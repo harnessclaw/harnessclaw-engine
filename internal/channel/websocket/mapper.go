@@ -18,13 +18,19 @@ type EventMapper struct {
 	blockIndex  int
 	inTextBlock bool
 	startTime   time.Time
+	clientTools bool // when true, emit content.* for tool_use blocks (client needs them)
 }
 
 // NewEventMapper creates a mapper for the given session.
-func NewEventMapper(sessionID string) *EventMapper {
+// clientTools controls whether tool_use content blocks are emitted via content.* events.
+// In client-tools mode (true), the client needs content.* events to see what the LLM requested.
+// In server-side mode (false), tool.start already carries all the info, so content.* tool_use
+// blocks are suppressed to avoid redundancy.
+func NewEventMapper(sessionID string, clientTools bool) *EventMapper {
 	return &EventMapper{
-		sessionID: sessionID,
-		startTime: time.Now(),
+		sessionID:   sessionID,
+		clientTools: clientTools,
+		startTime:   time.Now(),
 	}
 }
 
@@ -46,6 +52,8 @@ func (m *EventMapper) Map(event *types.EngineEvent) ([][]byte, error) {
 		return m.mapMessageStop(event)
 	case types.EngineEventText:
 		return m.mapText(event)
+	case types.EngineEventToolUse:
+		return m.mapToolUse(event)
 	case types.EngineEventToolStart:
 		return m.mapToolStart(event)
 	case types.EngineEventToolEnd:
@@ -102,7 +110,10 @@ func (m *EventMapper) mapMessageDelta(event *types.EngineEvent) ([][]byte, error
 	var usage *UsageInfo
 	if event.Usage != nil {
 		usage = &UsageInfo{
+			InputTokens:  event.Usage.InputTokens,
 			OutputTokens: event.Usage.OutputTokens,
+			CacheRead:    event.Usage.CacheRead,
+			CacheWrite:   event.Usage.CacheWrite,
 		}
 	}
 
@@ -178,15 +189,22 @@ func (m *EventMapper) mapText(event *types.EngineEvent) ([][]byte, error) {
 	return msgs, nil
 }
 
-// --- tool_start (server-side tool execution) ---
+// --- tool_use (LLM requested a tool call — content block from LLM output) ---
 
-func (m *EventMapper) mapToolStart(event *types.EngineEvent) ([][]byte, error) {
+func (m *EventMapper) mapToolUse(event *types.EngineEvent) ([][]byte, error) {
 	// Close the current text block if open.
 	msgs, err := m.closeTextBlock()
 	if err != nil {
 		return nil, err
 	}
 
+	// In server-side mode, tool.start already carries tool name/id/input,
+	// so we skip emitting content.* for tool_use blocks to avoid redundancy.
+	if !m.clientTools {
+		return msgs, nil
+	}
+
+	// Emit content.start for the tool_use block.
 	start := ContentStartMessage{
 		Type:      MsgTypeContentStart,
 		EventID:   newEventID(),
@@ -194,6 +212,7 @@ func (m *EventMapper) mapToolStart(event *types.EngineEvent) ([][]byte, error) {
 		Index:     m.blockIndex,
 		ContentBlock: &ContentBlockInfo{
 			Type: "tool_use",
+			ID:   event.ToolUseID,
 			Name: event.ToolName,
 		},
 	}
@@ -201,23 +220,123 @@ func (m *EventMapper) mapToolStart(event *types.EngineEvent) ([][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(msgs, b), nil
-}
+	msgs = append(msgs, b)
 
-// --- tool_end (server-side tool execution) ---
+	// Emit content.delta with the tool input JSON.
+	if event.ToolInput != "" {
+		delta := ContentDeltaMessage{
+			Type:      MsgTypeContentDelta,
+			EventID:   newEventID(),
+			SessionID: m.sessionID,
+			Index:     m.blockIndex,
+			Delta: &Delta{
+				Type:        "input_json_delta",
+				PartialJSON: event.ToolInput,
+			},
+		}
+		b, err = json.Marshal(delta)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, b)
+	}
 
-func (m *EventMapper) mapToolEnd(_ *types.EngineEvent) ([][]byte, error) {
+	// Emit content.stop to close the tool_use content block.
 	stop := ContentStopMessage{
 		Type:      MsgTypeContentStop,
 		EventID:   newEventID(),
 		SessionID: m.sessionID,
 		Index:     m.blockIndex,
 	}
-	b, err := json.Marshal(stop)
+	b, err = json.Marshal(stop)
 	if err != nil {
 		return nil, err
 	}
+	msgs = append(msgs, b)
 	m.blockIndex++
+
+	return msgs, nil
+}
+
+// --- tool.start (server-side tool execution begins) ---
+
+func (m *EventMapper) mapToolStart(event *types.EngineEvent) ([][]byte, error) {
+	var input map[string]interface{}
+	if event.ToolInput != "" {
+		if err := json.Unmarshal([]byte(event.ToolInput), &input); err != nil {
+			input = map[string]interface{}{"raw": event.ToolInput}
+		}
+	}
+
+	msg := ToolStartMessage{
+		Type:      MsgTypeToolStart,
+		EventID:   newEventID(),
+		SessionID: m.sessionID,
+		ToolUseID: event.ToolUseID,
+		ToolName:  event.ToolName,
+		Input:     input,
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- tool.end (server-side tool execution completed) ---
+
+func (m *EventMapper) mapToolEnd(event *types.EngineEvent) ([][]byte, error) {
+	status := "success"
+	output := ""
+	isError := false
+	var metadata map[string]any
+	var durationMs int64
+
+	if event.ToolResult != nil {
+		output = event.ToolResult.Content
+		isError = event.ToolResult.IsError
+		if isError {
+			status = "error"
+		}
+		// Copy metadata, extracting duration_ms to a top-level field
+		// to avoid duplication in the wire message.
+		if event.ToolResult.Metadata != nil {
+			metadata = make(map[string]any, len(event.ToolResult.Metadata))
+			for k, v := range event.ToolResult.Metadata {
+				if k == "duration_ms" {
+					switch d := v.(type) {
+					case int64:
+						durationMs = d
+					case float64:
+						durationMs = int64(d)
+					}
+					// Don't copy to metadata — it's promoted to top-level.
+					continue
+				}
+				metadata[k] = v
+			}
+			if len(metadata) == 0 {
+				metadata = nil
+			}
+		}
+	}
+
+	msg := ToolEndMessage{
+		Type:       MsgTypeToolEnd,
+		EventID:    newEventID(),
+		SessionID:  m.sessionID,
+		ToolUseID:  event.ToolUseID,
+		ToolName:   event.ToolName,
+		Status:     status,
+		Output:     output,
+		IsError:    isError,
+		DurationMs: durationMs,
+		Metadata:   metadata,
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
 	return [][]byte{b}, nil
 }
 

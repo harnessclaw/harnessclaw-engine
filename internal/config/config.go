@@ -136,6 +136,7 @@ type WSChannelConfig struct {
 	PingInterval   time.Duration `mapstructure:"ping_interval"`     // keep-alive ping interval (default 30s)
 	WriteTimeout   time.Duration `mapstructure:"write_timeout"`     // single write deadline (default 10s)
 	MaxMessageSize int64         `mapstructure:"max_message_size"`  // max inbound frame size (default 512KB)
+	ClientTools    bool          `mapstructure:"client_tools"`      // true = client executes tools; false = server executes tools
 }
 
 // HTTPChannelConfig holds HTTP API settings.
