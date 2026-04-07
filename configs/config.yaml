@@ -1,0 +1,32 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+log:
+  level: "info"
+  format: "console"
+  output: "stdout"
+
+llm:
+  default_provider: "anthropic"
+  max_retries: 3
+  api_timeout: "120s"
+  providers:
+    anthropic:
+      base_url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic"
+      api_key: "6598909ecd833a58a1943aaa0837a97d:YTFjMzM0NDYwMThlOGQ1YzA5OTAxNGJi"
+      model: "astron-code-latest"
+      max_tokens: 4096
+
+engine:
+  max_turns: 20
+  auto_compact_threshold: 0.8
+  tool_timeout: "60s"
+
+session:
+  max_messages: 200
+  idle_timeout: "30m"
+  storage: "memory"
+
+permission:
+  mode: "bypass"
