@@ -17,11 +17,11 @@ import (
 )
 
 // ============================================================
-// Mapper unit tests (v1.1 protocol)
+// Mapper unit tests (v1.2 protocol)
 // ============================================================
 
 func TestMapTextEvent_FirstEmitsBlockStart(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	msgs, err := m.Map(&types.EngineEvent{Type: types.EngineEventText, Text: "hello"})
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestMapTextEvent_FirstEmitsBlockStart(t *testing.T) {
 }
 
 func TestMapTextEvent_SubsequentOnlyDelta(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	// First call opens the block.
 	_, _ = m.Map(&types.EngineEvent{Type: types.EngineEventText, Text: "a"})
 
@@ -69,69 +69,186 @@ func TestMapTextEvent_SubsequentOnlyDelta(t *testing.T) {
 }
 
 func TestMapToolStartEvent(t *testing.T) {
-	m := NewEventMapper("s1")
-	msgs, err := m.Map(&types.EngineEvent{Type: types.EngineEventToolStart, ToolName: "bash"})
+	m := NewEventMapper("s1", false)
+	msgs, err := m.Map(&types.EngineEvent{
+		Type:      types.EngineEventToolStart,
+		ToolUseID: "tu_1",
+		ToolName:  "bash",
+		ToolInput: `{"command":"ls -la"}`,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(msgs) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(msgs))
+		t.Fatalf("expected 1 message (tool.start), got %d", len(msgs))
+	}
+
+	var msg ToolStartMessage
+	if err := json.Unmarshal(msgs[0], &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.Type != MsgTypeToolStart {
+		t.Errorf("expected %s, got %s", MsgTypeToolStart, msg.Type)
+	}
+	if msg.ToolName != "bash" {
+		t.Errorf("expected tool name 'bash', got %q", msg.ToolName)
+	}
+	if msg.ToolUseID != "tu_1" {
+		t.Errorf("expected tool_use_id 'tu_1', got %q", msg.ToolUseID)
+	}
+	if cmd, ok := msg.Input["command"]; !ok || cmd != "ls -la" {
+		t.Errorf("expected input.command 'ls -la', got %v", msg.Input)
+	}
+}
+
+func TestMapToolStartEvent_ClosesOpenTextBlock(t *testing.T) {
+	m := NewEventMapper("s1", false)
+	// Open a text block.
+	_, _ = m.Map(&types.EngineEvent{Type: types.EngineEventText, Text: "hi"})
+	// tool_use (from LLM) should close the text block.
+	// In server-side mode (clientTools=false), tool_use content blocks are suppressed.
+	msgs, err := m.Map(&types.EngineEvent{
+		Type:      types.EngineEventToolUse,
+		ToolUseID: "tu_1",
+		ToolName:  "grep",
+		ToolInput: `{"pattern":"foo"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Expect: content.stop (for text) only — tool_use content is suppressed in server-side mode.
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message (content.stop for text), got %d", len(msgs))
+	}
+
+	var stop ContentStopMessage
+	json.Unmarshal(msgs[0], &stop)
+	if stop.Type != MsgTypeContentStop {
+		t.Errorf("expected %s, got %s", MsgTypeContentStop, stop.Type)
+	}
+}
+
+func TestMapToolUse_ClientMode_EmitsContentBlocks(t *testing.T) {
+	m := NewEventMapper("s1", true) // client-tools mode
+	msgs, err := m.Map(&types.EngineEvent{
+		Type:      types.EngineEventToolUse,
+		ToolUseID: "tu_1",
+		ToolName:  "bash",
+		ToolInput: `{"command":"ls"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Expect: content.start + content.delta + content.stop
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages (content.start + content.delta + content.stop), got %d", len(msgs))
 	}
 
 	var start ContentStartMessage
-	if err := json.Unmarshal(msgs[0], &start); err != nil {
-		t.Fatal(err)
-	}
+	json.Unmarshal(msgs[0], &start)
 	if start.Type != MsgTypeContentStart {
-		t.Errorf("expected %s, got %s", MsgTypeContentStart, start.Type)
+		t.Errorf("expected content.start, got %s", start.Type)
 	}
 	if start.ContentBlock == nil || start.ContentBlock.Type != "tool_use" {
 		t.Error("expected tool_use content block")
 	}
 	if start.ContentBlock.Name != "bash" {
-		t.Errorf("expected tool name 'bash', got %q", start.ContentBlock.Name)
+		t.Errorf("expected name 'bash', got %q", start.ContentBlock.Name)
 	}
-}
 
-func TestMapToolStartEvent_ClosesOpenTextBlock(t *testing.T) {
-	m := NewEventMapper("s1")
-	// Open a text block.
-	_, _ = m.Map(&types.EngineEvent{Type: types.EngineEventText, Text: "hi"})
-	// tool_start should close it first.
-	msgs, err := m.Map(&types.EngineEvent{Type: types.EngineEventToolStart, ToolName: "grep"})
-	if err != nil {
-		t.Fatal(err)
+	var delta ContentDeltaMessage
+	json.Unmarshal(msgs[1], &delta)
+	if delta.Type != MsgTypeContentDelta {
+		t.Errorf("expected content.delta, got %s", delta.Type)
 	}
-	// Expect: content.stop (for text) + content.start (for tool)
-	if len(msgs) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	if delta.Delta == nil || delta.Delta.Type != "input_json_delta" {
+		t.Error("expected input_json_delta")
 	}
 
 	var stop ContentStopMessage
-	json.Unmarshal(msgs[0], &stop)
+	json.Unmarshal(msgs[2], &stop)
 	if stop.Type != MsgTypeContentStop {
-		t.Errorf("expected %s, got %s", MsgTypeContentStop, stop.Type)
+		t.Errorf("expected content.stop, got %s", stop.Type)
+	}
+}
+
+func TestMapToolUse_ServerMode_SuppressesContentBlocks(t *testing.T) {
+	m := NewEventMapper("s1", false) // server-side mode
+	msgs, err := m.Map(&types.EngineEvent{
+		Type:      types.EngineEventToolUse,
+		ToolUseID: "tu_1",
+		ToolName:  "bash",
+		ToolInput: `{"command":"ls"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// In server-side mode, tool_use content blocks are suppressed (tool.start carries the info).
+	if len(msgs) != 0 {
+		t.Fatalf("expected 0 messages in server-side mode, got %d", len(msgs))
 	}
 }
 
 func TestMapToolEndEvent(t *testing.T) {
-	m := NewEventMapper("s1")
-	msgs, err := m.Map(&types.EngineEvent{Type: types.EngineEventToolEnd})
+	m := NewEventMapper("s1", false)
+	msgs, err := m.Map(&types.EngineEvent{
+		Type:      types.EngineEventToolEnd,
+		ToolUseID: "tu_1",
+		ToolName:  "bash",
+		ToolResult: &types.ToolResult{
+			Content: "file1.go\nfile2.go",
+			IsError: false,
+			Metadata: map[string]any{
+				"exit_code":   0,
+				"duration_ms": int64(42),
+			},
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(msgs) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(msgs))
+		t.Fatalf("expected 1 message (tool.end), got %d", len(msgs))
 	}
-	var stop ContentStopMessage
-	json.Unmarshal(msgs[0], &stop)
-	if stop.Type != MsgTypeContentStop {
-		t.Errorf("expected %s, got %s", MsgTypeContentStop, stop.Type)
+	var msg ToolEndMessage
+	json.Unmarshal(msgs[0], &msg)
+	if msg.Type != MsgTypeToolEnd {
+		t.Errorf("expected %s, got %s", MsgTypeToolEnd, msg.Type)
+	}
+	if msg.ToolUseID != "tu_1" {
+		t.Errorf("expected tool_use_id 'tu_1', got %q", msg.ToolUseID)
+	}
+	if msg.Status != "success" {
+		t.Errorf("expected status 'success', got %q", msg.Status)
+	}
+	if msg.Output != "file1.go\nfile2.go" {
+		t.Errorf("expected output, got %q", msg.Output)
+	}
+	if msg.DurationMs != 42 {
+		t.Errorf("expected duration_ms 42, got %d", msg.DurationMs)
+	}
+	// duration_ms should be promoted to top-level, not duplicated in metadata.
+	if msg.Metadata != nil {
+		if _, hasDur := msg.Metadata["duration_ms"]; hasDur {
+			t.Error("duration_ms should not be duplicated in metadata")
+		}
+	}
+	// exit_code should remain in metadata.
+	if msg.Metadata == nil {
+		t.Fatal("expected metadata with exit_code")
+	}
+	ec, ok := msg.Metadata["exit_code"]
+	if !ok {
+		t.Fatal("metadata missing exit_code")
+	}
+	// After JSON roundtrip, integer values in map[string]any become float64.
+	if ecf, isFloat := ec.(float64); !isFloat || ecf != 0 {
+		t.Errorf("expected metadata.exit_code=0 (float64), got %v (%T)", ec, ec)
 	}
 }
 
 func TestMapErrorEvent(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	msgs, err := m.Map(&types.EngineEvent{
 		Type:  types.EngineEventError,
 		Error: fmt.Errorf("something broke"),
@@ -156,7 +273,7 @@ func TestMapErrorEvent(t *testing.T) {
 }
 
 func TestMapDoneEvent_Success(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	msgs, err := m.Map(&types.EngineEvent{
 		Type: types.EngineEventDone,
 		Terminal: &types.Terminal{
@@ -188,7 +305,7 @@ func TestMapDoneEvent_Success(t *testing.T) {
 }
 
 func TestMapDoneEvent_MaxTurns(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	msgs, _ := m.Map(&types.EngineEvent{
 		Type:     types.EngineEventDone,
 		Terminal: &types.Terminal{Reason: types.TerminalMaxTurns, Turn: 50},
@@ -201,7 +318,7 @@ func TestMapDoneEvent_MaxTurns(t *testing.T) {
 }
 
 func TestMapDoneEvent_Aborted(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	msgs, _ := m.Map(&types.EngineEvent{
 		Type:     types.EngineEventDone,
 		Terminal: &types.Terminal{Reason: types.TerminalAbortedStreaming},
@@ -214,7 +331,7 @@ func TestMapDoneEvent_Aborted(t *testing.T) {
 }
 
 func TestMapDoneEvent_ClosesOpenTextBlock(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	_, _ = m.Map(&types.EngineEvent{Type: types.EngineEventText, Text: "x"})
 	msgs, _ := m.Map(&types.EngineEvent{
 		Type:     types.EngineEventDone,
@@ -227,7 +344,7 @@ func TestMapDoneEvent_ClosesOpenTextBlock(t *testing.T) {
 }
 
 func TestMapperReset(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	_, _ = m.Map(&types.EngineEvent{Type: types.EngineEventText, Text: "a"})
 	m.Reset()
 
@@ -361,8 +478,8 @@ func TestIntegration_WebSocket_RoundTrip(t *testing.T) {
 	if initMsg.SessionID != "test-session" {
 		t.Errorf("expected session_id 'test-session', got %q", initMsg.SessionID)
 	}
-	if initMsg.ProtocolVersion != "1.1" {
-		t.Errorf("expected protocol_version '1.1', got %q", initMsg.ProtocolVersion)
+	if initMsg.ProtocolVersion != "1.2" {
+		t.Errorf("expected protocol_version '1.2', got %q", initMsg.ProtocolVersion)
 	}
 
 	// Send a user.message.
@@ -526,7 +643,7 @@ func TestMapTerminalReason(t *testing.T) {
 // ============================================================
 
 func TestMapEventID_HasPrefix(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	msgs, _ := m.Map(&types.EngineEvent{Type: types.EngineEventText, Text: "hi"})
 	var msg ContentStartMessage
 	json.Unmarshal(msgs[0], &msg)
@@ -536,7 +653,7 @@ func TestMapEventID_HasPrefix(t *testing.T) {
 }
 
 func TestMapError_StructuredError(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	msgs, _ := m.Map(&types.EngineEvent{
 		Type:  types.EngineEventError,
 		Error: fmt.Errorf("rate limit hit"),
@@ -556,7 +673,7 @@ func TestMapError_StructuredError(t *testing.T) {
 // ============================================================
 
 func TestMapMessageStart(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	msgs, err := m.Map(&types.EngineEvent{
 		Type:      types.EngineEventMessageStart,
 		MessageID: "msg_abc",
@@ -589,7 +706,7 @@ func TestMapMessageStart(t *testing.T) {
 }
 
 func TestMapMessageDelta(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	msgs, err := m.Map(&types.EngineEvent{
 		Type:       types.EngineEventMessageDelta,
 		StopReason: "end_turn",
@@ -615,7 +732,7 @@ func TestMapMessageDelta(t *testing.T) {
 }
 
 func TestMapMessageDelta_ClosesOpenTextBlock(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	// Open a text block.
 	_, _ = m.Map(&types.EngineEvent{Type: types.EngineEventText, Text: "hi"})
 	// message_delta should close it first.
@@ -643,7 +760,7 @@ func TestMapMessageDelta_ClosesOpenTextBlock(t *testing.T) {
 }
 
 func TestMapMessageStop(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	msgs, err := m.Map(&types.EngineEvent{Type: types.EngineEventMessageStop})
 	if err != nil {
 		t.Fatal(err)
@@ -662,7 +779,7 @@ func TestMapMessageStop(t *testing.T) {
 }
 
 func TestMapToolCall(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	msgs, err := m.Map(&types.EngineEvent{
 		Type:      types.EngineEventToolCall,
 		ToolUseID: "tu_123",
@@ -692,7 +809,7 @@ func TestMapToolCall(t *testing.T) {
 }
 
 func TestMapToolCall_InvalidJSON(t *testing.T) {
-	m := NewEventMapper("s1")
+	m := NewEventMapper("s1", false)
 	msgs, err := m.Map(&types.EngineEvent{
 		Type:      types.EngineEventToolCall,
 		ToolUseID: "tu_456",

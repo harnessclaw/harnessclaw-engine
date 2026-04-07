@@ -103,6 +103,7 @@ func (te *ToolExecutor) executeSingle(
 	// Emit tool_start event.
 	out <- types.EngineEvent{
 		Type:      types.EngineEventToolStart,
+		ToolUseID: tc.ID,
 		ToolName:  tc.Name,
 		ToolInput: tc.Input,
 	}
@@ -111,6 +112,7 @@ func (te *ToolExecutor) executeSingle(
 		// Emit tool_end event.
 		out <- types.EngineEvent{
 			Type:       types.EngineEventToolEnd,
+			ToolUseID:  tc.ID,
 			ToolName:   tc.Name,
 			ToolResult: &result,
 		}

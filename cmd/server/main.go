@@ -43,6 +43,7 @@ import (
 	"harnessclaw-go/internal/storage"
 	"harnessclaw-go/internal/storage/memory"
 	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tool/bash"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -98,9 +99,12 @@ func main() {
 
 	// --- Step 5: Register tools ---
 	registry := tool.NewRegistry()
-	// TODO: Replace with real tool registrations when tool implementations are ready.
-	// Tools will be registered based on cfg.Tools enablement flags:
-	//   if cfg.Tools.Bash.Enabled { registry.Register(bash.New(cfg.Tools.Bash)) }
+	if cfg.Tools.Bash.Enabled {
+		if err := registry.Register(bash.New(cfg.Tools.Bash)); err != nil {
+			logger.Fatal("failed to register bash tool", zap.Error(err))
+		}
+	}
+	// TODO: Register remaining tools when implementations are ready:
 	//   if cfg.Tools.FileRead.Enabled { registry.Register(fileread.New()) }
 	//   if cfg.Tools.FileEdit.Enabled { registry.Register(fileedit.New()) }
 	//   if cfg.Tools.FileWrite.Enabled { registry.Register(filewrite.New()) }

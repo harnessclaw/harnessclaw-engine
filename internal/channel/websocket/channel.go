@@ -200,12 +200,12 @@ func (ch *Channel) upgradeHandler(w http.ResponseWriter, r *http.Request) {
 		Type:            MsgTypeSessionCreated,
 		EventID:         "evt_" + uuid.New().String()[:8],
 		SessionID:       sessionID,
-		ProtocolVersion: "1.1",
+		ProtocolVersion: "1.2",
 		Session: SessionInfo{
 			Capabilities: Capabilities{
 				Streaming:   true,
 				Tools:       true,
-				ClientTools: true,
+				ClientTools: ch.config.ClientTools,
 				MultiTurn:   true,
 			},
 		},
@@ -223,7 +223,7 @@ func (ch *Channel) getOrCreateMapper(sessionID string) *EventMapper {
 	if v, ok := ch.mappers.Load(sessionID); ok {
 		return v.(*EventMapper)
 	}
-	m := NewEventMapper(sessionID)
+	m := NewEventMapper(sessionID, ch.config.ClientTools)
 	actual, _ := ch.mappers.LoadOrStore(sessionID, m)
 	return actual.(*EventMapper)
 }
