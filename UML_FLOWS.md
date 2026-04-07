@@ -2,7 +2,7 @@
 
 > 版本: v1.0.0 | 日期: 2026-04-05 | 作者: 架构组
 
-本文档使用 Mermaid 语法描述系统各核心流程的 UML 图，作为 [ARCHITECTURE.md](./ARCHITECTURE.md) 的补充。所有流程图均基于架构文档中定义的分层结构（Channel → Router → Engine → Provider/Tool）和核心 Interface 设计。
+本文档使用 Mermaid 语法描述系统各核心流程的 UML 图，作为 [ARCHITECTURE.md](docs/refactor/ARCHITECTURE.md) 的补充。所有流程图均基于架构文档中定义的分层结构（Channel → Router → Engine → Provider/Tool）和核心 Interface 设计。
 
 ---
 

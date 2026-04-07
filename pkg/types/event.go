@@ -25,8 +25,9 @@ type EngineEventType string
 
 const (
 	EngineEventText         EngineEventType = "text"
-	EngineEventToolStart    EngineEventType = "tool_start"
-	EngineEventToolEnd      EngineEventType = "tool_end"
+	EngineEventToolUse      EngineEventType = "tool_use"      // LLM requests tool use (content block)
+	EngineEventToolStart    EngineEventType = "tool_start"     // server-side tool execution begins
+	EngineEventToolEnd      EngineEventType = "tool_end"       // server-side tool execution completes
 	EngineEventToolCall     EngineEventType = "tool_call"      // server→client: request client-side tool execution
 	EngineEventError        EngineEventType = "error"
 	EngineEventDone         EngineEventType = "done"

@@ -16,7 +16,9 @@ const (
 	MsgTypeContentStart   WSMessageType = "content.start"
 	MsgTypeContentDelta   WSMessageType = "content.delta"
 	MsgTypeContentStop    WSMessageType = "content.stop"
-	MsgTypeToolCall       WSMessageType = "tool.call"
+	MsgTypeToolCall       WSMessageType = "tool.call"       // client-side tool execution request
+	MsgTypeToolStart      WSMessageType = "tool.start"      // server-side tool execution started
+	MsgTypeToolEnd        WSMessageType = "tool.end"        // server-side tool execution completed
 	MsgTypeTaskEnd        WSMessageType = "task.end"
 	MsgTypeError          WSMessageType = "error"
 	MsgTypePong           WSMessageType = "pong"
@@ -146,6 +148,30 @@ type ToolCallMessage struct {
 	ToolUseID string                 `json:"tool_use_id"`
 	ToolName  string                 `json:"tool_name"`
 	Input     map[string]interface{} `json:"input"`
+}
+
+// ToolStartMessage is sent when a server-side tool execution begins.
+type ToolStartMessage struct {
+	Type      WSMessageType          `json:"type"` // "tool.start"
+	EventID   string                 `json:"event_id"`
+	SessionID string                 `json:"session_id"`
+	ToolUseID string                 `json:"tool_use_id"`
+	ToolName  string                 `json:"tool_name"`
+	Input     map[string]interface{} `json:"input"`
+}
+
+// ToolEndMessage is sent when a server-side tool execution completes.
+type ToolEndMessage struct {
+	Type       WSMessageType  `json:"type"` // "tool.end"
+	EventID    string         `json:"event_id"`
+	SessionID  string         `json:"session_id"`
+	ToolUseID  string         `json:"tool_use_id"`
+	ToolName   string         `json:"tool_name"`
+	Status     string         `json:"status"` // "success" or "error"
+	Output     string         `json:"output"`
+	IsError    bool           `json:"is_error"`
+	DurationMs int64          `json:"duration_ms,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
 // TaskEndMessage signals that a query-loop task has finished.

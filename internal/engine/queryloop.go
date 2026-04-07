@@ -274,6 +274,13 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 			case types.StreamEventToolUse:
 				if evt.ToolCall != nil {
 					toolCalls = append(toolCalls, *evt.ToolCall)
+					// Emit tool_use content block so clients can see what the LLM requested.
+					out <- types.EngineEvent{
+						Type:      types.EngineEventToolUse,
+						ToolUseID: evt.ToolCall.ID,
+						ToolName:  evt.ToolCall.Name,
+						ToolInput: evt.ToolCall.Input,
+					}
 				}
 
 			case types.StreamEventMessageEnd:
