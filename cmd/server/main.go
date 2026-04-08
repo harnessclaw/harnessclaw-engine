@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"harnessclaw-go/internal/channel"
 	wsch "harnessclaw-go/internal/channel/websocket"
+	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/compact"
@@ -40,10 +42,18 @@ import (
 	"harnessclaw-go/internal/provider/bifrost"
 	"harnessclaw-go/internal/router"
 	"harnessclaw-go/internal/router/middleware"
+	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/storage"
 	"harnessclaw-go/internal/storage/memory"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/bash"
+	"harnessclaw-go/internal/tool/fileedit"
+	"harnessclaw-go/internal/tool/fileread"
+	"harnessclaw-go/internal/tool/filewrite"
+	"harnessclaw-go/internal/tool/glob"
+	"harnessclaw-go/internal/tool/grep"
+	"harnessclaw-go/internal/tool/skilltool"
+	"harnessclaw-go/internal/tool/webfetch"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -99,19 +109,76 @@ func main() {
 
 	// --- Step 5: Register tools ---
 	registry := tool.NewRegistry()
-	if cfg.Tools.Bash.Enabled {
-		if err := registry.Register(bash.New(cfg.Tools.Bash)); err != nil {
-			logger.Fatal("failed to register bash tool", zap.Error(err))
+
+	// Register built-in tools based on config.
+	builtInTools := []struct {
+		enabled bool
+		factory func() tool.Tool
+	}{
+		{cfg.Tools.Bash.Enabled, func() tool.Tool { return bash.New(cfg.Tools.Bash) }},
+		{cfg.Tools.FileRead.Enabled, func() tool.Tool { return fileread.New(cfg.Tools.FileRead) }},
+		{cfg.Tools.FileEdit.Enabled, func() tool.Tool { return fileedit.New(cfg.Tools.FileEdit) }},
+		{cfg.Tools.FileWrite.Enabled, func() tool.Tool { return filewrite.New(cfg.Tools.FileWrite) }},
+		{cfg.Tools.Grep.Enabled, func() tool.Tool { return grep.New(cfg.Tools.Grep) }},
+		{cfg.Tools.Glob.Enabled, func() tool.Tool { return glob.New(cfg.Tools.Glob) }},
+		{cfg.Tools.WebFetch.Enabled, func() tool.Tool { return webfetch.New(cfg.Tools.WebFetch) }},
+	}
+	for _, bt := range builtInTools {
+		if bt.enabled {
+			if err := registry.Register(bt.factory()); err != nil {
+				logger.Fatal("failed to register tool", zap.Error(err))
+			}
 		}
 	}
-	// TODO: Register remaining tools when implementations are ready:
-	//   if cfg.Tools.FileRead.Enabled { registry.Register(fileread.New()) }
-	//   if cfg.Tools.FileEdit.Enabled { registry.Register(fileedit.New()) }
-	//   if cfg.Tools.FileWrite.Enabled { registry.Register(filewrite.New()) }
-	//   if cfg.Tools.Grep.Enabled { registry.Register(grep.New()) }
-	//   if cfg.Tools.Glob.Enabled { registry.Register(glob.New()) }
-	//   if cfg.Tools.WebFetch.Enabled { registry.Register(webfetch.New(cfg.Tools.WebFetch)) }
-	logger.Info("tool registry initialized", zap.Int("tool_count", len(registry.All())))
+
+	// Load skills and register SkillTool.
+	skillLoader := skill.NewLoader(cfg.Skills.Dirs, logger)
+	skillCommands, err := skillLoader.LoadAll()
+	if err != nil {
+		logger.Warn("skill loading had issues", zap.Error(err))
+	}
+	for i, cmd := range skillCommands {
+		base := cmd.GetBase()
+		if base == nil {
+			continue
+		}
+		logger.Info("skill command detail",
+			zap.Int("index", i),
+			zap.String("name", base.Name),
+			zap.String("description", base.Description),
+			zap.String("when_to_use", base.WhenToUse),
+			zap.Strings("aliases", base.Aliases),
+			zap.Int("source", int(base.Source)),
+			zap.String("loaded_from", string(base.LoadedFrom)),
+			zap.Bool("user_invocable", base.UserInvocable),
+			zap.Bool("disable_model_invocation", base.DisableModelInvocation),
+			zap.String("type", string(cmd.Type)),
+		)
+		if cmd.Prompt != nil {
+			logger.Info("skill prompt detail",
+				zap.Int("index", i),
+				zap.String("name", base.Name),
+				zap.String("model", cmd.Prompt.Model),
+				zap.String("effort", cmd.Prompt.Effort),
+				zap.String("context", cmd.Prompt.Context),
+				zap.String("agent", cmd.Prompt.Agent),
+				zap.Strings("allowed_tools", cmd.Prompt.AllowedTools),
+				zap.Strings("arg_names", cmd.Prompt.ArgNames),
+				zap.Strings("paths", cmd.Prompt.Paths),
+				zap.String("skill_root", cmd.Prompt.SkillRoot),
+			)
+		}
+	}
+	cmdRegistry := command.NewRegistry()
+	cmdRegistry.LoadAll(skillCommands)
+	if err := registry.Register(skilltool.New(cmdRegistry)); err != nil {
+		logger.Fatal("failed to register skill tool", zap.Error(err))
+	}
+
+	logger.Info("tool registry initialized",
+		zap.Int("tool_count", len(registry.All())),
+		zap.Int("skill_count", len(skillCommands)),
+	)
 
 	// --- Step 6: Initialize LLM provider ---
 	llmProvider := initProvider(cfg.LLM, logger)
@@ -130,14 +197,27 @@ func main() {
 	compactor := compact.NewLLMCompactor(llmProvider, logger)
 	permChecker := initPermissionChecker(cfg.Permission)
 
+	// Build system prompt — generic skill guidance only (Layer 1 of 3-layer skill injection).
+	// The actual skill listing is injected per-turn as a <system-reminder> message (Layer 3).
+	hasSkills := len(cmdRegistry.GetSkillToolCommands()) > 0
+	systemPrompt := "You are a helpful assistant."
+
+	if hasSkills {
+		systemPrompt += "\n\n# Session-specific guidance\n" +
+			" - /<skill-name> (e.g., /commit) is shorthand for users to invoke a user-invocable skill. " +
+			"When executed, the skill gets expanded to a full prompt. Use the Skill tool to execute them. " +
+			"IMPORTANT: Only use Skill for skills listed in its user-invocable skills section - do not guess or use built-in CLI commands.\n"
+	}
+	systemPrompt += " - Skills directories: " + strings.Join(cfg.Skills.Dirs, ", ")
+
 	engCfg := engine.QueryEngineConfig{
 		MaxTurns:             cfg.Engine.MaxTurns,
 		AutoCompactThreshold: cfg.Engine.AutoCompactThreshold,
 		ToolTimeout:          cfg.Engine.ToolTimeout,
 		MaxTokens:            16384,
-		SystemPrompt:         "You are a helpful assistant.",
+		SystemPrompt:         systemPrompt,
 	}
-	eng := engine.NewQueryEngine(llmProvider, registry, sessionMgr, compactor, permChecker, bus, logger, engCfg)
+	eng := engine.NewQueryEngine(llmProvider, registry, sessionMgr, compactor, permChecker, bus, logger, engCfg, cmdRegistry)
 	logger.Info("engine initialized",
 		zap.Int("max_turns", engCfg.MaxTurns),
 		zap.Float64("compact_threshold", engCfg.AutoCompactThreshold),
@@ -355,7 +435,7 @@ func initPermissionChecker(cfg config.PermissionConfig) permission.Checker {
 		})
 	}
 
-	return permission.NewChecker(mode, rules)
+	return permission.NewOuterChecker(mode, rules)
 }
 
 // runIdleCleanup periodically triggers session idle cleanup.

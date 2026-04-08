@@ -2,18 +2,22 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tool/skilltool"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -47,16 +51,25 @@ type pendingToolCall struct {
 	resultCh chan *types.ToolResultPayload
 }
 
+// pendingPermission tracks a permission request awaiting client approval.
+type pendingPermission struct {
+	resultCh chan *types.PermissionResponse
+}
+
 // QueryEngine is the concrete Engine implementation that runs the 5-phase query loop.
 type QueryEngine struct {
 	provider    provider.Provider
 	registry    *tool.Registry
+	cmdRegistry *command.Registry
 	sessionMgr  *session.Manager
 	compactor   compact.Compactor
 	permChecker permission.Checker
 	eventBus    *event.Bus
 	logger      *zap.Logger
 	config      QueryEngineConfig
+
+	// Cached skill listing (computed once, reused per query).
+	skillListing string
 
 	// In-flight session tracking for abort support.
 	mu      sync.Mutex
@@ -65,6 +78,15 @@ type QueryEngine struct {
 	// Pending tool calls awaiting client results (client-tools mode).
 	toolMu       sync.Mutex
 	pendingTools map[string]*pendingToolCall // tool_use_id → pending
+
+	// Pending permission requests awaiting client approval.
+	permMu       sync.Mutex
+	pendingPerms map[string]*pendingPermission // request_id → pending
+
+	// Session-level tool allow list. When a user chooses "allow always in this session",
+	// the tool name is recorded here and subsequent invocations auto-approve.
+	sessionAllowMu    sync.RWMutex
+	sessionAllowTools map[string]map[string]bool // session_id → tool_name → true
 }
 
 // NewQueryEngine creates a new query engine.
@@ -77,18 +99,22 @@ func NewQueryEngine(
 	bus *event.Bus,
 	logger *zap.Logger,
 	cfg QueryEngineConfig,
+	cmdReg *command.Registry,
 ) *QueryEngine {
 	return &QueryEngine{
 		provider:     prov,
 		registry:     reg,
+		cmdRegistry:  cmdReg,
 		sessionMgr:   mgr,
 		compactor:    comp,
 		permChecker:  perm,
 		eventBus:     bus,
 		logger:       logger,
 		config:       cfg,
-		cancels:      make(map[string]context.CancelFunc),
-		pendingTools: make(map[string]*pendingToolCall),
+		cancels:           make(map[string]context.CancelFunc),
+		pendingTools:       make(map[string]*pendingToolCall),
+		pendingPerms:       make(map[string]*pendingPermission),
+		sessionAllowTools:  make(map[string]map[string]bool),
 	}
 }
 
@@ -130,7 +156,7 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 
 		qe.eventBus.Publish(event.Event{
 			Topic:   event.TopicQueryCompleted,
-			Payload: map[string]any{"session_id": sessionID, "reason": terminal.Reason},
+			Payload: map[string]any{"session_id": sessionID, "reason": terminal.Reason, "message": terminal.Message},
 		})
 
 		cumUsage := qe.cumulativeUsageFor(sess.ID)
@@ -161,6 +187,233 @@ func (qe *QueryEngine) SubmitToolResult(_ context.Context, _ string, result *typ
 	default:
 		return fmt.Errorf("tool result channel full for %s", result.ToolUseID)
 	}
+}
+
+// SubmitPermissionResult implements Engine. It delivers a permission approval/denial
+// from the client to the waiting tool executor.
+func (qe *QueryEngine) SubmitPermissionResult(_ context.Context, _ string, resp *types.PermissionResponse) error {
+	qe.permMu.Lock()
+	pending, ok := qe.pendingPerms[resp.RequestID]
+	qe.permMu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("no pending permission request for request_id %s", resp.RequestID)
+	}
+
+	select {
+	case pending.resultCh <- resp:
+		return nil
+	default:
+		return fmt.Errorf("permission response channel full for %s", resp.RequestID)
+	}
+}
+
+// requestPermissionApproval registers a pending permission request, emits the
+// event to the client, and blocks until the client responds or the context is cancelled.
+// This is passed to the ToolExecutor as a callback.
+//
+// If the tool+command has been previously approved with scope=session for this session,
+// the request is auto-approved without asking the client again.
+func (qe *QueryEngine) requestPermissionApproval(
+	ctx context.Context,
+	out chan<- types.EngineEvent,
+	sessionID string,
+	req *types.PermissionRequest,
+) *types.PermissionResponse {
+	permKey := req.PermissionKey
+	if permKey == "" {
+		permKey = req.ToolName // fallback for non-Bash tools without a specific key
+	}
+
+	// Fast path: check if this tool+command is already session-approved.
+	qe.sessionAllowMu.RLock()
+	if tools, ok := qe.sessionAllowTools[sessionID]; ok && tools[permKey] {
+		qe.sessionAllowMu.RUnlock()
+		qe.logger.Debug("permission auto-approved (session scope)",
+			zap.String("permission_key", permKey),
+			zap.String("session_id", sessionID),
+		)
+		return &types.PermissionResponse{
+			RequestID: req.RequestID,
+			Approved:  true,
+			Scope:     types.PermissionScopeSession,
+			Message:   "auto-approved (session scope)",
+		}
+	}
+	qe.sessionAllowMu.RUnlock()
+
+	ch := make(chan *types.PermissionResponse, 1)
+	qe.permMu.Lock()
+	qe.pendingPerms[req.RequestID] = &pendingPermission{resultCh: ch}
+	qe.permMu.Unlock()
+
+	defer func() {
+		qe.permMu.Lock()
+		delete(qe.pendingPerms, req.RequestID)
+		qe.permMu.Unlock()
+	}()
+
+	// Emit permission_request event to the client.
+	out <- types.EngineEvent{
+		Type:              types.EngineEventPermissionRequest,
+		PermissionRequest: req,
+	}
+
+	// Wait for client response — block indefinitely until the user acts or
+	// the session is aborted (ctx cancelled).  Permission decisions are a
+	// human action; applying an artificial timeout would silently deny
+	// operations the user simply hasn't reviewed yet.
+	var resp *types.PermissionResponse
+	select {
+	case <-ctx.Done():
+		return &types.PermissionResponse{
+			RequestID: req.RequestID,
+			Approved:  false,
+			Message:   "request cancelled",
+		}
+	case resp = <-ch:
+	}
+
+	// If approved with session scope, record for future auto-approval.
+	if resp.Approved && resp.Scope == types.PermissionScopeSession {
+		qe.sessionAllowMu.Lock()
+		if qe.sessionAllowTools[sessionID] == nil {
+			qe.sessionAllowTools[sessionID] = make(map[string]bool)
+		}
+		qe.sessionAllowTools[sessionID][permKey] = true
+		qe.sessionAllowMu.Unlock()
+		qe.logger.Info("command session-approved",
+			zap.String("permission_key", permKey),
+			zap.String("session_id", sessionID),
+		)
+	}
+
+	return resp
+}
+
+// extractPermissionKey derives a fine-grained key for session-level approval.
+//
+// For Bash: parses the command field and extracts "program + subcommand",
+// e.g. input `{"command":"git status"}` → key "Bash:git status".
+// This ensures approving "git status" doesn't auto-approve "git push".
+//
+// For file tools (Edit/Write/Read): extracts the file_path,
+// e.g. input `{"file_path":"/src/main.go",...}` → key "Edit:/src/main.go".
+//
+// For other tools: returns the tool name as-is.
+func extractPermissionKey(toolName, toolInput string) string {
+	switch toolName {
+	case "Bash":
+		var input struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal([]byte(toolInput), &input); err == nil && input.Command != "" {
+			cmdID := extractCommandIdentity(input.Command)
+			if cmdID != "" {
+				return "Bash:" + cmdID
+			}
+		}
+		return toolName
+
+	case "Edit", "Write", "Read":
+		var input struct {
+			FilePath string `json:"file_path"`
+		}
+		if err := json.Unmarshal([]byte(toolInput), &input); err == nil && input.FilePath != "" {
+			return toolName + ":" + input.FilePath
+		}
+		return toolName
+
+	default:
+		return toolName
+	}
+}
+
+// extractCommandIdentity extracts "program + subcommand" from a shell command.
+// The result is used as the session-level approval key.
+//
+// It returns the program name plus the first non-flag token (subcommand),
+// so that different subcommands require separate approval:
+//
+//	"git status"                → "git status"
+//	"git push --force"          → "git push"
+//	"git add file.go"           → "git add"
+//	"sudo npm install foo"      → "npm install"
+//	"ENV=val go build ./..."    → "go build"
+//	"rm -rf /tmp"               → "rm"
+//	"ls -la"                    → "ls"
+//	"cd /tmp && make test"      → "make test"
+//	"cat foo | grep bar"        → "cat"
+//	"docker compose up -d"      → "docker compose"
+func extractCommandIdentity(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return ""
+	}
+
+	// Split on pipes/chains — take the first segment.
+	for _, sep := range []string{"&&", "||", "|", ";"} {
+		if idx := strings.Index(cmd, sep); idx >= 0 {
+			cmd = strings.TrimSpace(cmd[:idx])
+			break
+		}
+	}
+
+	tokens := strings.Fields(cmd)
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	// Skip leading env-var assignments (FOO=bar) and sudo/env/nohup wrappers.
+	for len(tokens) > 0 {
+		t := tokens[0]
+		if strings.Contains(t, "=") && !strings.HasPrefix(t, "-") {
+			tokens = tokens[1:]
+			continue
+		}
+		if t == "sudo" || t == "env" || t == "nohup" || t == "nice" || t == "time" {
+			tokens = tokens[1:]
+			continue
+		}
+		break
+	}
+
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	// First token is the program name (strip path: /usr/bin/git → git).
+	program := tokens[0]
+	if idx := strings.LastIndex(program, "/"); idx >= 0 {
+		program = program[idx+1:]
+	}
+
+	// Look for a subcommand: the first token after the program that is
+	// neither a flag (starts with -) nor looks like a file path.
+	for _, t := range tokens[1:] {
+		if strings.HasPrefix(t, "-") {
+			continue // flag
+		}
+		if looksLikePath(t) {
+			break // argument, not subcommand
+		}
+		// Found a subcommand token.
+		return program + " " + t
+	}
+
+	return program
+}
+
+// looksLikePath returns true if the token appears to be a file path or glob
+// rather than a subcommand name.
+func looksLikePath(t string) bool {
+	return strings.HasPrefix(t, "/") ||
+		strings.HasPrefix(t, "./") ||
+		strings.HasPrefix(t, "../") ||
+		strings.HasPrefix(t, "~") ||
+		strings.Contains(t, "/") ||
+		strings.HasPrefix(t, "*.") ||
+		strings.HasPrefix(t, ".")
 }
 
 // AbortSession implements Engine. Cancels the in-flight query for a session.
@@ -194,7 +447,15 @@ type loopState struct {
 // Phase 5: Continuation — check terminal conditions, append assistant + tool messages, loop.
 func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, out chan<- types.EngineEvent) types.Terminal {
 	ls := &loopState{}
-	executor := NewToolExecutor(qe.registry, qe.permChecker, qe.logger, qe.config.ToolTimeout)
+
+	// Build the ToolPool once per query loop from the registry.
+	pool := tool.NewToolPool(qe.registry, nil /*mcpTools*/, nil /*denyRules*/)
+
+	// Create the approval function that sends permission requests to the client via `out`.
+	approvalFn := func(ctx context.Context, evtOut chan<- types.EngineEvent, req *types.PermissionRequest) *types.PermissionResponse {
+		return qe.requestPermissionApproval(ctx, evtOut, sess.ID, req)
+	}
+	executor := NewToolExecutor(pool, qe.permChecker, qe.logger, qe.config.ToolTimeout, approvalFn)
 
 	for {
 		ls.turn++
@@ -227,10 +488,24 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		}
 
 		// Build the LLM request.
+		// Inject skill listing as <system-reminder> user message (Layer 3 of 3-layer skill injection).
+		// This is transient — not persisted to the session — matching TS attachment behavior.
+		apiMessages := messages
+		if listing := qe.getSkillListing(); listing != "" {
+			skillMsg := types.Message{
+				Role: types.RoleUser,
+				Content: []types.ContentBlock{{
+					Type: types.ContentTypeText,
+					Text: "<system-reminder>\nThe following skills are available for use with the Skill tool:\n\n" + listing + "\n</system-reminder>",
+				}},
+			}
+			apiMessages = append([]types.Message{skillMsg}, apiMessages...)
+		}
+
 		req := &provider.ChatRequest{
-			Messages:  messages,
+			Messages:  apiMessages,
 			System:    qe.config.SystemPrompt,
-			Tools:     qe.registry.Schemas(),
+			Tools:     pool.Schemas(),
 			MaxTokens: qe.config.MaxTokens,
 		}
 
@@ -258,6 +533,11 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 			if ctx.Err() != nil {
 				return types.Terminal{Reason: types.TerminalAbortedStreaming, Message: "query cancelled", Turn: ls.turn}
 			}
+			qe.logger.Error("LLM chat request failed",
+				zap.String("session_id", sess.ID),
+				zap.Int("turn", ls.turn),
+				zap.Error(err),
+			)
 			return types.Terminal{Reason: types.TerminalModelError, Message: err.Error(), Turn: ls.turn}
 		}
 
@@ -313,6 +593,11 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 				return types.Terminal{Reason: types.TerminalAbortedStreaming, Message: "streaming aborted", Turn: ls.turn}
 			}
 			// Phase 3: treat stream errors as model errors.
+			qe.logger.Error("LLM stream error",
+				zap.String("session_id", sess.ID),
+				zap.Int("turn", ls.turn),
+				zap.Error(streamErr),
+			)
 			return types.Terminal{Reason: types.TerminalModelError, Message: streamErr.Error(), Turn: ls.turn}
 		}
 
@@ -367,7 +652,8 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 			return types.Terminal{Reason: types.TerminalAbortedTools, Message: "cancelled during tool execution", Turn: ls.turn}
 		}
 
-		// Append tool result messages to session.
+		// Append tool result messages to session, then inject any NewMessages
+		// (e.g., SkillTool injects skill prompts as user messages after tool_result).
 		for i, tc := range toolCalls {
 			toolMsg := types.Message{
 				Role: types.RoleUser,
@@ -383,6 +669,13 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 				CreatedAt: time.Now(),
 			}
 			sess.AddMessage(toolMsg)
+
+			// Append NewMessages from tool result (TS newMessages pattern).
+			// SkillTool uses this to inject the expanded skill prompt as a
+			// user message, so the model treats it as an instruction.
+			for _, nm := range results[i].NewMessages {
+				sess.AddMessage(nm)
+			}
 		}
 
 		// ---- Phase 5 (part B): Check stop reason. ----
@@ -512,4 +805,26 @@ func buildAssistantMessage(text string, toolCalls []types.ToolCall, usage *types
 		CreatedAt: time.Now(),
 		Tokens:    tokens,
 	}
+}
+
+// getSkillListing returns the cached skill listing string.
+// Computed once on first call using FormatCommandsWithinBudget (lazy init).
+func (qe *QueryEngine) getSkillListing() string {
+	if qe.skillListing != "" {
+		return qe.skillListing
+	}
+	if qe.cmdRegistry == nil {
+		return ""
+	}
+	cmds := qe.cmdRegistry.GetSkillToolCommands()
+	if len(cmds) == 0 {
+		return ""
+	}
+	// Use 200k context window as default budget reference.
+	qe.skillListing = skilltool.FormatCommandsWithinBudget(cmds, 200000)
+	qe.logger.Info("skill listing generated for injection",
+		zap.Int("skill_count", len(cmds)),
+		zap.Int("listing_len", len(qe.skillListing)),
+	)
+	return qe.skillListing
 }

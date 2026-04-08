@@ -24,32 +24,71 @@ type StreamEvent struct {
 type EngineEventType string
 
 const (
-	EngineEventText         EngineEventType = "text"
-	EngineEventToolUse      EngineEventType = "tool_use"      // LLM requests tool use (content block)
-	EngineEventToolStart    EngineEventType = "tool_start"     // server-side tool execution begins
-	EngineEventToolEnd      EngineEventType = "tool_end"       // server-side tool execution completes
-	EngineEventToolCall     EngineEventType = "tool_call"      // server→client: request client-side tool execution
-	EngineEventError        EngineEventType = "error"
-	EngineEventDone         EngineEventType = "done"
-	EngineEventMessageStart EngineEventType = "message_start"  // LLM call begins streaming
-	EngineEventMessageDelta EngineEventType = "message_delta"  // LLM call metadata (stop_reason, usage)
-	EngineEventMessageStop  EngineEventType = "message_stop"   // LLM call streaming ended
+	EngineEventText              EngineEventType = "text"
+	EngineEventToolUse           EngineEventType = "tool_use"            // LLM requests tool use (content block)
+	EngineEventToolStart         EngineEventType = "tool_start"          // server-side tool execution begins
+	EngineEventToolEnd           EngineEventType = "tool_end"            // server-side tool execution completes
+	EngineEventToolCall          EngineEventType = "tool_call"           // server→client: request client-side tool execution
+	EngineEventPermissionRequest EngineEventType = "permission_request"  // server→client: request permission approval
+	EngineEventError             EngineEventType = "error"
+	EngineEventDone              EngineEventType = "done"
+	EngineEventMessageStart      EngineEventType = "message_start"      // LLM call begins streaming
+	EngineEventMessageDelta      EngineEventType = "message_delta"      // LLM call metadata (stop_reason, usage)
+	EngineEventMessageStop       EngineEventType = "message_stop"       // LLM call streaming ended
 )
 
 // EngineEvent is a single event emitted from the engine to a channel.
 type EngineEvent struct {
-	Type       EngineEventType `json:"type"`
-	Text       string          `json:"text,omitempty"`
-	ToolName   string          `json:"tool_name,omitempty"`
-	ToolInput  string          `json:"tool_input,omitempty"`
-	ToolUseID  string          `json:"tool_use_id,omitempty"`  // for tool_call events
-	ToolResult *ToolResult     `json:"tool_result,omitempty"`
-	Error      error           `json:"-"`
-	Usage      *Usage          `json:"usage,omitempty"`
-	Terminal   *Terminal       `json:"terminal,omitempty"`     // set on EngineEventDone
-	MessageID  string          `json:"message_id,omitempty"`   // set on message_start
-	Model      string          `json:"model,omitempty"`        // set on message_start
-	StopReason string          `json:"stop_reason,omitempty"`  // set on message_delta
+	Type              EngineEventType    `json:"type"`
+	Text              string             `json:"text,omitempty"`
+	ToolName          string             `json:"tool_name,omitempty"`
+	ToolInput         string             `json:"tool_input,omitempty"`
+	ToolUseID         string             `json:"tool_use_id,omitempty"`  // for tool_call events
+	ToolResult        *ToolResult        `json:"tool_result,omitempty"`
+	PermissionRequest *PermissionRequest `json:"permission_request,omitempty"` // for permission_request events
+	Error             error              `json:"-"`
+	Usage             *Usage             `json:"usage,omitempty"`
+	Terminal          *Terminal          `json:"terminal,omitempty"`     // set on EngineEventDone
+	MessageID         string             `json:"message_id,omitempty"`  // set on message_start
+	Model             string             `json:"model,omitempty"`       // set on message_start
+	StopReason        string             `json:"stop_reason,omitempty"` // set on message_delta
+}
+
+// PermissionRequest is sent to the client when a tool execution needs approval.
+type PermissionRequest struct {
+	RequestID     string             `json:"request_id"`      // unique ID for correlating the response
+	ToolName      string             `json:"tool_name"`
+	ToolInput     string             `json:"tool_input"`
+	Message       string             `json:"message"`         // human-readable description of what's being asked
+	IsReadOnly    bool               `json:"is_read_only"`
+	Options       []PermissionOption `json:"options"`         // available choices for the client to display
+	PermissionKey string             `json:"permission_key"`  // session-allow granularity key (e.g. "Bash:git", "FileEdit:/src/main.go")
+}
+
+// PermissionOption describes one choice the client can present to the user.
+type PermissionOption struct {
+	Label string          `json:"label"` // display text, e.g. "Allow once"
+	Scope PermissionScope `json:"scope"` // "once" or "session"
+	Allow bool            `json:"allow"` // true=approve, false=deny
+}
+
+// PermissionScope controls how long a permission approval lasts.
+type PermissionScope string
+
+const (
+	// PermissionScopeOnce approves the tool for this single invocation only.
+	PermissionScopeOnce PermissionScope = "once"
+	// PermissionScopeSession approves the tool for the rest of this session.
+	// Subsequent calls to the same tool in the same session will auto-approve.
+	PermissionScopeSession PermissionScope = "session"
+)
+
+// PermissionResponse is the client's answer to a PermissionRequest.
+type PermissionResponse struct {
+	RequestID string          `json:"request_id"`          // must match PermissionRequest.RequestID
+	Approved  bool            `json:"approved"`
+	Scope     PermissionScope `json:"scope,omitempty"`     // "once" (default) or "session"
+	Message   string          `json:"message,omitempty"`   // optional reason for denial
 }
 
 // TerminalReason classifies why the query loop stopped.

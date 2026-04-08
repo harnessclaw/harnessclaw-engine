@@ -50,6 +50,8 @@ type IncomingMessage struct {
 	Text        string `json:"text"`
 	// ToolResult is set when the client returns a tool execution result (v1.1).
 	ToolResult *ToolResultPayload `json:"tool_result,omitempty"`
+	// PermissionResponse is set when the client approves/denies a permission request.
+	PermissionResponse *PermissionResponse `json:"permission_response,omitempty"`
 	// RawPayload holds channel-specific original data.
 	RawPayload map[string]any `json:"raw_payload,omitempty"`
 }

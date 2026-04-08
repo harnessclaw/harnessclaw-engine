@@ -48,6 +48,15 @@ type Config struct {
 	Channel    ChannelConfig    `mapstructure:"channels"`
 	Tools      ToolsConfig      `mapstructure:"tools"`
 	Permission PermissionConfig `mapstructure:"permission"`
+	Skills     SkillsConfig     `mapstructure:"skills"`
+}
+
+// SkillsConfig holds skill loading settings.
+type SkillsConfig struct {
+	// Dirs is the list of directories to load skills from.
+	// Each directory is scanned for SKILL.md (directory format) or *.md (flat format).
+	// Earlier entries have higher priority on name conflict.
+	Dirs []string `mapstructure:"dirs"`
 }
 
 // ServerConfig holds HTTP server settings.
