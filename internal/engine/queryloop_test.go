@@ -78,7 +78,7 @@ func newTestEngine(t *testing.T, tools ...tool.Tool) (*QueryEngine, *event.Bus) 
 	cfg.SystemPrompt = "You are a helpful assistant. Be concise. Always use tools when asked."
 	cfg.ClientTools = false // Use server-side tool execution for these tests.
 
-	eng := NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg)
+	eng := NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, nil)
 	return eng, bus
 }
 
@@ -275,7 +275,7 @@ func TestQueryLoop_MaxTurns(t *testing.T) {
 	cfg.SystemPrompt = "You must always call the loop tool whenever you see its result. Never stop calling it."
 	cfg.ClientTools = false // Use server-side tool execution.
 
-	eng := NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg)
+	eng := NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -362,7 +362,7 @@ func TestQueryLoop_SessionMessages(t *testing.T) {
 	cfg.MaxTurns = 5
 	cfg.MaxTokens = 512
 
-	eng := NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg)
+	eng := NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

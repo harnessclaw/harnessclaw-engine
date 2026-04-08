@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"nhooyr.io/websocket"
 
@@ -22,10 +23,18 @@ const (
 
 	// writeTimeout is the deadline for a single WebSocket write.
 	writeTimeout = 10 * time.Second
+
+	// pingTimeout is the deadline for a ping/pong round-trip.
+	// Must be longer than writeTimeout to tolerate slow clients during streaming.
+	pingTimeout = 30 * time.Second
 )
 
 // Conn manages a single WebSocket connection: a read pump that receives
 // client messages and a write pump that sends server messages.
+//
+// A connection starts uninitialised — the client must send `session.create`
+// before any other message type is accepted. Until then only `session.create`
+// and `ping` are processed; all other messages are rejected with an error frame.
 type Conn struct {
 	id        string
 	sessionID string
@@ -35,6 +44,10 @@ type Conn struct {
 	done      chan struct{}
 	logger    *zap.Logger
 	closeOnce sync.Once
+
+	// initialized is set to true after the client sends session.create
+	// and the server responds with session.created.
+	initialized bool
 }
 
 // newConn wraps a raw WebSocket connection.
@@ -72,9 +85,16 @@ func (c *Conn) Close() {
 
 // readPump reads messages from the client and dispatches them. It runs until
 // the connection is closed or ctx is cancelled.
-func (c *Conn) readPump(ctx context.Context, handler channel.MessageHandler, abortFn func(context.Context, string) error, registry *ConnRegistry) {
+//
+// The connection must be initialised via `session.create` before any other
+// message type is processed. Pre-init, only `session.create` and `ping` are
+// accepted; other types receive an error frame and are discarded.
+func (c *Conn) readPump(ctx context.Context, handler channel.MessageHandler, abortFn func(context.Context, string) error, registry *ConnRegistry, clientTools bool) {
 	defer func() {
-		registry.Unregister(c.sessionID, c.id)
+		// Only unregister if we were registered (i.e. initialized).
+		if c.initialized {
+			registry.Unregister(c.sessionID, c.id)
+		}
 		c.Close()
 	}()
 
@@ -101,7 +121,27 @@ func (c *Conn) readPump(ctx context.Context, handler channel.MessageHandler, abo
 			continue
 		}
 
+		// --- Pre-init gate: only session.create and ping are allowed ---
+		if !c.initialized {
+			switch msg.Type {
+			case MsgTypeSessionCreate:
+				c.handleSessionCreate(msg, registry, clientTools)
+				continue
+			case MsgTypePing:
+				// Allow ping even before init.
+			default:
+				c.sendError("session_not_initialized",
+					"session not initialized: send session.create first")
+				continue
+			}
+		}
+
 		switch msg.Type {
+		case MsgTypeSessionCreate:
+			// Already initialized — send error.
+			c.sendError("session_already_created",
+				"session already created, cannot re-initialize")
+
 		case MsgTypeUserMessage:
 			text := msg.Text
 			if msg.Content != nil {
@@ -143,6 +183,30 @@ func (c *Conn) readPump(ctx context.Context, handler channel.MessageHandler, abo
 			)
 			// TODO: reset tool timeout timer
 
+		case MsgTypePermissionResponse:
+			approved := false
+			if msg.Approved != nil {
+				approved = *msg.Approved
+			}
+			scope := types.PermissionScopeOnce
+			if msg.Scope == "session" {
+				scope = types.PermissionScopeSession
+			}
+			incoming := &types.IncomingMessage{
+				ChannelName: "websocket",
+				SessionID:   c.sessionID,
+				UserID:      c.userID,
+				PermissionResponse: &types.PermissionResponse{
+					RequestID: msg.RequestID,
+					Approved:  approved,
+					Scope:     scope,
+					Message:   msg.Message,
+				},
+			}
+			if err := handler(ctx, incoming); err != nil {
+				c.logger.Error("handler error (permission.response)", zap.Error(err))
+			}
+
 		case MsgTypeSessionInterrupt:
 			if abortFn != nil {
 				if err := abortFn(ctx, c.sessionID); err != nil {
@@ -174,6 +238,63 @@ func (c *Conn) readPump(ctx context.Context, handler channel.MessageHandler, abo
 	}
 }
 
+// handleSessionCreate processes the session.create message, binds the session
+// to this connection, registers it in the ConnRegistry, and sends session.created.
+func (c *Conn) handleSessionCreate(msg ClientMessage, registry *ConnRegistry, clientTools bool) {
+	sessionID := msg.SessionID
+	if sessionID == "" {
+		sessionID = uuid.New().String()
+	}
+	userID := msg.UserID
+
+	c.sessionID = sessionID
+	c.userID = userID
+	c.initialized = true
+	c.logger = c.logger.With(zap.String("session", sessionID))
+
+	registry.Register(c)
+
+	initMsg := SessionCreatedMessage{
+		Type:            MsgTypeSessionCreated,
+		EventID:         "evt_" + uuid.New().String()[:8],
+		SessionID:       sessionID,
+		ProtocolVersion: "1.4",
+		Session: SessionInfo{
+			Capabilities: Capabilities{
+				Streaming:   true,
+				Tools:       true,
+				ClientTools: clientTools,
+				MultiTurn:   true,
+			},
+		},
+	}
+	if data, err := json.Marshal(initMsg); err == nil {
+		c.TrySend(data)
+	}
+
+	c.logger.Info("session created",
+		zap.String("session_id", sessionID),
+		zap.String("user_id", userID),
+	)
+}
+
+// sendError sends a structured error frame to the client.
+func (c *Conn) sendError(code, message string) {
+	errMsg := ErrorMessage{
+		Type:      MsgTypeError,
+		EventID:   "evt_err",
+		SessionID: c.sessionID,
+		Error: ErrorDetail{
+			Type:    "protocol_error",
+			Code:    code,
+			Message: message,
+		},
+	}
+	if data, err := json.Marshal(errMsg); err == nil {
+		c.TrySend(data)
+	}
+}
+
 // writePump drains the send buffer and writes to the WebSocket. It also sends
 // periodic pings to keep the connection alive.
 func (c *Conn) writePump(ctx context.Context) {
@@ -195,12 +316,13 @@ func (c *Conn) writePump(ctx context.Context) {
 				return
 			}
 		case <-ticker.C:
-			pingCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+			pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
 			err := c.ws.Ping(pingCtx)
 			cancel()
 			if err != nil {
-				c.logger.Warn("ping failed", zap.Error(err))
-				return
+				// Ping failure during active streaming is expected — the client
+				// may be busy processing data. Log but don't kill the connection.
+				c.logger.Debug("ping failed (non-fatal during streaming)", zap.Error(err))
 			}
 		}
 	}

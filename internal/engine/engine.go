@@ -18,6 +18,10 @@ type Engine interface {
 	// the engine so the query loop can continue with the next LLM turn.
 	SubmitToolResult(ctx context.Context, sessionID string, result *types.ToolResultPayload) error
 
+	// SubmitPermissionResult delivers a permission approval/denial response
+	// from the client to the waiting tool executor.
+	SubmitPermissionResult(ctx context.Context, sessionID string, resp *types.PermissionResponse) error
+
 	// AbortSession cancels any in-flight processing for a session.
 	AbortSession(ctx context.Context, sessionID string) error
 }

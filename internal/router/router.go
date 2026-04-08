@@ -43,10 +43,20 @@ func (r *Router) Handle(ctx context.Context, msg *types.IncomingMessage) error {
 }
 
 // coreHandler dispatches to the engine and forwards events to the channel.
+//
+// IMPORTANT: For user.message, event forwarding runs in a background goroutine
+// so that the readPump is NOT blocked. This allows the readPump to continue
+// reading tool.result, permission.response, and session.interrupt messages
+// while the query loop is still running.
 func (r *Router) coreHandler(ctx context.Context, msg *types.IncomingMessage) error {
 	// If this is a tool.result from the client, forward to the engine directly.
 	if msg.ToolResult != nil {
 		return r.engine.SubmitToolResult(ctx, msg.SessionID, msg.ToolResult)
+	}
+
+	// If this is a permission.response from the client, forward to the engine.
+	if msg.PermissionResponse != nil {
+		return r.engine.SubmitPermissionResult(ctx, msg.SessionID, msg.PermissionResponse)
 	}
 
 	userMsg := &types.Message{
@@ -74,17 +84,22 @@ func (r *Router) coreHandler(ctx context.Context, msg *types.IncomingMessage) er
 		return pkgerr.New(pkgerr.CodeNotFound, "channel not found: "+msg.ChannelName)
 	}
 
-	// Forward every engine event to the channel in real time.
-	for evt := range events {
-		if sendErr := ch.SendEvent(ctx, msg.SessionID, &evt); sendErr != nil {
-			r.logger.Error("failed to send event to channel",
-				zap.String("channel", msg.ChannelName),
-				zap.String("session_id", msg.SessionID),
-				zap.Error(sendErr),
-			)
-			// Continue forwarding remaining events; don't break the stream.
+	// Forward engine events in a background goroutine so the caller (readPump)
+	// is free to read subsequent client messages (tool.result, permission.response,
+	// session.interrupt) while the query loop is still running. Without this,
+	// the readPump would be blocked until the entire query loop finishes, creating
+	// a deadlock for any protocol that requires mid-query client→server messages.
+	go func() {
+		for evt := range events {
+			if sendErr := ch.SendEvent(ctx, msg.SessionID, &evt); sendErr != nil {
+				r.logger.Error("failed to send event to channel",
+					zap.String("channel", msg.ChannelName),
+					zap.String("session_id", msg.SessionID),
+					zap.Error(sendErr),
+				)
+			}
 		}
-	}
+	}()
 
 	return nil
 }

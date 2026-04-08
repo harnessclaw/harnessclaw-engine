@@ -47,6 +47,99 @@ type Tool interface {
 // Embed this in concrete tool structs to get sensible defaults.
 type BaseTool struct{}
 
-func (BaseTool) IsEnabled() bool                          { return true }
-func (BaseTool) IsConcurrencySafe() bool                  { return false }
-func (BaseTool) ValidateInput(_ json.RawMessage) error    { return nil }
+func (BaseTool) IsEnabled() bool                       { return true }
+func (BaseTool) IsConcurrencySafe() bool               { return false }
+func (BaseTool) ValidateInput(_ json.RawMessage) error { return nil }
+
+// ---------------------------------------------------------------------------
+// Optional interfaces — checked via type assertion at runtime.
+// This follows the Go idiom of small interfaces (cf. io.Closer, http.Flusher).
+// The core Tool interface stays lean; tools opt in to extra capabilities.
+// ---------------------------------------------------------------------------
+
+// AliasedTool provides alternative names for backward-compatible lookup.
+// Example: "Bash" tool might have aliases ["Shell", "BashTool"].
+type AliasedTool interface {
+	Aliases() []string
+}
+
+// PromptProvider supplies system prompt text describing this tool's usage.
+// The returned string is included in the system prompt sent to the LLM.
+type PromptProvider interface {
+	Prompt(ctx context.Context) string
+}
+
+// SearchHintProvider enables ToolSearch keyword matching.
+// Returns a short text hint used when the ToolSearch mechanism needs
+// to find tools by keyword rather than exact name.
+type SearchHintProvider interface {
+	SearchHint() string
+}
+
+// DeferredTool marks tools that support deferred loading via ToolSearch.
+// When ShouldDefer returns true, the tool's schema is not included in the
+// initial tool list; instead it is loaded on demand.
+type DeferredTool interface {
+	ShouldDefer() bool
+}
+
+// InterruptMode defines behavior when the user submits new input mid-execution.
+type InterruptMode string
+
+const (
+	// InterruptCancel means the tool execution is cancelled immediately.
+	InterruptCancel InterruptMode = "cancel"
+	// InterruptBlock means the tool blocks new user input until completion.
+	InterruptBlock InterruptMode = "block"
+)
+
+// InterruptibleTool declares the tool's behavior on user interrupt.
+type InterruptibleTool interface {
+	InterruptBehavior() InterruptMode
+}
+
+// ResultSizeLimiter caps the tool output size before sending to the model.
+// If the result exceeds MaxResultSizeChars, the engine truncates or persists
+// the full output and sends a summary.
+type ResultSizeLimiter interface {
+	MaxResultSizeChars() int
+}
+
+// PermissionPreResult carries the outcome of a tool-specific permission pre-check.
+type PermissionPreResult struct {
+	// Behavior is one of "allow", "deny", "ask", "passthrough".
+	Behavior string
+	// Message provides a human-readable explanation.
+	Message string
+	// UpdatedInput may modify the original input (nil = no change).
+	UpdatedInput json.RawMessage
+}
+
+// PermissionPreChecker lets a tool provide tool-specific permission logic
+// that runs before the general permission pipeline.
+type PermissionPreChecker interface {
+	CheckPermission(ctx context.Context, input json.RawMessage) PermissionPreResult
+}
+
+// ContextModifier lets a tool modify the execution context after completion.
+// This is used by tools like SkillTool to inject allowedTools, model overrides, etc.
+type ContextModifier interface {
+	ModifyContext(tuc *types.ToolUseContext) *types.ToolUseContext
+}
+
+// SearchReadInfo classifies a tool invocation as search/read/list for UI folding.
+type SearchReadInfo struct {
+	IsSearch bool
+	IsRead   bool
+	IsList   bool
+}
+
+// SearchOrReadClassifier marks read/search operations for UI grouping.
+type SearchOrReadClassifier interface {
+	IsSearchOrReadCommand(input json.RawMessage) SearchReadInfo
+}
+
+// DestructiveMarker flags irreversible operations for extra safety checks.
+type DestructiveMarker interface {
+	IsDestructive(input json.RawMessage) bool
+}

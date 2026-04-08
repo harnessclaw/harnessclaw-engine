@@ -19,17 +19,20 @@ const (
 	MsgTypeToolCall       WSMessageType = "tool.call"       // client-side tool execution request
 	MsgTypeToolStart      WSMessageType = "tool.start"      // server-side tool execution started
 	MsgTypeToolEnd        WSMessageType = "tool.end"        // server-side tool execution completed
+	MsgTypePermissionRequest WSMessageType = "permission.request" // server asks client for tool approval
 	MsgTypeTaskEnd        WSMessageType = "task.end"
 	MsgTypeError          WSMessageType = "error"
 	MsgTypePong           WSMessageType = "pong"
 
 	// Client → Server
-	MsgTypeUserMessage      WSMessageType = "user.message"
-	MsgTypeToolResult       WSMessageType = "tool.result"
-	MsgTypeToolProgress     WSMessageType = "tool.progress"
-	MsgTypeSessionUpdate    WSMessageType = "session.update"
-	MsgTypeSessionInterrupt WSMessageType = "session.interrupt"
-	MsgTypePing             WSMessageType = "ping"
+	MsgTypeSessionCreate      WSMessageType = "session.create"      // client requests session initialization
+	MsgTypeUserMessage        WSMessageType = "user.message"
+	MsgTypeToolResult         WSMessageType = "tool.result"
+	MsgTypeToolProgress       WSMessageType = "tool.progress"
+	MsgTypePermissionResponse WSMessageType = "permission.response" // client approves/denies a permission request
+	MsgTypeSessionUpdate      WSMessageType = "session.update"
+	MsgTypeSessionInterrupt   WSMessageType = "session.interrupt"
+	MsgTypePing               WSMessageType = "ping"
 )
 
 // ---------------------------------------------------------------------------
@@ -174,6 +177,27 @@ type ToolEndMessage struct {
 	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
+// PermissionRequestMessage is sent by the server when a tool needs user approval.
+type PermissionRequestMessage struct {
+	Type          WSMessageType          `json:"type"` // "permission.request"
+	EventID       string                 `json:"event_id"`
+	SessionID     string                 `json:"session_id"`
+	RequestID     string                 `json:"request_id"`
+	ToolName      string                 `json:"tool_name"`
+	ToolInput     string                 `json:"tool_input"`
+	Message       string                 `json:"message"`
+	IsReadOnly    bool                   `json:"is_read_only"`
+	Options       []PermissionOptionWire `json:"options"`
+	PermissionKey string                 `json:"permission_key"` // session-allow granularity key (e.g. "Bash:git")
+}
+
+// PermissionOptionWire is the wire format of a permission choice.
+type PermissionOptionWire struct {
+	Label string `json:"label"`
+	Scope string `json:"scope"` // "once" or "session"
+	Allow bool   `json:"allow"`
+}
+
 // TaskEndMessage signals that a query-loop task has finished.
 type TaskEndMessage struct {
 	Type       WSMessageType `json:"type"` // "task.end"
@@ -244,6 +268,9 @@ type ClientMessage struct {
 	EventID   string                 `json:"event_id,omitempty"`
 	SessionID string                 `json:"session_id,omitempty"`
 
+	// session.create fields
+	UserID string `json:"user_id,omitempty"` // optional user identifier
+
 	// user.message fields
 	Content *ClientContent `json:"content,omitempty"`
 	Text    string         `json:"text,omitempty"` // shorthand for content.text
@@ -254,6 +281,12 @@ type ClientMessage struct {
 	Output    string                 `json:"output,omitempty"`
 	Error     *ClientError           `json:"error,omitempty"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+
+	// permission.response fields
+	RequestID string `json:"request_id,omitempty"`
+	Approved  *bool  `json:"approved,omitempty"` // pointer to distinguish unset from false
+	Scope     string `json:"scope,omitempty"`    // "once" (default) or "session"
+	Message   string `json:"message,omitempty"`  // reuse for denial reason
 }
 
 // ClientError is the error detail in a tool.result message.

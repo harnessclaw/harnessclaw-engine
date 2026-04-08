@@ -458,14 +458,23 @@ func TestIntegration_WebSocket_RoundTrip(t *testing.T) {
 	}
 
 	// Connect a WebSocket client.
-	wsURL := "ws://" + addr + "/ws?session_id=test-session"
+	wsURL := "ws://" + addr + "/ws"
 	ws, _, err := websocket.Dial(ctx, wsURL, nil)
 	if err != nil {
 		t.Fatal("dial failed:", err)
 	}
 	defer ws.Close(websocket.StatusNormalClosure, "test done")
 
-	// Read session.created message.
+	// Send session.create to initialize the connection.
+	createMsg, _ := json.Marshal(ClientMessage{
+		Type:      MsgTypeSessionCreate,
+		SessionID: "test-session",
+	})
+	if err := ws.Write(ctx, websocket.MessageText, createMsg); err != nil {
+		t.Fatal("write session.create:", err)
+	}
+
+	// Read session.created response.
 	_, initData, err := ws.Read(ctx)
 	if err != nil {
 		t.Fatal("read init:", err)
@@ -478,8 +487,8 @@ func TestIntegration_WebSocket_RoundTrip(t *testing.T) {
 	if initMsg.SessionID != "test-session" {
 		t.Errorf("expected session_id 'test-session', got %q", initMsg.SessionID)
 	}
-	if initMsg.ProtocolVersion != "1.2" {
-		t.Errorf("expected protocol_version '1.2', got %q", initMsg.ProtocolVersion)
+	if initMsg.ProtocolVersion != "1.4" {
+		t.Errorf("expected protocol_version '1.4', got %q", initMsg.ProtocolVersion)
 	}
 
 	// Send a user.message.
@@ -565,13 +574,21 @@ func TestIntegration_WebSocket_MultipleClients(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Connect two clients to the same session.
-	wsURL := "ws://" + addr + "/ws?session_id=shared"
+	wsURL := "ws://" + addr + "/ws"
 	ws1, _, _ := websocket.Dial(ctx, wsURL, nil)
 	defer ws1.Close(websocket.StatusNormalClosure, "done")
 	ws2, _, _ := websocket.Dial(ctx, wsURL, nil)
 	defer ws2.Close(websocket.StatusNormalClosure, "done")
 
-	// Drain session.created messages.
+	// Send session.create for both clients (same session).
+	createMsg, _ := json.Marshal(ClientMessage{
+		Type:      MsgTypeSessionCreate,
+		SessionID: "shared",
+	})
+	ws1.Write(ctx, websocket.MessageText, createMsg)
+	ws2.Write(ctx, websocket.MessageText, createMsg)
+
+	// Drain session.created responses.
 	ws1.Read(ctx)
 	ws2.Read(ctx)
 
@@ -861,11 +878,18 @@ func TestIntegration_FullMessageLifecycle(t *testing.T) {
 	go ch.Start(ctx, mockHandler)
 	time.Sleep(100 * time.Millisecond)
 
-	ws, _, err := websocket.Dial(ctx, "ws://"+addr+"/ws?session_id=lifecycle", nil)
+	ws, _, err := websocket.Dial(ctx, "ws://"+addr+"/ws", nil)
 	if err != nil {
 		t.Fatal("dial failed:", err)
 	}
 	defer ws.Close(websocket.StatusNormalClosure, "test done")
+
+	// Send session.create to initialize.
+	createMsg, _ := json.Marshal(ClientMessage{
+		Type:      MsgTypeSessionCreate,
+		SessionID: "lifecycle",
+	})
+	ws.Write(ctx, websocket.MessageText, createMsg)
 
 	// Read session.created.
 	ws.Read(ctx)

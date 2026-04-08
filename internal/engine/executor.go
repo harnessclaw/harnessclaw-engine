@@ -4,37 +4,46 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
 )
 
+// PermissionApprovalFunc is called when a tool needs user approval (permission.Ask).
+// It sends the request to the client and blocks until a response is received.
+type PermissionApprovalFunc func(ctx context.Context, out chan<- types.EngineEvent, req *types.PermissionRequest) *types.PermissionResponse
+
 // ToolExecutor handles the execution of tool calls within the query loop.
 // It enforces permission checks, timeouts, and the parallel-read / serial-write
 // execution model that mirrors the TypeScript engine.
 type ToolExecutor struct {
-	registry    *tool.Registry
+	pool        *tool.ToolPool
 	permChecker permission.Checker
 	logger      *zap.Logger
 	timeout     time.Duration
+	approvalFn  PermissionApprovalFunc // nil = deny on Ask (legacy behavior)
 }
 
 // NewToolExecutor creates a tool executor.
 func NewToolExecutor(
-	reg *tool.Registry,
+	pool *tool.ToolPool,
 	perm permission.Checker,
 	logger *zap.Logger,
 	timeout time.Duration,
+	approvalFn PermissionApprovalFunc,
 ) *ToolExecutor {
 	return &ToolExecutor{
-		registry:    reg,
+		pool:        pool,
 		permChecker: perm,
 		logger:      logger,
 		timeout:     timeout,
+		approvalFn:  approvalFn,
 	}
 }
 
@@ -58,7 +67,7 @@ func (te *ToolExecutor) ExecuteBatch(
 	var parallel, serial []indexedCall
 
 	for i, tc := range toolCalls {
-		t := te.registry.Get(tc.Name)
+		t := te.pool.Get(tc.Name)
 		if t != nil && (t.IsReadOnly() || t.IsConcurrencySafe()) {
 			parallel = append(parallel, indexedCall{index: i, call: tc})
 		} else {
@@ -133,7 +142,7 @@ func (te *ToolExecutor) executeSingle(
 	}()
 
 	// Look up tool.
-	t := te.registry.Get(tc.Name)
+	t := te.pool.Get(tc.Name)
 	if t == nil {
 		return types.ToolResult{
 			Content: fmt.Sprintf("unknown tool: %s", tc.Name),
@@ -167,13 +176,64 @@ func (te *ToolExecutor) executeSingle(
 			IsError: true,
 		}
 	case permission.Ask:
-		// In the multi-channel service model, Ask means "needs approval".
-		// For now, treat as denied with a descriptive message.
-		// A real implementation would send an approval request to the channel.
-		return types.ToolResult{
-			Content: fmt.Sprintf("tool %s requires approval: %s", tc.Name, permResult.Message),
-			IsError: true,
+		// Send approval request to client and wait for response.
+		if te.approvalFn == nil {
+			// No approval handler — fall back to deny.
+			return types.ToolResult{
+				Content: fmt.Sprintf("tool %s requires approval: %s", tc.Name, permResult.Message),
+				IsError: true,
+			}
 		}
+
+		// Extract the fine-grained permission key (e.g. "Bash:git", "Edit:/path").
+		permKey := extractPermissionKey(tc.Name, tc.Input)
+
+		// Derive a human-readable command label for the UI.
+		// "Bash:git" → "git", "Edit:/src/main.go" → "Edit /src/main.go", "Grep" → "Grep"
+		cmdLabel := permKeyLabel(permKey, tc.Name)
+
+		// Build a clear, actionable permission message for the user.
+		permMessage := permResult.Message
+		if permMessage == "" {
+			if t.IsReadOnly() {
+				permMessage = fmt.Sprintf("Allow %s to read data?", cmdLabel)
+			} else {
+				permMessage = fmt.Sprintf("Allow %s to make changes?", cmdLabel)
+			}
+		}
+
+		// Session-scope label shows what exactly will be auto-approved.
+		sessionLabel := fmt.Sprintf("Always allow %s in this session", cmdLabel)
+
+		req := &types.PermissionRequest{
+			RequestID:     "perm_" + uuid.New().String()[:8],
+			ToolName:      tc.Name,
+			ToolInput:     tc.Input,
+			Message:       permMessage,
+			IsReadOnly:    t.IsReadOnly(),
+			PermissionKey: permKey,
+			Options: []types.PermissionOption{
+				{Label: "Allow once", Scope: types.PermissionScopeOnce, Allow: true},
+				{Label: sessionLabel, Scope: types.PermissionScopeSession, Allow: true},
+				{Label: "Deny", Scope: types.PermissionScopeOnce, Allow: false},
+			},
+		}
+		resp := te.approvalFn(ctx, out, req)
+		if !resp.Approved {
+			msg := "user denied permission"
+			if resp.Message != "" {
+				msg = resp.Message
+			}
+			return types.ToolResult{
+				Content: fmt.Sprintf("Permission denied for %s: %s", tc.Name, msg),
+				IsError: true,
+			}
+		}
+		te.logger.Info("permission approved",
+			zap.String("tool", tc.Name),
+			zap.String("request_id", req.RequestID),
+			zap.String("scope", string(resp.Scope)),
+		)
 	}
 
 	// Execute with timeout.
@@ -196,4 +256,24 @@ func (te *ToolExecutor) executeSingle(
 		return types.ToolResult{Content: ""}
 	}
 	return *tr
+}
+
+// permKeyLabel converts a permission key into a human-readable label.
+//
+//	"Bash:git"            → "git"
+//	"Bash:npm"            → "npm"
+//	"Edit:/src/main.go"   → "Edit /src/main.go"
+//	"Grep"                → "Grep"
+func permKeyLabel(permKey, toolName string) string {
+	if idx := strings.IndexByte(permKey, ':'); idx >= 0 {
+		prefix := permKey[:idx]
+		suffix := permKey[idx+1:]
+		if prefix == "Bash" {
+			// For Bash commands, show just the program name (e.g. "git").
+			return suffix
+		}
+		// For file tools, show "Edit /path" style.
+		return prefix + " " + suffix
+	}
+	return toolName
 }
