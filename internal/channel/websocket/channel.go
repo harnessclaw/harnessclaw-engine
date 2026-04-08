@@ -185,38 +185,17 @@ func (ch *Channel) upgradeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID := r.URL.Query().Get("session_id")
-	if sessionID == "" {
-		sessionID = uuid.New().String()
-	}
-	userID := r.URL.Query().Get("user_id")
 	connID := uuid.New().String()
 
-	conn := newConn(connID, sessionID, userID, ws, ch.logger)
-	ch.registry.Register(conn)
-
-	// Send session.created message (v1.1).
-	initMsg := SessionCreatedMessage{
-		Type:            MsgTypeSessionCreated,
-		EventID:         "evt_" + uuid.New().String()[:8],
-		SessionID:       sessionID,
-		ProtocolVersion: "1.2",
-		Session: SessionInfo{
-			Capabilities: Capabilities{
-				Streaming:   true,
-				Tools:       true,
-				ClientTools: ch.config.ClientTools,
-				MultiTurn:   true,
-			},
-		},
-	}
-	if data, err := json.Marshal(initMsg); err == nil {
-		conn.TrySend(data)
-	}
+	// Connection starts uninitialised — no session yet.
+	// The client must send `session.create` to bind a session and receive
+	// the `session.created` response. Until then, only `session.create`
+	// and `ping` are accepted; all other message types are rejected.
+	conn := newConn(connID, "" /*sessionID*/, "" /*userID*/, ws, ch.logger)
 
 	ctx := ch.connCtx
 	go conn.writePump(ctx)
-	go conn.readPump(ctx, ch.handler, ch.abortFn, ch.registry)
+	go conn.readPump(ctx, ch.handler, ch.abortFn, ch.registry, ch.config.ClientTools)
 }
 
 func (ch *Channel) getOrCreateMapper(sessionID string) *EventMapper {

@@ -60,6 +60,8 @@ func (m *EventMapper) Map(event *types.EngineEvent) ([][]byte, error) {
 		return m.mapToolEnd(event)
 	case types.EngineEventToolCall:
 		return m.mapToolCall(event)
+	case types.EngineEventPermissionRequest:
+		return m.mapPermissionRequest(event)
 	case types.EngineEventError:
 		return m.mapError(event)
 	case types.EngineEventDone:
@@ -359,6 +361,42 @@ func (m *EventMapper) mapToolCall(event *types.EngineEvent) ([][]byte, error) {
 		ToolUseID: event.ToolUseID,
 		ToolName:  event.ToolName,
 		Input:     input,
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- permission_request (server asks client for tool approval) ---
+
+func (m *EventMapper) mapPermissionRequest(event *types.EngineEvent) ([][]byte, error) {
+	if event.PermissionRequest == nil {
+		return nil, nil
+	}
+
+	// Convert options from types to wire format.
+	var wireOpts []PermissionOptionWire
+	for _, opt := range event.PermissionRequest.Options {
+		wireOpts = append(wireOpts, PermissionOptionWire{
+			Label: opt.Label,
+			Scope: string(opt.Scope),
+			Allow: opt.Allow,
+		})
+	}
+
+	msg := PermissionRequestMessage{
+		Type:          MsgTypePermissionRequest,
+		EventID:       newEventID(),
+		SessionID:     m.sessionID,
+		RequestID:     event.PermissionRequest.RequestID,
+		ToolName:      event.PermissionRequest.ToolName,
+		ToolInput:     event.PermissionRequest.ToolInput,
+		Message:       event.PermissionRequest.Message,
+		IsReadOnly:    event.PermissionRequest.IsReadOnly,
+		Options:       wireOpts,
+		PermissionKey: event.PermissionRequest.PermissionKey,
 	}
 	b, err := json.Marshal(msg)
 	if err != nil {
