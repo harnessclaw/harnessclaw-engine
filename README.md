@@ -176,9 +176,7 @@ make clean              # 清理构建产物
 ## 文档
 
 - [WebSocket 协议规范 v1.4](docs/protocols/websocket.md)
-- [系统架构文档](docs/refactor/ARCHITECTURE.md)
-- [协议设计评审](docs/refactor/websocket_review.md)
-- [UML 流程图](UML_FLOWS.md)
 
 ## License
 
+Apache-2.0 License. See [LICENSE](LICENSE) for details.
