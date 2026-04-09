@@ -24,9 +24,9 @@ llm:
   #   X-Custom: "value"
   providers:
     anthropic:
-      base_url: "https://api.anthropic.com"
+      base_url: "your-api-url"
       api_key: "your-api-key-here"
-      model: "claude-sonnet-4-6-20250514"
+      model: "your-model-id"
       max_tokens: 16384
   # bifrost:
   #   enabled: false
