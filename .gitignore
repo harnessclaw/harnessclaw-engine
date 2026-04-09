@@ -29,6 +29,8 @@ Thumbs.db
 .env
 .env.*
 testdata/llm.yaml
+configs/config_self.yaml
+configs/config.yaml
 
 # Dependency
 vendor/
