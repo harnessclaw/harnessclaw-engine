@@ -1,6 +1,6 @@
 .PHONY: build run test lint clean
 
-APP_NAME := claude-code-go
+APP_NAME := harnessclaw-engine
 BUILD_DIR := ./dist
 CMD := ./cmd/server
 
