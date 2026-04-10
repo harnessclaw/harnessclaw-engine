@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
@@ -143,16 +144,34 @@ func (c *Conn) readPump(ctx context.Context, handler channel.MessageHandler, abo
 				"session already created, cannot re-initialize")
 
 		case MsgTypeUserMessage:
-			text := msg.Text
-			if msg.Content != nil {
-				text = msg.Content.Text
-			}
 			incoming := &types.IncomingMessage{
 				ChannelName: "websocket",
 				SessionID:   c.sessionID,
 				UserID:      c.userID,
-				Text:        text,
 			}
+
+			blocks, err := msg.ContentBlocks()
+			if err != nil {
+				c.logger.Warn("invalid user.message content", zap.Error(err))
+				c.sendError("invalid_content", err.Error())
+				continue
+			}
+
+			if len(blocks) > 0 {
+				incoming.Content = toIncomingContentBlocks(blocks)
+				// Collect text from all text blocks for backward compat.
+				var textParts []string
+				for _, b := range blocks {
+					if b.Type == "text" && b.Text != "" {
+						textParts = append(textParts, b.Text)
+					}
+				}
+				incoming.Text = strings.Join(textParts, "\n")
+			} else {
+				// Fall back to the shorthand Text field.
+				incoming.Text = msg.Text
+			}
+
 			if err := handler(ctx, incoming); err != nil {
 				c.logger.Error("handler error", zap.Error(err))
 			}
@@ -258,7 +277,7 @@ func (c *Conn) handleSessionCreate(msg ClientMessage, registry *ConnRegistry, cl
 		Type:            MsgTypeSessionCreated,
 		EventID:         "evt_" + uuid.New().String()[:8],
 		SessionID:       sessionID,
-		ProtocolVersion: "1.4",
+		ProtocolVersion: "1.5",
 		Session: SessionInfo{
 			Capabilities: Capabilities{
 				Streaming:   true,
@@ -326,4 +345,24 @@ func (c *Conn) writePump(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// toIncomingContentBlocks converts wire-format ClientContentBlock slice to
+// the channel-agnostic IncomingContentBlock slice used by the engine.
+func toIncomingContentBlocks(blocks []ClientContentBlock) []types.IncomingContentBlock {
+	out := make([]types.IncomingContentBlock, 0, len(blocks))
+	for _, b := range blocks {
+		icb := types.IncomingContentBlock{
+			Type: b.Type,
+			Text: b.Text,
+		}
+		if b.Source != nil {
+			icb.MIMEType = b.Source.MediaType
+			icb.Path = b.Source.Path
+			icb.URL = b.Source.URL
+			icb.Data = b.Source.Data
+		}
+		out = append(out, icb)
+	}
+	return out
 }

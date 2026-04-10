@@ -487,8 +487,8 @@ func TestIntegration_WebSocket_RoundTrip(t *testing.T) {
 	if initMsg.SessionID != "test-session" {
 		t.Errorf("expected session_id 'test-session', got %q", initMsg.SessionID)
 	}
-	if initMsg.ProtocolVersion != "1.4" {
-		t.Errorf("expected protocol_version '1.4', got %q", initMsg.ProtocolVersion)
+	if initMsg.ProtocolVersion != "1.5" {
+		t.Errorf("expected protocol_version '1.5', got %q", initMsg.ProtocolVersion)
 	}
 
 	// Send a user.message.
@@ -926,6 +926,229 @@ func TestIntegration_FullMessageLifecycle(t *testing.T) {
 		if envelope.Type != expected {
 			t.Errorf("message %d: expected type %q, got %q", i, expected, envelope.Type)
 		}
+	}
+
+	cancel()
+}
+
+// ============================================================
+// Multi-content user.message tests (v1.5)
+// ============================================================
+
+func TestContentBlocks_TextShorthand(t *testing.T) {
+	// When Content is nil and Text is set, ContentBlocks returns nil.
+	msg := ClientMessage{Type: MsgTypeUserMessage, Text: "hello"}
+	blocks, err := msg.ContentBlocks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocks != nil {
+		t.Fatalf("expected nil blocks for text shorthand, got %d", len(blocks))
+	}
+}
+
+func TestContentBlocks_SingleObject(t *testing.T) {
+	// Backward compat: content is a single object.
+	raw := json.RawMessage(`{"type":"text","text":"hello world"}`)
+	msg := ClientMessage{Type: MsgTypeUserMessage, Content: raw}
+	blocks, err := msg.ContentBlocks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	if blocks[0].Type != "text" || blocks[0].Text != "hello world" {
+		t.Errorf("unexpected block: %+v", blocks[0])
+	}
+}
+
+func TestContentBlocks_ArrayMultiType(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"type":"text","text":"Describe this image"},
+		{"type":"image","source":{"type":"path","path":"/tmp/screenshot.png"}},
+		{"type":"file","source":{"type":"url","url":"https://example.com/data.csv","media_type":"text/csv"}}
+	]`)
+	msg := ClientMessage{Type: MsgTypeUserMessage, Content: raw}
+	blocks, err := msg.ContentBlocks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 blocks, got %d", len(blocks))
+	}
+
+	// Text block.
+	if blocks[0].Type != "text" || blocks[0].Text != "Describe this image" {
+		t.Errorf("text block mismatch: %+v", blocks[0])
+	}
+
+	// Image block with path source.
+	if blocks[1].Type != "image" {
+		t.Errorf("expected type 'image', got %q", blocks[1].Type)
+	}
+	if blocks[1].Source == nil || blocks[1].Source.Type != "path" || blocks[1].Source.Path != "/tmp/screenshot.png" {
+		t.Errorf("image source mismatch: %+v", blocks[1].Source)
+	}
+
+	// File block with url source.
+	if blocks[2].Type != "file" {
+		t.Errorf("expected type 'file', got %q", blocks[2].Type)
+	}
+	if blocks[2].Source == nil || blocks[2].Source.Type != "url" || blocks[2].Source.URL != "https://example.com/data.csv" {
+		t.Errorf("file source mismatch: %+v", blocks[2].Source)
+	}
+	if blocks[2].Source.MediaType != "text/csv" {
+		t.Errorf("expected media_type 'text/csv', got %q", blocks[2].Source.MediaType)
+	}
+}
+
+func TestContentBlocks_ImageBase64(t *testing.T) {
+	raw := json.RawMessage(`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBOR..."}}`)
+	msg := ClientMessage{Type: MsgTypeUserMessage, Content: raw}
+	blocks, err := msg.ContentBlocks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+	src := blocks[0].Source
+	if src == nil || src.Type != "base64" || src.MediaType != "image/png" || src.Data != "iVBOR..." {
+		t.Errorf("base64 source mismatch: %+v", src)
+	}
+}
+
+func TestContentBlocks_InvalidJSON(t *testing.T) {
+	raw := json.RawMessage(`{invalid}`)
+	msg := ClientMessage{Type: MsgTypeUserMessage, Content: raw}
+	_, err := msg.ContentBlocks()
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestContentBlocks_EmptyArray(t *testing.T) {
+	raw := json.RawMessage(`[]`)
+	msg := ClientMessage{Type: MsgTypeUserMessage, Content: raw}
+	blocks, err := msg.ContentBlocks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 0 {
+		t.Fatalf("expected 0 blocks, got %d", len(blocks))
+	}
+}
+
+func TestToIncomingContentBlocks(t *testing.T) {
+	blocks := []ClientContentBlock{
+		{Type: "text", Text: "hello"},
+		{Type: "image", Source: &ClientContentSource{
+			Type: "path", Path: "/tmp/img.png", MediaType: "image/png",
+		}},
+		{Type: "file", Source: &ClientContentSource{
+			Type: "url", URL: "https://example.com/f.pdf",
+		}},
+	}
+	result := toIncomingContentBlocks(blocks)
+	if len(result) != 3 {
+		t.Fatalf("expected 3, got %d", len(result))
+	}
+	// text
+	if result[0].Type != "text" || result[0].Text != "hello" {
+		t.Errorf("text block: %+v", result[0])
+	}
+	// image
+	if result[1].Type != "image" || result[1].Path != "/tmp/img.png" || result[1].MIMEType != "image/png" {
+		t.Errorf("image block: %+v", result[1])
+	}
+	// file
+	if result[2].Type != "file" || result[2].URL != "https://example.com/f.pdf" {
+		t.Errorf("file block: %+v", result[2])
+	}
+}
+
+func TestIntegration_MultiContent_UserMessage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	// Find a free port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_, portStr, _ := net.SplitHostPort(addr)
+	port := 0
+	fmt.Sscanf(portStr, "%d", &port)
+	ln.Close()
+
+	cfg := config.WSChannelConfig{Host: "127.0.0.1", Port: port, Path: "/ws"}
+
+	var received *types.IncomingMessage
+	mockHandler := func(ctx context.Context, msg *types.IncomingMessage) error {
+		received = msg
+		return nil
+	}
+
+	ch := New(cfg, nil, zap.NewNop())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go ch.Start(ctx, mockHandler)
+	time.Sleep(100 * time.Millisecond)
+
+	// Connect.
+	ws, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://127.0.0.1:%d/ws", port), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close(websocket.StatusNormalClosure, "done")
+
+	// session.create
+	initMsg, _ := json.Marshal(ClientMessage{
+		Type: MsgTypeSessionCreate, SessionID: "multi-test", UserID: "u1",
+	})
+	ws.Write(ctx, websocket.MessageText, initMsg)
+	ws.Read(ctx) // session.created
+
+	// Send multi-content user.message (array form).
+	multiContent := json.RawMessage(`[
+		{"type":"text","text":"Look at this image"},
+		{"type":"image","source":{"type":"path","path":"/tmp/test.png"}},
+		{"type":"file","source":{"type":"url","url":"https://example.com/data.csv","media_type":"text/csv"}}
+	]`)
+	userMsg, _ := json.Marshal(ClientMessage{
+		Type:    MsgTypeUserMessage,
+		EventID: "evt_multi",
+		Content: multiContent,
+	})
+	ws.Write(ctx, websocket.MessageText, userMsg)
+
+	// Wait for handler to process.
+	time.Sleep(100 * time.Millisecond)
+
+	if received == nil {
+		t.Fatal("handler was not called")
+	}
+	if received.Text != "Look at this image" {
+		t.Errorf("expected text 'Look at this image', got %q", received.Text)
+	}
+	if len(received.Content) != 3 {
+		t.Fatalf("expected 3 content blocks, got %d", len(received.Content))
+	}
+	if received.Content[0].Type != "text" || received.Content[0].Text != "Look at this image" {
+		t.Errorf("content[0] mismatch: %+v", received.Content[0])
+	}
+	if received.Content[1].Type != "image" || received.Content[1].Path != "/tmp/test.png" {
+		t.Errorf("content[1] mismatch: %+v", received.Content[1])
+	}
+	if received.Content[2].Type != "file" || received.Content[2].URL != "https://example.com/data.csv" {
+		t.Errorf("content[2] mismatch: %+v", received.Content[2])
+	}
+	if received.Content[2].MIMEType != "text/csv" {
+		t.Errorf("content[2] mime_type mismatch: %q", received.Content[2].MIMEType)
 	}
 
 	cancel()

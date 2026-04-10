@@ -16,10 +16,11 @@ const (
 type ContentType string
 
 const (
-	ContentTypeText      ContentType = "text"
-	ContentTypeToolUse   ContentType = "tool_use"
+	ContentTypeText       ContentType = "text"
+	ContentTypeToolUse    ContentType = "tool_use"
 	ContentTypeToolResult ContentType = "tool_result"
-	ContentTypeImage     ContentType = "image"
+	ContentTypeImage      ContentType = "image"
+	ContentTypeFile       ContentType = "file"
 )
 
 // ContentBlock is a single piece of content within a message.
@@ -48,12 +49,29 @@ type IncomingMessage struct {
 	SessionID   string `json:"session_id"`
 	UserID      string `json:"user_id"`
 	Text        string `json:"text"`
+	// Content holds multi-type content blocks (v1.5). When present, Text is
+	// the concatenation of all text blocks for backward-compatible consumers.
+	Content []IncomingContentBlock `json:"content,omitempty"`
 	// ToolResult is set when the client returns a tool execution result (v1.1).
 	ToolResult *ToolResultPayload `json:"tool_result,omitempty"`
 	// PermissionResponse is set when the client approves/denies a permission request.
 	PermissionResponse *PermissionResponse `json:"permission_response,omitempty"`
 	// RawPayload holds channel-specific original data.
 	RawPayload map[string]any `json:"raw_payload,omitempty"`
+}
+
+// IncomingContentBlock is a typed content block from a user message.
+//
+// For text blocks only Text is populated. For image and file blocks the source
+// fields describe where to find the data (local path, remote URL, or inline
+// base64).
+type IncomingContentBlock struct {
+	Type      string `json:"type"`                 // "text", "image", "file"
+	Text      string `json:"text,omitempty"`       // for type=text
+	MIMEType  string `json:"mime_type,omitempty"`  // e.g. "image/png", "text/csv"
+	Path      string `json:"path,omitempty"`       // local filesystem path
+	URL       string `json:"url,omitempty"`        // remote URL
+	Data      string `json:"data,omitempty"`       // base64-encoded inline data
 }
 
 // ToolResultPayload carries the result of client-side tool execution.
