@@ -94,7 +94,7 @@ go_rebuild/
 
 ```bash
 # 构建
-make build              # 输出 ./dist/claude-code-go
+make build              # 输出 ./dist/harnessclaw-engine
 
 # 运行 (使用默认配置)
 make run                # go run ./cmd/server -config ./configs/config.yaml
