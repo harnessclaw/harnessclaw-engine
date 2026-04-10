@@ -3,6 +3,12 @@
 // frames with type/event_id/session_id fields. Type names use dot.notation.
 package websocket
 
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
+
 // WSMessageType identifies the kind of wire-protocol message.
 type WSMessageType string
 
@@ -272,8 +278,13 @@ type ClientMessage struct {
 	UserID string `json:"user_id,omitempty"` // optional user identifier
 
 	// user.message fields
-	Content *ClientContent `json:"content,omitempty"`
-	Text    string         `json:"text,omitempty"` // shorthand for content.text
+	//
+	// Content accepts either a single content block object or an array of
+	// content blocks. Use ContentBlocks() to get the normalised slice.
+	//   Single: {"type":"text","text":"hello"}
+	//   Array:  [{"type":"text","text":"hello"},{"type":"image","source":{...}}]
+	Content json.RawMessage `json:"content,omitempty"`
+	Text    string          `json:"text,omitempty"` // shorthand: equivalent to [{"type":"text","text":"..."}]
 
 	// tool.result fields
 	ToolUseID string                 `json:"tool_use_id,omitempty"`
@@ -289,14 +300,62 @@ type ClientMessage struct {
 	Message   string `json:"message,omitempty"`  // reuse for denial reason
 }
 
+// ContentBlocks parses the Content field into a normalised slice of content
+// blocks. It handles three wire formats:
+//  1. null / absent  → nil (caller should fall back to Text field)
+//  2. single object  → one-element slice  (backward compat v1.4)
+//  3. JSON array     → multi-element slice (v1.5)
+func (m *ClientMessage) ContentBlocks() ([]ClientContentBlock, error) {
+	if len(m.Content) == 0 {
+		return nil, nil
+	}
+	// Peek at the first non-whitespace byte to distinguish object from array.
+	trimmed := bytes.TrimLeft(m.Content, " \t\r\n")
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+	if trimmed[0] == '[' {
+		var blocks []ClientContentBlock
+		if err := json.Unmarshal(m.Content, &blocks); err != nil {
+			return nil, fmt.Errorf("invalid content array: %w", err)
+		}
+		return blocks, nil
+	}
+	// Single object — wrap in slice.
+	var block ClientContentBlock
+	if err := json.Unmarshal(m.Content, &block); err != nil {
+		return nil, fmt.Errorf("invalid content object: %w", err)
+	}
+	return []ClientContentBlock{block}, nil
+}
+
+// ClientContentBlock is a single content block in a user.message.
+//
+// Wire formats by type:
+//
+//	text:  {"type":"text","text":"Hello"}
+//	image: {"type":"image","source":{"type":"path","path":"/tmp/img.png"}}
+//	       {"type":"image","source":{"type":"url","url":"https://..."}}
+//	       {"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}
+//	file:  {"type":"file","source":{"type":"path","path":"/tmp/data.csv"}}
+//	       {"type":"file","source":{"type":"url","url":"https://..."}}
+type ClientContentBlock struct {
+	Type   string               `json:"type"`             // "text", "image", "file"
+	Text   string               `json:"text,omitempty"`   // for type=text
+	Source *ClientContentSource `json:"source,omitempty"` // for type=image or type=file
+}
+
+// ClientContentSource describes the source of an image or file content block.
+type ClientContentSource struct {
+	Type      string `json:"type"`                 // "path", "url", "base64"
+	Path      string `json:"path,omitempty"`       // for type=path: local filesystem path
+	URL       string `json:"url,omitempty"`        // for type=url: remote URL
+	Data      string `json:"data,omitempty"`       // for type=base64: base64-encoded data
+	MediaType string `json:"media_type,omitempty"` // MIME type (e.g. "image/png"), required for base64
+}
+
 // ClientError is the error detail in a tool.result message.
 type ClientError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
-}
-
-// ClientContent is the content object in a user.message.
-type ClientContent struct {
-	Type string `json:"type"` // "text", "image", "file"
-	Text string `json:"text,omitempty"`
 }

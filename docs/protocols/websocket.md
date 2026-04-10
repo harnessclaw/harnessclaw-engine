@@ -2,6 +2,7 @@
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 1.5 | 2026-04-09 | `user.message` 的 `content` 字段扩展为支持多类型内容块数组：`text`（文本）、`image`（图片）、`file`（文件）。`image` 和 `file` 通过 `source` 对象描述数据来源，支持 `path`（本地路径）、`url`（远程 URL）、`base64`（内联数据）三种方式。同时保持向后兼容：`content` 仍可为单个对象，`text` 快捷字段仍有效 |
 | 1.4 | 2026-04-08 | 连接协议改为显式握手：客户端必须发送 `session.create` 后才能收到 `session.created`，连接建立时服务端不再自动推送；新增 pre-init gate，初始化前仅接受 `session.create` 和 `ping`；权限审批增强为三选项模型（单次允许/会话级允许/拒绝）；会话级审批粒度为「程序 + 子命令」（如 `Bash:git push`），而非工具名或程序名；`permission.request` 新增 `options` + `permission_key` 字段；`permission.response` 新增 `scope` 字段；移除权限审批超时（无限等待直到用户操作） |
 | 1.3 | 2026-04-08 | 新增权限审批协议（`permission.request`/`permission.response`）；服务端工具执行需要用户确认时，通过 WebSocket 异步审批而非直接拒绝 |
 | 1.2 | 2026-04-07 | 新增服务端工具执行事件（`tool.start`/`tool.end`）；LLM tool_use 输出统一走 `content.*` 内容块；`EngineEventToolUse` 与 `EngineEventToolStart`/`EngineEventToolEnd` 职责分离 |
@@ -10,13 +11,18 @@
 
 ---
 
-# WebSocket Channel Protocol v1.4
+# WebSocket Channel Protocol v1.5
 
 ## 1. Overview
 
 本协议定义了 harnessclaw-go WebSocket Channel 的双向通信规范。客户端通过 WebSocket 发送用户消息和控制指令，服务端以流式事件实时推送 query-loop 的完整执行过程。
 
-**协议版本**: `1.4`
+**协议版本**: `1.5`
+
+**v1.5 核心变更**:
+- **多类型内容块**: `user.message` 的 `content` 字段从单一对象扩展为支持内容块数组，包含 `text`、`image`、`file` 三种类型
+- **image/file 数据来源**: 通过 `source` 对象描述，支持 `path`（本地路径）、`url`（远程 URL）、`base64`（内联 base64 编码数据）三种方式
+- **向后兼容**: `content` 仍可为单个对象（v1.4 格式），`text` 快捷字段仍有效
 
 **v1.4 核心变更**:
 - **显式会话初始化**: 连接建立后服务端不再自动推送 `session.created`。客户端 **MUST** 发送 `session.create` 请求来初始化会话，服务端收到后回复 `session.created`
@@ -175,11 +181,24 @@ Client                                Server
 
 ### 5.1 `user.message` — 发送用户消息
 
+`content` 字段支持三种格式：
+
+**格式 1: 快捷文本（仅文本）**
+
 ```json
 {
   "type": "user.message",
   "event_id": "evt_client_001",
-  "session_id": "sess_abc123",
+  "text": "What is 1+1?"
+}
+```
+
+**格式 2: 单内容块对象（v1.4 兼容）**
+
+```json
+{
+  "type": "user.message",
+  "event_id": "evt_client_001",
   "content": {
     "type": "text",
     "text": "What is 1+1?"
@@ -187,11 +206,54 @@ Client                                Server
 }
 ```
 
+**格式 3: 多内容块数组（v1.5）**
+
+```json
+{
+  "type": "user.message",
+  "event_id": "evt_client_001",
+  "content": [
+    {"type": "text", "text": "请描述这张图片并分析这个文件"},
+    {"type": "image", "source": {"type": "path", "path": "/tmp/screenshot.png"}},
+    {"type": "file", "source": {"type": "url", "url": "https://example.com/data.csv", "media_type": "text/csv"}}
+  ]
+}
+```
+
+#### 内容块类型
+
+| 类型 | 说明 | 必填字段 |
+|------|------|----------|
+| `text` | 纯文本 | `text` |
+| `image` | 图片（支持 PNG/JPEG/GIF/WebP） | `source` |
+| `file` | 文件附件（任意类型） | `source` |
+
+#### Source 对象
+
+`image` 和 `file` 类型通过 `source` 对象描述数据来源：
+
+| source.type | 说明 | 必填字段 | 示例 |
+|-------------|------|----------|------|
+| `path` | 本地文件路径 | `path` | `{"type":"path","path":"/home/user/img.png"}` |
+| `url` | 远程 URL | `url` | `{"type":"url","url":"https://example.com/file.pdf"}` |
+| `base64` | 内联 base64 数据 | `data`, `media_type` | `{"type":"base64","media_type":"image/png","data":"iVBOR..."}` |
+
+| Source 字段 | 类型 | 说明 |
+|------------|------|------|
+| `type` | string | 数据来源类型: `"path"` / `"url"` / `"base64"` |
+| `path` | string | 本地文件系统路径（`type: "path"` 时必填） |
+| `url` | string | 远程 URL（`type: "url"` 时必填） |
+| `data` | string | Base64 编码数据（`type: "base64"` 时必填） |
+| `media_type` | string | MIME 类型（如 `"image/png"`、`"text/csv"`）。`base64` 时必填，`path`/`url` 时可选 |
+
+#### 字段总表
+
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `content` | object | 是 | 消息内容 |
-| `content.type` | string | 是 | `"text"` / `"image"` / `"file"` (预留) |
-| `content.text` | string | 条件 | `type: "text"` 时必填 |
+| `content` | object \| array | 否 | 单个内容块对象或内容块数组。与 `text` 二选一 |
+| `text` | string | 否 | 纯文本快捷方式，等价于 `[{"type":"text","text":"..."}]` |
+
+> **优先级**: `content` 优先于 `text`。两者都存在时，忽略 `text`。
 
 `event_id` 将作为 `request_id` 出现在该请求触发的所有服务端事件中。
 
@@ -366,7 +428,7 @@ Client                                Server
   "type": "session.created",
   "event_id": "evt_001",
   "session_id": "sess_abc123",
-  "protocol_version": "1.4",
+  "protocol_version": "1.5",
   "session": {
     "model": "claude-sonnet-4-20250514",
     "capabilities": {
@@ -878,7 +940,7 @@ Client                                         Server
   |  ─── session.create ──────────────────────→  |
   |      {session_id:"sess_abc123"}              |
   |  ←─── session.created ──────────────────────  |
-  |       {protocol_version:"1.4",session:{...}}  |
+  |       {protocol_version:"1.5",session:{...}}  |
   |                                              |
   |  ─── user.message ───────────────────────→   |
   |      {event_id:"c1",content:{text:"Hi"}}     |
@@ -1276,7 +1338,7 @@ CLAUDE_CHANNELS_WEBSOCKET_TOOL_TIMEOUT=180s
 | type | 说明 | 状态 |
 |------|------|------|
 | `session.create` | 初始化会话（连接后首条消息） | **v1.4 新增** |
-| `user.message` | 发送用户消息 | 已实现 |
+| `user.message` | 发送用户消息（v1.5 起支持多类型内容块） | 已实现 |
 | `tool.result` | 上报工具执行结果 | **v1.1 新增** |
 | `tool.progress` | 工具执行心跳（客户端→服务端） | **v1.1 新增** |
 | `permission.response` | 回复权限审批请求 | **v1.3 新增**，v1.4 增加 `scope` 字段 |
@@ -1352,8 +1414,11 @@ wscat -c "ws://localhost:8081/v1/ws"
 # 先发送 session.create 初始化会话
 > {"type":"session.create","event_id":"c0","session_id":"test1"}
 
-# 等待 session.created 后发送
-> {"type":"user.message","event_id":"c1","content":{"type":"text","text":"hello"}}
+# 等待 session.created 后发送（文本快捷方式）
+> {"type":"user.message","event_id":"c1","text":"hello"}
+
+# 或发送多类型内容（v1.5）
+> {"type":"user.message","event_id":"c2","content":[{"type":"text","text":"describe this"},{"type":"image","source":{"type":"path","path":"/tmp/img.png"}}]}
 ```
 
 ### Python
