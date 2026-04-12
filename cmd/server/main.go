@@ -1,4 +1,4 @@
-// Package main is the entry point for the Claude Code Go service.
+// Package main is the entry point for the harnessclaw-engine service.
 //
 // Startup sequence:
 //  1. Load configuration (Viper)
@@ -88,7 +88,7 @@ func main() {
 	}
 	defer logger.Sync()
 
-	logger.Info("starting claude-code-go",
+	logger.Info("starting harnessclaw-engine",
 		zap.String("host", cfg.Server.Host),
 		zap.Int("port", cfg.Server.Port),
 		zap.String("storage", cfg.Session.Storage),

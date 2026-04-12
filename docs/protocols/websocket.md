@@ -51,7 +51,7 @@
 **设计对齐**:
 - 流式事件结构对齐 [Anthropic Messages Streaming API](https://docs.anthropic.com/en/api/messages-streaming)
 - 会话管理参考 [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime)
-- 工具执行模型参考 Claude Code CLI 的本地工具调用机制
+- 工具执行模型采用本地工具调用机制
 
 **前向兼容约定**:
 - 客户端 **MUST** 忽略不识别的 `type` 值，跳过该消息继续处理
