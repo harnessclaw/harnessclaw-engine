@@ -1,6 +1,6 @@
 # HarnessClaw Engine
 
-基于 Claude Code 的理念，使用Go语言重新构建 。通过 WebSocket 协议对外提供 LLM 编程助手能力，支持多轮对话、工具调用、权限管控和技能扩展。
+使用Go语言构建的 LLM 编程助手引擎。通过 WebSocket 协议对外提供能力，支持多轮对话、工具调用、权限管控和技能扩展。
 
 ## 架构概览
 
@@ -100,7 +100,7 @@ make build              # 输出 ./dist/harnessclaw-engine
 make run                # go run ./cmd/server -config ./configs/config.yaml
 
 # 也可以直接指定配置文件
-./dist/claude-code-go -config ./configs/config.yaml
+./dist/harnessclaw-engine -config ./configs/config.yaml
 ```
 
 ### 测试
