@@ -109,7 +109,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (*typ
 	if err != nil {
 		return &types.ToolResult{Content: "error creating request: " + err.Error(), IsError: true}, nil
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; ClaudeCode/1.0)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; HarnessClawEngine/1.0)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,text/plain,*/*")
 
 	resp, err := t.client.Do(req)

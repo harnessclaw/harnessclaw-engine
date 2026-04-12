@@ -1,5 +1,5 @@
 # =============================================================================
-# Claude Code Go Service — Configuration
+# HarnessClaw Engine — Configuration
 # =============================================================================
 
 # --- Server ---
@@ -12,7 +12,7 @@ log:
   level: "info"          # debug, info, warn, error
   format: "console"      # json, console
   output: "stdout"       # stdout, file
-  # file_path: "/var/log/claude-code/service.log"
+  # file_path: "/var/log/harnessclaw-engine/service.log"
 
 # --- LLM Provider ---
 llm:
