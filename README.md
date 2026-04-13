@@ -2,11 +2,13 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-使用Go语言构建的 LLM 编程助手引擎。通过 WebSocket 协议对外提供能力，支持多轮对话、工具调用、权限管控和技能扩展。
+[English](README.md) | [中文](README_zh.md)
 
-## 架构概览
+An LLM programming assistant engine built with Go. It provides capabilities via the WebSocket protocol, supporting multi-turn dialogues, tool calling, permission control, and skill extension.
 
-```
+## Architecture Overview
+
+```text
 ┌───────────-──┐   ┌─────────────┐   ┌─────────────┐
 │  WebSocket   │   │    HTTP     │   │   Feishu    │
 │  Channel     │   │   Channel   │   │  Channel    │
@@ -15,13 +17,13 @@
        └──────────────────┼──────────────────┘
                           ▼
                 ┌──────────────────┐
-                │  Router + 中间件  │  Auth / RateLimit / Logging
+                │Router + Middleware│  Auth / RateLimit / Logging
                 └────────┬─────────┘
                          ▼
                 ┌──────────────────┐
                 │   Query Engine   │  5-Phase Loop
-                │  (queryloop.go)  │  预处理 → LLM流式调用 → 错误恢复
-                └───┬──────────┬───┘  → 工具执行 → 续行判断
+                │  (queryloop.go)  │  Preprocessing → LLM Streaming → Error Recovery
+                └───┬──────────┬───┘  → Tool Execution → Continuation Check
                     │          │
               ┌─────▼──-─┐  ┌──▼──────────┐
               │ Provider │  │ Tool System │
@@ -29,155 +31,155 @@
               └───────-──┘  └─────────────┘
 ```
 
-**依赖方向**: Channel → Router → Engine → Provider / Tool（单向，无循环依赖）
+**Dependency Direction**: Channel → Router → Engine → Provider / Tool (Unidirectional, no circular dependencies)
 
-## 核心特性
+## Core Features
 
-- **5 阶段查询循环** — 预处理(自动压缩) → LLM 流式调用 → 错误恢复(指数退避重试) → 工具执行(并行/串行) → 续行判断
-- **WebSocket 协议 v1.4** — 显式会话握手、完整消息生命周期、双向工具调用(服务端执行 + 客户端执行)、权限请求/响应流
-- **7 个内置工具** — Bash、FileRead、FileEdit、FileWrite、Grep、Glob、WebFetch
-- **6 步权限管线** — DenyRule → ToolCheckPerm → BypassMode → AlwaysAllowRule → ReadOnlyAutoAllow → ModeDefault，支持 6 种权限模式
-- **技能系统** — 从 `SKILL.md` 文件加载技能，支持 YAML frontmatter、参数替换、优先级覆盖
-- **多 Provider 支持** — 直连 Anthropic SSE 客户端 + Bifrost 多 Provider 适配器(Anthropic/OpenAI/Bedrock/Vertex)
-- **上下文压缩** — 基于 LLM 的对话摘要 + 断路器模式，token 使用率达阈值时自动触发
-- **会话管理** — 线程安全的会话状态、多连接 fan-out、空闲超时回收
+- **5-Phase Query Loop** — Preprocessing (Auto-compaction) → LLM Streaming Call → Error Recovery (Exponential Backoff) → Tool Execution (Parallel/Serial) → Continuation Check
+- **WebSocket Protocol v1.4** — Explicit session handshake, full message lifecycle, bidirectional tool calling (Server-side + Client-side execution), permission request/response stream
+- **7 Built-in Tools** — Bash, FileRead, FileEdit, FileWrite, Grep, Glob, WebFetch
+- **6-Step Permission Pipeline** — DenyRule → ToolCheckPerm → BypassMode → AlwaysAllowRule → ReadOnlyAutoAllow → ModeDefault, supporting 6 permission modes
+- **Skill System** — Loads skills from `SKILL.md` files, supporting YAML frontmatter, parameter substitution, and priority override
+- **Multi-Provider Support** — Direct Anthropic SSE client + Bifrost Multi-Provider adapter (Anthropic/OpenAI/Bedrock/Vertex)
+- **Context Compaction** — LLM-based conversation summarization + Circuit breaker pattern, automatically triggered when token usage reaches the threshold
+- **Session Management** — Thread-safe session state, multi-connection fan-out, idle timeout reclamation
 
-## 项目结构
+## Project Structure
 
-```
+```text
 go_rebuild/
-├── cmd/server/           # 入口 & 集成测试
-│   ├── main.go           # 11 步启动流程
-│   └── main_test.go      # E2E 测试 (build tag: integration)
+├── cmd/server/           # Entry point & Integration tests
+│   ├── main.go           # 11-step startup process
+│   └── main_test.go      # E2E tests (build tag: integration)
 ├── configs/
-│   └── config.yaml       # 默认配置
+│   └── config.yaml       # Default configuration
 ├── internal/
-│   ├── channel/           # 多协议接入层 (WebSocket / HTTP / Feishu)
-│   ├── command/           # 命令注册 & 优先级系统
-│   ├── config/            # Viper 配置管理 (50+ 默认项)
-│   ├── engine/            # 核心查询引擎
-│   │   ├── queryloop.go   # QueryEngine 主循环 (831 行)
-│   │   ├── executor.go    # 工具并行/串行执行器
-│   │   ├── compact/       # LLM 上下文压缩
-│   │   ├── context/       # 系统提示词组装
-│   │   └── session/       # 会话状态 & 生命周期
-│   ├── event/             # 进程内发布/订阅事件总线
-│   ├── permission/        # 6 步权限管线 (6 种模式)
-│   ├── provider/          # LLM Provider 抽象
-│   │   ├── anthropic/     # Anthropic SSE 直连客户端
-│   │   ├── bifrost/       # 多 Provider 适配器
-│   │   └── retry/         # 指数退避 + 529 过载切换
-│   ├── router/            # 消息路由 + 中间件链
-│   ├── skill/             # SKILL.md 加载 & 参数替换
-│   ├── storage/           # 存储接口 (内存实现)
-│   └── tool/              # 工具系统
-│       ├── tool.go        # Tool 接口 + 10 个扩展接口
-│       ├── registry.go    # 线程安全工具注册表
-│       ├── pool.go        # 不可变 per-query 工具池
+│   ├── channel/           # Multi-protocol access layer (WebSocket / HTTP / Feishu)
+│   ├── command/           # Command registration & Priority system
+│   ├── config/            # Viper configuration management (50+ defaults)
+│   ├── engine/            # Core query engine
+│   │   ├── queryloop.go   # QueryEngine main loop (831 lines)
+│   │   ├── executor.go    # Parallel/Serial tool executor
+│   │   ├── compact/       # LLM context compaction
+│   │   ├── context/       # System prompt assembly
+│   │   └── session/       # Session state & Lifecycle
+│   ├── event/             # In-process pub/sub event bus
+│   ├── permission/        # 6-step permission pipeline (6 modes)
+│   ├── provider/          # LLM Provider abstraction
+│   │   ├── anthropic/     # Direct Anthropic SSE client
+│   │   ├── bifrost/       # Multi-Provider adapter
+│   │   └── retry/         # Exponential backoff + 529 overload switching
+│   ├── router/            # Message routing + Middleware chain
+│   ├── skill/             # SKILL.md loading & Parameter substitution
+│   ├── storage/           # Storage interfaces (Memory implementation)
+│   └── tool/              # Tool system
+│       ├── tool.go        # Tool interface + 10 extension interfaces
+│       ├── registry.go    # Thread-safe tool registry
+│       ├── pool.go        # Immutable per-query tool pool
 │       └── bash/fileread/fileedit/filewrite/grep/glob/webfetch/skilltool/
 ├── pkg/
-│   ├── types/             # 共享类型 (Message, Event, ToolCall, Context)
-│   └── errors/            # 领域错误 (16 个错误码)
+│   ├── types/             # Shared types (Message, Event, ToolCall, Context)
+│   └── errors/            # Domain errors (16 error codes)
 ├── docs/
-│   ├── protocols/         # WebSocket 协议规范 (v1.4)
-├── Makefile               # 构建/运行/测试/lint
+│   ├── protocols/         # WebSocket protocol specification (v1.4)
+├── Makefile               # Build/Run/Test/Lint
 └── go.mod                 # Go 1.26.1
 ```
 
-## 快速开始
+## Quick Start
 
-### 前置条件
+### Prerequisites
 
 - Go 1.26+
-- (可选) [golangci-lint](https://golangci-lint.run/) — 用于代码检查
-- (可选) [ripgrep](https://github.com/BurntSushi/ripgrep) — Grep 工具运行时依赖
+- (Optional) [golangci-lint](https://golangci-lint.run/) — For code linting
+- (Optional) [ripgrep](https://github.com/BurntSushi/ripgrep) — Runtime dependency for the Grep tool
 
-### 构建 & 运行
+### Build & Run
 
 ```bash
-# 构建
-make build              # 输出 ./dist/harnessclaw-engine
+# Build
+make build              # Outputs to ./dist/harnessclaw-engine
 
-# 运行 (使用默认配置)
+# Run (using default configuration)
 make run                # go run ./cmd/server -config ./configs/config.yaml
 
-# 也可以直接指定配置文件
+# Run directly with a specific configuration file
 ./dist/harnessclaw-engine -config ./configs/config.yaml
 ```
 
-### 测试
+### Testing
 
 ```bash
-# 单元测试
+# Unit tests
 make test               # go test ./... -v -race -count=1
 
-# 覆盖率报告
-make test-cover         # 生成 coverage.html
+# Coverage report
+make test-cover         # Generates coverage.html
 
-# 集成测试 (需要真实 LLM API)
+# Integration tests (requires real LLM API)
 go test -tags=integration ./cmd/server/ -v
 go test -tags=integration ./internal/provider/bifrost/ -v
 ```
 
-### 其他命令
+### Other Commands
 
 ```bash
-make fmt                # 格式化代码
-make tidy               # 整理 go.mod
-make lint               # 代码检查
-make vuln               # 漏洞扫描
-make clean              # 清理构建产物
+make fmt                # Format code
+make tidy               # Tidy go.mod
+make lint               # Run linters
+make vuln               # Scan for vulnerabilities
+make clean              # Clean build artifacts
 ```
 
-## 配置
+## Configuration
 
-配置文件 `configs/config.yaml`，主要配置项：
+The configuration file is located at `configs/config.yaml`. Main configuration items:
 
-| 配置项 | 说明 | 默认值 |
+| Configuration Item | Description | Default Value |
 |--------|------|--------|
-| `server.port` | HTTP 服务端口 | `8080` |
-| `channels.websocket.port` | WebSocket 端口 | `8081` |
-| `channels.websocket.path` | WebSocket 路径 | `/ws` |
+| `server.port` | HTTP server port | `8080` |
+| `channels.websocket.port` | WebSocket port | `8081` |
+| `channels.websocket.path` | WebSocket path | `/ws` |
 | `llm.default_provider` | LLM Provider | `anthropic` |
-| `llm.providers.anthropic.model` | 模型名称 | `astron-code-latest` |
-| `engine.max_turns` | 单轮最大工具调用次数 | `50` |
-| `engine.auto_compact_threshold` | 自动压缩 token 阈值比例 | `0.8` |
-| `session.idle_timeout` | 会话空闲超时 | `30m` |
-| `permission.mode` | 权限模式 | `default` |
-| `tools.*` | 各工具开关 | 全部 `true` |
+| `llm.providers.anthropic.model` | Model name | `astron-code-latest` |
+| `engine.max_turns` | Max tool calls per turn | `50` |
+| `engine.auto_compact_threshold` | Token ratio threshold for auto-compaction | `0.8` |
+| `session.idle_timeout` | Session idle timeout | `30m` |
+| `permission.mode` | Permission mode | `default` |
+| `tools.*` | Individual tool toggles | All `true` |
 
-## WebSocket 协议
+## WebSocket Protocol
 
-连接地址: `ws://host:8081/ws`
+Connection Address: `ws://host:8081/ws`
 
-### 会话生命周期
+### Session Lifecycle
 
-```
-客户端                                   服务端
+```text
+Client                                   Server
   │                                        │
   │── session.create ──────────────────────>│
   │<────────────────────── session.created ─│
   │                                        │
   │── user.message ────────────────────────>│
   │<──────────────────── message.start ─────│
-  │<──── content.start / content.delta ─────│  (流式文本)
-  │<──────── tool.start / tool.end ─────────│  (服务端工具)
-  │<──────────── tool.call ─────────────────│  (客户端工具)
+  │<──── content.start / content.delta ─────│  (Streaming Text)
+  │<──────── tool.start / tool.end ─────────│  (Server-side Tool)
+  │<──────────── tool.call ─────────────────│  (Client-side Tool)
   │── tool.result ─────────────────────────>│
-  │<──── permission.request ────────────────│  (权限确认)
+  │<──── permission.request ────────────────│  (Permission Request)
   │── permission.response ─────────────────>│
   │<──────────────── content.stop ──────────│
   │<──────────────── message.stop ──────────│
   │<──────────────── task.end ──────────────│
   │                                        │
-  │── abort ───────────────────────────────>│  (中断)
+  │── abort ───────────────────────────────>│  (Interrupt)
 ```
 
-详细协议规范见 [docs/protocols/websocket.md](docs/protocols/websocket.md)。
+For detailed protocol specifications, see [docs/protocols/websocket.md](docs/protocols/websocket.md).
 
-## 文档
+## Documentation
 
-- [WebSocket 协议规范 v1.4](docs/protocols/websocket.md)
+- [WebSocket Protocol Specification v1.4](docs/protocols/websocket.md)
 
 ## License
 
