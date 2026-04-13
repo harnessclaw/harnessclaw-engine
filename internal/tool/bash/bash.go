@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"harnessclaw-go/internal/config"
@@ -180,12 +179,8 @@ __ec=$?; pwd -P > %s; exit $__ec`,
 	cmd.Dir = cwd
 	cmd.Env = buildEnv()
 
-	// Create a new process group so we can kill the entire tree on timeout.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		// Kill the entire process group (negative PID).
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
+	// Platform-specific process group setup for clean timeout killing.
+	setProcAttr(cmd)
 
 	output, execErr := cmd.CombinedOutput()
 	duration := time.Since(start)
@@ -243,17 +238,6 @@ func (b *BashTool) Cwd() string {
 	b.cwdMu.Lock()
 	defer b.cwdMu.Unlock()
 	return b.cwd
-}
-
-// resolveShell finds the preferred shell binary.
-func resolveShell() string {
-	if s := os.Getenv("CLAUDE_CODE_SHELL"); s != "" {
-		return s
-	}
-	if s := os.Getenv("SHELL"); s != "" {
-		return s
-	}
-	return "/bin/bash"
 }
 
 // buildEnv returns the environment for child processes.
