@@ -1,5 +1,7 @@
 # HarnessClaw Engine
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 使用Go语言构建的 LLM 编程助手引擎。通过 WebSocket 协议对外提供能力，支持多轮对话、工具调用、权限管控和技能扩展。
 
 ## 架构概览
