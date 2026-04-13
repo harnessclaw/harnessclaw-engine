@@ -181,6 +181,13 @@ For detailed protocol specifications, see [docs/protocols/websocket.md](docs/pro
 
 - [WebSocket Protocol Specification v1.4](docs/protocols/websocket.md)
 
+## 📞 Support
+
+- 💬 **Community Discussion**: [GitHub Discussions](https://github.com/harnessclaw/harnessclaw-engine/discussions)
+- 🐛 **Bug Reports**: [Issues](https://github.com/harnessclaw/harnessclaw-engine/issues)
+- 👥 **WeChat Work Group**: <br>
+  <img src="https://github.com/iflytek/astron-agent/blob/main/docs/imgs/WeCom_Group.png?raw=true" alt="WeChat Work Group" width="300"/>
+
 ## License
 
 Apache-2.0 License. See [LICENSE](LICENSE) for details.
