@@ -181,6 +181,14 @@ make clean              # 清理构建产物
 
 - [WebSocket 协议规范 v1.4](docs/protocols/websocket.md)
 
+## 📞 Support
+
+- 💬 **Community Discussion**: [GitHub Discussions](https://github.com/harnessclaw/harnessclaw-engine/discussions)
+- 🐛 **Bug Reports**: [Issues](https://github.com/harnessclaw/harnessclaw-engine/issues)
+- 👾 **Discord**: [Join our server](https://discord.gg/SeseGE7ZUH)
+- 👥 **WeChat Work Group**: <br>
+  <img src="https://github.com/iflytek/astron-agent/blob/main/docs/imgs/WeCom_Group.png?raw=true" alt="WeChat Work Group" width="300"/>
+
 ## License
 
 Apache-2.0 License. See [LICENSE](LICENSE) for details.
