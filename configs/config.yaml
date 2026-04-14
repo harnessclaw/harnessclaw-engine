@@ -14,9 +14,9 @@ log:
   output: "stdout"       # stdout, file
   # file_path: "/var/log/harnessclaw-engine/service.log"
 
-# --- LLM Provider ---
+# --- LLM Provider (all providers are routed through Bifrost SDK) ---
 llm:
-  default_provider: "anthropic"
+  default_provider: "anthropic"              # Switch to "openai" to use OpenAI
   max_retries: 3
   api_timeout: "120s"
   # proxy_url: "http://proxy:8888"
@@ -28,12 +28,11 @@ llm:
       api_key: "your-api-key-here"
       model: "your-model-id"
       max_tokens: 16384
-  # bifrost:
-  #   enabled: false
-  #   provider: "anthropic"
-  #   fallback_model: "claude-haiku-4-5-20251001"
-  #   max_concurrency: 1000
-  #   buffer_size: 5000
+#    openai:
+#      base_url: "https://api.openai.com"
+#      api_key: "your-openai-api-key"
+#      model: "gpt-4o"
+#      max_tokens: 4096
 
 # --- Query Engine ---
 engine:
