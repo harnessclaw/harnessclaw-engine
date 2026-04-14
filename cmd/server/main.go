@@ -6,7 +6,7 @@
 //  3. Initialize storage (SQLite or memory)
 //  4. Create event bus
 //  5. Register tools
-//  6. Initialize LLM provider (Bifrost or direct)
+//  6. Initialize LLM provider (Bifrost SDK)
 //  7. Create session manager
 //  8. Create query engine
 //  9. Build router with middleware chain
@@ -38,7 +38,6 @@ import (
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
-	"harnessclaw-go/internal/provider/anthropic"
 	"harnessclaw-go/internal/provider/bifrost"
 	"harnessclaw-go/internal/router"
 	"harnessclaw-go/internal/router/middleware"
@@ -474,65 +473,44 @@ func initProvider(cfg config.LLMConfig, logger *zap.Logger) provider.Provider {
 		)
 	}
 
-	var baseProvider provider.Provider
-	switch provName {
-	case "anthropic":
-		baseProvider = anthropic.New(anthropic.Config{
-			BaseURL: provCfg.BaseURL,
-			APIKey:  provCfg.APIKey,
-			Model:   provCfg.Model,
-		})
-		logger.Info("anthropic provider initialized",
-			zap.String("base_url", provCfg.BaseURL),
-			zap.String("model", provCfg.Model),
-		)
-	default:
-		logger.Fatal("unsupported provider type", zap.String("provider", provName))
-		return nil
+	// All providers are routed through the Bifrost SDK.
+	// Bifrost-specific overrides take precedence; fall back to provider config.
+	bfProvider := mapBifrostProvider(cfg.Bifrost.Provider, provName)
+	bfModel := cfg.Bifrost.Model
+	if bfModel == "" {
+		bfModel = provCfg.Model
+	}
+	bfAPIKey := cfg.Bifrost.APIKey
+	if bfAPIKey == "" {
+		bfAPIKey = provCfg.APIKey
+	}
+	bfBaseURL := cfg.Bifrost.BaseURL
+	if bfBaseURL == "" {
+		bfBaseURL = provCfg.BaseURL
 	}
 
-	// Wrap with Bifrost adapter if enabled.
-	if cfg.Bifrost.Enabled {
-		// Resolve Bifrost config: prefer Bifrost-specific overrides, fall back to provider config.
-		bfProvider := mapBifrostProvider(cfg.Bifrost.Provider, provName)
-		bfModel := cfg.Bifrost.Model
-		if bfModel == "" {
-			bfModel = provCfg.Model
-		}
-		bfAPIKey := cfg.Bifrost.APIKey
-		if bfAPIKey == "" {
-			bfAPIKey = provCfg.APIKey
-		}
-		bfBaseURL := cfg.Bifrost.BaseURL
-		if bfBaseURL == "" {
-			bfBaseURL = provCfg.BaseURL
-		}
-
-		adapter, err := bifrost.New(bifrost.Config{
-			Provider:       bfProvider,
-			Model:          bfModel,
-			APIKey:         bfAPIKey,
-			BaseURL:        bfBaseURL,
-			FallbackModel:  cfg.Bifrost.FallbackModel,
-			MaxConcurrency: cfg.Bifrost.MaxConcurrency,
-			BufferSize:     cfg.Bifrost.BufferSize,
-			ProxyURL:       cfg.ProxyURL,
-			CustomHeaders:  cfg.CustomHeaders,
-			Logger:         logger,
-		})
-		if err != nil {
-			logger.Fatal("failed to create bifrost adapter", zap.Error(err))
-		}
-		logger.Info("bifrost adapter enabled",
-			zap.String("provider", string(bfProvider)),
-			zap.String("model", bfModel),
-			zap.String("fallback", cfg.Bifrost.FallbackModel),
-			zap.Bool("proxy", cfg.ProxyURL != ""),
-		)
-		return adapter
+	adapter, err := bifrost.New(bifrost.Config{
+		Provider:       bfProvider,
+		Model:          bfModel,
+		APIKey:         bfAPIKey,
+		BaseURL:        bfBaseURL,
+		FallbackModel:  cfg.Bifrost.FallbackModel,
+		MaxConcurrency: cfg.Bifrost.MaxConcurrency,
+		BufferSize:     cfg.Bifrost.BufferSize,
+		ProxyURL:       cfg.ProxyURL,
+		CustomHeaders:  cfg.CustomHeaders,
+		Logger:         logger,
+	})
+	if err != nil {
+		logger.Fatal("failed to create bifrost adapter", zap.Error(err))
 	}
-
-	return baseProvider
+	logger.Info("bifrost provider initialized",
+		zap.String("provider", string(bfProvider)),
+		zap.String("model", bfModel),
+		zap.String("fallback", cfg.Bifrost.FallbackModel),
+		zap.Bool("proxy", cfg.ProxyURL != ""),
+	)
+	return adapter
 }
 
 // mapBifrostProvider converts a config string to a schemas.ModelProvider constant.

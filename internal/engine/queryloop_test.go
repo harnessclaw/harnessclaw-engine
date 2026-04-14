@@ -13,7 +13,8 @@ import (
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
-	"harnessclaw-go/internal/provider/anthropic"
+	"harnessclaw-go/internal/provider"
+	"harnessclaw-go/internal/provider/bifrost"
 	"harnessclaw-go/internal/storage/memory"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
@@ -34,7 +35,7 @@ type testLLMConfig struct {
 	} `yaml:"llm"`
 }
 
-func loadProvider(t *testing.T) *anthropic.Client {
+func loadProvider(t *testing.T) provider.Provider {
 	t.Helper()
 	paths := []string{"../../testdata/llm.yaml", "testdata/llm.yaml"}
 	var data []byte
@@ -52,11 +53,16 @@ func loadProvider(t *testing.T) *anthropic.Client {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("parse llm config: %v", err)
 	}
-	return anthropic.New(anthropic.Config{
-		BaseURL: cfg.LLM.BaseURL,
-		APIKey:  cfg.LLM.APIKey,
-		Model:   cfg.LLM.Model,
+	prov, err := bifrost.New(bifrost.Config{
+		Provider: "anthropic",
+		Model:    cfg.LLM.Model,
+		APIKey:   cfg.LLM.APIKey,
+		BaseURL:  cfg.LLM.BaseURL,
 	})
+	if err != nil {
+		t.Fatalf("create bifrost adapter: %v", err)
+	}
+	return prov
 }
 
 func newTestEngine(t *testing.T, tools ...tool.Tool) (*QueryEngine, *event.Bus) {
@@ -121,9 +127,11 @@ type echoTool struct {
 	calls atomic.Int32
 }
 
-func (et *echoTool) Name() string               { return "echo" }
-func (et *echoTool) Description() string         { return "Echoes the input text back. Parameter: text (string)" }
-func (et *echoTool) IsReadOnly() bool            { return true }
+func (et *echoTool) Name() string { return "echo" }
+func (et *echoTool) Description() string {
+	return "Echoes the input text back. Parameter: text (string)"
+}
+func (et *echoTool) IsReadOnly() bool { return true }
 func (et *echoTool) InputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -135,7 +143,9 @@ func (et *echoTool) InputSchema() map[string]any {
 }
 func (et *echoTool) Execute(_ context.Context, input json.RawMessage) (*types.ToolResult, error) {
 	et.calls.Add(1)
-	var p struct{ Text string `json:"text"` }
+	var p struct {
+		Text string `json:"text"`
+	}
 	json.Unmarshal(input, &p)
 	return &types.ToolResult{Content: "echo: " + p.Text}, nil
 }
@@ -145,9 +155,11 @@ type addTool struct {
 	calls atomic.Int32
 }
 
-func (at *addTool) Name() string               { return "add" }
-func (at *addTool) Description() string         { return "Adds two numbers. Parameters: a (number), b (number)" }
-func (at *addTool) IsReadOnly() bool            { return true }
+func (at *addTool) Name() string { return "add" }
+func (at *addTool) Description() string {
+	return "Adds two numbers. Parameters: a (number), b (number)"
+}
+func (at *addTool) IsReadOnly() bool { return true }
 func (at *addTool) InputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -300,9 +312,11 @@ func TestQueryLoop_MaxTurns(t *testing.T) {
 
 type loopForeverTool struct{ tool.BaseTool }
 
-func (l *loopForeverTool) Name() string               { return "loop" }
-func (l *loopForeverTool) Description() string         { return "A test tool. Always returns a message asking you to call it again." }
-func (l *loopForeverTool) IsReadOnly() bool            { return true }
+func (l *loopForeverTool) Name() string { return "loop" }
+func (l *loopForeverTool) Description() string {
+	return "A test tool. Always returns a message asking you to call it again."
+}
+func (l *loopForeverTool) IsReadOnly() bool { return true }
 func (l *loopForeverTool) InputSchema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
@@ -339,8 +353,8 @@ func TestQueryLoop_Abort(t *testing.T) {
 
 	allowed := map[types.TerminalReason]bool{
 		types.TerminalAbortedStreaming: true,
-		types.TerminalModelError:      true,
-		types.TerminalCompleted:       true,
+		types.TerminalModelError:       true,
+		types.TerminalCompleted:        true,
 	}
 	if !allowed[terminal.Reason] {
 		t.Errorf("unexpected terminal reason: %s", terminal.Reason)

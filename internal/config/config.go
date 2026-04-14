@@ -67,9 +67,9 @@ type ServerConfig struct {
 
 // LogConfig holds logging settings.
 type LogConfig struct {
-	Level    string `mapstructure:"level"`    // debug, info, warn, error
-	Format   string `mapstructure:"format"`   // json, console
-	Output   string `mapstructure:"output"`   // stdout, file
+	Level    string `mapstructure:"level"`  // debug, info, warn, error
+	Format   string `mapstructure:"format"` // json, console
+	Output   string `mapstructure:"output"` // stdout, file
 	FilePath string `mapstructure:"file_path"`
 }
 
@@ -94,15 +94,15 @@ type ProviderConfig struct {
 }
 
 // BifrostConfig holds Bifrost unified SDK settings.
+// Bifrost is always enabled as the sole provider backend.
 type BifrostConfig struct {
-	Enabled        bool   `mapstructure:"enabled"`
 	Provider       string `mapstructure:"provider"`        // "anthropic", "openai", etc. Defaults to LLM.DefaultProvider.
-	Model          string `mapstructure:"model"`            // Override model (defaults to provider's model).
-	APIKey         string `mapstructure:"api_key"`          // Override API key (defaults to provider's key).
-	BaseURL        string `mapstructure:"base_url"`         // Override base URL (defaults to provider's base_url).
-	FallbackModel  string `mapstructure:"fallback_model"`   // Fallback model on primary failure.
-	MaxConcurrency int    `mapstructure:"max_concurrency"`  // 0 = Bifrost default (1000).
-	BufferSize     int    `mapstructure:"buffer_size"`       // 0 = Bifrost default (5000).
+	Model          string `mapstructure:"model"`           // Override model (defaults to provider's model).
+	APIKey         string `mapstructure:"api_key"`         // Override API key (defaults to provider's key).
+	BaseURL        string `mapstructure:"base_url"`        // Override base URL (defaults to provider's base_url).
+	FallbackModel  string `mapstructure:"fallback_model"`  // Fallback model on primary failure.
+	MaxConcurrency int    `mapstructure:"max_concurrency"` // 0 = Bifrost default (1000).
+	BufferSize     int    `mapstructure:"buffer_size"`     // 0 = Bifrost default (5000).
 }
 
 // EngineConfig holds query engine settings.
@@ -141,11 +141,11 @@ type WSChannelConfig struct {
 	Host           string        `mapstructure:"host"`
 	Port           int           `mapstructure:"port"`
 	Path           string        `mapstructure:"path"`
-	WriteBuffer    int           `mapstructure:"write_buffer"`      // per-connection write buffer size (default 256)
-	PingInterval   time.Duration `mapstructure:"ping_interval"`     // keep-alive ping interval (default 30s)
-	WriteTimeout   time.Duration `mapstructure:"write_timeout"`     // single write deadline (default 10s)
-	MaxMessageSize int64         `mapstructure:"max_message_size"`  // max inbound frame size (default 512KB)
-	ClientTools    bool          `mapstructure:"client_tools"`      // true = client executes tools; false = server executes tools
+	WriteBuffer    int           `mapstructure:"write_buffer"`     // per-connection write buffer size (default 256)
+	PingInterval   time.Duration `mapstructure:"ping_interval"`    // keep-alive ping interval (default 30s)
+	WriteTimeout   time.Duration `mapstructure:"write_timeout"`    // single write deadline (default 10s)
+	MaxMessageSize int64         `mapstructure:"max_message_size"` // max inbound frame size (default 512KB)
+	ClientTools    bool          `mapstructure:"client_tools"`     // true = client executes tools; false = server executes tools
 }
 
 // HTTPChannelConfig holds HTTP API settings.
@@ -177,7 +177,7 @@ type ToolConfig struct {
 
 // PermissionConfig holds tool permission control settings.
 type PermissionConfig struct {
-	Mode         string   `mapstructure:"mode"`          // default, plan, bypass, acceptEdits, dontAsk
+	Mode         string   `mapstructure:"mode"` // default, plan, bypass, acceptEdits, dontAsk
 	AllowedTools []string `mapstructure:"allowed_tools"`
 	DeniedTools  []string `mapstructure:"denied_tools"`
 }

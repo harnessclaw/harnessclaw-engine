@@ -17,7 +17,7 @@ import (
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
-	"harnessclaw-go/internal/provider/anthropic"
+	"harnessclaw-go/internal/provider/bifrost"
 	"harnessclaw-go/internal/storage/memory"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
@@ -37,20 +37,25 @@ func loadTestConfig(t *testing.T) *config.Config {
 }
 
 // buildFullEngine wires exactly the same components as main() —
-// real Anthropic provider, real engine, real session manager.
+// real Bifrost provider, real engine, real session manager.
 func buildFullEngine(t *testing.T) *engine.QueryEngine {
 	t.Helper()
 	cfg := loadTestConfig(t)
 
 	logger, _ := zap.NewDevelopment()
 
-	// Provider — same logic as initProvider in main.go.
+	// Provider — same logic as initProvider in main.go (always Bifrost).
 	provCfg := cfg.LLM.Providers[cfg.LLM.DefaultProvider]
-	prov := anthropic.New(anthropic.Config{
-		BaseURL: provCfg.BaseURL,
-		APIKey:  provCfg.APIKey,
-		Model:   provCfg.Model,
+	prov, err := bifrost.New(bifrost.Config{
+		Provider: mapBifrostProvider(cfg.LLM.Bifrost.Provider, cfg.LLM.DefaultProvider),
+		Model:    provCfg.Model,
+		APIKey:   provCfg.APIKey,
+		BaseURL:  provCfg.BaseURL,
+		Logger:   logger,
 	})
+	if err != nil {
+		t.Fatalf("create bifrost adapter: %v", err)
+	}
 
 	store := memory.New()
 	mgr := session.NewManager(store, logger, cfg.Session.IdleTimeout)
@@ -132,8 +137,8 @@ type dateTool struct {
 }
 
 func (d *dateTool) Name() string        { return "get_date" }
-func (d *dateTool) Description() string  { return "Returns today's date in YYYY-MM-DD format" }
-func (d *dateTool) IsReadOnly() bool     { return true }
+func (d *dateTool) Description() string { return "Returns today's date in YYYY-MM-DD format" }
+func (d *dateTool) IsReadOnly() bool    { return true }
 func (d *dateTool) InputSchema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
@@ -147,11 +152,16 @@ func TestE2E_RealProvider_ToolCall(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
 	provCfg := cfg.LLM.Providers[cfg.LLM.DefaultProvider]
-	prov := anthropic.New(anthropic.Config{
-		BaseURL: provCfg.BaseURL,
-		APIKey:  provCfg.APIKey,
-		Model:   provCfg.Model,
+	prov, err := bifrost.New(bifrost.Config{
+		Provider: mapBifrostProvider(cfg.LLM.Bifrost.Provider, cfg.LLM.DefaultProvider),
+		Model:    provCfg.Model,
+		APIKey:   provCfg.APIKey,
+		BaseURL:  provCfg.BaseURL,
+		Logger:   logger,
 	})
+	if err != nil {
+		t.Fatalf("create bifrost adapter: %v", err)
+	}
 
 	store := memory.New()
 	mgr := session.NewManager(store, logger, cfg.Session.IdleTimeout)
@@ -249,8 +259,8 @@ func TestE2E_RealProvider_Abort(t *testing.T) {
 	// Could be aborted_streaming or model_error depending on timing.
 	allowed := map[types.TerminalReason]bool{
 		types.TerminalAbortedStreaming: true,
-		types.TerminalModelError:      true,
-		types.TerminalCompleted:       true, // may complete before abort hits
+		types.TerminalModelError:       true,
+		types.TerminalCompleted:        true, // may complete before abort hits
 	}
 	if !allowed[terminal.Reason] {
 		t.Errorf("unexpected terminal reason: %s", terminal.Reason)
