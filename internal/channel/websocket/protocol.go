@@ -14,24 +14,24 @@ type WSMessageType string
 
 const (
 	// Server → Client
-	MsgTypeSessionCreated WSMessageType = "session.created"
-	MsgTypeSessionUpdated WSMessageType = "session.updated"
-	MsgTypeMessageStart   WSMessageType = "message.start"
-	MsgTypeMessageDelta   WSMessageType = "message.delta"
-	MsgTypeMessageStop    WSMessageType = "message.stop"
-	MsgTypeContentStart   WSMessageType = "content.start"
-	MsgTypeContentDelta   WSMessageType = "content.delta"
-	MsgTypeContentStop    WSMessageType = "content.stop"
-	MsgTypeToolCall       WSMessageType = "tool.call"       // client-side tool execution request
-	MsgTypeToolStart      WSMessageType = "tool.start"      // server-side tool execution started
-	MsgTypeToolEnd        WSMessageType = "tool.end"        // server-side tool execution completed
+	MsgTypeSessionCreated    WSMessageType = "session.created"
+	MsgTypeSessionUpdated    WSMessageType = "session.updated"
+	MsgTypeMessageStart      WSMessageType = "message.start"
+	MsgTypeMessageDelta      WSMessageType = "message.delta"
+	MsgTypeMessageStop       WSMessageType = "message.stop"
+	MsgTypeContentStart      WSMessageType = "content.start"
+	MsgTypeContentDelta      WSMessageType = "content.delta"
+	MsgTypeContentStop       WSMessageType = "content.stop"
+	MsgTypeToolCall          WSMessageType = "tool.call"          // client-side tool execution request
+	MsgTypeToolStart         WSMessageType = "tool.start"         // server-side tool execution started
+	MsgTypeToolEnd           WSMessageType = "tool.end"           // server-side tool execution completed
 	MsgTypePermissionRequest WSMessageType = "permission.request" // server asks client for tool approval
-	MsgTypeTaskEnd        WSMessageType = "task.end"
-	MsgTypeError          WSMessageType = "error"
-	MsgTypePong           WSMessageType = "pong"
+	MsgTypeTaskEnd           WSMessageType = "task.end"
+	MsgTypeError             WSMessageType = "error"
+	MsgTypePong              WSMessageType = "pong"
 
 	// Client → Server
-	MsgTypeSessionCreate      WSMessageType = "session.create"      // client requests session initialization
+	MsgTypeSessionCreate      WSMessageType = "session.create" // client requests session initialization
 	MsgTypeUserMessage        WSMessageType = "user.message"
 	MsgTypeToolResult         WSMessageType = "tool.result"
 	MsgTypeToolProgress       WSMessageType = "tool.progress"
@@ -81,24 +81,25 @@ type MessageStartMessage struct {
 
 // MessageStartInfo carries metadata about the starting message.
 type MessageStartInfo struct {
-	ID    string    `json:"id"`
-	Model string    `json:"model"`
-	Role  string    `json:"role"`
+	ID    string     `json:"id"`
+	Model string     `json:"model"`
+	Role  string     `json:"role"`
 	Usage *UsageInfo `json:"usage,omitempty"`
 }
 
 // MessageDeltaMessage carries end-of-message metadata (stop_reason, usage).
 type MessageDeltaMessage struct {
-	Type      WSMessageType     `json:"type"` // "message.delta"
-	EventID   string            `json:"event_id"`
-	SessionID string            `json:"session_id"`
-	Delta     MessageDeltaInfo  `json:"delta"`
-	Usage     *UsageInfo        `json:"usage,omitempty"`
+	Type      WSMessageType    `json:"type"` // "message.delta"
+	EventID   string           `json:"event_id"`
+	SessionID string           `json:"session_id"`
+	Delta     MessageDeltaInfo `json:"delta"`
+	Usage     *UsageInfo       `json:"usage,omitempty"`
 }
 
-// MessageDeltaInfo carries the stop reason.
+// MessageDeltaInfo carries the stop reason and optional error detail.
 type MessageDeltaInfo struct {
-	StopReason string `json:"stop_reason"`
+	StopReason string       `json:"stop_reason"`
+	Error      *ErrorDetail `json:"error,omitempty"`
 }
 
 // MessageStopMessage signals the end of an LLM response message.
@@ -110,10 +111,10 @@ type MessageStopMessage struct {
 
 // ContentStartMessage signals the beginning of a content block.
 type ContentStartMessage struct {
-	Type         WSMessageType    `json:"type"` // "content.start"
-	EventID      string           `json:"event_id"`
-	SessionID    string           `json:"session_id"`
-	Index        int              `json:"index"`
+	Type         WSMessageType     `json:"type"` // "content.start"
+	EventID      string            `json:"event_id"`
+	SessionID    string            `json:"session_id"`
+	Index        int               `json:"index"`
 	ContentBlock *ContentBlockInfo `json:"content_block,omitempty"`
 }
 
@@ -137,7 +138,7 @@ type ContentStopMessage struct {
 // Delta carries incremental text or tool-input JSON.
 type Delta struct {
 	Type        string `json:"type"`                   // text_delta, input_json_delta
-	Text        string `json:"text,omitempty"`          // for text_delta
+	Text        string `json:"text,omitempty"`         // for text_delta
 	PartialJSON string `json:"partial_json,omitempty"` // for input_json_delta
 }
 
@@ -211,6 +212,7 @@ type TaskEndMessage struct {
 	SessionID  string        `json:"session_id"`
 	RequestID  string        `json:"request_id,omitempty"`
 	Status     string        `json:"status"`
+	Message    string        `json:"message,omitempty"`
 	DurationMs int64         `json:"duration_ms"`
 	NumTurns   int           `json:"num_turns"`
 	TotalUsage *UsageInfo    `json:"total_usage,omitempty"`
@@ -270,9 +272,9 @@ type ContentItem struct {
 
 // ClientMessage is the generic envelope for messages sent by the client.
 type ClientMessage struct {
-	Type      WSMessageType          `json:"type"`
-	EventID   string                 `json:"event_id,omitempty"`
-	SessionID string                 `json:"session_id,omitempty"`
+	Type      WSMessageType `json:"type"`
+	EventID   string        `json:"event_id,omitempty"`
+	SessionID string        `json:"session_id,omitempty"`
 
 	// session.create fields
 	UserID string `json:"user_id,omitempty"` // optional user identifier

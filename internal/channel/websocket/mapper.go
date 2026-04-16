@@ -128,6 +128,15 @@ func (m *EventMapper) mapMessageDelta(event *types.EngineEvent) ([][]byte, error
 		},
 		Usage: usage,
 	}
+
+	// Attach error detail when the stop reason is "error".
+	if event.Error != nil {
+		msg.Delta.Error = &ErrorDetail{
+			Type:    "model_error",
+			Code:    "model_error",
+			Message: event.Error.Error(),
+		}
+	}
 	b, err := json.Marshal(msg)
 	if err != nil {
 		return nil, err
@@ -441,9 +450,11 @@ func (m *EventMapper) mapDone(event *types.EngineEvent) ([][]byte, error) {
 
 	status := "success"
 	numTurns := 0
+	message := ""
 	if event.Terminal != nil {
 		status = mapTerminalReason(event.Terminal.Reason)
 		numTurns = event.Terminal.Turn
+		message = event.Terminal.Message
 	}
 
 	taskEnd := TaskEndMessage{
@@ -451,6 +462,7 @@ func (m *EventMapper) mapDone(event *types.EngineEvent) ([][]byte, error) {
 		EventID:    newEventID(),
 		SessionID:  m.sessionID,
 		Status:     status,
+		Message:    message,
 		DurationMs: time.Since(m.startTime).Milliseconds(),
 		NumTurns:   numTurns,
 	}

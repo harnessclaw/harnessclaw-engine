@@ -526,8 +526,11 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		if err != nil {
 			// ---- Phase 3: Error Recovery (connection/auth errors) ----
 
+			// Emit the error event so the client sees the details.
+			out <- types.EngineEvent{Type: types.EngineEventError, Error: err}
+
 			// Emit message.delta + message.stop even on error so the message lifecycle is complete.
-			out <- types.EngineEvent{Type: types.EngineEventMessageDelta, StopReason: "error"}
+			out <- types.EngineEvent{Type: types.EngineEventMessageDelta, StopReason: "error", Error: err}
 			out <- types.EngineEvent{Type: types.EngineEventMessageStop}
 
 			if ctx.Err() != nil {
@@ -581,10 +584,14 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		}
 
 		if streamErr := stream.Err(); streamErr != nil {
+			// Emit the error event so the client sees the details.
+			out <- types.EngineEvent{Type: types.EngineEventError, Error: streamErr}
+
 			// Emit message lifecycle events to close cleanly.
 			out <- types.EngineEvent{
 				Type:       types.EngineEventMessageDelta,
 				StopReason: "error",
+				Error:      streamErr,
 				Usage:      ls.lastUsage,
 			}
 			out <- types.EngineEvent{Type: types.EngineEventMessageStop}

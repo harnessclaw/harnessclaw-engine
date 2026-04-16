@@ -932,6 +932,129 @@ func TestIntegration_FullMessageLifecycle(t *testing.T) {
 }
 
 // ============================================================
+// Model error event sequence integration test
+// ============================================================
+
+// TestIntegration_ModelError_AllFrames verifies that when a model error occurs,
+// the client receives every frame: message.start, error, message.delta (with
+// error detail), message.stop, and task.end (with error message).
+func TestIntegration_ModelError_AllFrames(t *testing.T) {
+	ch, addr := startTestChannel(t)
+
+	modelErr := fmt.Errorf("bifrost: stream request failed: provider returned non-SSE response")
+
+	// Simulate the exact event sequence that queryloop emits on Chat() failure:
+	//   message.start → error → message.delta(stop_reason=error) → message.stop → done
+	mockHandler := func(ctx context.Context, msg *types.IncomingMessage) error {
+		events := []types.EngineEvent{
+			{Type: types.EngineEventMessageStart, MessageID: "msg_err1", Model: "test-model", Usage: &types.Usage{InputTokens: 10}},
+			{Type: types.EngineEventError, Error: modelErr},
+			{Type: types.EngineEventMessageDelta, StopReason: "error", Error: modelErr},
+			{Type: types.EngineEventMessageStop},
+			{Type: types.EngineEventDone, Terminal: &types.Terminal{
+				Reason:  types.TerminalModelError,
+				Message: modelErr.Error(),
+				Turn:    1,
+			}, Usage: &types.Usage{InputTokens: 10}},
+		}
+		for i := range events {
+			if err := ch.SendEvent(ctx, msg.SessionID, &events[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go ch.Start(ctx, mockHandler)
+	time.Sleep(100 * time.Millisecond)
+
+	ws, _, err := websocket.Dial(ctx, "ws://"+addr+"/ws", nil)
+	if err != nil {
+		t.Fatal("dial failed:", err)
+	}
+	defer ws.Close(websocket.StatusNormalClosure, "test done")
+
+	// Initialize session.
+	createMsg, _ := json.Marshal(ClientMessage{Type: MsgTypeSessionCreate, SessionID: "err-test"})
+	ws.Write(ctx, websocket.MessageText, createMsg)
+	ws.Read(ctx) // consume session.created
+
+	// Send user message to trigger the error flow.
+	msg, _ := json.Marshal(ClientMessage{Type: MsgTypeUserMessage, Text: "trigger error"})
+	ws.Write(ctx, websocket.MessageText, msg)
+
+	// Expected frame sequence.
+	expectedTypes := []string{
+		"message.start",
+		"error",
+		"message.delta",
+		"message.stop",
+		"task.end",
+	}
+
+	readCtx, readCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer readCancel()
+
+	frames := make([]json.RawMessage, len(expectedTypes))
+	for i := range expectedTypes {
+		_, data, err := ws.Read(readCtx)
+		if err != nil {
+			t.Fatalf("read frame #%d failed: %v", i, err)
+		}
+		frames[i] = data
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		json.Unmarshal(data, &envelope)
+		if envelope.Type != expectedTypes[i] {
+			t.Errorf("frame %d: expected type %q, got %q (body: %s)", i, expectedTypes[i], envelope.Type, string(data))
+		}
+	}
+
+	// Verify the error frame (index 1) has the error message.
+	var errFrame ErrorMessage
+	json.Unmarshal(frames[1], &errFrame)
+	if errFrame.Error.Message == "" {
+		t.Error("error frame: expected non-empty error.message")
+	}
+	if errFrame.Error.Code != "engine_error" {
+		t.Errorf("error frame: expected code 'engine_error', got %q", errFrame.Error.Code)
+	}
+	t.Logf("error frame: %s", string(frames[1]))
+
+	// Verify message.delta (index 2) contains error detail.
+	var deltaFrame MessageDeltaMessage
+	json.Unmarshal(frames[2], &deltaFrame)
+	if deltaFrame.Delta.StopReason != "error" {
+		t.Errorf("message.delta: expected stop_reason 'error', got %q", deltaFrame.Delta.StopReason)
+	}
+	if deltaFrame.Delta.Error == nil {
+		t.Error("message.delta: expected delta.error to be present")
+	} else if deltaFrame.Delta.Error.Message == "" {
+		t.Error("message.delta: expected non-empty delta.error.message")
+	} else {
+		t.Logf("message.delta error: %s", deltaFrame.Delta.Error.Message)
+	}
+	t.Logf("message.delta frame: %s", string(frames[2]))
+
+	// Verify task.end (index 4) contains the error message.
+	var taskEnd TaskEndMessage
+	json.Unmarshal(frames[4], &taskEnd)
+	if taskEnd.Status != "error_model" {
+		t.Errorf("task.end: expected status 'error_model', got %q", taskEnd.Status)
+	}
+	if taskEnd.Message == "" {
+		t.Error("task.end: expected non-empty message")
+	}
+	t.Logf("task.end frame: %s", string(frames[4]))
+
+	cancel()
+}
+
+// ============================================================
 // Multi-content user.message tests (v1.5)
 // ============================================================
 
