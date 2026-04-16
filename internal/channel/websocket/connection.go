@@ -119,6 +119,7 @@ func (c *Conn) readPump(ctx context.Context, handler channel.MessageHandler, abo
 		var msg ClientMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			c.logger.Warn("invalid client message", zap.Error(err))
+			c.sendError("invalid_message", "failed to parse message: "+err.Error())
 			continue
 		}
 
