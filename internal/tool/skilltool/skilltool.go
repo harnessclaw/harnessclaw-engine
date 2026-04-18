@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/constants"
 	"harnessclaw-go/internal/tool"
@@ -28,11 +29,12 @@ const ToolName = "Skill"
 type SkillTool struct {
 	tool.BaseTool
 	cmdRegistry *command.Registry
+	logger      *zap.Logger
 }
 
 // New creates a SkillTool backed by the given command registry.
-func New(cmdReg *command.Registry) *SkillTool {
-	return &SkillTool{cmdRegistry: cmdReg}
+func New(cmdReg *command.Registry, logger *zap.Logger) *SkillTool {
+	return &SkillTool{cmdRegistry: cmdReg, logger: logger}
 }
 
 func (s *SkillTool) Name() string        { return ToolName }
@@ -89,6 +91,8 @@ func (s *SkillTool) ValidateInput(input json.RawMessage) error {
 }
 
 func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (*types.ToolResult, error) {
+	startTime := time.Now()
+
 	var si skillInput
 	if err := json.Unmarshal(input, &si); err != nil {
 		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
@@ -115,6 +119,11 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (*types.
 	}
 	blocks, err := pc.GetPromptForCommand(si.Args, promptCtx)
 	if err != nil {
+		s.logger.Warn("skill execution failed",
+			zap.String("skill", name),
+			zap.String("args", si.Args),
+			zap.Error(err),
+		)
 		return &types.ToolResult{Content: "skill execution failed: " + err.Error(), IsError: true}, nil
 	}
 
@@ -135,6 +144,15 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (*types.
 	if commandName == "" {
 		commandName = name
 	}
+
+	s.logger.Info("skill executed",
+		zap.String("skill", name),
+		zap.String("args", si.Args),
+		zap.Duration("duration", time.Since(startTime)),
+		zap.Int("prompt_length", len(skillPrompt)),
+		zap.String("context", pc.Context),
+		zap.String("model", pc.Model),
+	)
 
 	return &types.ToolResult{
 		Content: fmt.Sprintf("Launching skill: %s", commandName),
