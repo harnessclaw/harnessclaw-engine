@@ -23,7 +23,7 @@ const (
 	// MaxListingDescChars is the hard cap on a single skill's description
 	// in the listing. The listing is for discovery only — the Skill tool
 	// loads full content on invoke.
-	MaxListingDescChars = 250
+	MaxListingDescChars = 500
 )
 
 // getCharBudget computes the character budget for the skill listing.
