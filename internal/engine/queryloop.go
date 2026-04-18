@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +14,8 @@ import (
 	"go.uber.org/zap"
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/engine/compact"
+	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/prompt/sections"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
@@ -68,6 +72,10 @@ type QueryEngine struct {
 	logger      *zap.Logger
 	config      QueryEngineConfig
 
+	// Prompt builder for structured system prompt assembly.
+	promptBuilder *prompt.Builder
+	promptProfile *prompt.AgentProfile
+
 	// Cached skill listing (computed once, reused per query).
 	skillListing string
 
@@ -87,6 +95,21 @@ type QueryEngine struct {
 	// the tool name is recorded here and subsequent invocations auto-approve.
 	sessionAllowMu    sync.RWMutex
 	sessionAllowTools map[string]map[string]bool // session_id → tool_name → true
+
+	// Per-session prompt cache. Caches the entire built system prompt to avoid
+	// rebuilding on every turn when inputs haven't changed.
+	promptCacheMu sync.RWMutex
+	promptCache   map[string]*promptCacheEntry // session_id → cache entry
+}
+
+// promptCacheEntry stores a cached system prompt and the conditions under which it was built.
+// The cache is invalidated when any input changes enough to affect the output.
+type promptCacheEntry struct {
+	prompt       string              // cached ToSystemPrompt() result
+	output       *prompt.PromptOutput // full output (for observability)
+	budget       int                 // budget when cached
+	hasTask      bool                // whether task state was present
+	memoryLen    int                 // len(memory) when cached
 }
 
 // NewQueryEngine creates a new query engine.
@@ -101,20 +124,48 @@ func NewQueryEngine(
 	cfg QueryEngineConfig,
 	cmdReg *command.Registry,
 ) *QueryEngine {
+	// Initialize prompt builder with default registry and built-in sections
+	promptRegistry := prompt.NewRegistry()
+	promptRegistry.Register(sections.NewRoleSection())
+	promptRegistry.Register(sections.NewPrinciplesSection())
+	promptRegistry.Register(sections.NewOutputSection())
+	promptRegistry.Register(sections.NewToolsSection())
+	promptRegistry.Register(sections.NewEnvSection())
+	promptRegistry.Register(sections.NewMemorySection())
+	promptRegistry.Register(sections.NewSkillsSection())
+	promptRegistry.Register(sections.NewTaskSection())
+	promptBuilder := prompt.NewBuilder(promptRegistry, logger)
+
+	// Use full profile by default
+	promptProfile := prompt.FullProfile
+
 	return &QueryEngine{
-		provider:     prov,
-		registry:     reg,
-		cmdRegistry:  cmdReg,
-		sessionMgr:   mgr,
-		compactor:    comp,
-		permChecker:  perm,
-		eventBus:     bus,
-		logger:       logger,
-		config:       cfg,
+		provider:          prov,
+		registry:          reg,
+		cmdRegistry:       cmdReg,
+		sessionMgr:        mgr,
+		compactor:         comp,
+		permChecker:       perm,
+		eventBus:          bus,
+		logger:            logger,
+		config:            cfg,
+		promptBuilder:     promptBuilder,
+		promptProfile:     promptProfile,
 		cancels:           make(map[string]context.CancelFunc),
-		pendingTools:       make(map[string]*pendingToolCall),
-		pendingPerms:       make(map[string]*pendingPermission),
-		sessionAllowTools:  make(map[string]map[string]bool),
+		pendingTools:      make(map[string]*pendingToolCall),
+		pendingPerms:      make(map[string]*pendingPermission),
+		sessionAllowTools: make(map[string]map[string]bool),
+		promptCache:       make(map[string]*promptCacheEntry),
+	}
+}
+
+// RegisterPromptSection registers a section with the prompt builder.
+// This allows external code to add custom sections.
+func (qe *QueryEngine) RegisterPromptSection(section prompt.Section) {
+	if qe.promptBuilder != nil {
+		// Access the registry through the builder (we'll need to expose it)
+		// For now, this is a placeholder - sections should be registered during initialization
+		qe.logger.Debug("prompt section registration requested", zap.String("section", section.Name()))
 	}
 }
 
@@ -488,26 +539,60 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		}
 
 		// Build the LLM request.
-		// Inject skill listing as <system-reminder> user message (Layer 3 of 3-layer skill injection).
-		// This is transient — not persisted to the session — matching TS attachment behavior.
-		apiMessages := messages
-		if listing := qe.getSkillListing(); listing != "" {
-			skillMsg := types.Message{
-				Role: types.RoleUser,
-				Content: []types.ContentBlock{{
-					Type: types.ContentTypeText,
-					Text: "<system-reminder>\nThe following skills are available for use with the Skill tool:\n\n" + listing + "\n</system-reminder>",
-				}},
-			}
-			apiMessages = append([]types.Message{skillMsg}, apiMessages...)
-		}
+		// Build structured system prompt using prompt builder.
+		// Skill listing is now injected as a system prompt section (Layer 2),
+		// replacing the previous per-turn <system-reminder> user message (Layer 3).
+		systemPrompt := qe.buildSystemPrompt(ctx, sess, messages)
 
 		req := &provider.ChatRequest{
-			Messages:  apiMessages,
-			System:    qe.config.SystemPrompt,
+			Messages:  messages,
+			System:    systemPrompt,
 			Tools:     pool.Schemas(),
 			MaxTokens: qe.config.MaxTokens,
 		}
+
+		// --- LLM request observability: dump what we're sending to the model ---
+		qe.logger.Debug("========== LLM REQUEST DUMP START ==========",
+			zap.String("session_id", sess.ID),
+			zap.Int("turn", ls.turn),
+			zap.Int("message_count", len(messages)),
+			zap.Int("tool_schema_count", len(pool.Schemas())),
+			zap.Int("system_prompt_len", len(systemPrompt)),
+			zap.Int("max_tokens", qe.config.MaxTokens),
+		)
+		for i, m := range messages {
+			contentPreview := ""
+			for _, cb := range m.Content {
+				if cb.Type == types.ContentTypeText && len(cb.Text) > 0 {
+					preview := cb.Text
+					if len(preview) > 200 {
+						preview = preview[:200] + "...[truncated]"
+					}
+					contentPreview = preview
+					break
+				}
+				if cb.Type == types.ContentTypeToolUse {
+					contentPreview = fmt.Sprintf("[tool_use: %s]", cb.ToolName)
+					break
+				}
+				if cb.Type == types.ContentTypeToolResult {
+					preview := cb.ToolResult
+					if len(preview) > 100 {
+						preview = preview[:100] + "...[truncated]"
+					}
+					contentPreview = fmt.Sprintf("[tool_result: %s] %s", cb.ToolName, preview)
+					break
+				}
+			}
+			qe.logger.Debug("llm request message",
+				zap.Int("index", i),
+				zap.String("role", string(m.Role)),
+				zap.Int("content_blocks", len(m.Content)),
+				zap.Int("tokens", m.Tokens),
+				zap.String("preview", contentPreview),
+			)
+		}
+		qe.logger.Debug("========== LLM REQUEST DUMP END ==========")
 
 		// ---- Phase 2: LLM Call (streaming) ----
 
@@ -816,6 +901,7 @@ func buildAssistantMessage(text string, toolCalls []types.ToolCall, usage *types
 
 // getSkillListing returns the cached skill listing string.
 // Computed once on first call using FormatCommandsWithinBudget (lazy init).
+// The listing is passed into PromptContext.SkillListing for the SkillsSection to render.
 func (qe *QueryEngine) getSkillListing() string {
 	if qe.skillListing != "" {
 		return qe.skillListing
@@ -834,4 +920,139 @@ func (qe *QueryEngine) getSkillListing() string {
 		zap.Int("listing_len", len(qe.skillListing)),
 	)
 	return qe.skillListing
+}
+
+// buildSystemPrompt constructs the system prompt using the prompt builder.
+// Uses per-session whole-output caching: only rebuilds when inputs change.
+// Falls back to config.SystemPrompt if builder fails.
+func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Session, messages []types.Message) string {
+	// If prompt builder is not initialized, use static prompt
+	if qe.promptBuilder == nil {
+		return qe.config.SystemPrompt
+	}
+
+	// Estimate tokens used by conversation
+	totalTokens := 0
+	for _, msg := range messages {
+		totalTokens += msg.Tokens
+	}
+
+	// Compute budget early for cache comparison
+	budget := prompt.ComputeSystemPromptBudget(200000, totalTokens, 16384, prompt.DefaultSafetyMargin)
+
+	// Check if we have a valid cached prompt for this session
+	qe.promptCacheMu.RLock()
+	cached := qe.promptCache[sess.ID]
+	qe.promptCacheMu.RUnlock()
+
+	if cached != nil {
+		// Determine if cache is still valid:
+		// - budget hasn't dropped by more than 10% (no section would be skipped)
+		// - task state hasn't changed
+		// - memory hasn't changed
+		budgetDrift := float64(cached.budget-budget) / float64(cached.budget)
+		hasTask := false // TODO: populate from session metadata when available
+		memoryLen := 0   // TODO: populate when memory loading is implemented
+
+		if budgetDrift < 0.1 && cached.hasTask == hasTask && cached.memoryLen == memoryLen {
+			qe.logger.Debug("prompt cache hit",
+				zap.String("session_id", sess.ID),
+				zap.String("version", cached.output.Version),
+				zap.Int("budget_cached", cached.budget),
+				zap.Int("budget_current", budget),
+			)
+			return cached.prompt
+		}
+
+		qe.logger.Debug("prompt cache invalidated",
+			zap.String("session_id", sess.ID),
+			zap.Float64("budget_drift", budgetDrift),
+			zap.Bool("task_changed", cached.hasTask != hasTask),
+			zap.Bool("memory_changed", cached.memoryLen != memoryLen),
+		)
+	}
+
+	// Cache miss or invalidated — full build
+	promptCtx := &prompt.PromptContext{
+		SessionID:         sess.ID,
+		Turn:              len(messages),
+		Session:           sess,
+		Tools:             qe.registry,
+		TotalTokensUsed:   totalTokens,
+		ContextWindowSize: 200000, // TODO: get from provider
+		Memory:            make(map[string]string),
+		EnvInfo:           qe.getEnvSnapshot(),
+		SkillListing:      qe.getSkillListing(),
+	}
+
+	output, err := qe.promptBuilder.Build(promptCtx, qe.promptProfile)
+	if err != nil {
+		qe.logger.Error("prompt build failed, using fallback",
+			zap.Error(err),
+			zap.String("session_id", sess.ID),
+		)
+		return qe.config.SystemPrompt
+	}
+
+	// --- Prompt observability: dump full prompt structure ---
+	qe.logger.Debug("========== PROMPT DUMP START ==========")
+	qe.logger.Debug(output.Dump())
+	qe.logger.Debug("========== PROMPT DUMP END ==========",
+		zap.String("session_id", sess.ID),
+		zap.Int("turn", promptCtx.Turn),
+		zap.String("version", output.Version),
+		zap.Int("total_tokens", output.Metadata.TotalTokens),
+		zap.Int("budget", output.Metadata.TokenBudget),
+		zap.Int("block_count", len(output.Blocks)),
+		zap.Int("skipped_count", len(output.Metadata.SkippedSections)),
+		zap.Float64("cacheable_ratio", output.Metadata.CacheMetrics.CacheableRatio),
+	)
+	for _, b := range output.Blocks {
+		qe.logger.Debug("prompt block",
+			zap.String("section", b.Name),
+			zap.Int("tokens", b.EstimatedTokens),
+			zap.Bool("cacheable", b.Cacheable),
+			zap.Int("content_len", len(b.Content)),
+		)
+	}
+	for _, s := range output.Metadata.SkippedSections {
+		qe.logger.Debug("prompt section skipped",
+			zap.String("section", s.Section),
+			zap.String("reason", s.Reason),
+		)
+	}
+
+	// Cache the result for this session
+	result := output.ToSystemPrompt()
+	qe.promptCacheMu.Lock()
+	qe.promptCache[sess.ID] = &promptCacheEntry{
+		prompt:    result,
+		output:    output,
+		budget:    budget,
+		hasTask:   false, // TODO: update when task state is populated
+		memoryLen: 0,     // TODO: update when memory is populated
+	}
+	qe.promptCacheMu.Unlock()
+
+	return result
+}
+
+// getEnvSnapshot captures current environment information dynamically.
+func (qe *QueryEngine) getEnvSnapshot() prompt.EnvSnapshot {
+	snap := prompt.EnvSnapshot{
+		OS:       runtime.GOOS,
+		Platform: runtime.GOOS + "/" + runtime.GOARCH,
+	}
+
+	// CWD
+	snap.CWD = "~/.harnessclaw/workspace"
+
+	// Shell
+	if shell := os.Getenv("SHELL"); shell != "" {
+		snap.Shell = shell
+	} else if comspec := os.Getenv("COMSPEC"); comspec != "" {
+		snap.Shell = comspec
+	}
+
+	return snap
 }

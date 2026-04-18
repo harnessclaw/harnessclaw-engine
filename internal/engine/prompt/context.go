@@ -27,9 +27,10 @@ type PromptContext struct {
 	PreviousSections  map[string]bool // sections rendered last turn
 
 	// --- External data (populated by Builder before render) ---
-	Memory  map[string]string // loaded memory entries
-	EnvInfo EnvSnapshot       // OS, CWD, shell
-	Task    *TaskState        // current task state (nil = no active task)
+	Memory       map[string]string // loaded memory entries
+	EnvInfo      EnvSnapshot       // OS, CWD, shell
+	Task         *TaskState        // current task state (nil = no active task)
+	SkillListing string            // pre-formatted skill listing text (empty = no skills)
 }
 
 // TaskState tracks the agent's current execution state.
