@@ -3,6 +3,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -225,6 +227,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("tools.glob.enabled", true)
 	v.SetDefault("tools.web_fetch.enabled", true)
 	v.SetDefault("permission.mode", "default")
+	v.SetDefault("skills.dirs", []string{"~/.harnessclaw/workspace/skills"})
 
 	// Config file
 	if configPath != "" {
@@ -253,5 +256,39 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
 
+	// Apply default skills directory when config has no dirs.
+	// Viper's SetDefault won't help if the key exists but the value is null/empty.
+	if len(cfg.Skills.Dirs) == 0 {
+		home, _ := os.UserHomeDir()
+		cfg.Skills.Dirs = []string{filepath.Join(home, ".harnessclaw", "workspace", "skills")}
+	}
+
+	// Expand ~ in skill dirs to the user's home directory.
+	expandSkillDirs(&cfg)
+
 	return &cfg, nil
+}
+
+// expandSkillDirs replaces ~ prefix with the user's home directory in skill paths,
+// and normalizes path separators for the current platform.
+func expandSkillDirs(cfg *Config) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	for i, dir := range cfg.Skills.Dirs {
+		if dir == "~" {
+			cfg.Skills.Dirs[i] = home
+			continue
+		}
+		// Match both ~/path and ~\path (Windows)
+		if strings.HasPrefix(dir, "~/") || strings.HasPrefix(dir, "~\\") {
+			// Split the relative part after ~/ or ~\, then rejoin platform-aware
+			rel := filepath.FromSlash(dir[2:])
+			cfg.Skills.Dirs[i] = filepath.Join(home, rel)
+			continue
+		}
+		// Normalize any forward slashes in explicit paths (e.g. from yaml on Windows)
+		cfg.Skills.Dirs[i] = filepath.FromSlash(dir)
+	}
 }

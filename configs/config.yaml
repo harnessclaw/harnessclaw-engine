@@ -94,10 +94,10 @@ tools:
 # Earlier directories have higher priority on name conflicts.
 # Each directory is scanned for:
 #   - skill-name/SKILL.md  (directory format)
-#   - skill-name.md        (flat file format)
+# Default: ~/.harnessclaw/workspace/skills/ (when dirs is null or empty)
 skills:
   dirs:
-    # - "${HOME}/.harnessclaw/workspace/skills/"
+    # - "~/.harnessclaw/workspace/skills/"
 
 # --- Permission ---
 permission:
