@@ -132,10 +132,22 @@ func main() {
 
 	// Load skills and register SkillTool.
 	skillLoader := skill.NewLoader(cfg.Skills.Dirs, logger)
-	skillCommands, err := skillLoader.LoadAll()
-	if err != nil {
-		logger.Warn("skill loading had issues", zap.Error(err))
+	loadResult := skillLoader.LoadAll()
+
+	// Report skill loading results.
+	logger.Info("skill loading summary",
+		zap.Int("loaded", len(loadResult.Commands)),
+		zap.Int("errors", len(loadResult.Errors)),
+	)
+	for _, e := range loadResult.Errors {
+		logger.Error("skill load failed",
+			zap.String("path", e.Path),
+			zap.String("reason", e.Reason),
+			zap.Error(e.Err),
+		)
 	}
+
+	skillCommands := loadResult.Commands
 	for i, cmd := range skillCommands {
 		base := cmd.GetBase()
 		if base == nil {
@@ -170,7 +182,7 @@ func main() {
 	}
 	cmdRegistry := command.NewRegistry()
 	cmdRegistry.LoadAll(skillCommands)
-	if err := registry.Register(skilltool.New(cmdRegistry)); err != nil {
+	if err := registry.Register(skilltool.New(cmdRegistry, logger)); err != nil {
 		logger.Fatal("failed to register skill tool", zap.Error(err))
 	}
 

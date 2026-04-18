@@ -25,11 +25,23 @@ func NewLoader(dirs []string, logger *zap.Logger) *Loader {
 	return &Loader{dirs: dirs, logger: logger}
 }
 
-// LoadAll loads skills from all configured directories and returns deduplicated commands.
-func (l *Loader) LoadAll() ([]command.Command, error) {
+// LoadResult is the structured output from LoadAll, separating successes from errors.
+type LoadResult struct {
+	Commands []command.Command
+	Errors   []LoadError
+}
+
+// LoadError records a single skill loading failure.
+type LoadError struct {
+	Path   string
+	Reason string
+	Err    error
+}
+
+// LoadAll loads skills from all configured directories and returns a structured result.
+func (l *Loader) LoadAll() *LoadResult {
 	seen := make(map[string]bool) // realpath → already loaded
-	var commands []command.Command
-	var errs []string
+	result := &LoadResult{}
 
 	l.logger.Info("skill loader starting",
 		zap.Int("dir_count", len(l.dirs)),
@@ -49,7 +61,9 @@ func (l *Loader) LoadAll() ([]command.Command, error) {
 				zap.String("dir", dir),
 				zap.Error(err),
 			)
-			errs = append(errs, fmt.Sprintf("skip dir %s: %v", dir, err))
+			result.Errors = append(result.Errors, LoadError{
+				Path: dir, Reason: "directory not accessible", Err: err,
+			})
 			continue
 		}
 
@@ -66,7 +80,9 @@ func (l *Loader) LoadAll() ([]command.Command, error) {
 					zap.String("entry", entry),
 					zap.Error(err),
 				)
-				errs = append(errs, fmt.Sprintf("resolve %s: %v", entry, err))
+				result.Errors = append(result.Errors, LoadError{
+					Path: entry, Reason: "symlink resolution failed", Err: err,
+				})
 				continue
 			}
 			if seen[real] {
@@ -84,7 +100,9 @@ func (l *Loader) LoadAll() ([]command.Command, error) {
 					zap.String("entry", entry),
 					zap.Error(err),
 				)
-				errs = append(errs, fmt.Sprintf("load %s: %v", entry, err))
+				result.Errors = append(result.Errors, LoadError{
+					Path: entry, Reason: "parse failed", Err: err,
+				})
 				continue
 			}
 
@@ -93,20 +111,16 @@ func (l *Loader) LoadAll() ([]command.Command, error) {
 				zap.String("name", cmd.GetName()),
 				zap.String("type", string(cmd.Type)),
 			)
-			commands = append(commands, *cmd)
+			result.Commands = append(result.Commands, *cmd)
 		}
 	}
 
 	l.logger.Info("skill loader finished",
-		zap.Int("total_loaded", len(commands)),
-		zap.Int("error_count", len(errs)),
+		zap.Int("total_loaded", len(result.Commands)),
+		zap.Int("error_count", len(result.Errors)),
 	)
 
-	var retErr error
-	if len(errs) > 0 {
-		retErr = fmt.Errorf("skill loading issues: %s", strings.Join(errs, "; "))
-	}
-	return commands, retErr
+	return result
 }
 
 // discoverSkillEntries finds all skill files in a skills directory.
