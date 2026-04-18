@@ -123,30 +123,30 @@ func (l *Loader) LoadAll() *LoadResult {
 	return result
 }
 
-// discoverSkillEntries finds all skill files in a skills directory.
-// Per TypeScript spec, skills directories only support directory format:
-//   - skill-name/SKILL.md
+// discoverSkillEntries recursively finds all SKILL.md files in a skills directory.
+// Supports both flat and nested layouts:
+//   - skills/skill-name/SKILL.md            (flat)
+//   - skills/repo-name/skill-name/SKILL.md  (nested)
 //
-// Single .md flat files are NOT supported in /skills/ directories
-// (they were only supported in the deprecated /commands/ directories).
+// Any directory containing a SKILL.md is treated as a skill entry.
+// Directories without SKILL.md are traversed as potential parent groups.
 func discoverSkillEntries(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+	var paths []string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip inaccessible entries
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if d.Name() == "SKILL.md" {
+			paths = append(paths, path)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	var paths []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		// Directory format: skill-name/SKILL.md
-		skillFile := filepath.Join(dir, entry.Name(), "SKILL.md")
-		if _, err := os.Stat(skillFile); err == nil {
-			paths = append(paths, skillFile)
-		}
-	}
-
 	sort.Strings(paths)
 	return paths, nil
 }
