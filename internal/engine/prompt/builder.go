@@ -12,20 +12,14 @@ type Builder struct {
 	registry  *Registry
 	allocator *BudgetAllocator
 	logger    *zap.Logger
-
-	// Section-level render cache. Cacheable sections are rendered once
-	// and reused across turns within the same session. Dynamic sections
-	// are always re-rendered. The cache is keyed by section name.
-	sectionCache map[string]PromptBlock
 }
 
 // NewBuilder creates a prompt builder.
 func NewBuilder(registry *Registry, logger *zap.Logger) *Builder {
 	return &Builder{
-		registry:     registry,
-		allocator:    NewBudgetAllocator(),
-		logger:       logger,
-		sectionCache: make(map[string]PromptBlock),
+		registry:  registry,
+		allocator: NewBudgetAllocator(),
+		logger:    logger,
 	}
 }
 
@@ -93,18 +87,6 @@ func (b *Builder) Build(ctx *PromptContext, profile *AgentProfile) (*PromptOutpu
 			continue
 		}
 
-		// For cacheable sections, try to use cached render result.
-		// This avoids re-rendering static content (role, principles, output)
-		// on every turn. Cache is invalidated if budget allocation changes
-		// enough to cause a different render (checked via allocated budget).
-		if s.Cacheable() {
-			if cached, ok := b.sectionCache[s.Name()]; ok && cached.EstimatedTokens <= allocated {
-				blocks = append(blocks, cached)
-				sectionTokens[s.Name()] = [2]int{allocated, cached.EstimatedTokens}
-				continue
-			}
-		}
-
 		// Render section
 		content, err := s.Render(ctx, allocated)
 		if err != nil {
@@ -129,19 +111,12 @@ func (b *Builder) Build(ctx *PromptContext, profile *AgentProfile) (*PromptOutpu
 		}
 
 		tokens := EstimateTokens(content)
-		block := PromptBlock{
+		blocks = append(blocks, PromptBlock{
 			Name:            s.Name(),
 			Content:         content,
 			Cacheable:       s.Cacheable(),
 			EstimatedTokens: tokens,
-		}
-
-		// Cache cacheable sections for subsequent turns.
-		if s.Cacheable() {
-			b.sectionCache[s.Name()] = block
-		}
-
-		blocks = append(blocks, block)
+		})
 		sectionTokens[s.Name()] = [2]int{allocated, tokens}
 	}
 
