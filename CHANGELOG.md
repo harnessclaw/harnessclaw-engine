@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
+## [0.0.4] - 2026-04-18
+
+### Added
+- Nested skill directory discovery: supports `skills/<repo-name>/<skill-name>/SKILL.md` multi-level layouts via recursive `filepath.WalkDir`
+- Commit and changelog rules documentation (`docs/release-rules.md`) covering conventional commit format, Co-Authored-By prohibition, and LLM-based changelog generation policy
+
+### Changed
+- GitHub Release body now extracted from `CHANGELOG.md` instead of auto-generated commit list, ensuring release notes match the maintained changelog
+
 ## [0.0.3] - 2026-04-18
 
 ### Added
