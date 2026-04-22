@@ -35,6 +35,31 @@ const (
 	EngineEventMessageStart      EngineEventType = "message_start"      // LLM call begins streaming
 	EngineEventMessageDelta      EngineEventType = "message_delta"      // LLM call metadata (stop_reason, usage)
 	EngineEventMessageStop       EngineEventType = "message_stop"       // LLM call streaming ended
+	EngineEventSubAgentStart     EngineEventType = "subagent_start"     // sub-agent session begins
+	EngineEventSubAgentEnd       EngineEventType = "subagent_end"       // sub-agent session completes
+	EngineEventSubAgentEvent     EngineEventType = "subagent_event"     // real-time sub-agent streaming event
+
+	// Phase 1.5: @-mention routing
+	EngineEventAgentRouted     EngineEventType = "agent_routed"      // @-mention routed to agent
+
+	// Phase 2: Tasks
+	EngineEventTaskCreated     EngineEventType = "task_created"      // task created
+	EngineEventTaskUpdated     EngineEventType = "task_updated"      // task status/property changed
+
+	// Phase 3: Messaging
+	EngineEventAgentMessage    EngineEventType = "agent_message"     // inter-agent message
+
+	// Phase 4: Async agents
+	EngineEventAgentSpawned    EngineEventType = "agent_spawned"     // async agent launched
+	EngineEventAgentIdle       EngineEventType = "agent_idle"        // agent entered idle
+	EngineEventAgentCompleted  EngineEventType = "agent_completed"   // async agent done
+	EngineEventAgentFailed     EngineEventType = "agent_failed"      // async agent failed
+
+	// Phase 5: Teams
+	EngineEventTeamCreated     EngineEventType = "team_created"      // team created
+	EngineEventTeamMemberJoin  EngineEventType = "team_member_join"  // member joined
+	EngineEventTeamMemberLeft  EngineEventType = "team_member_left"  // member left
+	EngineEventTeamDeleted     EngineEventType = "team_deleted"      // team dissolved
 )
 
 // EngineEvent is a single event emitted from the engine to a channel.
@@ -52,6 +77,65 @@ type EngineEvent struct {
 	MessageID         string             `json:"message_id,omitempty"`  // set on message_start
 	Model             string             `json:"model,omitempty"`       // set on message_start
 	StopReason        string             `json:"stop_reason,omitempty"` // set on message_delta
+
+	// Sub-agent fields (set on subagent_start / subagent_end)
+	AgentID       string   `json:"agent_id,omitempty"`
+	AgentName     string   `json:"agent_name,omitempty"`
+	AgentDesc     string   `json:"agent_desc,omitempty"`
+	AgentType     string   `json:"agent_type,omitempty"`
+	ParentAgentID string   `json:"parent_agent_id,omitempty"`
+	Duration      int64    `json:"duration_ms,omitempty"`
+	AgentStatus   string   `json:"agent_status,omitempty"` // for subagent_end: "completed", "error", "max_turns"
+	DeniedTools   []string `json:"denied_tools,omitempty"` // tools denied during sub-agent execution
+
+	// Task event fields (Phase 2+)
+	TaskEvent     *TaskEvent         `json:"task_event,omitempty"`
+	// Agent message fields (Phase 3+)
+	AgentMsg      *AgentMessageEvent `json:"agent_msg,omitempty"`
+	// Team event fields (Phase 5+)
+	TeamEvent     *TeamEvent         `json:"team_event,omitempty"`
+	// Sub-agent real-time streaming content (for subagent_event type)
+	SubAgentEvent *SubAgentEventData `json:"subagent_event,omitempty"`
+}
+
+// TaskEvent carries task state change info.
+type TaskEvent struct {
+	TaskID     string `json:"task_id"`
+	Subject    string `json:"subject"`
+	Status     string `json:"status"`
+	Owner      string `json:"owner,omitempty"`
+	ActiveForm string `json:"active_form,omitempty"`
+	ScopeID    string `json:"scope_id"`
+}
+
+// SubAgentEventData carries a sub-agent's real-time streaming content.
+// This wraps the inner event so it doesn't interfere with the parent's
+// message lifecycle in the EventMapper.
+type SubAgentEventData struct {
+	EventType string `json:"event_type"`           // inner event type: "text", "tool_start", "tool_end", etc.
+	Text      string `json:"text,omitempty"`        // for text events
+	ToolName  string `json:"tool_name,omitempty"`   // for tool events
+	ToolInput string `json:"tool_input,omitempty"`  // for tool_start
+	ToolUseID string `json:"tool_use_id,omitempty"` // for tool events
+	IsError   bool   `json:"is_error,omitempty"`    // for tool_end errors
+	Output    string `json:"output,omitempty"`      // for tool_end output
+}
+
+// AgentMessageEvent carries inter-agent message summary.
+type AgentMessageEvent struct {
+	From    string `json:"from"`
+	To      string `json:"to"`
+	Summary string `json:"summary"`
+	TeamID  string `json:"team_id,omitempty"`
+}
+
+// TeamEvent carries team lifecycle info.
+type TeamEvent struct {
+	TeamID     string   `json:"team_id"`
+	TeamName   string   `json:"team_name"`
+	Members    []string `json:"members,omitempty"`
+	MemberName string   `json:"member_name,omitempty"`
+	MemberType string   `json:"member_type,omitempty"`
 }
 
 // PermissionRequest is sent to the client when a tool execution needs approval.

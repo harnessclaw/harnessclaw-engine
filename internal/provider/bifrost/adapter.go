@@ -102,6 +102,18 @@ func (a *account) GetConfigForProvider(prov schemas.ModelProvider) (*schemas.Pro
 	if a.baseURL != "" {
 		netCfg.BaseURL = a.baseURL
 	}
+	// Increase stream idle timeout for agent workloads where the LLM may
+	// "think" for extended periods (e.g. extended thinking, complex tool
+	// orchestration) without sending any SSE chunks. The default 60s is
+	// too aggressive for sub-agent tasks. 5 minutes accommodates heavy
+	// reasoning while still catching truly dead connections.
+	netCfg.StreamIdleTimeoutInSeconds = 300
+	// DefaultRequestTimeoutInSeconds becomes fasthttp's ReadTimeout on the
+	// underlying TCP connection. For streaming responses this must be at
+	// least as long as the stream idle timeout, otherwise the connection-
+	// level read deadline fires before the per-chunk idle timer, causing
+	// "i/o timeout" errors on long LLM generations (e.g. writing reports).
+	netCfg.DefaultRequestTimeoutInSeconds = 600
 
 	concurrency := schemas.DefaultConcurrencyAndBufferSize
 	if a.maxConcurrency > 0 {

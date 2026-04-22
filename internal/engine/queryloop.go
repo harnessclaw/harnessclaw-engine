@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/artifact"
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/prompt"
@@ -100,6 +102,17 @@ type QueryEngine struct {
 	// rebuilding on every turn when inputs haven't changed.
 	promptCacheMu sync.RWMutex
 	promptCache   map[string]*promptCacheEntry // session_id → cache entry
+
+	// Multi-agent support fields.
+	agentRegistry  *agent.AgentRegistry
+	messageBroker  *agent.MessageBroker
+	defRegistry    *agent.AgentDefinitionRegistry
+	mentionParser  *MentionParser
+
+	// Per-session artifact stores and replacement states.
+	artifactMu          sync.RWMutex
+	artifactStores      map[string]*artifact.Store            // session_id → store
+	artifactReplacements map[string]*artifact.ReplacementState // session_id → state
 }
 
 // promptCacheEntry stores a cached system prompt and the conditions under which it was built.
@@ -110,6 +123,7 @@ type promptCacheEntry struct {
 	budget       int                 // budget when cached
 	hasTask      bool                // whether task state was present
 	memoryLen    int                 // len(memory) when cached
+	date         string              // date when cached (YYYY-MM-DD)
 }
 
 // NewQueryEngine creates a new query engine.
@@ -126,10 +140,12 @@ func NewQueryEngine(
 ) *QueryEngine {
 	// Initialize prompt builder with default registry and built-in sections
 	promptRegistry := prompt.NewRegistry()
+	promptRegistry.Register(sections.NewCurrentDateSection())
 	promptRegistry.Register(sections.NewRoleSection())
 	promptRegistry.Register(sections.NewPrinciplesSection())
 	promptRegistry.Register(sections.NewOutputSection())
 	promptRegistry.Register(sections.NewToolsSection())
+	promptRegistry.Register(sections.NewArtifactsSection())
 	promptRegistry.Register(sections.NewEnvSection())
 	promptRegistry.Register(sections.NewMemorySection())
 	promptRegistry.Register(sections.NewSkillsSection())
@@ -156,6 +172,8 @@ func NewQueryEngine(
 		pendingPerms:      make(map[string]*pendingPermission),
 		sessionAllowTools: make(map[string]map[string]bool),
 		promptCache:       make(map[string]*promptCacheEntry),
+		artifactStores:       make(map[string]*artifact.Store),
+		artifactReplacements: make(map[string]*artifact.ReplacementState),
 	}
 }
 
@@ -169,6 +187,40 @@ func (qe *QueryEngine) RegisterPromptSection(section prompt.Section) {
 	}
 }
 
+// getArtifactStore returns the artifact store and replacement state for a
+// session, creating them on first access.
+func (qe *QueryEngine) getArtifactStore(sessionID string) (*artifact.Store, *artifact.ReplacementState) {
+	qe.artifactMu.RLock()
+	store, ok1 := qe.artifactStores[sessionID]
+	rs, ok2 := qe.artifactReplacements[sessionID]
+	qe.artifactMu.RUnlock()
+
+	if ok1 && ok2 {
+		return store, rs
+	}
+
+	qe.artifactMu.Lock()
+	defer qe.artifactMu.Unlock()
+
+	// Double-check after acquiring write lock.
+	if s, ok := qe.artifactStores[sessionID]; ok {
+		return s, qe.artifactReplacements[sessionID]
+	}
+
+	store = artifact.NewStore()
+	rs = artifact.NewReplacementState()
+	qe.artifactStores[sessionID] = store
+	qe.artifactReplacements[sessionID] = rs
+	return store, rs
+}
+
+// SetDefRegistry configures the agent definition registry and initializes
+// the @-mention parser for routing user messages to specialized agents.
+func (qe *QueryEngine) SetDefRegistry(reg *agent.AgentDefinitionRegistry) {
+	qe.defRegistry = reg
+	qe.mentionParser = NewMentionParser(reg)
+}
+
 // ProcessMessage implements Engine. It appends the user message to the session
 // and runs the query loop, emitting events on the returned channel.
 func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg *types.Message) (<-chan types.EngineEvent, error) {
@@ -176,6 +228,19 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 	sess, err := qe.sessionMgr.GetOrCreate(ctx, sessionID, "", "")
 	if err != nil {
 		return nil, fmt.Errorf("session get-or-create: %w", err)
+	}
+
+	// @-mention routing: detect @agent_name at the start of the user message.
+	if qe.mentionParser != nil && qe.defRegistry != nil {
+		msgText := extractMessageText(msg)
+		if mention := qe.mentionParser.Parse(msgText); mention.AgentName != "" {
+			def := qe.defRegistry.Get(mention.AgentName)
+			if def != nil {
+				// Record the user message before routing to preserve session history.
+				sess.AddMessage(*msg)
+				return qe.processWithAgent(ctx, sessionID, sess, mention, def)
+			}
+		}
 	}
 
 	sess.AddMessage(*msg)
@@ -215,6 +280,88 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 			Type:     types.EngineEventDone,
 			Terminal: &terminal,
 			Usage:    &cumUsage,
+		}
+	}()
+
+	return out, nil
+}
+
+// extractMessageText extracts the text content from a message's content blocks.
+func extractMessageText(msg *types.Message) string {
+	var buf strings.Builder
+	for _, block := range msg.Content {
+		if block.Type == types.ContentTypeText {
+			buf.WriteString(block.Text)
+		}
+	}
+	return buf.String()
+}
+
+// processWithAgent handles a user message routed to a specific agent via @-mention.
+// It emits an agent.routed event and delegates to SpawnSync or a team workflow.
+func (qe *QueryEngine) processWithAgent(
+	ctx context.Context,
+	sessionID string,
+	sess *session.Session,
+	mention *MentionResult,
+	def *agent.AgentDefinition,
+) (<-chan types.EngineEvent, error) {
+	out := make(chan types.EngineEvent, 64)
+
+	go func() {
+		defer close(out)
+
+		// Emit agent.routed event for client observability.
+		out <- types.EngineEvent{
+			Type:      types.EngineEventAgentRouted,
+			AgentName: def.Name,
+			AgentDesc: def.Description,
+		}
+
+		prompt := mention.Prompt
+		if def.SystemPrompt != "" {
+			prompt = def.SystemPrompt + "\n\n" + mention.Prompt
+		}
+
+		if def.AutoTeam && len(def.SubAgents) > 0 {
+			// Team mode: run as coordinator with predefined sub-agents.
+			// TODO: implement runTeamWorkflow for auto-team agents.
+			qe.logger.Info("team workflow not yet implemented, falling back to single agent",
+				zap.String("agent", def.Name),
+			)
+		}
+
+		// Single agent mode: SpawnSync directly.
+		cfg := &agent.SpawnConfig{
+			Prompt:          prompt,
+			AgentType:       def.AgentType,
+			SubagentType:    def.Profile,
+			Name:            def.Name,
+			Description:     def.Description,
+			Model:           def.Model,
+			MaxTurns:        def.MaxTurns,
+			ParentSessionID: sessionID,
+			ParentOut:       out, // enable real-time event forwarding
+		}
+
+		result, err := qe.SpawnSync(ctx, cfg)
+
+		if err != nil {
+			out <- types.EngineEvent{Type: types.EngineEventError, Error: err}
+			out <- types.EngineEvent{
+				Type:     types.EngineEventDone,
+				Terminal: &types.Terminal{Reason: types.TerminalModelError, Message: err.Error()},
+				Usage:    &types.Usage{},
+			}
+			return
+		}
+
+		// Text was already streamed in real-time via ParentOut forwarding.
+		// Only emit the final done event.
+		out <- types.EngineEvent{
+			Type:     types.EngineEventDone,
+			Terminal: result.Terminal,
+			Usage:    result.Usage,
 		}
 	}()
 
@@ -499,14 +646,37 @@ type loopState struct {
 func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, out chan<- types.EngineEvent) types.Terminal {
 	ls := &loopState{}
 
+	// Register a mailbox for this session so async sub-agents can send
+	// completion notifications back. Deregister on exit.
+	var mailbox *agent.Mailbox
+	if qe.messageBroker != nil {
+		mailbox = qe.messageBroker.Register(sess.ID, "")
+		defer qe.messageBroker.Unregister(sess.ID)
+	}
+
+	// Get or create per-session artifact store for large tool result persistence.
+	artStore, artRS := qe.getArtifactStore(sess.ID)
+
+	// Wire artifact store into the compactor for artifact-aware compaction.
+	if lc, ok := qe.compactor.(*compact.LLMCompactor); ok {
+		lc.SetArtifactStore(artStore)
+	}
+
 	// Build the ToolPool once per query loop from the registry.
 	pool := tool.NewToolPool(qe.registry, nil /*mcpTools*/, nil /*denyRules*/)
+
+	// Coordinator mode: if session has coordinator_mode=true, restrict pool
+	// to coordinator-allowed tools and switch profile.
+	if isCoordinatorMode(sess) {
+		pool = pool.FilteredFor(tool.AgentTypeCoordinator)
+	}
 
 	// Create the approval function that sends permission requests to the client via `out`.
 	approvalFn := func(ctx context.Context, evtOut chan<- types.EngineEvent, req *types.PermissionRequest) *types.PermissionResponse {
 		return qe.requestPermissionApproval(ctx, evtOut, sess.ID, req)
 	}
 	executor := NewToolExecutor(pool, qe.permChecker, qe.logger, qe.config.ToolTimeout, approvalFn)
+	executor.SetArtifactStore(artifact.AsToolStore(artStore))
 
 	for {
 		ls.turn++
@@ -528,6 +698,12 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 				messages = compacted
 			}
 		}
+
+		// Apply artifact references: replace old tool_result content with
+		// compact previews for results that were persisted as artifacts.
+		// This uses frozen decisions (ReplacementState) so the message
+		// prefix never changes between turns, preserving prompt cache hits.
+		messages = artifact.CompactMessages(messages, artRS)
 
 		// Check max turns.
 		if ls.turn > qe.config.MaxTurns {
@@ -607,90 +783,39 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 			},
 		}
 
-		stream, err := qe.provider.Chat(ctx, req)
-		if err != nil {
-			// ---- Phase 3: Error Recovery (connection/auth errors) ----
+		// ---- Phase 2: LLM Call with retry ----
+		llmResult := retryLLMCall(ctx, qe.provider, req, qe.logger, out)
 
-			// Emit the error event so the client sees the details.
-			out <- types.EngineEvent{Type: types.EngineEventError, Error: err}
-
-			// Emit message.delta + message.stop even on error so the message lifecycle is complete.
-			out <- types.EngineEvent{Type: types.EngineEventMessageDelta, StopReason: "error", Error: err}
+		if llmResult.streamErr != nil {
+			// ---- Phase 3: Error Recovery (all retries exhausted) ----
+			llmErr := llmResult.streamErr
+			out <- types.EngineEvent{Type: types.EngineEventError, Error: llmErr}
+			out <- types.EngineEvent{Type: types.EngineEventMessageDelta, StopReason: "error", Error: llmErr}
 			out <- types.EngineEvent{Type: types.EngineEventMessageStop}
 
 			if ctx.Err() != nil {
 				return types.Terminal{Reason: types.TerminalAbortedStreaming, Message: "query cancelled", Turn: ls.turn}
 			}
-			qe.logger.Error("LLM chat request failed",
+			qe.logger.Error("LLM call failed after retries",
 				zap.String("session_id", sess.ID),
 				zap.Int("turn", ls.turn),
-				zap.Error(err),
+				zap.Error(llmErr),
 			)
-			return types.Terminal{Reason: types.TerminalModelError, Message: err.Error(), Turn: ls.turn}
+			return types.Terminal{Reason: types.TerminalModelError, Message: llmErr.Error(), Turn: ls.turn}
 		}
 
-		// Collect the streamed response.
-		var textBuf string
-		var toolCalls []types.ToolCall
+		// Events were already streamed in real-time by retryLLMCall.
+		// Extract collected results for session state.
+		textBuf := llmResult.textBuf
+		toolCalls := llmResult.toolCalls
 
-		for evt := range stream.Events {
-			switch evt.Type {
-			case types.StreamEventText:
-				textBuf += evt.Text
-				out <- types.EngineEvent{Type: types.EngineEventText, Text: evt.Text}
-
-			case types.StreamEventToolUse:
-				if evt.ToolCall != nil {
-					toolCalls = append(toolCalls, *evt.ToolCall)
-					// Emit tool_use content block so clients can see what the LLM requested.
-					out <- types.EngineEvent{
-						Type:      types.EngineEventToolUse,
-						ToolUseID: evt.ToolCall.ID,
-						ToolName:  evt.ToolCall.Name,
-						ToolInput: evt.ToolCall.Input,
-					}
-				}
-
-			case types.StreamEventMessageEnd:
-				ls.stopReason = evt.StopReason
-				if evt.Usage != nil {
-					ls.lastUsage = evt.Usage
-					ls.cumulativeUsage.InputTokens += evt.Usage.InputTokens
-					ls.cumulativeUsage.OutputTokens += evt.Usage.OutputTokens
-					ls.cumulativeUsage.CacheRead += evt.Usage.CacheRead
-					ls.cumulativeUsage.CacheWrite += evt.Usage.CacheWrite
-				}
-
-			case types.StreamEventError:
-				if evt.Error != nil {
-					out <- types.EngineEvent{Type: types.EngineEventError, Error: evt.Error}
-				}
-			}
-		}
-
-		if streamErr := stream.Err(); streamErr != nil {
-			// Emit the error event so the client sees the details.
-			out <- types.EngineEvent{Type: types.EngineEventError, Error: streamErr}
-
-			// Emit message lifecycle events to close cleanly.
-			out <- types.EngineEvent{
-				Type:       types.EngineEventMessageDelta,
-				StopReason: "error",
-				Error:      streamErr,
-				Usage:      ls.lastUsage,
-			}
-			out <- types.EngineEvent{Type: types.EngineEventMessageStop}
-
-			if ctx.Err() != nil {
-				return types.Terminal{Reason: types.TerminalAbortedStreaming, Message: "streaming aborted", Turn: ls.turn}
-			}
-			// Phase 3: treat stream errors as model errors.
-			qe.logger.Error("LLM stream error",
-				zap.String("session_id", sess.ID),
-				zap.Int("turn", ls.turn),
-				zap.Error(streamErr),
-			)
-			return types.Terminal{Reason: types.TerminalModelError, Message: streamErr.Error(), Turn: ls.turn}
+		ls.stopReason = llmResult.stopReason
+		if llmResult.lastUsage != nil {
+			ls.lastUsage = llmResult.lastUsage
+			ls.cumulativeUsage.InputTokens += llmResult.lastUsage.InputTokens
+			ls.cumulativeUsage.OutputTokens += llmResult.lastUsage.OutputTokens
+			ls.cumulativeUsage.CacheRead += llmResult.lastUsage.CacheRead
+			ls.cumulativeUsage.CacheWrite += llmResult.lastUsage.CacheWrite
 		}
 
 		// Emit message.delta with stop_reason and output usage.
@@ -717,6 +842,16 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 
 		// ---- Phase 5 (part A): Check terminal — no tool calls means LLM is done. ----
 		if len(toolCalls) == 0 {
+			// Before terminating, check if there are async sub-agents still
+			// running for this session. If so, wait for their completion
+			// notifications via the mailbox, inject them as user messages,
+			// and continue the loop so the LLM can process the results.
+			if qe.shouldWaitForAsyncAgents(sess.ID, mailbox) {
+				if msg := qe.waitForMailboxMessage(ctx, sess.ID, mailbox, out); msg != nil {
+					sess.AddMessage(*msg)
+					continue
+				}
+			}
 			return types.Terminal{
 				Reason:  types.TerminalCompleted,
 				Message: "model finished",
@@ -747,6 +882,21 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		// Append tool result messages to session, then inject any NewMessages
 		// (e.g., SkillTool injects skill prompts as user messages after tool_result).
 		for i, tc := range toolCalls {
+			content := results[i].Content
+			var artID string
+
+			// Persist large tool results as artifacts. The content in the
+			// session message is replaced with a preview; the full content
+			// stays in the artifact store for later retrieval via ArtifactGet.
+			content, artID = artifact.PersistAndReplace(
+				artStore, artRS,
+				tc.ID, tc.Name,
+				content, results[i].IsError,
+				results[i].Metadata,
+				artifact.DefaultThreshold,
+				artifact.DefaultPreviewLen,
+			)
+
 			toolMsg := types.Message{
 				Role: types.RoleUser,
 				Content: []types.ContentBlock{
@@ -754,8 +904,9 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 						Type:       types.ContentTypeToolResult,
 						ToolUseID:  tc.ID,
 						ToolName:   tc.Name,
-						ToolResult: results[i].Content,
+						ToolResult: content,
 						IsError:    results[i].IsError,
+						ArtifactID: artID,
 					},
 				},
 				CreatedAt: time.Now(),
@@ -950,11 +1101,13 @@ func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Sess
 		// - budget hasn't dropped by more than 10% (no section would be skipped)
 		// - task state hasn't changed
 		// - memory hasn't changed
+		// - date hasn't changed (cross-midnight)
+		today := time.Now().Format("2006-01-02")
 		budgetDrift := float64(cached.budget-budget) / float64(cached.budget)
 		hasTask := false // TODO: populate from session metadata when available
 		memoryLen := 0   // TODO: populate when memory loading is implemented
 
-		if budgetDrift < 0.1 && cached.hasTask == hasTask && cached.memoryLen == memoryLen {
+		if budgetDrift < 0.1 && cached.hasTask == hasTask && cached.memoryLen == memoryLen && cached.date == today {
 			qe.logger.Debug("prompt cache hit",
 				zap.String("session_id", sess.ID),
 				zap.String("version", cached.output.Version),
@@ -969,6 +1122,7 @@ func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Sess
 			zap.Float64("budget_drift", budgetDrift),
 			zap.Bool("task_changed", cached.hasTask != hasTask),
 			zap.Bool("memory_changed", cached.memoryLen != memoryLen),
+			zap.Bool("date_changed", cached.date != today),
 		)
 	}
 
@@ -985,7 +1139,13 @@ func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Sess
 		SkillListing:      qe.getSkillListing(),
 	}
 
-	output, err := qe.promptBuilder.Build(promptCtx, qe.promptProfile)
+	// Select profile: use CoordinatorProfile when in coordinator mode.
+	activeProfile := qe.promptProfile
+	if isCoordinatorMode(sess) {
+		activeProfile = prompt.CoordinatorProfile
+	}
+
+	output, err := qe.promptBuilder.Build(promptCtx, activeProfile)
 	if err != nil {
 		qe.logger.Error("prompt build failed, using fallback",
 			zap.Error(err),
@@ -1031,6 +1191,7 @@ func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Sess
 		budget:    budget,
 		hasTask:   false, // TODO: update when task state is populated
 		memoryLen: 0,     // TODO: update when memory is populated
+		date:      time.Now().Format("2006-01-02"),
 	}
 	qe.promptCacheMu.Unlock()
 
@@ -1042,6 +1203,7 @@ func (qe *QueryEngine) getEnvSnapshot() prompt.EnvSnapshot {
 	snap := prompt.EnvSnapshot{
 		OS:       runtime.GOOS,
 		Platform: runtime.GOOS + "/" + runtime.GOARCH,
+		Date:     time.Now().Format("2006-01-02"),
 	}
 
 	// CWD
@@ -1055,4 +1217,108 @@ func (qe *QueryEngine) getEnvSnapshot() prompt.EnvSnapshot {
 	}
 
 	return snap
+}
+
+// enterCoordinatorMode switches the session to coordinator mode.
+// The next query loop iteration will use CoordinatorProfile and restricted tool pool.
+// Called by TeamCreate tool (via engine interface).
+func (qe *QueryEngine) EnterCoordinatorMode(sess *session.Session) {
+	if sess.Metadata == nil {
+		sess.Metadata = make(map[string]any)
+	}
+	sess.Metadata["prev_profile"] = qe.promptProfile.Name
+	sess.Metadata["coordinator_mode"] = true
+
+	// Invalidate prompt cache so the next turn rebuilds with CoordinatorProfile.
+	qe.promptCacheMu.Lock()
+	delete(qe.promptCache, sess.ID)
+	qe.promptCacheMu.Unlock()
+
+	qe.logger.Info("entered coordinator mode", zap.String("session_id", sess.ID))
+}
+
+// exitCoordinatorMode restores the session from coordinator mode to the original profile.
+// Called by TeamDelete tool (via engine interface).
+func (qe *QueryEngine) ExitCoordinatorMode(sess *session.Session) {
+	if sess.Metadata == nil {
+		return
+	}
+	delete(sess.Metadata, "coordinator_mode")
+	delete(sess.Metadata, "prev_profile")
+
+	// Invalidate prompt cache so the next turn rebuilds with original profile.
+	qe.promptCacheMu.Lock()
+	delete(qe.promptCache, sess.ID)
+	qe.promptCacheMu.Unlock()
+
+	qe.logger.Info("exited coordinator mode", zap.String("session_id", sess.ID))
+}
+
+// isCoordinatorMode checks if the session is in coordinator mode.
+func isCoordinatorMode(sess *session.Session) bool {
+	if sess.Metadata == nil {
+		return false
+	}
+	v, ok := sess.Metadata["coordinator_mode"]
+	if !ok {
+		return false
+	}
+	b, _ := v.(bool)
+	return b
+}
+
+// shouldWaitForAsyncAgents returns true if the query loop should block on
+// the mailbox instead of terminating. This happens when there are async
+// sub-agents still running for this session.
+func (qe *QueryEngine) shouldWaitForAsyncAgents(sessionID string, mailbox *agent.Mailbox) bool {
+	if mailbox == nil || qe.agentRegistry == nil {
+		return false
+	}
+	// Check if any async agents spawned by this session are still running.
+	return qe.agentRegistry.HasRunningForParent(sessionID)
+}
+
+// waitForMailboxMessage blocks until a message arrives on the mailbox or the
+// context is cancelled. It converts the AgentMessage into a types.Message
+// (user role) so the LLM can process the notification in the next turn.
+// Returns nil if the context is cancelled before a message arrives.
+func (qe *QueryEngine) waitForMailboxMessage(
+	ctx context.Context,
+	sessionID string,
+	mailbox *agent.Mailbox,
+	out chan<- types.EngineEvent,
+) *types.Message {
+	if mailbox == nil {
+		return nil
+	}
+
+	qe.logger.Info("waiting for async agent notifications",
+		zap.String("session_id", sessionID),
+	)
+
+	select {
+	case <-ctx.Done():
+		return nil
+	case agentMsg, ok := <-mailbox.Receive():
+		if !ok || agentMsg == nil {
+			return nil
+		}
+		qe.logger.Info("received async agent notification",
+			zap.String("session_id", sessionID),
+			zap.String("from", agentMsg.From),
+			zap.String("type", string(agentMsg.Type)),
+		)
+
+		// Format the notification as a user message for the LLM.
+		text := fmt.Sprintf("[Agent notification from %s]\n%s", agentMsg.From, agentMsg.Content)
+		msg := &types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{{
+				Type: types.ContentTypeText,
+				Text: text,
+			}},
+			CreatedAt: time.Now(),
+		}
+		return msg
+	}
 }

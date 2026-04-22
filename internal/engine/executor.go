@@ -23,11 +23,12 @@ type PermissionApprovalFunc func(ctx context.Context, out chan<- types.EngineEve
 // It enforces permission checks, timeouts, and the parallel-read / serial-write
 // execution model that mirrors the TypeScript engine.
 type ToolExecutor struct {
-	pool        *tool.ToolPool
-	permChecker permission.Checker
-	logger      *zap.Logger
-	timeout     time.Duration
-	approvalFn  PermissionApprovalFunc // nil = deny on Ask (legacy behavior)
+	pool          *tool.ToolPool
+	permChecker   permission.Checker
+	logger        *zap.Logger
+	timeout       time.Duration
+	approvalFn    PermissionApprovalFunc // nil = deny on Ask (legacy behavior)
+	artifactStore tool.ArtifactStore     // optional; injected into tool context when non-nil
 }
 
 // NewToolExecutor creates a tool executor.
@@ -45,6 +46,13 @@ func NewToolExecutor(
 		timeout:     timeout,
 		approvalFn:  approvalFn,
 	}
+}
+
+// SetArtifactStore sets the artifact store that will be injected into tool
+// execution contexts. Tools like ArtifactGet and Write (with artifact_ref)
+// use this to access stored artifacts.
+func (te *ToolExecutor) SetArtifactStore(store tool.ArtifactStore) {
+	te.artifactStore = store
 }
 
 // ExecuteBatch runs a batch of tool calls. Read-only and concurrency-safe tools
@@ -168,6 +176,25 @@ func (te *ToolExecutor) executeSingle(
 	}
 
 	// Permission check.
+	// First, check if the tool itself provides a pre-check that auto-allows.
+	// This runs before the general pipeline because the pipeline's Check()
+	// method does not pass the tool instance (req.Tool is nil), so
+	// ToolCheckPermStep never fires. We handle it here directly.
+	permSkipped := false
+	if preChecker, ok := t.(tool.PermissionPreChecker); ok {
+		preResult := preChecker.CheckPermission(ctx, rawInput)
+		switch preResult.Behavior {
+		case "allow":
+			permSkipped = true
+		case "deny":
+			return types.ToolResult{
+				Content: fmt.Sprintf("permission denied for %s: %s", tc.Name, preResult.Message),
+				IsError: true,
+			}
+		}
+	}
+
+	if !permSkipped {
 	permResult := te.permChecker.Check(ctx, tc.Name, rawInput, t.IsReadOnly())
 	switch permResult.Decision {
 	case permission.Deny:
@@ -235,10 +262,28 @@ func (te *ToolExecutor) executeSingle(
 			zap.String("scope", string(resp.Scope)),
 		)
 	}
+	} // end if !permSkipped
 
-	// Execute with timeout.
-	execCtx, cancel := context.WithTimeout(ctx, te.timeout)
+	// Execute with timeout. Long-running tools (e.g., Agent) manage their own
+	// timeout and bypass the executor's default.
+	var execCtx context.Context
+	var cancel context.CancelFunc
+	if lrt, ok := t.(tool.LongRunningTool); ok && lrt.IsLongRunning() {
+		execCtx, cancel = ctx, func() {}
+	} else {
+		execCtx, cancel = context.WithTimeout(ctx, te.timeout)
+	}
 	defer cancel()
+
+	// Inject the event output channel into the context so tools that need to
+	// emit events (e.g., Agent tool for subagent.start/end) can access it.
+	execCtx = tool.WithEventOut(execCtx, out)
+
+	// Inject the artifact store so tools (ArtifactGet, Write with artifact_ref)
+	// can access stored artifacts.
+	if te.artifactStore != nil {
+		execCtx = tool.WithArtifactStore(execCtx, te.artifactStore)
+	}
 
 	tr, err := t.Execute(execCtx, rawInput)
 	if err != nil {

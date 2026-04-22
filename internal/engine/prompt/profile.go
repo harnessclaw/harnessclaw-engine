@@ -44,6 +44,7 @@ var (
 		Name:        "explore",
 		Description: "Read-only exploration agent",
 		Sections: []string{
+			"currentdate",
 			"role",
 			"principles",
 			"tools",
@@ -64,6 +65,7 @@ Your role is to help users understand codebases and find information quickly.`,
 		Name:        "plan",
 		Description: "Planning agent that designs but does not implement",
 		Sections: []string{
+			"currentdate",
 			"role",
 			"principles",
 			"env",
@@ -141,4 +143,30 @@ func agentTypeToProfile(agentCtx *AgentContext) string {
 type AgentContext struct {
 	AgentType string
 	IsSubAgent bool
+}
+
+// ResolveProfileBySubagentType maps a subagent_type string (from SpawnConfig)
+// to the corresponding AgentProfile. This is the primary entry point for
+// sub-agent profile selection.
+//
+// Mapping:
+//
+//	"general-purpose" / "" → FullProfile
+//	"Explore"              → ExploreProfile
+//	"Plan"                 → PlanProfile
+//	"coordinator"          → PlanProfile
+//	other                  → FullProfile
+func ResolveProfileBySubagentType(subagentType string) *AgentProfile {
+	switch subagentType {
+	case "Explore", "explore":
+		return ExploreProfile
+	case "Plan", "plan":
+		return PlanProfile
+	case "coordinator":
+		return PlanProfile
+	case "general-purpose", "":
+		return FullProfile
+	default:
+		return FullProfile
+	}
 }

@@ -38,6 +38,10 @@ const (
 	TopicAPIRetry         Topic = "api.retry"
 	TopicProviderSwitched Topic = "provider.switched"
 	TopicProviderFallback Topic = "provider.fallback"
+
+	// Sub-agent lifecycle
+	TopicSubAgentStarted Topic = "subagent.started"
+	TopicSubAgentEnded   Topic = "subagent.ended"
 )
 
 // Event is a message published on the event bus.

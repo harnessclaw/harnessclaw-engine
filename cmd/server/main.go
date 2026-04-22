@@ -3,7 +3,7 @@
 // Startup sequence:
 //  1. Load configuration (Viper)
 //  2. Initialize structured logger (Zap)
-//  3. Initialize storage (SQLite or memory)
+//  3. Initialize storage (SQLite)
 //  4. Create event bus
 //  5. Register tools
 //  6. Initialize LLM provider (Bifrost SDK)
@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,8 +33,10 @@ import (
 	wsch "harnessclaw-go/internal/channel/websocket"
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/config"
+	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/compact"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
@@ -42,9 +45,10 @@ import (
 	"harnessclaw-go/internal/router"
 	"harnessclaw-go/internal/router/middleware"
 	"harnessclaw-go/internal/skill"
-	"harnessclaw-go/internal/storage"
-	"harnessclaw-go/internal/storage/memory"
+	sqlitesess "harnessclaw-go/internal/storage/sqlite"
+	"harnessclaw-go/internal/task"
 	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tool/agenttool"
 	"harnessclaw-go/internal/tool/bash"
 	"harnessclaw-go/internal/tool/fileedit"
 	"harnessclaw-go/internal/tool/fileread"
@@ -52,7 +56,12 @@ import (
 	"harnessclaw-go/internal/tool/glob"
 	"harnessclaw-go/internal/tool/grep"
 	"harnessclaw-go/internal/tool/skilltool"
+	"harnessclaw-go/internal/tool/tasktool"
+	"harnessclaw-go/internal/tool/teamtool"
 	"harnessclaw-go/internal/tool/webfetch"
+	"harnessclaw-go/internal/tool/websearch"
+	"harnessclaw-go/internal/tool/tavilysearch"
+	"harnessclaw-go/internal/tool/artifacttool"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -90,17 +99,16 @@ func main() {
 	logger.Info("starting harnessclaw-engine",
 		zap.String("host", cfg.Server.Host),
 		zap.Int("port", cfg.Server.Port),
-		zap.String("storage", cfg.Session.Storage),
 		zap.String("default_provider", cfg.LLM.DefaultProvider),
 	)
 
-	// --- Step 3: Initialize storage ---
-	store, err := initStorage(cfg.Session, logger)
+	// --- Step 3: Initialize storage (always SQLite) ---
+	store, err := sqlitesess.New(cfg.Session.DBPath)
 	if err != nil {
 		logger.Fatal("failed to initialize storage", zap.Error(err))
 	}
 	defer store.Close()
-	logger.Info("storage initialized", zap.String("backend", cfg.Session.Storage))
+	logger.Info("storage initialized", zap.String("db_path", cfg.Session.DBPath))
 
 	// --- Step 4: Create event bus and subscribe key events for logging ---
 	bus := event.NewBus()
@@ -120,13 +128,20 @@ func main() {
 		{cfg.Tools.FileWrite.Enabled, func() tool.Tool { return filewrite.New(cfg.Tools.FileWrite) }},
 		{cfg.Tools.Grep.Enabled, func() tool.Tool { return grep.New(cfg.Tools.Grep) }},
 		{cfg.Tools.Glob.Enabled, func() tool.Tool { return glob.New(cfg.Tools.Glob) }},
-		{cfg.Tools.WebFetch.Enabled, func() tool.Tool { return webfetch.New(cfg.Tools.WebFetch) }},
+		{cfg.Tools.WebFetch.Enabled, func() tool.Tool { return webfetch.New(cfg.Tools.WebFetch, logger) }},
+		{cfg.Tools.WebSearch.Enabled, func() tool.Tool { return websearch.New(cfg.Tools.WebSearch, logger) }},
+		{cfg.Tools.TavilySearch.Enabled, func() tool.Tool { return tavilysearch.New(cfg.Tools.TavilySearch, logger) }},
+		// ArtifactGet is always enabled — it allows the LLM to retrieve
+		// full content from the artifact store for large tool results.
+		{true, func() tool.Tool { return artifacttool.NewGetTool() }},
 	}
 	for _, bt := range builtInTools {
 		if bt.enabled {
-			if err := registry.Register(bt.factory()); err != nil {
+			t := bt.factory()
+			if err := registry.Register(t); err != nil {
 				logger.Fatal("failed to register tool", zap.Error(err))
 			}
+			logger.Info("tool registered", zap.String("name", t.Name()), zap.Bool("is_enabled", t.IsEnabled()))
 		}
 	}
 
@@ -234,6 +249,79 @@ func main() {
 		zap.Float64("compact_threshold", engCfg.AutoCompactThreshold),
 	)
 
+	// Register Agent tool (post-engine: needs engine as AgentSpawner).
+	// ToolPool is rebuilt per query loop, so late registration is safe.
+	if err := registry.Register(agenttool.New(eng, logger)); err != nil {
+		logger.Fatal("failed to register agent tool", zap.Error(err))
+	}
+	logger.Info("agent tool registered")
+
+	// --- Step 8.5: Initialize multi-agent infrastructure ---
+	agentReg := agent.NewAgentRegistry()
+	broker := agent.NewMessageBroker()
+	teamMgr := agent.NewTeamManager()
+
+	// Initialize task store — prefer SQLite for persistence, fall back to memory.
+	var taskStore task.Store
+	taskDBPath := defaultDBPath("tasks.db")
+	sqliteStore, err := task.NewSQLiteStore(taskDBPath)
+	if err != nil {
+		logger.Warn("failed to open SQLite task store, falling back to memory",
+			zap.String("path", taskDBPath),
+			zap.Error(err),
+		)
+		taskStore = task.NewMemoryStore()
+	} else {
+		taskStore = sqliteStore
+		defer sqliteStore.Close()
+		logger.Info("task store initialized", zap.String("backend", "sqlite"), zap.String("path", taskDBPath))
+	}
+
+	agentDefReg := agent.NewAgentDefinitionRegistry()
+	agent.DefaultCoordinatorSystemPrompt = prompt.CoordinatorSystemPrompt
+	agentDefReg.RegisterBuiltins()
+
+	// Load custom agent definitions from .harnessclaw/agents/ directory.
+	agentDefsDir := ".harnessclaw/agents"
+	if err := agentDefReg.LoadFromDirectory(agentDefsDir); err != nil {
+		logger.Warn("failed to load custom agent definitions", zap.String("dir", agentDefsDir), zap.Error(err))
+	} else {
+		logger.Info("custom agent definitions loaded", zap.String("dir", agentDefsDir))
+	}
+
+	// Inject multi-agent dependencies into the engine.
+	eng.SetAgentRegistry(agentReg)
+	eng.SetMessageBroker(broker)
+	eng.SetDefRegistry(agentDefReg)
+
+	// Register task tools (scoped to a default scope for now).
+	defaultScope := "default"
+	taskTools := []tool.Tool{
+		tasktool.NewCreate(taskStore, defaultScope),
+		tasktool.NewGet(taskStore, defaultScope),
+		tasktool.NewList(taskStore, defaultScope),
+		tasktool.NewUpdate(taskStore, defaultScope),
+	}
+	for _, tt := range taskTools {
+		if err := registry.Register(tt); err != nil {
+			logger.Fatal("failed to register task tool", zap.Error(err))
+		}
+	}
+	logger.Info("task tools registered", zap.Int("count", len(taskTools)))
+
+	// Register team tools.
+	if err := registry.Register(teamtool.NewCreate(teamMgr, broker, logger)); err != nil {
+		logger.Fatal("failed to register team create tool", zap.Error(err))
+	}
+	if err := registry.Register(teamtool.NewDelete(teamMgr, logger)); err != nil {
+		logger.Fatal("failed to register team delete tool", zap.Error(err))
+	}
+	logger.Info("team tools registered")
+
+	logger.Info("multi-agent infrastructure initialized",
+		zap.Int("agent_definitions", len(agentDefReg.All())),
+	)
+
 	// --- Step 9: Build router with middleware chain ---
 	middlewares := buildMiddlewareChain(cfg, logger)
 	channels := make(map[string]channel.Channel)
@@ -257,23 +345,30 @@ func main() {
 	// --- Step 10: Start channels ---
 	channelCtx, channelCancel := context.WithCancel(context.Background())
 	defer channelCancel()
+	channelErrCh := make(chan error, len(channels))
 	for name, ch := range channels {
 		go func(n string, c channel.Channel) {
 			if err := c.Start(channelCtx, rtr.Handle); err != nil {
 				logger.Error("channel exited with error", zap.String("channel", n), zap.Error(err))
+				channelErrCh <- fmt.Errorf("channel %s: %w", n, err)
 			}
 		}(name, ch)
 	}
 	// TODO: Start HTTP and Feishu channels when implementations are ready.
 	logger.Info("all channels started, service is ready")
 
-	// --- Step 11: Wait for shutdown signal (double-signal support) ---
+	// --- Step 11: Wait for shutdown signal or channel failure ---
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// First signal: begin graceful shutdown.
-	<-sigCh
-	logger.Info("shutdown signal received, stopping gracefully...")
+	select {
+	case <-sigCh:
+		// First signal: begin graceful shutdown.
+		logger.Info("shutdown signal received, stopping gracefully...")
+	case err := <-channelErrCh:
+		// Channel failed (e.g. port in use): shut down immediately.
+		logger.Fatal("channel startup failed, exiting", zap.Error(err))
+	}
 
 	// Second signal: force exit.
 	go func() {
@@ -321,11 +416,6 @@ func main() {
 		logger.Error("failed to persist some sessions", zap.Error(err))
 	}
 
-	// Close storage.
-	if err := store.Close(); err != nil {
-		logger.Error("failed to close storage", zap.Error(err))
-	}
-
 	// Flush logger.
 	logger.Info("shutdown complete")
 	_ = logger.Sync()
@@ -353,22 +443,6 @@ func initLogger(cfg config.LogConfig) (*zap.Logger, error) {
 	}
 
 	return zapCfg.Build()
-}
-
-// initStorage creates the appropriate Storage implementation based on config.
-func initStorage(cfg config.SessionConfig, logger *zap.Logger) (storage.Storage, error) {
-	switch cfg.Storage {
-	case "memory":
-		logger.Info("using in-memory storage (data will be lost on restart)")
-		return memory.New(), nil
-	case "sqlite":
-		// TODO: Replace with real SQLite storage once internal/storage/sqlite is implemented.
-		// For now, fall back to memory storage with a warning.
-		logger.Warn("sqlite storage not yet implemented, falling back to memory storage")
-		return memory.New(), nil
-	default:
-		return nil, fmt.Errorf("unknown storage type: %s", cfg.Storage)
-	}
 }
 
 // subscribeEventLogging registers event bus handlers that log key events.
@@ -548,4 +622,14 @@ func mapKeys(m map[string]config.ProviderConfig) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// defaultDBPath returns ~/.harnessclaw/db/<name> with cross-platform home dir resolution.
+func defaultDBPath(name string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// Fallback to current directory if home cannot be determined.
+		return filepath.Join(".harnessclaw", "db", name)
+	}
+	return filepath.Join(home, ".harnessclaw", "db", name)
 }
