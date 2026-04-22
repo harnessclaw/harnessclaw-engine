@@ -143,3 +143,10 @@ type SearchOrReadClassifier interface {
 type DestructiveMarker interface {
 	IsDestructive(input json.RawMessage) bool
 }
+
+// LongRunningTool marks tools that manage their own timeout and should bypass
+// the executor's default timeout. The Agent tool uses this because sub-agent
+// execution may take much longer than a single tool invocation.
+type LongRunningTool interface {
+	IsLongRunning() bool
+}
