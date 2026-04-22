@@ -11,7 +11,7 @@ build:
 
 # Run the server
 run:
-	go run $(CMD) -config ./configs/config_self.yaml
+	go run $(CMD) -config ./configs/config.yaml
 
 # Run tests
 test:
