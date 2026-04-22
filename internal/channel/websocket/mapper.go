@@ -62,6 +62,36 @@ func (m *EventMapper) Map(event *types.EngineEvent) ([][]byte, error) {
 		return m.mapToolCall(event)
 	case types.EngineEventPermissionRequest:
 		return m.mapPermissionRequest(event)
+	case types.EngineEventSubAgentStart:
+		return m.mapSubAgentStart(event)
+	case types.EngineEventSubAgentEnd:
+		return m.mapSubAgentEnd(event)
+	case types.EngineEventSubAgentEvent:
+		return m.mapSubAgentEvent(event)
+	case types.EngineEventAgentRouted:
+		return m.mapAgentRouted(event)
+	case types.EngineEventTaskCreated:
+		return m.mapTaskCreated(event)
+	case types.EngineEventTaskUpdated:
+		return m.mapTaskUpdated(event)
+	case types.EngineEventAgentMessage:
+		return m.mapAgentMessage(event)
+	case types.EngineEventAgentSpawned:
+		return m.mapAgentSpawned(event)
+	case types.EngineEventAgentIdle:
+		return m.mapAgentIdle(event)
+	case types.EngineEventAgentCompleted:
+		return m.mapAgentCompleted(event)
+	case types.EngineEventAgentFailed:
+		return m.mapAgentFailed(event)
+	case types.EngineEventTeamCreated:
+		return m.mapTeamCreated(event)
+	case types.EngineEventTeamMemberJoin:
+		return m.mapTeamMemberJoin(event)
+	case types.EngineEventTeamMemberLeft:
+		return m.mapTeamMemberLeft(event)
+	case types.EngineEventTeamDeleted:
+		return m.mapTeamDeleted(event)
 	case types.EngineEventError:
 		return m.mapError(event)
 	case types.EngineEventDone:
@@ -302,6 +332,8 @@ func (m *EventMapper) mapToolEnd(event *types.EngineEvent) ([][]byte, error) {
 	isError := false
 	var metadata map[string]any
 	var durationMs int64
+	var renderHint RenderHint
+	var language, filePath string
 
 	if event.ToolResult != nil {
 		output = event.ToolResult.Content
@@ -309,22 +341,37 @@ func (m *EventMapper) mapToolEnd(event *types.EngineEvent) ([][]byte, error) {
 		if isError {
 			status = "error"
 		}
-		// Copy metadata, extracting duration_ms to a top-level field
-		// to avoid duplication in the wire message.
+		// Copy metadata, promoting well-known keys to top-level fields.
 		if event.ToolResult.Metadata != nil {
 			metadata = make(map[string]any, len(event.ToolResult.Metadata))
 			for k, v := range event.ToolResult.Metadata {
-				if k == "duration_ms" {
+				switch k {
+				case "duration_ms":
 					switch d := v.(type) {
 					case int64:
 						durationMs = d
 					case float64:
 						durationMs = int64(d)
 					}
-					// Don't copy to metadata — it's promoted to top-level.
 					continue
+				case MetaRenderHint:
+					if s, ok := v.(string); ok {
+						renderHint = RenderHint(s)
+					}
+					continue
+				case MetaLanguage:
+					if s, ok := v.(string); ok {
+						language = s
+					}
+					continue
+				case MetaFilePath:
+					if s, ok := v.(string); ok {
+						filePath = s
+					}
+					continue
+				default:
+					metadata[k] = v
 				}
-				metadata[k] = v
 			}
 			if len(metadata) == 0 {
 				metadata = nil
@@ -342,6 +389,9 @@ func (m *EventMapper) mapToolEnd(event *types.EngineEvent) ([][]byte, error) {
 		Output:     output,
 		IsError:    isError,
 		DurationMs: durationMs,
+		RenderHint: renderHint,
+		Language:   language,
+		FilePath:   filePath,
 		Metadata:   metadata,
 	}
 	b, err := json.Marshal(msg)
@@ -406,6 +456,355 @@ func (m *EventMapper) mapPermissionRequest(event *types.EngineEvent) ([][]byte, 
 		IsReadOnly:    event.PermissionRequest.IsReadOnly,
 		Options:       wireOpts,
 		PermissionKey: event.PermissionRequest.PermissionKey,
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- subagent_start (sub-agent session begins) ---
+
+func (m *EventMapper) mapSubAgentStart(event *types.EngineEvent) ([][]byte, error) {
+	msg := SubAgentStartMessage{
+		Type:          MsgTypeSubAgentStart,
+		EventID:       newEventID(),
+		SessionID:     m.sessionID,
+		AgentID:       event.AgentID,
+		AgentName:     event.AgentName,
+		Description:   event.AgentDesc,
+		AgentType:     event.AgentType,
+		ParentAgentID: event.ParentAgentID,
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- subagent_end (sub-agent session completes) ---
+
+func (m *EventMapper) mapSubAgentEnd(event *types.EngineEvent) ([][]byte, error) {
+	var usage *UsageInfo
+	if event.Usage != nil {
+		usage = &UsageInfo{
+			InputTokens:  event.Usage.InputTokens,
+			OutputTokens: event.Usage.OutputTokens,
+			CacheRead:    event.Usage.CacheRead,
+			CacheWrite:   event.Usage.CacheWrite,
+		}
+	}
+	msg := SubAgentEndMessage{
+		Type:        MsgTypeSubAgentEnd,
+		EventID:     newEventID(),
+		SessionID:   m.sessionID,
+		AgentID:     event.AgentID,
+		AgentName:   event.AgentName,
+		Status:      event.AgentStatus,
+		DurationMs:  event.Duration,
+		Usage:       usage,
+		DeniedTools: event.DeniedTools,
+	}
+	if event.Terminal != nil {
+		msg.NumTurns = event.Terminal.Turn
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- subagent_event (real-time sub-agent streaming) ---
+
+func (m *EventMapper) mapSubAgentEvent(event *types.EngineEvent) ([][]byte, error) {
+	if event.SubAgentEvent == nil {
+		return nil, nil
+	}
+	msg := SubAgentEventMessage{
+		Type:      MsgTypeSubAgentEvent,
+		EventID:   newEventID(),
+		SessionID: m.sessionID,
+		AgentID:   event.AgentID,
+		AgentName: event.AgentName,
+		Payload:   event.SubAgentEvent,
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- agent_routed (@-mention routing) ---
+
+func (m *EventMapper) mapAgentRouted(event *types.EngineEvent) ([][]byte, error) {
+	msg := AgentRoutedMessage{
+		Type:      MsgTypeAgentRouted,
+		EventID:   newEventID(),
+		SessionID: m.sessionID,
+		AgentName: event.AgentName,
+		Description: event.AgentDesc,
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- task_created ---
+
+func (m *EventMapper) mapTaskCreated(event *types.EngineEvent) ([][]byte, error) {
+	if event.TaskEvent == nil {
+		return nil, nil
+	}
+	msg := TaskCreatedMessage{
+		Type:      MsgTypeTaskCreated,
+		EventID:   newEventID(),
+		SessionID: m.sessionID,
+		Task: TaskInfoWire{
+			TaskID:  event.TaskEvent.TaskID,
+			Subject: event.TaskEvent.Subject,
+			Status:  event.TaskEvent.Status,
+			Owner:   event.TaskEvent.Owner,
+			ScopeID: event.TaskEvent.ScopeID,
+		},
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- task_updated ---
+
+func (m *EventMapper) mapTaskUpdated(event *types.EngineEvent) ([][]byte, error) {
+	if event.TaskEvent == nil {
+		return nil, nil
+	}
+	msg := TaskUpdatedMessage{
+		Type:      MsgTypeTaskUpdated,
+		EventID:   newEventID(),
+		SessionID: m.sessionID,
+		Task: TaskInfoWire{
+			TaskID:     event.TaskEvent.TaskID,
+			Subject:    event.TaskEvent.Subject,
+			Status:     event.TaskEvent.Status,
+			Owner:      event.TaskEvent.Owner,
+			ActiveForm: event.TaskEvent.ActiveForm,
+			ScopeID:    event.TaskEvent.ScopeID,
+		},
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- agent_message (inter-agent) ---
+
+func (m *EventMapper) mapAgentMessage(event *types.EngineEvent) ([][]byte, error) {
+	if event.AgentMsg == nil {
+		return nil, nil
+	}
+	msg := AgentMessageWireMessage{
+		Type:      MsgTypeAgentMessage,
+		EventID:   newEventID(),
+		SessionID: m.sessionID,
+		Message: AgentMsgInfoWire{
+			From:    event.AgentMsg.From,
+			To:      event.AgentMsg.To,
+			Summary: event.AgentMsg.Summary,
+			TeamID:  event.AgentMsg.TeamID,
+		},
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- agent_spawned (async agent launched) ---
+
+func (m *EventMapper) mapAgentSpawned(event *types.EngineEvent) ([][]byte, error) {
+	msg := AgentSpawnedMessage{
+		Type:          MsgTypeAgentSpawned,
+		EventID:       newEventID(),
+		SessionID:     m.sessionID,
+		AgentID:       event.AgentID,
+		AgentName:     event.AgentName,
+		Description:   event.AgentDesc,
+		AgentType:     event.AgentType,
+		ParentAgentID: event.ParentAgentID,
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- agent_idle ---
+
+func (m *EventMapper) mapAgentIdle(event *types.EngineEvent) ([][]byte, error) {
+	msg := AgentIdleMessage{
+		Type:      MsgTypeAgentIdle,
+		EventID:   newEventID(),
+		SessionID: m.sessionID,
+		AgentID:   event.AgentID,
+		AgentName: event.AgentName,
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- agent_completed (async agent done) ---
+
+func (m *EventMapper) mapAgentCompleted(event *types.EngineEvent) ([][]byte, error) {
+	var usage *UsageInfo
+	if event.Usage != nil {
+		usage = &UsageInfo{
+			InputTokens:  event.Usage.InputTokens,
+			OutputTokens: event.Usage.OutputTokens,
+			CacheRead:    event.Usage.CacheRead,
+			CacheWrite:   event.Usage.CacheWrite,
+		}
+	}
+	msg := AgentCompletedMessage{
+		Type:       MsgTypeAgentCompleted,
+		EventID:    newEventID(),
+		SessionID:  m.sessionID,
+		AgentID:    event.AgentID,
+		AgentName:  event.AgentName,
+		Status:     event.AgentStatus,
+		DurationMs: event.Duration,
+		Usage:      usage,
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- agent_failed (async agent error) ---
+
+func (m *EventMapper) mapAgentFailed(event *types.EngineEvent) ([][]byte, error) {
+	errMsg := "unknown error"
+	if event.Error != nil {
+		errMsg = event.Error.Error()
+	}
+	msg := AgentFailedMessage{
+		Type:       MsgTypeAgentFailed,
+		EventID:    newEventID(),
+		SessionID:  m.sessionID,
+		AgentID:    event.AgentID,
+		AgentName:  event.AgentName,
+		Error:      ErrorDetail{Type: "agent_error", Code: "agent_failed", Message: errMsg},
+		DurationMs: event.Duration,
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- team_created ---
+
+func (m *EventMapper) mapTeamCreated(event *types.EngineEvent) ([][]byte, error) {
+	if event.TeamEvent == nil {
+		return nil, nil
+	}
+	msg := TeamCreatedMessage{
+		Type:      MsgTypeTeamCreated,
+		EventID:   newEventID(),
+		SessionID: m.sessionID,
+		Team: TeamInfoWire{
+			TeamID:   event.TeamEvent.TeamID,
+			TeamName: event.TeamEvent.TeamName,
+			Members:  event.TeamEvent.Members,
+		},
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- team_member_join ---
+
+func (m *EventMapper) mapTeamMemberJoin(event *types.EngineEvent) ([][]byte, error) {
+	if event.TeamEvent == nil {
+		return nil, nil
+	}
+	msg := TeamMemberJoinMessage{
+		Type:      MsgTypeTeamMemberJoin,
+		EventID:   newEventID(),
+		SessionID: m.sessionID,
+		Team: TeamInfoWire{
+			TeamID:     event.TeamEvent.TeamID,
+			TeamName:   event.TeamEvent.TeamName,
+			Members:    event.TeamEvent.Members,
+			MemberName: event.TeamEvent.MemberName,
+			MemberType: event.TeamEvent.MemberType,
+		},
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- team_member_left ---
+
+func (m *EventMapper) mapTeamMemberLeft(event *types.EngineEvent) ([][]byte, error) {
+	if event.TeamEvent == nil {
+		return nil, nil
+	}
+	msg := TeamMemberLeftMessage{
+		Type:      MsgTypeTeamMemberLeft,
+		EventID:   newEventID(),
+		SessionID: m.sessionID,
+		Team: TeamInfoWire{
+			TeamID:     event.TeamEvent.TeamID,
+			TeamName:   event.TeamEvent.TeamName,
+			Members:    event.TeamEvent.Members,
+			MemberName: event.TeamEvent.MemberName,
+		},
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
+}
+
+// --- team_deleted ---
+
+func (m *EventMapper) mapTeamDeleted(event *types.EngineEvent) ([][]byte, error) {
+	if event.TeamEvent == nil {
+		return nil, nil
+	}
+	msg := TeamDeletedMessage{
+		Type:      MsgTypeTeamDeleted,
+		EventID:   newEventID(),
+		SessionID: m.sessionID,
+		Team: TeamInfoWire{
+			TeamID:   event.TeamEvent.TeamID,
+			TeamName: event.TeamEvent.TeamName,
+		},
 	}
 	b, err := json.Marshal(msg)
 	if err != nil {

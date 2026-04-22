@@ -278,13 +278,18 @@ func (c *Conn) handleSessionCreate(msg ClientMessage, registry *ConnRegistry, cl
 		Type:            MsgTypeSessionCreated,
 		EventID:         "evt_" + uuid.New().String()[:8],
 		SessionID:       sessionID,
-		ProtocolVersion: "1.5",
+		ProtocolVersion: "1.9",
 		Session: SessionInfo{
 			Capabilities: Capabilities{
-				Streaming:   true,
-				Tools:       true,
+				Streaming:  true,
+				Tools:      true,
 				ClientTools: clientTools,
-				MultiTurn:   true,
+				MultiTurn:  true,
+				SubAgents:  true,
+				Tasks:      true,
+				Messaging:  true,
+				AsyncAgent: true,
+				Teams:      true,
 			},
 		},
 	}

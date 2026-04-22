@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+
+	"harnessclaw-go/pkg/types"
 )
 
 // WSMessageType identifies the kind of wire-protocol message.
@@ -26,10 +28,59 @@ const (
 	MsgTypeToolStart         WSMessageType = "tool.start"         // server-side tool execution started
 	MsgTypeToolEnd           WSMessageType = "tool.end"           // server-side tool execution completed
 	MsgTypePermissionRequest WSMessageType = "permission.request" // server asks client for tool approval
+	MsgTypeSubAgentStart     WSMessageType = "subagent.start"
+	MsgTypeSubAgentEnd       WSMessageType = "subagent.end"
+	MsgTypeSubAgentEvent     WSMessageType = "subagent.event"     // real-time sub-agent streaming
+	// Phase 1.5
+	MsgTypeAgentRouted      WSMessageType = "agent.routed"
+	// Phase 2
+	MsgTypeTaskCreated      WSMessageType = "task.created"
+	MsgTypeTaskUpdated      WSMessageType = "task.updated"
+	// Phase 3
+	MsgTypeAgentMessage     WSMessageType = "agent.message"
+	// Phase 4
+	MsgTypeAgentSpawned     WSMessageType = "agent.spawned"
+	MsgTypeAgentIdle        WSMessageType = "agent.idle"
+	MsgTypeAgentCompleted   WSMessageType = "agent.completed"
+	MsgTypeAgentFailed      WSMessageType = "agent.failed"
+	// Phase 5
+	MsgTypeTeamCreated      WSMessageType = "team.created"
+	MsgTypeTeamMemberJoin   WSMessageType = "team.member_join"
+	MsgTypeTeamMemberLeft   WSMessageType = "team.member_left"
+	MsgTypeTeamDeleted      WSMessageType = "team.deleted"
 	MsgTypeTaskEnd           WSMessageType = "task.end"
 	MsgTypeError             WSMessageType = "error"
 	MsgTypePong              WSMessageType = "pong"
+)
 
+// RenderHint classifies tool output for client-side rendering.
+type RenderHint string
+
+const (
+	RenderTerminal RenderHint = "terminal"  // Bash: shell output
+	RenderCode     RenderHint = "code"      // Read: source code with syntax highlighting
+	RenderDiff     RenderHint = "diff"      // Edit: file diff/patch
+	RenderFileInfo RenderHint = "file_info" // Write: file creation/overwrite confirmation
+	RenderSearch   RenderHint = "search"    // Grep, Glob, WebSearch, TavilySearch
+	RenderMarkdown RenderHint = "markdown"  // WebFetch: web content
+	RenderAgent    RenderHint = "agent"     // Agent tool: sub-agent output
+	RenderSkill    RenderHint = "skill"     // Skill invocation
+	RenderTask     RenderHint = "task"      // Task management tools
+	RenderMessage  RenderHint = "message"   // SendMessage
+	RenderTeam     RenderHint = "team"      // TeamCreate/Delete
+	RenderPlain    RenderHint = "plain"     // default fallback
+)
+
+// Well-known metadata keys promoted to top-level ToolEndMessage fields.
+// Tools set these in ToolResult.Metadata; the mapper promotes them and
+// removes them from the residual metadata map to avoid duplication.
+const (
+	MetaRenderHint = "render_hint"
+	MetaLanguage   = "language"
+	MetaFilePath   = "file_path"
+)
+
+const (
 	// Client → Server
 	MsgTypeSessionCreate      WSMessageType = "session.create" // client requests session initialization
 	MsgTypeUserMessage        WSMessageType = "user.message"
@@ -68,6 +119,11 @@ type Capabilities struct {
 	Thinking    bool `json:"thinking"`
 	MultiTurn   bool `json:"multi_turn"`
 	ImageInput  bool `json:"image_input"`
+	SubAgents   bool `json:"sub_agents"`
+	Tasks       bool `json:"tasks"`
+	Messaging   bool `json:"messaging"`
+	AsyncAgent  bool `json:"async_agent"`
+	Teams       bool `json:"teams"`
 }
 
 // MessageStartMessage signals the beginning of an LLM response message.
@@ -181,6 +237,9 @@ type ToolEndMessage struct {
 	Output     string         `json:"output"`
 	IsError    bool           `json:"is_error"`
 	DurationMs int64          `json:"duration_ms,omitempty"`
+	RenderHint RenderHint     `json:"render_hint,omitempty"`
+	Language   string         `json:"language,omitempty"`
+	FilePath   string         `json:"file_path,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
@@ -203,6 +262,183 @@ type PermissionOptionWire struct {
 	Label string `json:"label"`
 	Scope string `json:"scope"` // "once" or "session"
 	Allow bool   `json:"allow"`
+}
+
+// SubAgentStartMessage is sent when a sub-agent session begins.
+type SubAgentStartMessage struct {
+	Type          WSMessageType `json:"type"` // "subagent.start"
+	EventID       string        `json:"event_id"`
+	SessionID     string        `json:"session_id"`
+	AgentID       string        `json:"agent_id"`
+	AgentName     string        `json:"agent_name,omitempty"`
+	Description   string        `json:"description,omitempty"`
+	AgentType     string        `json:"agent_type"`
+	ParentAgentID string        `json:"parent_agent_id,omitempty"`
+}
+
+// SubAgentEndMessage is sent when a sub-agent session completes.
+type SubAgentEndMessage struct {
+	Type        WSMessageType `json:"type"` // "subagent.end"
+	EventID     string        `json:"event_id"`
+	SessionID   string        `json:"session_id"`
+	AgentID     string        `json:"agent_id"`
+	AgentName   string        `json:"agent_name,omitempty"`
+	Status      string        `json:"status"`
+	DurationMs  int64         `json:"duration_ms"`
+	NumTurns    int           `json:"num_turns,omitempty"`
+	Usage       *UsageInfo    `json:"usage,omitempty"`
+	DeniedTools []string      `json:"denied_tools,omitempty"`
+}
+
+// SubAgentEventMessage carries real-time streaming content from a sub-agent.
+// It wraps the inner event so it doesn't interfere with the parent's message
+// lifecycle in the mapper.
+type SubAgentEventMessage struct {
+	Type      WSMessageType              `json:"type"` // "subagent.event"
+	EventID   string                     `json:"event_id"`
+	SessionID string                     `json:"session_id"`
+	AgentID   string                     `json:"agent_id"`
+	AgentName string                     `json:"agent_name,omitempty"`
+	Payload   *types.SubAgentEventData   `json:"payload"`
+}
+
+// AgentRoutedMessage notifies the client that a message was routed to a specialist agent.
+type AgentRoutedMessage struct {
+	Type        WSMessageType `json:"type"`
+	EventID     string        `json:"event_id"`
+	SessionID   string        `json:"session_id"`
+	AgentName   string        `json:"agent_name"`
+	DisplayName string        `json:"display_name,omitempty"`
+	Description string        `json:"description,omitempty"`
+	AutoTeam    bool          `json:"auto_team,omitempty"`
+	Prompt      string        `json:"prompt,omitempty"`
+}
+
+// TaskCreatedMessage notifies the client of a new task.
+type TaskCreatedMessage struct {
+	Type      WSMessageType `json:"type"`
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	Task      TaskInfoWire  `json:"task"`
+}
+
+// TaskUpdatedMessage notifies the client of task changes.
+type TaskUpdatedMessage struct {
+	Type      WSMessageType `json:"type"`
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	Task      TaskInfoWire  `json:"task"`
+}
+
+// TaskInfoWire is the wire format of task state.
+type TaskInfoWire struct {
+	TaskID     string `json:"task_id"`
+	Subject    string `json:"subject"`
+	Status     string `json:"status"`
+	Owner      string `json:"owner,omitempty"`
+	ActiveForm string `json:"active_form,omitempty"`
+	ScopeID    string `json:"scope_id"`
+}
+
+// AgentMessageWireMessage notifies the client of inter-agent communication.
+type AgentMessageWireMessage struct {
+	Type      WSMessageType      `json:"type"`
+	EventID   string             `json:"event_id"`
+	SessionID string             `json:"session_id"`
+	Message   AgentMsgInfoWire   `json:"message"`
+}
+
+// AgentMsgInfoWire is the wire format of agent message summary.
+type AgentMsgInfoWire struct {
+	From    string `json:"from"`
+	To      string `json:"to"`
+	Summary string `json:"summary"`
+	TeamID  string `json:"team_id,omitempty"`
+}
+
+// AgentSpawnedMessage notifies the client of a new async agent.
+type AgentSpawnedMessage struct {
+	Type          WSMessageType `json:"type"`
+	EventID       string        `json:"event_id"`
+	SessionID     string        `json:"session_id"`
+	AgentID       string        `json:"agent_id"`
+	AgentName     string        `json:"agent_name,omitempty"`
+	Description   string        `json:"description,omitempty"`
+	AgentType     string        `json:"agent_type"`
+	ParentAgentID string        `json:"parent_agent_id,omitempty"`
+}
+
+// AgentIdleMessage notifies the client that an agent entered idle state.
+type AgentIdleMessage struct {
+	Type      WSMessageType `json:"type"`
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	AgentID   string        `json:"agent_id"`
+	AgentName string        `json:"agent_name,omitempty"`
+}
+
+// AgentCompletedMessage notifies the client that an async agent completed.
+type AgentCompletedMessage struct {
+	Type       WSMessageType `json:"type"`
+	EventID    string        `json:"event_id"`
+	SessionID  string        `json:"session_id"`
+	AgentID    string        `json:"agent_id"`
+	AgentName  string        `json:"agent_name,omitempty"`
+	Status     string        `json:"status"`
+	DurationMs int64         `json:"duration_ms"`
+	Usage      *UsageInfo    `json:"usage,omitempty"`
+}
+
+// AgentFailedMessage notifies the client that an async agent failed.
+type AgentFailedMessage struct {
+	Type       WSMessageType  `json:"type"`
+	EventID    string         `json:"event_id"`
+	SessionID  string         `json:"session_id"`
+	AgentID    string         `json:"agent_id"`
+	AgentName  string         `json:"agent_name,omitempty"`
+	Error      ErrorDetail    `json:"error"`
+	DurationMs int64          `json:"duration_ms"`
+}
+
+// TeamCreatedMessage notifies the client of a new team.
+type TeamCreatedMessage struct {
+	Type      WSMessageType `json:"type"`
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	Team      TeamInfoWire  `json:"team"`
+}
+
+// TeamMemberJoinMessage notifies the client of a new team member.
+type TeamMemberJoinMessage struct {
+	Type      WSMessageType `json:"type"`
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	Team      TeamInfoWire  `json:"team"`
+}
+
+// TeamMemberLeftMessage notifies the client of a departed team member.
+type TeamMemberLeftMessage struct {
+	Type      WSMessageType `json:"type"`
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	Team      TeamInfoWire  `json:"team"`
+}
+
+// TeamDeletedMessage notifies the client of a dissolved team.
+type TeamDeletedMessage struct {
+	Type      WSMessageType `json:"type"`
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	Team      TeamInfoWire  `json:"team"`
+}
+
+// TeamInfoWire is the wire format of team state.
+type TeamInfoWire struct {
+	TeamID     string   `json:"team_id"`
+	TeamName   string   `json:"team_name"`
+	Members    []string `json:"members,omitempty"`
+	MemberName string   `json:"member_name,omitempty"`
+	MemberType string   `json:"member_type,omitempty"`
 }
 
 // TaskEndMessage signals that a query-loop task has finished.

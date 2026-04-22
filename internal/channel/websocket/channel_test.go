@@ -199,8 +199,10 @@ func TestMapToolEndEvent(t *testing.T) {
 			Content: "file1.go\nfile2.go",
 			IsError: false,
 			Metadata: map[string]any{
-				"exit_code":   0,
-				"duration_ms": int64(42),
+				"exit_code":    0,
+				"duration_ms":  int64(42),
+				"render_hint":  "terminal",
+				"command":      "ls -la",
 			},
 		},
 	})
@@ -233,9 +235,19 @@ func TestMapToolEndEvent(t *testing.T) {
 			t.Error("duration_ms should not be duplicated in metadata")
 		}
 	}
+	// render_hint should be promoted to top-level.
+	if msg.RenderHint != "terminal" {
+		t.Errorf("expected render_hint 'terminal', got %q", msg.RenderHint)
+	}
+	// render_hint should NOT be in residual metadata.
+	if msg.Metadata != nil {
+		if _, has := msg.Metadata["render_hint"]; has {
+			t.Error("render_hint should not be duplicated in metadata")
+		}
+	}
 	// exit_code should remain in metadata.
 	if msg.Metadata == nil {
-		t.Fatal("expected metadata with exit_code")
+		t.Fatal("expected metadata with exit_code and command")
 	}
 	ec, ok := msg.Metadata["exit_code"]
 	if !ok {
@@ -244,6 +256,137 @@ func TestMapToolEndEvent(t *testing.T) {
 	// After JSON roundtrip, integer values in map[string]any become float64.
 	if ecf, isFloat := ec.(float64); !isFloat || ecf != 0 {
 		t.Errorf("expected metadata.exit_code=0 (float64), got %v (%T)", ec, ec)
+	}
+	// command should remain in metadata (not promoted).
+	if _, hasCmd := msg.Metadata["command"]; !hasCmd {
+		t.Error("metadata missing command")
+	}
+}
+
+func TestMapToolEnd_RenderHintPromoted(t *testing.T) {
+	m := NewEventMapper("s1", false)
+	msgs, err := m.Map(&types.EngineEvent{
+		Type:      types.EngineEventToolEnd,
+		ToolUseID: "tu_2",
+		ToolName:  "Read",
+		ToolResult: &types.ToolResult{
+			Content: "package main",
+			Metadata: map[string]any{
+				"render_hint": "code",
+				"language":    "go",
+				"file_path":   "/src/main.go",
+				"start_line":  1,
+				"lines_read":  10,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	var msg ToolEndMessage
+	json.Unmarshal(msgs[0], &msg)
+
+	// Promoted fields.
+	if msg.RenderHint != "code" {
+		t.Errorf("expected render_hint 'code', got %q", msg.RenderHint)
+	}
+	if msg.Language != "go" {
+		t.Errorf("expected language 'go', got %q", msg.Language)
+	}
+	if msg.FilePath != "/src/main.go" {
+		t.Errorf("expected file_path '/src/main.go', got %q", msg.FilePath)
+	}
+
+	// Promoted keys must NOT appear in residual metadata.
+	if msg.Metadata != nil {
+		for _, key := range []string{"render_hint", "language", "file_path"} {
+			if _, has := msg.Metadata[key]; has {
+				t.Errorf("%s should not be duplicated in metadata", key)
+			}
+		}
+	}
+
+	// Non-promoted keys should remain.
+	if msg.Metadata == nil {
+		t.Fatal("expected metadata with start_line and lines_read")
+	}
+	if _, ok := msg.Metadata["start_line"]; !ok {
+		t.Error("metadata missing start_line")
+	}
+	if _, ok := msg.Metadata["lines_read"]; !ok {
+		t.Error("metadata missing lines_read")
+	}
+}
+
+func TestMapToolEnd_NoRenderHint(t *testing.T) {
+	m := NewEventMapper("s1", false)
+	msgs, err := m.Map(&types.EngineEvent{
+		Type:      types.EngineEventToolEnd,
+		ToolUseID: "tu_3",
+		ToolName:  "custom",
+		ToolResult: &types.ToolResult{
+			Content: "ok",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg ToolEndMessage
+	json.Unmarshal(msgs[0], &msg)
+
+	if msg.RenderHint != "" {
+		t.Errorf("expected empty render_hint, got %q", msg.RenderHint)
+	}
+	if msg.Language != "" {
+		t.Errorf("expected empty language, got %q", msg.Language)
+	}
+	if msg.FilePath != "" {
+		t.Errorf("expected empty file_path, got %q", msg.FilePath)
+	}
+}
+
+func TestMapToolEnd_AllPromotedFields(t *testing.T) {
+	m := NewEventMapper("s1", false)
+	msgs, err := m.Map(&types.EngineEvent{
+		Type:      types.EngineEventToolEnd,
+		ToolUseID: "tu_4",
+		ToolName:  "Edit",
+		ToolResult: &types.ToolResult{
+			Content: "applied",
+			Metadata: map[string]any{
+				"duration_ms": int64(100),
+				"render_hint": "diff",
+				"language":    "python",
+				"file_path":   "/app/utils.py",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg ToolEndMessage
+	json.Unmarshal(msgs[0], &msg)
+
+	// All four promoted fields should be at top-level.
+	if msg.DurationMs != 100 {
+		t.Errorf("expected duration_ms 100, got %d", msg.DurationMs)
+	}
+	if msg.RenderHint != "diff" {
+		t.Errorf("expected render_hint 'diff', got %q", msg.RenderHint)
+	}
+	if msg.Language != "python" {
+		t.Errorf("expected language 'python', got %q", msg.Language)
+	}
+	if msg.FilePath != "/app/utils.py" {
+		t.Errorf("expected file_path '/app/utils.py', got %q", msg.FilePath)
+	}
+
+	// Metadata should be nil since all keys were promoted.
+	if msg.Metadata != nil {
+		t.Errorf("expected nil metadata (all keys promoted), got %v", msg.Metadata)
 	}
 }
 
@@ -487,8 +630,8 @@ func TestIntegration_WebSocket_RoundTrip(t *testing.T) {
 	if initMsg.SessionID != "test-session" {
 		t.Errorf("expected session_id 'test-session', got %q", initMsg.SessionID)
 	}
-	if initMsg.ProtocolVersion != "1.5" {
-		t.Errorf("expected protocol_version '1.5', got %q", initMsg.ProtocolVersion)
+	if initMsg.ProtocolVersion != "1.9" {
+		t.Errorf("expected protocol_version '1.9', got %q", initMsg.ProtocolVersion)
 	}
 
 	// Send a user.message.
