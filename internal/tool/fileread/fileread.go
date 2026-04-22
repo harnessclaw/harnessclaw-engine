@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"harnessclaw-go/internal/config"
@@ -128,10 +129,26 @@ func (t *FileReadTool) Execute(_ context.Context, input json.RawMessage) (*types
 	}
 
 	if sb.Len() == 0 {
-		return &types.ToolResult{Content: "(empty file)", IsError: false}, nil
+		return &types.ToolResult{
+			Content: "(empty file)",
+			Metadata: map[string]any{
+				"render_hint": "code",
+				"file_path":   ri.FilePath,
+				"language":    tool.ExtToLanguage(filepath.Ext(ri.FilePath)),
+			},
+		}, nil
 	}
 
-	return &types.ToolResult{Content: sb.String()}, nil
+	return &types.ToolResult{
+		Content: sb.String(),
+		Metadata: map[string]any{
+			"render_hint": "code",
+			"file_path":   ri.FilePath,
+			"language":    tool.ExtToLanguage(filepath.Ext(ri.FilePath)),
+			"start_line":  offset,
+			"lines_read":  linesRead,
+		},
+	}, nil
 }
 
 const fileReadDescription = `Reads a file from the local filesystem. You can access any file directly by using this tool.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"harnessclaw-go/internal/config"
@@ -136,7 +137,14 @@ func (t *FileEditTool) Execute(_ context.Context, input json.RawMessage) (*types
 		return &types.ToolResult{Content: "error writing file: " + err.Error(), IsError: true}, nil
 	}
 
-	return &types.ToolResult{Content: fmt.Sprintf("Successfully edited %s", ei.FilePath)}, nil
+	return &types.ToolResult{
+		Content: fmt.Sprintf("Successfully edited %s", ei.FilePath),
+		Metadata: map[string]any{
+			"render_hint": "diff",
+			"file_path":   ei.FilePath,
+			"language":    tool.ExtToLanguage(filepath.Ext(ei.FilePath)),
+		},
+	}, nil
 }
 
 const fileEditDescription = `Performs exact string replacements in files.

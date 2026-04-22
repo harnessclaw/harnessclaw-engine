@@ -157,6 +157,7 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (*types.
 	return &types.ToolResult{
 		Content: fmt.Sprintf("Launching skill: %s", commandName),
 		Metadata: map[string]any{
+			"render_hint":   "skill",
 			"skill_name":    name,
 			"allowed_tools": pc.AllowedTools,
 			"model":         pc.Model,

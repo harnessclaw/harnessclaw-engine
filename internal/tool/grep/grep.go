@@ -124,7 +124,14 @@ func (t *GrepTool) Execute(ctx context.Context, input json.RawMessage) (*types.T
 	// rg exits 1 when no matches found — not an error.
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return &types.ToolResult{Content: "No matches found."}, nil
+			return &types.ToolResult{
+				Content: "No matches found.",
+				Metadata: map[string]any{
+					"render_hint": "search",
+					"pattern":     gi.Pattern,
+					"match_count": 0,
+				},
+			}, nil
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
 			return &types.ToolResult{Content: "Error: " + output, IsError: true}, nil
@@ -148,7 +155,26 @@ func (t *GrepTool) Execute(ctx context.Context, input json.RawMessage) (*types.T
 		}
 	}
 
-	return &types.ToolResult{Content: output}, nil
+	return &types.ToolResult{
+		Content: output,
+		Metadata: map[string]any{
+			"render_hint": "search",
+			"pattern":     gi.Pattern,
+			"match_count": countNonEmptyLines(output),
+			"output_mode": gi.OutputMode,
+		},
+	}, nil
+}
+
+// countNonEmptyLines counts non-empty lines in output for match estimation.
+func countNonEmptyLines(s string) int {
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // buildRgArgs constructs the ripgrep command-line arguments.

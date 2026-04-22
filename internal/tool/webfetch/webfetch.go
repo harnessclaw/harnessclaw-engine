@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
+
+	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/tool"
@@ -27,15 +31,30 @@ type fetchInput struct {
 	Prompt string `json:"prompt"`
 }
 
+// fetchStats tracks error patterns for observability.
+type fetchStats struct {
+	mu          sync.Mutex
+	total       int
+	errors      int
+	byStatus    map[int]int    // status_code → count
+	byDomain    map[string]int // domain → error count
+	networkErrs int
+}
+
 // WebFetchTool fetches content from URLs and returns it.
 type WebFetchTool struct {
 	tool.BaseTool
 	cfg    config.ToolConfig
 	client *http.Client
+	logger *zap.Logger
+	stats  fetchStats
 }
 
 // New creates a WebFetchTool with the given config.
-func New(cfg config.ToolConfig) *WebFetchTool {
+func New(cfg config.ToolConfig, logger *zap.Logger) *WebFetchTool {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &WebFetchTool{
 		cfg: cfg,
 		client: &http.Client{
@@ -47,14 +66,19 @@ func New(cfg config.ToolConfig) *WebFetchTool {
 				return nil
 			},
 		},
+		logger: logger.Named("webfetch"),
+		stats: fetchStats{
+			byStatus: make(map[int]int),
+			byDomain: make(map[string]int),
+		},
 	}
 }
 
-func (t *WebFetchTool) Name() string                   { return toolName }
-func (t *WebFetchTool) Description() string            { return webFetchDescription }
-func (t *WebFetchTool) IsReadOnly() bool               { return true }
-func (t *WebFetchTool) IsConcurrencySafe() bool        { return true }
-func (t *WebFetchTool) IsEnabled() bool                { return t.cfg.Enabled }
+func (t *WebFetchTool) Name() string            { return toolName }
+func (t *WebFetchTool) Description() string     { return webFetchDescription }
+func (t *WebFetchTool) IsReadOnly() bool         { return true }
+func (t *WebFetchTool) IsConcurrencySafe() bool  { return true }
+func (t *WebFetchTool) IsEnabled() bool          { return t.cfg.Enabled }
 
 func (t *WebFetchTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -62,7 +86,7 @@ func (t *WebFetchTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"url": map[string]any{
 				"type":        "string",
-				"description": "The URL to fetch content from",
+				"description": "The URL to fetch content from. Must be a publicly accessible URL.",
 				"format":      "uri",
 			},
 			"prompt": map[string]any{
@@ -85,10 +109,6 @@ func (t *WebFetchTool) ValidateInput(input json.RawMessage) error {
 	if fi.Prompt == "" {
 		return fmt.Errorf("prompt is required")
 	}
-	// Upgrade HTTP to HTTPS.
-	if strings.HasPrefix(fi.URL, "http://") {
-		// Just validate, upgrade happens in Execute.
-	}
 	return nil
 }
 
@@ -99,26 +119,64 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (*typ
 	}
 
 	// Upgrade HTTP to HTTPS.
-	url := fi.URL
-	if strings.HasPrefix(url, "http://") {
-		url = "https://" + url[7:]
+	rawURL := fi.URL
+	if strings.HasPrefix(rawURL, "http://") {
+		rawURL = "https://" + rawURL[7:]
 	}
 
+	// Extract domain for logging.
+	domain := extractDomain(rawURL)
+
+	t.stats.mu.Lock()
+	t.stats.total++
+	t.stats.mu.Unlock()
+
+	t.logger.Info("webfetch attempt",
+		zap.String("url", rawURL),
+		zap.String("domain", domain),
+	)
+
 	// Fetch the URL.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
+		t.recordError(domain, 0)
+		t.logger.Warn("webfetch request creation failed",
+			zap.String("url", rawURL),
+			zap.Error(err),
+		)
 		return &types.ToolResult{Content: "error creating request: " + err.Error(), IsError: true}, nil
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; HarnessClawEngine/1.0)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,text/plain,*/*")
 
+	start := time.Now()
 	resp, err := t.client.Do(req)
+	elapsed := time.Since(start)
+
 	if err != nil {
+		t.recordError(domain, 0)
+		t.stats.mu.Lock()
+		t.stats.networkErrs++
+		t.stats.mu.Unlock()
+		t.logger.Warn("webfetch network error",
+			zap.String("url", rawURL),
+			zap.String("domain", domain),
+			zap.Duration("elapsed", elapsed),
+			zap.Error(err),
+		)
 		return &types.ToolResult{Content: "error fetching URL: " + err.Error(), IsError: true}, nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		t.recordError(domain, resp.StatusCode)
+		t.logger.Warn("webfetch HTTP error",
+			zap.String("url", rawURL),
+			zap.String("domain", domain),
+			zap.Int("status", resp.StatusCode),
+			zap.Duration("elapsed", elapsed),
+			zap.String("content_type", resp.Header.Get("Content-Type")),
+		)
 		return &types.ToolResult{
 			Content: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, resp.Status),
 			IsError: true,
@@ -128,13 +186,16 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (*typ
 	// Read body with size limit.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if err != nil {
+		t.logger.Warn("webfetch read error",
+			zap.String("url", rawURL),
+			zap.Error(err),
+		)
 		return &types.ToolResult{Content: "error reading response: " + err.Error(), IsError: true}, nil
 	}
 
 	content := string(body)
 
 	// Basic HTML tag stripping for readability.
-	// A proper implementation would use a HTML-to-markdown converter.
 	content = stripBasicHTML(content)
 
 	// Truncate if still too long.
@@ -142,10 +203,20 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (*typ
 		content = content[:maxBodySize/2] + "\n... (content truncated)"
 	}
 
+	t.logger.Info("webfetch success",
+		zap.String("url", rawURL),
+		zap.String("domain", domain),
+		zap.Int("status", resp.StatusCode),
+		zap.Int("body_bytes", len(body)),
+		zap.Int("stripped_len", len(content)),
+		zap.Duration("elapsed", elapsed),
+	)
+
 	return &types.ToolResult{
-		Content: fmt.Sprintf("Fetched content from %s:\n\n%s\n\nPrompt: %s", url, content, fi.Prompt),
+		Content: fmt.Sprintf("Fetched content from %s:\n\n%s\n\nPrompt: %s", rawURL, content, fi.Prompt),
 		Metadata: map[string]any{
-			"url":            url,
+			"render_hint":    "markdown",
+			"url":            rawURL,
 			"status_code":    resp.StatusCode,
 			"content_type":   resp.Header.Get("Content-Type"),
 			"content_length": len(body),
@@ -153,20 +224,59 @@ func (t *WebFetchTool) Execute(ctx context.Context, input json.RawMessage) (*typ
 	}, nil
 }
 
+// recordError tracks error stats for observability.
+func (t *WebFetchTool) recordError(domain string, statusCode int) {
+	t.stats.mu.Lock()
+	defer t.stats.mu.Unlock()
+	t.stats.errors++
+	if statusCode > 0 {
+		t.stats.byStatus[statusCode]++
+	}
+	t.stats.byDomain[domain]++
+
+	// Log cumulative stats periodically (every 10 errors).
+	if t.stats.errors%10 == 0 {
+		t.logger.Info("webfetch error stats",
+			zap.Int("total_requests", t.stats.total),
+			zap.Int("total_errors", t.stats.errors),
+			zap.Int("network_errors", t.stats.networkErrs),
+			zap.Any("by_status", t.stats.byStatus),
+			zap.Any("by_domain_errors", t.stats.byDomain),
+		)
+	}
+}
+
+// extractDomain returns the hostname from a URL, or the raw URL on parse failure.
+func extractDomain(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return rawURL
+	}
+	return strings.ToLower(parsed.Hostname())
+}
+
 // stripBasicHTML removes common HTML tags for basic readability.
 func stripBasicHTML(s string) string {
 	// Remove script and style blocks.
 	for _, tag := range []string{"script", "style"} {
+		closeTag := "</" + tag + ">"
 		for {
-			start := strings.Index(strings.ToLower(s), "<"+tag)
+			lower := strings.ToLower(s)
+			start := strings.Index(lower, "<"+tag)
 			if start < 0 {
 				break
 			}
-			end := strings.Index(strings.ToLower(s[start:]), "</"+tag+">")
+			end := strings.Index(lower[start:], closeTag)
 			if end < 0 {
 				break
 			}
-			s = s[:start] + s[start+end+len("</"+tag+">"):]
+			cutEnd := start + end + len(closeTag)
+			if cutEnd > len(s) {
+				// Malformed HTML; remove from start to end of string.
+				s = s[:start]
+				break
+			}
+			s = s[:start] + s[cutEnd:]
 		}
 	}
 
@@ -202,8 +312,10 @@ func stripBasicHTML(s string) string {
 
 const webFetchDescription = `Fetches content from a specified URL and processes it.
 
+IMPORTANT: This tool will FAIL for authenticated or private URLs. Before using this tool, check if the URL requires login or authentication (e.g. Google Docs, Confluence, Jira, Slack, Notion, Figma). If so, do NOT use this tool.
+
 Usage:
-- Takes a URL and a prompt as input
-- Fetches the URL content and converts HTML to text
+- Only use for publicly accessible URLs that you are confident will return content
 - The URL must be a fully-formed valid URL
-- HTTP URLs will be automatically upgraded to HTTPS`
+- HTTP URLs will be automatically upgraded to HTTPS
+- Do NOT guess or fabricate URLs — only use URLs from user messages or known documentation`

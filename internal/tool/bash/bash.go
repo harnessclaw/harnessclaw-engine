@@ -227,8 +227,10 @@ __ec=$?; pwd -P > %s; exit $__ec`,
 		Content: content,
 		IsError: isCtxErr,
 		Metadata: map[string]any{
+			"render_hint": "terminal",
 			"exit_code":   exitCode,
 			"duration_ms": duration.Milliseconds(),
+			"command":     in.Command,
 		},
 	}, nil
 }

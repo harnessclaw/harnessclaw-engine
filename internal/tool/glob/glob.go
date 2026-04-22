@@ -122,7 +122,14 @@ func (t *GlobTool) Execute(_ context.Context, input json.RawMessage) (*types.Too
 
 	// Format output.
 	if len(matches) == 0 {
-		return &types.ToolResult{Content: "No files matched the pattern."}, nil
+		return &types.ToolResult{
+			Content: "No files matched the pattern.",
+			Metadata: map[string]any{
+				"render_hint": "search",
+				"pattern":     gi.Pattern,
+				"match_count": 0,
+			},
+		}, nil
 	}
 
 	var sb strings.Builder
@@ -136,7 +143,14 @@ func (t *GlobTool) Execute(_ context.Context, input json.RawMessage) (*types.Too
 		output = output[:maxOutputLen] + "\n... (output truncated)"
 	}
 
-	return &types.ToolResult{Content: output}, nil
+	return &types.ToolResult{
+		Content: output,
+		Metadata: map[string]any{
+			"render_hint": "search",
+			"pattern":     gi.Pattern,
+			"match_count": len(matches),
+		},
+	}, nil
 }
 
 // walkGlob performs recursive directory walking for ** patterns.
