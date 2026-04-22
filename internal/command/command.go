@@ -18,6 +18,7 @@ const (
 	SourceManaged     CommandSource = iota // Managed (policy) skills — highest priority
 	SourceBundled                          // Bundled skills
 	SourcePluginSkill                      // Plugin-provided skills
+	SourceSkillDir                         // User skill directories
 	SourceWorkflow                         // Workflow commands
 	SourcePluginCmd                        // Plugin commands
 	SourceBuiltin                          // Built-in commands — lowest priority

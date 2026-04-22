@@ -226,10 +226,10 @@ func (a *Adapter) Chat(ctx context.Context, req *provider.ChatRequest) (*provide
 			bifReq.Model = a.fallbackModel
 			stream, bfErr = a.client.ChatCompletionStreamRequest(bfCtx, bifReq)
 			if bfErr != nil {
-				return nil, fmt.Errorf("bifrost: fallback also failed: %s", bfErr.Error.Message)
+				return nil, fmt.Errorf("bifrost: fallback also failed: %s", formatBifrostError(bfErr))
 			}
 		} else {
-			return nil, fmt.Errorf("bifrost: stream request failed: %s", bfErr.Error.Message)
+			return nil, fmt.Errorf("bifrost: stream request failed: %s", formatBifrostError(bfErr))
 		}
 	}
 
@@ -289,6 +289,45 @@ func (a *Adapter) IsUsingFallback() bool {
 
 // ---------- Internal helpers ----------
 
+// formatBifrostError builds a descriptive error string including HTTP status
+// code, error type/code, and the underlying error when available.
+func formatBifrostError(bfErr *schemas.BifrostError) string {
+	msg := bfErr.Error.Message
+	var parts []string
+	if bfErr.StatusCode != nil {
+		parts = append(parts, fmt.Sprintf("status=%d", *bfErr.StatusCode))
+	}
+	if bfErr.Error.Type != nil && *bfErr.Error.Type != "" {
+		parts = append(parts, fmt.Sprintf("type=%s", *bfErr.Error.Type))
+	}
+	if bfErr.Error.Code != nil && *bfErr.Error.Code != "" {
+		parts = append(parts, fmt.Sprintf("code=%s", *bfErr.Error.Code))
+	}
+	if bfErr.ExtraFields.Provider != "" {
+		parts = append(parts, fmt.Sprintf("provider=%s", bfErr.ExtraFields.Provider))
+	}
+	// Error.Error holds the underlying HTTP/network error with details
+	// (e.g. status code, connection refused) that Error.Message lacks.
+	if bfErr.Error.Error != nil && bfErr.Error.Error.Error() != msg {
+		if len(parts) > 0 {
+			return fmt.Sprintf("[%s] %s: %s", joinStrings(parts, " "), msg, bfErr.Error.Error.Error())
+		}
+		return fmt.Sprintf("%s: %s", msg, bfErr.Error.Error.Error())
+	}
+	if len(parts) > 0 {
+		return fmt.Sprintf("[%s] %s", joinStrings(parts, " "), msg)
+	}
+	return msg
+}
+
+func joinStrings(parts []string, sep string) string {
+	result := parts[0]
+	for _, p := range parts[1:] {
+		result += sep + p
+	}
+	return result
+}
+
 func (a *Adapter) currentModel() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -333,11 +372,12 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 		chunk := *chunkPtr
 
 		if chunk.BifrostError != nil {
+			errMsg := fmt.Sprintf("bifrost stream error: %s", formatBifrostError(chunk.BifrostError))
 			out <- types.StreamEvent{
 				Type:  types.StreamEventError,
-				Error: fmt.Errorf("bifrost stream error: %s", chunk.BifrostError.Error.Message),
+				Error: fmt.Errorf("%s", errMsg),
 			}
-			return fmt.Errorf("bifrost stream error: %s", chunk.BifrostError.Error.Message)
+			return fmt.Errorf("%s", errMsg)
 		}
 
 		if chunk.BifrostChatResponse == nil || len(chunk.BifrostChatResponse.Choices) == 0 {
