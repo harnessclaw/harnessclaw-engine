@@ -3,6 +3,40 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
+## [0.0.5] - 2026-04-22
+
+### Added
+- Universal artifact store: session-scoped content store for large tool results with automatic threshold-based replacement, frozen replacement decisions for prompt cache stability, and pre-LLM compaction
+- ArtifactGet tool: LLM retrieves full artifact content by ID without regenerating
+- Write tool `artifact_ref` parameter: write artifact content to files by reference, saving output tokens
+- Artifact-aware compaction: replaces artifact-backed tool results with compact references before LLM summarization
+- SQLite artifact persistence: `artifacts` table for persisting large tool results across server restarts
+- Multi-agent orchestration system: sub-agent spawning (sync/async/fork), loopConfig-parameterized query loop, coordinator mode with team management
+- Agent tool with `SpawnSync`/`SpawnAsync`, `InheritedChecker` permission inheritance, and `LongRunningTool` interface for timeout bypass
+- Task system: `TaskCreate`/`TaskGet`/`TaskList`/`TaskUpdate` tools with in-memory and SQLite-backed stores
+- Team management: `TeamCreate`/`TeamDelete` tools, `MessageBroker` with mailbox-based inter-agent messaging, `SendMessage` tool
+- @-mention routing: `MentionParser` extracts `@agent_name` from user messages, routes to registered agent definitions loaded from YAML
+- Coordinator mode: system prompt rewrite to dispatcher role with 4-phase workflow (research → synthesis → implementation → verification)
+- WebSocket sub-agent and multi-agent event protocol: `subagent.start/end`, `agent.routed/spawned/idle/completed/failed`, `task.created/updated`, `agent.message`, `team.created/member_join/member_left/deleted`
+- Render hint metadata on tool results: `render_hint`, `language`, `file_path` fields promoted to top-level in `tool.end` WebSocket messages
+- Language detection utility mapping file extensions to language identifiers for render hints
+- Web search tools: Tavily search and iFly/Xunfei search integrations
+- LLM retry with exponential backoff for transient provider failures
+- Mock LLM provider and stream builder for unit testing
+- Current date section in system prompt
+- Artifact guidance section in system prompt teaching LLM about artifact usage patterns
+
+### Changed
+- Storage architecture: removed memory/sqlite switch; SQLite is now always the persistence backend, `Manager.active` map serves as in-memory cache
+- Bifrost adapter error messages now include HTTP status code, error type/code, and underlying error details for easier troubleshooting
+- Bifrost stream idle timeout increased to 300s and request timeout to 600s for sub-agent workloads
+- System prompt role and output style sections rewritten with improved anti-AI-speak guidance
+
+### Fixed
+- Session persistence across server restarts: eliminated config-level memory/sqlite choice that prevented SQLite from being used
+- Bifrost error messages no longer hide HTTP-level error details behind generic constant strings
+- Missing `SourceSkillDir` constant in command source enumeration
+
 ## [0.0.4] - 2026-04-18
 
 ### Added
