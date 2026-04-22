@@ -49,4 +49,5 @@ type EnvSnapshot struct {
 	CWD      string
 	Shell    string
 	Platform string
+	Date     string // current date in YYYY-MM-DD format
 }

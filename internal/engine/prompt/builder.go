@@ -63,6 +63,14 @@ func (b *Builder) Build(ctx *PromptContext, profile *AgentProfile) (*PromptOutpu
 	for _, s := range sections {
 		allocated := allocation[s.Name()]
 
+		b.logger.Debug("section budget",
+			zap.String("section", s.Name()),
+			zap.Int("allocated", allocated),
+			zap.Int("min_tokens", s.MinTokens()),
+			zap.Bool("cacheable", s.Cacheable()),
+			zap.Int("priority", s.Priority()),
+		)
+
 		// Check if section has override in profile
 		if profile != nil && profile.SectionOverrides != nil {
 			if override, ok := profile.SectionOverrides[s.Name()]; ok {
