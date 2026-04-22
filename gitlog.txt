@@ -1,0 +1,122 @@
+commit 70c0ab85443ff45a84e51dfc4538e455c7680f6c
+Author: harnessclaw <harnessclaw@users.noreply.github.com>
+Date:   Thu Apr 9 14:42:25 2026 +0800
+
+    chore: disable Co-Authored-By in Claude Code commits
+
+commit 08534b0b5cebd1a55c7dbba384c2b43052383310
+Author: harnessclaw <harnessclaw@users.noreply.github.com>
+Date:   Thu Apr 9 12:28:37 2026 +0800
+
+    docs: clean up README, add Apache-2.0 license reference
+    
+    Remove internal doc links (architecture, protocol review, UML).
+    Point LICENSE section to Apache-2.0.
+
+commit 5af8aca08c55b192ce5644e7c25b1a261e4eff82
+Author: harnessclaw <harnessclaw@users.noreply.github.com>
+Date:   Thu Apr 9 12:12:57 2026 +0800
+
+    chore: sanitize config.yaml template placeholders
+
+commit daab610e756292cf00b8fd34ba6de963ea4951c7
+Author: harnessclaw <harnessclaw@users.noreply.github.com>
+Date:   Thu Apr 9 12:05:11 2026 +0800
+
+    chore: restore config.yaml as template, keep config_self.yaml for local use
+    
+    config.yaml is now a sanitized template (no real API keys) tracked in
+    the repo. Personal config goes in config_self.yaml (gitignored).
+
+commit 3bfafb8a223852df4e5e21feec9edf183204cfb4
+Author: harnessclaw <harnessclaw@users.noreply.github.com>
+Date:   Thu Apr 9 12:03:43 2026 +0800
+
+    chore: move config.yaml to config_self.yaml, remove config from tracking
+    
+    Config contains API keys â€?stop tracking it and use config_self.yaml
+    for local development. Updated Makefile run target accordingly.
+
+commit cc89544b191209af19efe31395044ec41c3144c6
+Author: harnessclaw <harnessclaw@users.noreply.github.com>
+Date:   Thu Apr 9 11:57:04 2026 +0800
+
+    docs: add README.md, remove internal docs from tracking
+    
+    - Add project README with architecture overview, features, quickstart guide
+    - Remove docs/refactor/ from git tracking (already in .gitignore)
+    - Remove UML_FLOWS.md and websocket_review.md
+
+commit 66226ba22599aa5da230dedfd7d3a9b77c4bc07a
+Author: harnessclaw <harnessclaw@users.noreply.github.com>
+Date:   Wed Apr 8 20:21:15 2026 +0800
+
+    feat: tools/skills system, permission pipeline, session.create handshake (v1.4)
+    
+    Major expansion of the Go rebuild:
+    
+    - Tools: implement FileRead, FileEdit, FileWrite, Grep, Glob, WebFetch tools
+      with full schemas, prompts, and permission models
+    - ToolPool: assembly pipeline with alias lookup, deny-rule filtering,
+      agent restriction sets, and prompt-cache stable sorting
+    - Skills: 5-layer skill discovery, frontmatter parser, argument substitution,
+      SkillTool bridge connecting Command registry to tool execution
+    - Command system: typed CommandBase/PromptCommand/LocalCommand with
+      priority-based registry merging
+    - Permission pipeline: 10-step PipelineChecker + OuterChecker wrapping
+      dontAsk/auto mode conversion; 3-option model (once/session/deny)
+    - Session-level auto-approve: tracked by program+subcommand granularity
+      (e.g. Bash:git status != Bash:git push) via extractCommandIdentity
+    - WebSocket protocol v1.4: explicit session.create handshake â€?server no
+      longer auto-pushes session.created on connect; pre-init gate rejects
+      non-init messages; client must send session.create first
+    - Updated all integration tests and protocol documentation
+
+commit 40e8957f47c1b8de110436ce998d71b1d9765a8f
+Author: harnessclaw <harnessclaw@users.noreply.github.com>
+Date:   Tue Apr 7 20:16:06 2026 +0800
+
+    feat: implement bash tool and redesign WebSocket tool execution protocol (v1.2)
+    
+    Add the first concrete tool implementation (internal/tool/bash) with shell
+    execution, CWD persistence, output truncation, and process group cleanup.
+    
+    Redesign the WebSocket protocol to cleanly separate LLM output (content.*)
+    from tool execution lifecycle (tool.start/tool.end), eliminating redundant
+    data transmission in server-side mode. Key changes:
+    
+    - Add EngineEventToolUse for LLM tool_use content blocks
+    - Add tool.start/tool.end server events for execution observability
+    - Suppress redundant content.* tool_use blocks in server-side mode
+    - Deduplicate duration_ms between top-level field and metadata in tool.end
+    - Bump protocol version to 1.2
+
+commit 61fa7e60f377785e2e169025c712cb05072336ea
+Author: harnessclaw <harnessclaw@users.noreply.github.com>
+Date:   Tue Apr 7 14:52:43 2026 +0800
+
+    Fix .gitignore: include cmd/server/ source files
+    
+    The bare 'server' pattern was matching cmd/server/ directory.
+    Use '/server' to only ignore the root-level binary.
+
+commit 0a93ff674bb04336c8ba558401d8e02402435e5a
+Author: harnessclaw <harnessclaw@users.noreply.github.com>
+Date:   Tue Apr 7 14:49:13 2026 +0800
+
+    Initial commit: harnessclaw-engine Go rebuild
+    
+    Multi-channel LLM engine service with WebSocket streaming protocol v1.1.
+    
+    Core components:
+    - Engine: 5-phase query loop with streaming, client-side tool execution
+    - Router: middleware chain (auth, logging, rate-limit) + message dispatch
+    - WebSocket Channel: full v1.1 protocol (session, message lifecycle, tool.call/tool.result)
+    - Provider: Anthropic API client with Bifrost adapter and retry logic
+    - Session management, permission system, event bus
+
+commit 7a61e21b5494d30aa53ab9624f1899e68db5371c
+Author: harnessclaw <harnessclaw@users.noreply.github.com>
+Date:   Thu Apr 9 10:27:36 2026 +0800
+
+    Initial commit
