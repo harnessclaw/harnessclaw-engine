@@ -1,5 +1,6 @@
-// Package memory provides an in-memory storage implementation.
-// Suitable for development and testing. Data is lost on restart.
+// Package memory provides an in-memory storage implementation for testing.
+// Production code always uses SQLite for persistence; this package exists
+// solely to provide a lightweight Store for unit tests.
 package memory
 
 import (

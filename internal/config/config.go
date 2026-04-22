@@ -25,9 +25,6 @@ func (c *Config) Validate() error {
 	if c.Engine.AutoCompactThreshold < 0 || c.Engine.AutoCompactThreshold > 1.0 {
 		return fmt.Errorf("engine.auto_compact_threshold must be between 0 and 1, got %f", c.Engine.AutoCompactThreshold)
 	}
-	if c.Session.Storage != "memory" && c.Session.Storage != "sqlite" {
-		return fmt.Errorf("session.storage must be 'memory' or 'sqlite', got %q", c.Session.Storage)
-	}
 	validModes := map[string]bool{
 		"default": true, "plan": true, "bypass": true, "acceptEdits": true, "dontAsk": true,
 	}
@@ -118,7 +115,7 @@ type EngineConfig struct {
 type SessionConfig struct {
 	MaxMessages int           `mapstructure:"max_messages"`
 	IdleTimeout time.Duration `mapstructure:"idle_timeout"`
-	Storage     string        `mapstructure:"storage"` // "memory" or "sqlite"
+	DBPath      string        `mapstructure:"db_path"` // SQLite database file path
 }
 
 // ChannelConfig holds per-channel settings.
@@ -160,13 +157,15 @@ type HTTPChannelConfig struct {
 
 // ToolsConfig holds per-tool settings.
 type ToolsConfig struct {
-	Bash      ToolConfig `mapstructure:"bash"`
-	FileRead  ToolConfig `mapstructure:"file_read"`
-	FileEdit  ToolConfig `mapstructure:"file_edit"`
-	FileWrite ToolConfig `mapstructure:"file_write"`
-	Grep      ToolConfig `mapstructure:"grep"`
-	Glob      ToolConfig `mapstructure:"glob"`
-	WebFetch  ToolConfig `mapstructure:"web_fetch"`
+	Bash      ToolConfig      `mapstructure:"bash"`
+	FileRead  ToolConfig      `mapstructure:"file_read"`
+	FileEdit  ToolConfig      `mapstructure:"file_edit"`
+	FileWrite ToolConfig      `mapstructure:"file_write"`
+	Grep      ToolConfig      `mapstructure:"grep"`
+	Glob      ToolConfig      `mapstructure:"glob"`
+	WebFetch  ToolConfig      `mapstructure:"web_fetch"`
+	WebSearch    WebSearchConfig    `mapstructure:"web_search"`
+	TavilySearch TavilySearchConfig `mapstructure:"tavily_search"`
 }
 
 // ToolConfig holds individual tool settings.
@@ -175,6 +174,24 @@ type ToolConfig struct {
 	Timeout     time.Duration `mapstructure:"timeout"`
 	MaxFileSize string        `mapstructure:"max_file_size"`
 	Sandbox     bool          `mapstructure:"sandbox"`
+}
+
+// WebSearchConfig holds settings for the iFly web search tool.
+type WebSearchConfig struct {
+	Enabled   bool   `mapstructure:"enabled"`
+	APIKey    string `mapstructure:"api_key"`
+	APISecret string `mapstructure:"api_secret"`
+	AppID     string `mapstructure:"app_id"`
+	Host      string `mapstructure:"host"`
+	Path      string `mapstructure:"path"`
+	Limit     int    `mapstructure:"limit"`
+}
+
+// TavilySearchConfig holds settings for the Tavily Search API tool.
+type TavilySearchConfig struct {
+	Enabled    bool   `mapstructure:"enabled"`
+	APIKey     string `mapstructure:"api_key"`
+	MaxResults int    `mapstructure:"max_results"`
 }
 
 // PermissionConfig holds tool permission control settings.
@@ -202,7 +219,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("engine.tool_timeout", "120s")
 	v.SetDefault("session.max_messages", 200)
 	v.SetDefault("session.idle_timeout", "30m")
-	v.SetDefault("session.storage", "sqlite")
+	v.SetDefault("session.db_path", "~/.harnessclaw/db/sessions.db")
 	v.SetDefault("channels.websocket.enabled", true)
 	v.SetDefault("channels.websocket.host", "0.0.0.0")
 	v.SetDefault("channels.websocket.port", 8081)
@@ -226,6 +243,12 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("tools.grep.enabled", true)
 	v.SetDefault("tools.glob.enabled", true)
 	v.SetDefault("tools.web_fetch.enabled", true)
+	v.SetDefault("tools.web_search.enabled", false)
+	v.SetDefault("tools.web_search.host", "cbm-search-api.cn-huabei-1.xf-yun.com")
+	v.SetDefault("tools.web_search.path", "/biz/search")
+	v.SetDefault("tools.web_search.limit", 5)
+	v.SetDefault("tools.tavily_search.enabled", false)
+	v.SetDefault("tools.tavily_search.max_results", 5)
 	v.SetDefault("permission.mode", "default")
 	v.SetDefault("skills.dirs", []string{"~/.harnessclaw/workspace/skills"})
 
@@ -266,7 +289,28 @@ func Load(configPath string) (*Config, error) {
 	// Expand ~ in skill dirs to the user's home directory.
 	expandSkillDirs(&cfg)
 
+	// Expand ~ in database paths to the user's home directory.
+	expandHomePath(&cfg.Session.DBPath)
+
 	return &cfg, nil
+}
+
+// expandHomePath replaces a ~ prefix with the user's home directory.
+func expandHomePath(p *string) {
+	if *p == "" {
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	if *p == "~" {
+		*p = home
+		return
+	}
+	if strings.HasPrefix(*p, "~/") || strings.HasPrefix(*p, "~\\") {
+		*p = filepath.Join(home, filepath.FromSlash((*p)[2:]))
+	}
 }
 
 // expandSkillDirs replaces ~ prefix with the user's home directory in skill paths,

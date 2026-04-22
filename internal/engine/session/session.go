@@ -36,25 +36,51 @@ type Session struct {
 	ChannelName string         `json:"channel_name"`
 	UserID      string         `json:"user_id"`
 	Metadata    map[string]any `json:"metadata,omitempty"`
+
+	// onChange is called after AddMessage/SetMessages to enable auto-persistence.
+	// Set by Manager after session creation/restoration. Must NOT be called
+	// under s.mu to avoid deadlock (SaveSession acquires RLock via GetMessages).
+	onChange func()
 }
+
+// SetOnChange sets the auto-persistence callback. Called once by Manager.
+func (s *Session) SetOnChange(fn func()) {
+	s.mu.Lock()
+	s.onChange = fn
+	s.mu.Unlock()
+}
+
+// RLockFields acquires a read lock for direct field access by storage.
+func (s *Session) RLockFields()   { s.mu.RLock() }
+
+// RUnlockFields releases the read lock.
+func (s *Session) RUnlockFields() { s.mu.RUnlock() }
 
 // AddMessage appends a message and updates token counts.
 func (s *Session) AddMessage(msg types.Message) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	s.Messages = append(s.Messages, msg)
 	s.UpdatedAt = time.Now()
 	s.TotalInputTokens += msg.Tokens
+	cb := s.onChange
+	s.mu.Unlock()
+
+	if cb != nil {
+		cb()
+	}
 }
 
 // SetMessages replaces the full message history (used after compaction).
 func (s *Session) SetMessages(msgs []types.Message) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	s.Messages = msgs
 	s.UpdatedAt = time.Now()
+	cb := s.onChange
+	s.mu.Unlock()
+
+	if cb != nil {
+		cb()
+	}
 }
 
 // MessageCount returns the number of messages in the session.

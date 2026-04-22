@@ -50,6 +50,7 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID string, channelName
 		s.State = StateActive
 		s.UpdatedAt = time.Now()
 		s.mu.Unlock()
+		m.bindOnChange(s)
 		return s, nil
 	}
 
@@ -59,6 +60,7 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID string, channelName
 		stored.State = StateActive
 		stored.UpdatedAt = time.Now()
 		m.active[sessionID] = stored
+		m.bindOnChange(stored)
 		m.logger.Info("session restored from storage", zap.String("session_id", sessionID))
 		return stored, nil
 	}
@@ -78,6 +80,7 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID string, channelName
 		s.ID = uuid.New().String()
 	}
 	m.active[s.ID] = s
+	m.bindOnChange(s)
 	m.logger.Info("session created", zap.String("session_id", s.ID))
 	return s, nil
 }
@@ -87,6 +90,21 @@ func (m *Manager) Get(sessionID string) *Session {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.active[sessionID]
+}
+
+// PersistSession saves a single session to persistent storage.
+func (m *Manager) PersistSession(ctx context.Context, s *Session) {
+	if err := m.store.SaveSession(ctx, s); err != nil {
+		m.logger.Error("failed to persist session",
+			zap.String("session_id", s.ID), zap.Error(err))
+	}
+}
+
+// bindOnChange sets the auto-persist callback on a session if not already set.
+func (m *Manager) bindOnChange(s *Session) {
+	s.SetOnChange(func() {
+		go m.PersistSession(context.Background(), s)
+	})
 }
 
 // PersistAll saves all active sessions to storage.
