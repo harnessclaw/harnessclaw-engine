@@ -36,6 +36,7 @@ vendor/
 
 # docs
 docs/refactor
+docs/prompt
 
 # Debug
 __debug_bin*
