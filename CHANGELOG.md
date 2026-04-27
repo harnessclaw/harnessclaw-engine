@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
-## [Unreleased]
+## [0.0.6] - 2026-04-27
 
 ### Added
 - Agent definition persistence: SQLite-backed `AgentService` and console HTTP API (`/console/v1/agents`) for create/list/get/update/delete/import operations; built-in definitions are synced on startup and YAML files are imported on demand
