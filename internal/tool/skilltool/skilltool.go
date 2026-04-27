@@ -99,6 +99,15 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (*types.
 	}
 
 	name := strings.TrimPrefix(si.Skill, "/")
+
+	// Check allowed skills whitelist (set by sub-agent context).
+	if allowed, ok := tool.GetAllowedSkills(ctx); ok && !allowed[name] {
+		return &types.ToolResult{
+			Content: fmt.Sprintf("skill %s is not available for this agent", name),
+			IsError: true,
+		}, nil
+	}
+
 	cmd := s.cmdRegistry.FindCommand(name)
 	if cmd == nil {
 		return &types.ToolResult{Content: "unknown skill: " + name, IsError: true}, nil

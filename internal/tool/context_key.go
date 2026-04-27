@@ -43,6 +43,24 @@ func WithEventOut(ctx context.Context, out chan<- types.EngineEvent) context.Con
 	return context.WithValue(ctx, eventOutContextKey, out)
 }
 
+// allowedSkillsKey is the unexported key type for the allowed skills whitelist.
+type allowedSkillsKey struct{}
+
+// allowedSkillsContextKey is the singleton key for allowed skills.
+var allowedSkillsContextKey = allowedSkillsKey{}
+
+// GetAllowedSkills extracts the allowed skills whitelist from a context.
+// Returns nil, false if no restriction is set (all skills allowed).
+func GetAllowedSkills(ctx context.Context) (map[string]bool, bool) {
+	s, ok := ctx.Value(allowedSkillsContextKey).(map[string]bool)
+	return s, ok
+}
+
+// WithAllowedSkills returns a child context carrying the allowed skills whitelist.
+func WithAllowedSkills(ctx context.Context, skills map[string]bool) context.Context {
+	return context.WithValue(ctx, allowedSkillsContextKey, skills)
+}
+
 // ArtifactStore is the interface that tools use to access stored artifacts.
 // Defined here (in the tool package) to avoid circular dependencies between
 // the tool layer and the artifact package.
