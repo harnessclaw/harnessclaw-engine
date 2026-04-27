@@ -3,6 +3,31 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
+## [Unreleased]
+
+### Added
+- Agent definition persistence: SQLite-backed `AgentService` and console HTTP API (`/console/v1/agents`) for create/list/get/update/delete/import operations; built-in definitions are synced on startup and YAML files are imported on demand
+- Console management API server with configurable host/port (`console.enabled/host/port` config keys, defaults to `0.0.0.0:8090`)
+- Per-agent skill whitelist enforcement: `AgentDefinition.Skills` and `SpawnConfig.AllowedSkills` are now respected by `SkillTool`, which rejects invocations of skills not on the list
+- Per-agent tool whitelist enforcement: `AgentDefinition.AllowedTools` filters the sub-agent tool pool via the new `ToolPool.FilterByNames` method
+- `Personality` field is injected into the auto-generated worker identity prompt
+- WebSocket `deliverable.ready` event: sub-agent file outputs (FileWrite results) surface to the client with `file_path`, `language`, and `byte_size` for direct rendering or download
+- `<summary>` tag protocol for sub-agent outputs: Worker / Explore / Plan profiles require sub-agents to wrap their core conclusion in `<summary>...</summary>`; the engine extracts it into `SpawnResult.Summary` and returns only summary + deliverables to the parent agent
+- `TaskRegistry`: full sub-agent results are stored in-engine by agent ID for context passing and debugging while the parent only sees summaries
+- `SpawnResult` now carries structured `Summary`, `Status`, and `Attempts` fields
+
+### Changed
+- Emma system prompt restructured into a three-layer architecture: persona/team/judgment/delivery only; dispatch protocol, retry rules, and multi-agent coordination paragraphs moved to application code
+- Sub-agent system prompts no longer hard-code agent names in role overrides; dynamic `SystemPromptOverride` from agent definition takes precedence over static profile `SectionOverrides` for the role section
+- Section headings dropped numeric prefixes ("一、二、三") so reordering does not break the prompt
+- All built-in section content translated to Chinese (env, tools, memory, skills, task, currentdate, artifacts)
+- `FileWrite` no longer auto-creates parent directories; callers must ensure the directory exists or the tool returns an explicit error pointing at the missing path; the schema description now hints at a default working directory
+- Agent definitions are no longer auto-scanned from `.harnessclaw/agents/` on startup; use the import endpoint instead
+
+### Removed
+- Coordinator system prompt and `CoordinatorProfile`: orchestration is now an L2 application-code concern, planned to land as a code-driven Orchestrate tool in a follow-up
+- Static `output` / `rules` prompt sections: their delivery rules are folded into `principles`
+
 ## [0.0.5] - 2026-04-22
 
 ### Added
