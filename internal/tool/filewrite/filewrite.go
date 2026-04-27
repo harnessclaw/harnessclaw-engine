@@ -33,18 +33,25 @@ func New(cfg config.ToolConfig) *FileWriteTool {
 	return &FileWriteTool{cfg: cfg}
 }
 
-func (t *FileWriteTool) Name() string            { return toolName }
-func (t *FileWriteTool) Description() string     { return fileWriteDescription }
-func (t *FileWriteTool) IsReadOnly() bool        { return false }
-func (t *FileWriteTool) IsEnabled() bool         { return t.cfg.Enabled }
+func (t *FileWriteTool) Name() string        { return toolName }
+func (t *FileWriteTool) Description() string { return fileWriteDescription }
+func (t *FileWriteTool) IsReadOnly() bool    { return false }
+func (t *FileWriteTool) IsEnabled() bool     { return t.cfg.Enabled }
 
 func (t *FileWriteTool) InputSchema() map[string]any {
+	// Build default working directory path with cross-platform support
+	defaultDir := getDefaultWorkingDir()
+	filePathDesc := fmt.Sprintf(
+		"The absolute path to the file to write (must be absolute, not relative). If no specific location is mentioned, you may use %s as a default working directory.",
+		defaultDir,
+	)
+
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"file_path": map[string]any{
 				"type":        "string",
-				"description": "The absolute path to the file to write (must be absolute, not relative)",
+				"description": filePathDesc,
 			},
 			"content": map[string]any{
 				"type":        "string",
@@ -102,10 +109,10 @@ func (t *FileWriteTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 		return &types.ToolResult{Content: "either content or artifact_ref is required", IsError: true}, nil
 	}
 
-	// Ensure parent directory exists.
+	// Verify target directory exists.
 	dir := filepath.Dir(wi.FilePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return &types.ToolResult{Content: "error creating directory: " + err.Error(), IsError: true}, nil
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return &types.ToolResult{Content: fmt.Sprintf("directory %s does not exist; create it first", dir), IsError: true}, nil
 	}
 
 	// Preserve existing permissions if file exists.
@@ -134,6 +141,17 @@ const fileWriteDescription = `Writes a file to the local filesystem.
 Usage:
 - This tool will overwrite the existing file if there is one at the provided path.
 - The file_path parameter must be an absolute path, not a relative path.
-- Parent directories will be created automatically if they don't exist.
+- You must ensure the target directory exists before writing. Use Bash to create it if needed.
 - Use artifact_ref to write content from a stored artifact instead of providing inline content.
   This avoids re-generating large content the model has already produced.`
+
+// getDefaultWorkingDir returns the expanded default working directory path
+// for file operations, with cross-platform support.
+func getDefaultWorkingDir() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		// Fallback to literal path if home dir cannot be determined
+		return "~/.harnessclaw/files/"
+	}
+	return filepath.Join(homeDir, ".harnessclaw", "files")
+}

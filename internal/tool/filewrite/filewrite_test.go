@@ -150,9 +150,10 @@ func TestExecuteWriteContent(t *testing.T) {
 	}
 }
 
-func TestExecuteCreatesParentDirs(t *testing.T) {
+func TestExecuteRequiresExistingDir(t *testing.T) {
 	ft := New(enabledCfg())
 	dir := t.TempDir()
+	// Try to write to a non-existent subdirectory
 	path := filepath.Join(dir, "sub", "dir", "test.txt")
 
 	input := json.RawMessage(`{"file_path":"` + path + `","content":"nested"}`)
@@ -160,16 +161,11 @@ func TestExecuteCreatesParentDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.IsError {
-		t.Errorf("unexpected error result: %s", result.Content)
+	if !result.IsError {
+		t.Error("expected error when directory does not exist")
 	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read written file: %v", err)
-	}
-	if string(data) != "nested" {
-		t.Errorf("file content = %q, want 'nested'", string(data))
+	if !strings.Contains(result.Content, "does not exist") {
+		t.Errorf("error message should mention directory does not exist, got: %s", result.Content)
 	}
 }
 
