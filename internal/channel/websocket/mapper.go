@@ -92,6 +92,8 @@ func (m *EventMapper) Map(event *types.EngineEvent) ([][]byte, error) {
 		return m.mapTeamMemberLeft(event)
 	case types.EngineEventTeamDeleted:
 		return m.mapTeamDeleted(event)
+	case types.EngineEventDeliverable:
+		return m.mapDeliverable(event)
 	case types.EngineEventError:
 		return m.mapError(event)
 	case types.EngineEventDone:
@@ -880,6 +882,31 @@ func (m *EventMapper) mapDone(event *types.EngineEvent) ([][]byte, error) {
 		return nil, err
 	}
 	return append(msgs, b), nil
+}
+
+// --- deliverable ---
+
+func (m *EventMapper) mapDeliverable(event *types.EngineEvent) ([][]byte, error) {
+	if event.Deliverable == nil {
+		return nil, nil
+	}
+
+	msg := DeliverableReadyMessage{
+		Type:      MsgTypeDeliverableReady,
+		EventID:   newEventID(),
+		SessionID: m.sessionID,
+		AgentID:   event.AgentID,
+		AgentName: event.AgentName,
+		FilePath:  event.Deliverable.FilePath,
+		Language:  event.Deliverable.Language,
+		ByteSize:  event.Deliverable.ByteSize,
+	}
+
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil, err
+	}
+	return [][]byte{b}, nil
 }
 
 // --- helpers ---

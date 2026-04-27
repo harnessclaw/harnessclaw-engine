@@ -49,6 +49,8 @@ const (
 	MsgTypeTeamMemberLeft   WSMessageType = "team.member_left"
 	MsgTypeTeamDeleted      WSMessageType = "team.deleted"
 	MsgTypeTaskEnd           WSMessageType = "task.end"
+	// Deliverable
+	MsgTypeDeliverableReady  WSMessageType = "deliverable.ready"
 	MsgTypeError             WSMessageType = "error"
 	MsgTypePong              WSMessageType = "pong"
 )
@@ -452,6 +454,19 @@ type TaskEndMessage struct {
 	DurationMs int64         `json:"duration_ms"`
 	NumTurns   int           `json:"num_turns"`
 	TotalUsage *UsageInfo    `json:"total_usage,omitempty"`
+}
+
+// DeliverableReadyMessage notifies the client that a sub-agent has produced
+// a file deliverable. The client should render/download the file directly.
+type DeliverableReadyMessage struct {
+	Type      WSMessageType `json:"type"` // "deliverable.ready"
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	AgentID   string        `json:"agent_id,omitempty"`
+	AgentName string        `json:"agent_name,omitempty"`
+	FilePath  string        `json:"file_path"`
+	Language  string        `json:"language,omitempty"`
+	ByteSize  int           `json:"byte_size,omitempty"`
 }
 
 // ErrorMessage delivers a structured error to the client.

@@ -55,6 +55,9 @@ const (
 	EngineEventAgentCompleted  EngineEventType = "agent_completed"   // async agent done
 	EngineEventAgentFailed     EngineEventType = "agent_failed"      // async agent failed
 
+	// Deliverable: file produced by sub-agent
+	EngineEventDeliverable     EngineEventType = "deliverable"       // sub-agent wrote a deliverable file
+
 	// Phase 5: Teams
 	EngineEventTeamCreated     EngineEventType = "team_created"      // team created
 	EngineEventTeamMemberJoin  EngineEventType = "team_member_join"  // member joined
@@ -96,6 +99,8 @@ type EngineEvent struct {
 	TeamEvent     *TeamEvent         `json:"team_event,omitempty"`
 	// Sub-agent real-time streaming content (for subagent_event type)
 	SubAgentEvent *SubAgentEventData `json:"subagent_event,omitempty"`
+	// Deliverable file produced by a sub-agent (for deliverable type)
+	Deliverable   *Deliverable       `json:"deliverable,omitempty"`
 }
 
 // TaskEvent carries task state change info.
