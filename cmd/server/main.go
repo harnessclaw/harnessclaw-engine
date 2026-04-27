@@ -29,14 +29,14 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/api"
 	"harnessclaw-go/internal/channel"
 	wsch "harnessclaw-go/internal/channel/websocket"
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/compact"
-	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
@@ -278,16 +278,54 @@ func main() {
 	}
 
 	agentDefReg := agent.NewAgentDefinitionRegistry()
-	agent.DefaultCoordinatorSystemPrompt = prompt.CoordinatorSystemPrompt
-	agentDefReg.RegisterBuiltins()
 
-	// Load custom agent definitions from .harnessclaw/agents/ directory.
-	agentDefsDir := ".harnessclaw/agents"
-	if err := agentDefReg.LoadFromDirectory(agentDefsDir); err != nil {
-		logger.Warn("failed to load custom agent definitions", zap.String("dir", agentDefsDir), zap.Error(err))
-	} else {
-		logger.Info("custom agent definitions loaded", zap.String("dir", agentDefsDir))
+	// Initialize agent definition store (SQLite) and service.
+	agentDefDBPath := defaultDBPath("agent_definitions.db")
+	agentDefStore, err := agent.NewSQLiteAgentStore(agentDefDBPath)
+	if err != nil {
+		logger.Fatal("failed to initialize agent definition store", zap.Error(err))
 	}
+	defer agentDefStore.Close()
+	logger.Info("agent definition store initialized", zap.String("path", agentDefDBPath))
+
+	agentSvc := agent.NewAgentService(agentDefStore, agentDefReg, bus, logger)
+
+	// Sync built-in agent definitions to SQLite.
+	if err := agentSvc.SyncBuiltins(context.Background()); err != nil {
+		logger.Warn("failed to sync builtin agent definitions", zap.Error(err))
+	}
+
+	// Load all persisted definitions from SQLite into in-memory registry.
+	// YAML is no longer auto-scanned; use POST /console/v1/agents/import to import.
+	if err := agentSvc.LoadAllToRegistry(context.Background()); err != nil {
+		logger.Warn("failed to load agent definitions to registry", zap.Error(err))
+	}
+
+	// Log all registered agent definitions.
+	for _, def := range agentDefReg.All() {
+		fields := []zap.Field{
+			zap.String("name", def.Name),
+			zap.String("agent_type", string(def.AgentType)),
+			zap.String("profile", def.Profile),
+		}
+		if def.DisplayName != "" {
+			fields = append(fields, zap.String("display_name", def.DisplayName))
+		}
+		if def.Source != "" {
+			fields = append(fields, zap.String("source", def.Source))
+		}
+		if len(def.AllowedTools) > 0 {
+			fields = append(fields, zap.Int("allowed_tools", len(def.AllowedTools)))
+		}
+		if len(def.Skills) > 0 {
+			fields = append(fields, zap.Strings("skills", def.Skills))
+		}
+		if def.AutoTeam {
+			fields = append(fields, zap.Int("sub_agents", len(def.SubAgents)))
+		}
+		logger.Info("agent definition registered", fields...)
+	}
+	logger.Info("agent definitions summary", zap.Int("total", len(agentDefReg.All())))
 
 	// Inject multi-agent dependencies into the engine.
 	eng.SetAgentRegistry(agentReg)
@@ -355,6 +393,21 @@ func main() {
 		}(name, ch)
 	}
 	// TODO: Start HTTP and Feishu channels when implementations are ready.
+
+	// --- Step 10.5: Start Console management API server ---
+	var consoleServer *api.Server
+	if cfg.Console.Enabled {
+		consoleServer = api.NewServer(api.ServerConfig{
+			Host: cfg.Console.Host,
+			Port: cfg.Console.Port,
+		}, agentSvc, logger)
+		go func() {
+			if err := consoleServer.Start(); err != nil {
+				logger.Error("console API server exited", zap.Error(err))
+			}
+		}()
+	}
+
 	logger.Info("all channels started, service is ready")
 
 	// --- Step 11: Wait for shutdown signal or channel failure ---
@@ -398,6 +451,14 @@ func main() {
 	}
 	wg.Wait()
 	logger.Info("channels stopped")
+
+	// Stop Console API server.
+	if consoleServer != nil {
+		if err := consoleServer.Stop(shutdownCtx); err != nil {
+			logger.Error("console API server stop error", zap.Error(err))
+		}
+		logger.Info("console API server stopped")
+	}
 
 	// Wait for in-flight queries to complete (grace period).
 	// The engine's placeholder does not track in-flight queries; real
