@@ -137,15 +137,15 @@ func TestMentionParser_LeadingWhitespace(t *testing.T) {
 }
 
 func TestMentionParser_AgentNamePrefix(t *testing.T) {
-	// Ensure that "code-reviewer" is not matched by a partial prefix like "code-review"
+	// Ensure that "general-purpose" is not matched by a partial prefix like "general"
 	parser := NewMentionParser(newTestRegistry())
 
-	m := parser.Parse("@code-reviewer check this PR")
+	m := parser.Parse("@general-purpose check this PR")
 	if !m.Matched {
-		t.Fatal("expected Matched=true for code-reviewer")
+		t.Fatal("expected Matched=true for general-purpose")
 	}
-	if m.AgentName != "code-reviewer" {
-		t.Fatalf("expected AgentName=code-reviewer, got %q", m.AgentName)
+	if m.AgentName != "general-purpose" {
+		t.Fatalf("expected AgentName=general-purpose, got %q", m.AgentName)
 	}
 	if m.Message != "check this PR" {
 		t.Fatalf("expected remaining message 'check this PR', got %q", m.Message)

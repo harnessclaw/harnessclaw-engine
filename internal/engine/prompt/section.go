@@ -43,3 +43,19 @@ type Section interface {
 	// The tokenBudget is a soft limit in estimated tokens.
 	Render(ctx *PromptContext, tokenBudget int) (string, error)
 }
+
+// BudgetAwareSection is an optional interface that sections can implement
+// to participate in demand-driven budget allocation. Sections that implement
+// this declare how many tokens they ideally want, allowing the allocator to
+// satisfy demand exactly when budget permits and trim intelligently when it doesn't.
+//
+// Sections that do NOT implement this fall back to tier-based static allocation.
+type BudgetAwareSection interface {
+	Section
+
+	// IdealTokens returns the number of tokens this section would use
+	// if given unlimited budget, for the given context.
+	// This should be a fast estimate (not a full render).
+	// Return 0 to indicate "use whatever the tier allocates".
+	IdealTokens(ctx *PromptContext) int
+}

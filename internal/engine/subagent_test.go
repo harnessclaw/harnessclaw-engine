@@ -320,7 +320,7 @@ func TestSpawnSync_Timeout(t *testing.T) {
 var _ agent.AgentSpawner = (*QueryEngine)(nil)
 
 // Suppress unused import warning for prompt package.
-var _ = prompt.FullProfile
+var _ = prompt.EmmaProfile
 
 func TestSpawnSync_ParentOutEvents(t *testing.T) {
 	prov := &subagentMockProvider{

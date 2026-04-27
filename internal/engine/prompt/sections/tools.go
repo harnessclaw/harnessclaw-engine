@@ -1,6 +1,7 @@
 package sections
 
 import (
+	"fmt"
 	"strings"
 
 	"harnessclaw-go/internal/engine/prompt"
@@ -28,16 +29,33 @@ func (s *ToolsSection) Render(ctx *prompt.PromptContext, budget int) (string, er
 		return "", nil
 	}
 
-	// For now, render a simplified tools section
-	// TODO: Implement full tool description rendering with budget awareness
 	var sb strings.Builder
-	sb.WriteString("# Using Your Tools\n\n")
-	sb.WriteString("You have access to various tools for file operations, code search, and task management.\n\n")
-	sb.WriteString("Important guidelines:\n")
-	sb.WriteString("- Do NOT use Bash to run commands when a relevant dedicated tool is provided\n")
-	sb.WriteString("- Use Read instead of cat, Edit instead of sed, Write instead of echo redirection\n")
-	sb.WriteString("- Use Glob for file search, Grep for content search\n")
-	sb.WriteString("- Break down complex work with tasks to track progress\n")
+	sb.WriteString("# 可用工具\n\n")
+
+	// Render tool summaries within budget.
+	// Each tool gets: name + one-line description.
+	tokensUsed := prompt.EstimateTokens("# 可用工具\n\n")
+	for _, t := range tools {
+		line := fmt.Sprintf("- **%s**：%s\n", t.Name(), t.Description())
+		lineTokens := prompt.EstimateTokens(line)
+		if tokensUsed+lineTokens > budget {
+			sb.WriteString(fmt.Sprintf("\n_（还有 %d 个工具因预算限制未列出）_\n", len(tools)-countLines(sb.String())))
+			break
+		}
+		sb.WriteString(line)
+		tokensUsed += lineTokens
+	}
 
 	return sb.String(), nil
+}
+
+// countLines is a simple helper; counts non-empty lines for the omitted count.
+func countLines(s string) int {
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(line, "- **") {
+			n++
+		}
+	}
+	return n
 }

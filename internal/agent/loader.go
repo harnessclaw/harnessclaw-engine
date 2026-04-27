@@ -55,6 +55,7 @@ type yamlAgentDef struct {
 	Tools           []string       `yaml:"tools"`
 	AllowedTools    []string       `yaml:"allowed_tools"`
 	DisallowedTools []string       `yaml:"disallowed_tools"`
+	Skills          []string       `yaml:"skills"`
 	AutoTeam        bool           `yaml:"auto_team"`
 	SubAgents       []yamlSubAgent `yaml:"sub_agents"`
 }
@@ -93,6 +94,7 @@ func loadAgentDefinitionFile(path string) (*AgentDefinition, error) {
 		Tools:           raw.Tools,
 		AllowedTools:    raw.AllowedTools,
 		DisallowedTools: raw.DisallowedTools,
+		Skills:          raw.Skills,
 		AutoTeam:        raw.AutoTeam,
 	}
 

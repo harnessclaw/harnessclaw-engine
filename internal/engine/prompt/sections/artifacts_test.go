@@ -46,7 +46,7 @@ func TestArtifactsSectionRender(t *testing.T) {
 		"ArtifactGet",
 		"artifact_ref",
 		"art_",
-		"Do NOT regenerate",
+		"不要重新生成",
 	}
 	for _, check := range checks {
 		if !strings.Contains(content, check) {

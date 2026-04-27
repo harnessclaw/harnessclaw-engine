@@ -109,6 +109,13 @@ type QueryEngine struct {
 	defRegistry    *agent.AgentDefinitionRegistry
 	mentionParser  *MentionParser
 
+	// TaskRegistry stores completed sub-agent results by agentID.
+	// Full output is kept here; emma only receives summaries via tool_result.
+	// Used for context passing (depends_on) and debugging.
+	// TODO(phase2): add TTL or LRU eviction to prevent unbounded growth on long-running servers.
+	taskRegistryMu sync.RWMutex
+	taskRegistry   map[string]*agent.SpawnResult // agentID → full result
+
 	// Per-session artifact stores and replacement states.
 	artifactMu          sync.RWMutex
 	artifactStores      map[string]*artifact.Store            // session_id → store
@@ -142,18 +149,21 @@ func NewQueryEngine(
 	promptRegistry := prompt.NewRegistry()
 	promptRegistry.Register(sections.NewCurrentDateSection())
 	promptRegistry.Register(sections.NewRoleSection())
+	// IdentitySection not registered — it's an internal detail of RoleSection.
+	promptRegistry.Register(sections.NewTeamSection())
 	promptRegistry.Register(sections.NewPrinciplesSection())
-	promptRegistry.Register(sections.NewOutputSection())
 	promptRegistry.Register(sections.NewToolsSection())
+	// TODO(phase2): register ArtifactsSection in worker profile when artifact system is used by sub-agents.
 	promptRegistry.Register(sections.NewArtifactsSection())
 	promptRegistry.Register(sections.NewEnvSection())
 	promptRegistry.Register(sections.NewMemorySection())
+	// TODO(phase2): register SkillsSection in profiles that need it.
 	promptRegistry.Register(sections.NewSkillsSection())
 	promptRegistry.Register(sections.NewTaskSection())
 	promptBuilder := prompt.NewBuilder(promptRegistry, logger)
 
-	// Use full profile by default
-	promptProfile := prompt.FullProfile
+	// Use emma profile by default (main agent facing the user)
+	promptProfile := prompt.EmmaProfile
 
 	return &QueryEngine{
 		provider:          prov,
@@ -174,6 +184,7 @@ func NewQueryEngine(
 		promptCache:       make(map[string]*promptCacheEntry),
 		artifactStores:       make(map[string]*artifact.Store),
 		artifactReplacements: make(map[string]*artifact.ReplacementState),
+		taskRegistry:         make(map[string]*agent.SpawnResult),
 	}
 }
 
@@ -665,12 +676,6 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 	// Build the ToolPool once per query loop from the registry.
 	pool := tool.NewToolPool(qe.registry, nil /*mcpTools*/, nil /*denyRules*/)
 
-	// Coordinator mode: if session has coordinator_mode=true, restrict pool
-	// to coordinator-allowed tools and switch profile.
-	if isCoordinatorMode(sess) {
-		pool = pool.FilteredFor(tool.AgentTypeCoordinator)
-	}
-
 	// Create the approval function that sends permission requests to the client via `out`.
 	approvalFn := func(ctx context.Context, evtOut chan<- types.EngineEvent, req *types.PermissionRequest) *types.PermissionResponse {
 		return qe.requestPermissionApproval(ctx, evtOut, sess.ID, req)
@@ -1073,6 +1078,32 @@ func (qe *QueryEngine) getSkillListing() string {
 	return qe.skillListing
 }
 
+// getSkillListingFiltered returns the skill listing filtered by an allowed set.
+// When allowedSkills is nil, returns the full listing (same as getSkillListing).
+// When non-nil, only skills whose names are in the map are included.
+func (qe *QueryEngine) getSkillListingFiltered(allowedSkills map[string]bool) string {
+	if allowedSkills == nil {
+		return qe.getSkillListing()
+	}
+	if qe.cmdRegistry == nil {
+		return ""
+	}
+	allCmds := qe.cmdRegistry.GetSkillToolCommands()
+	if len(allCmds) == 0 {
+		return ""
+	}
+	filtered := make([]*command.PromptCommand, 0, len(allowedSkills))
+	for _, cmd := range allCmds {
+		if allowedSkills[cmd.Name] {
+			filtered = append(filtered, cmd)
+		}
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	return skilltool.FormatCommandsWithinBudget(filtered, 200000)
+}
+
 // buildSystemPrompt constructs the system prompt using the prompt builder.
 // Uses per-session whole-output caching: only rebuilds when inputs change.
 // Falls back to config.SystemPrompt if builder fails.
@@ -1137,13 +1168,10 @@ func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Sess
 		Memory:            make(map[string]string),
 		EnvInfo:           qe.getEnvSnapshot(),
 		SkillListing:      qe.getSkillListing(),
+		TeamMembers:       qe.getTeamMembers(),
 	}
 
-	// Select profile: use CoordinatorProfile when in coordinator mode.
 	activeProfile := qe.promptProfile
-	if isCoordinatorMode(sess) {
-		activeProfile = prompt.CoordinatorProfile
-	}
 
 	output, err := qe.promptBuilder.Build(promptCtx, activeProfile)
 	if err != nil {
@@ -1182,8 +1210,15 @@ func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Sess
 		)
 	}
 
-	// Cache the result for this session
+	// Log the final system prompt text sent to the LLM.
 	result := output.ToSystemPrompt()
+	qe.logger.Debug("========== FINAL SYSTEM PROMPT START ==========\n" + result + "\n========== FINAL SYSTEM PROMPT END ==========",
+		zap.String("session_id", sess.ID),
+		zap.Int("char_count", len(result)),
+		zap.Int("estimated_tokens", prompt.EstimateTokens(result)),
+	)
+
+	// Cache the result for this session
 	qe.promptCacheMu.Lock()
 	qe.promptCache[sess.ID] = &promptCacheEntry{
 		prompt:    result,
@@ -1196,6 +1231,25 @@ func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Sess
 	qe.promptCacheMu.Unlock()
 
 	return result
+}
+
+// getTeamMembers builds the dynamic team member list from the agent definition registry.
+func (qe *QueryEngine) getTeamMembers() []prompt.TeamMember {
+	if qe.defRegistry == nil {
+		return nil
+	}
+	defs := qe.defRegistry.TeamMembers()
+	members := make([]prompt.TeamMember, 0, len(defs))
+	for _, d := range defs {
+		members = append(members, prompt.TeamMember{
+			DisplayName: d.DisplayName,
+			CodeName:    d.Name,
+			Description: d.Description,
+			Personality: d.Personality,
+			Triggers:    d.Triggers,
+		})
+	}
+	return members
 }
 
 // getEnvSnapshot captures current environment information dynamically.
@@ -1217,54 +1271,6 @@ func (qe *QueryEngine) getEnvSnapshot() prompt.EnvSnapshot {
 	}
 
 	return snap
-}
-
-// enterCoordinatorMode switches the session to coordinator mode.
-// The next query loop iteration will use CoordinatorProfile and restricted tool pool.
-// Called by TeamCreate tool (via engine interface).
-func (qe *QueryEngine) EnterCoordinatorMode(sess *session.Session) {
-	if sess.Metadata == nil {
-		sess.Metadata = make(map[string]any)
-	}
-	sess.Metadata["prev_profile"] = qe.promptProfile.Name
-	sess.Metadata["coordinator_mode"] = true
-
-	// Invalidate prompt cache so the next turn rebuilds with CoordinatorProfile.
-	qe.promptCacheMu.Lock()
-	delete(qe.promptCache, sess.ID)
-	qe.promptCacheMu.Unlock()
-
-	qe.logger.Info("entered coordinator mode", zap.String("session_id", sess.ID))
-}
-
-// exitCoordinatorMode restores the session from coordinator mode to the original profile.
-// Called by TeamDelete tool (via engine interface).
-func (qe *QueryEngine) ExitCoordinatorMode(sess *session.Session) {
-	if sess.Metadata == nil {
-		return
-	}
-	delete(sess.Metadata, "coordinator_mode")
-	delete(sess.Metadata, "prev_profile")
-
-	// Invalidate prompt cache so the next turn rebuilds with original profile.
-	qe.promptCacheMu.Lock()
-	delete(qe.promptCache, sess.ID)
-	qe.promptCacheMu.Unlock()
-
-	qe.logger.Info("exited coordinator mode", zap.String("session_id", sess.ID))
-}
-
-// isCoordinatorMode checks if the session is in coordinator mode.
-func isCoordinatorMode(sess *session.Session) bool {
-	if sess.Metadata == nil {
-		return false
-	}
-	v, ok := sess.Metadata["coordinator_mode"]
-	if !ok {
-		return false
-	}
-	b, _ := v.(bool)
-	return b
 }
 
 // shouldWaitForAsyncAgents returns true if the query loop should block on

@@ -21,19 +21,16 @@ func (s *ArtifactsSection) Render(_ *prompt.PromptContext, _ int) (string, error
 	return artifactsGuidance, nil
 }
 
-const artifactsGuidance = `# Artifacts
+const artifactsGuidance = `# 产物缓存
 
-When a tool produces substantial output (file contents, command output, generated text),
-it is automatically stored as an artifact with an ID like ` + "`art_abc12345`" + `.
-In earlier messages, these large results may appear as truncated previews with their artifact ID.
+当工具产出大量内容（文件内容、命令输出、生成的文本）时，系统会自动将其存储为产物，ID 格式如 ` + "`art_abc12345`" + `。
+历史消息中，这些大结果可能显示为带产物 ID 的截断预览。
 
-To work efficiently with artifacts:
-- Use ArtifactGet to retrieve the full content of a stored artifact when you need it.
-- Use Write with the artifact_ref parameter to write artifact content to a file,
-  instead of regenerating the same content inline. This saves significant output tokens.
-- Do NOT regenerate content that already exists as an artifact — reference it by ID instead.
+高效使用产物：
+- 用 ArtifactGet 获取已存储产物的完整内容
+- 用 Write 的 artifact_ref 参���将产物内容写入文件，而不是重新生成相同内容——这能节省大量输出 token
+- 不要重新生成已存在的产物内容——用 ID 引用即可
 
-Example: if a previous Read tool result was stored as art_abc12345, and you need to
-write that content to a different path, use:
+示例：如果之前 Read 工具的结果存储��� art_abc12345，需要写到其他路径时：
   Write(file_path="/new/path.txt", artifact_ref="art_abc12345")
-instead of regenerating the content in the content parameter.`
+而不是在 content 参数中重新生成内容。`

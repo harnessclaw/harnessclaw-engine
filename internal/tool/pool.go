@@ -145,6 +145,39 @@ func (tp *ToolPool) FilteredFor(agentType AgentType) *ToolPool {
 	return sub
 }
 
+// FilterByNames returns a sub-pool containing only tools whose names are in
+// the whitelist. If whitelist is nil or empty, returns the pool unchanged.
+func (tp *ToolPool) FilterByNames(whitelist []string) *ToolPool {
+	if len(whitelist) == 0 {
+		return tp
+	}
+	allowed := make(map[string]bool, len(whitelist))
+	for _, name := range whitelist {
+		allowed[name] = true
+	}
+	var filtered []Tool
+	for _, t := range tp.merged {
+		if allowed[t.Name()] {
+			filtered = append(filtered, t)
+		}
+	}
+	sub := &ToolPool{
+		merged: filtered,
+		byName: make(map[string]Tool, len(filtered)),
+	}
+	for _, t := range filtered {
+		sub.byName[t.Name()] = t
+		if at, ok := t.(AliasedTool); ok {
+			for _, alias := range at.Aliases() {
+				if _, exists := sub.byName[alias]; !exists {
+					sub.byName[alias] = t
+				}
+			}
+		}
+	}
+	return sub
+}
+
 // Size returns the number of tools in the pool.
 func (tp *ToolPool) Size() int {
 	return len(tp.merged)

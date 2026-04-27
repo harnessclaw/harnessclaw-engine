@@ -56,6 +56,16 @@ type SpawnConfig struct {
 	// When false (default), the sub-agent starts with a blank session.
 	Fork bool
 
+	// ContextSummary provides a compressed context summary for "distill" mode.
+	// When non-empty and Fork is false, this summary is prepended to the Prompt
+	// as background context, giving the sub-agent essential information without
+	// the full conversation history (which would dilute attention) or a blank
+	// slate (which would lack necessary context).
+	//
+	// The parent agent or coordinator should produce this summary by extracting
+	// only the information relevant to the sub-agent's specific task.
+	ContextSummary string
+
 	// ParentSessionID is the parent's session ID, used for session ID generation
 	// and context inheritance in fork mode.
 	ParentSessionID string
@@ -67,6 +77,12 @@ type SpawnConfig struct {
 	// SystemPromptOverride replaces the sub-agent's generated system prompt.
 	// Used in fork mode to preserve the parent's prompt cache prefix.
 	SystemPromptOverride string
+
+	// AllowedSkills restricts which skills the sub-agent can invoke via SkillTool.
+	// When non-empty, only skills in this list are available; the system prompt
+	// skill listing is also filtered accordingly.
+	// When empty, all skills are accessible (default behavior).
+	AllowedSkills []string
 
 	// ParentOut is the parent query loop's event output channel.
 	// When set, SpawnSync emits subagent.start/end events on this channel

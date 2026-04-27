@@ -24,8 +24,8 @@ func (s *SkillsSection) Render(ctx *prompt.PromptContext, budget int) (string, e
 		return "", nil
 	}
 
-	return "# Available Skills\n\n" +
-		"Use the Skill tool to invoke these. " +
-		"When a user's request matches a skill, invoke it BEFORE generating any other response.\n\n" +
+	return "# 可用技能\n\n" +
+		"使用 Skill 工具调用以下技能。" +
+		"当用户请求匹配某项技能时，先调用技能再生成其他回复。\n\n" +
 		ctx.SkillListing, nil
 }

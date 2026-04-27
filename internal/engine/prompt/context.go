@@ -31,10 +31,21 @@ type PromptContext struct {
 	EnvInfo      EnvSnapshot       // OS, CWD, shell
 	Task         *TaskState        // current task state (nil = no active task)
 	SkillListing string            // pre-formatted skill listing text (empty = no skills)
+	TeamMembers  []TeamMember      // emma's team (populated from AgentDefinitionRegistry)
+}
+
+// TeamMember describes a team member for dynamic prompt rendering.
+// Decoupled from agent.AgentDefinition to avoid circular imports.
+type TeamMember struct {
+	DisplayName string // 小林, 小瑞, ...
+	CodeName    string // writer, researcher, ...
+	Description string // 精通领域
+	Personality string // 性格特点
+	Triggers    string // 典型触发场景 (used for programmatic routing, not shown in prompt)
 }
 
 // TaskState tracks the agent's current execution state.
-// Populated by the harness from session metadata or an external task system.
+// Populated from session metadata or an external task system.
 type TaskState struct {
 	Goal           string   // the final objective
 	Plan           []string // ordered steps to achieve the goal

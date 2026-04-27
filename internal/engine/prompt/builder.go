@@ -52,8 +52,26 @@ func (b *Builder) Build(ctx *PromptContext, profile *AgentProfile) (*PromptOutpu
 		budget = profile.TokenBudget
 	}
 
-	// Allocate budget across sections
-	allocation := b.allocator.Allocate(sections, budget)
+	// Create a scoped allocator with profile-level tier weight overrides.
+	// We must NOT mutate the shared b.allocator — it's reused across builds.
+	allocator := b.allocator
+	if profile != nil && len(profile.TierWeights) > 0 {
+		// Deep-copy tiers so overrides don't leak to future builds.
+		overriddenTiers := make([]BudgetTier, len(b.allocator.tiers))
+		copy(overriddenTiers, b.allocator.tiers)
+		for key, weight := range profile.TierWeights {
+			for i := range overriddenTiers {
+				tierKey := fmt.Sprintf("%d-%d", overriddenTiers[i].MinPriority, overriddenTiers[i].MaxPriority)
+				if tierKey == key {
+					overriddenTiers[i].Weight = weight
+				}
+			}
+		}
+		allocator = &BudgetAllocator{tiers: overriddenTiers}
+	}
+
+	// Allocate budget across sections (demand-driven when possible).
+	allocation := allocator.AllocateDynamic(sections, budget, ctx)
 
 	// Render sections
 	var blocks []PromptBlock
@@ -71,18 +89,26 @@ func (b *Builder) Build(ctx *PromptContext, profile *AgentProfile) (*PromptOutpu
 			zap.Int("priority", s.Priority()),
 		)
 
-		// Check if section has override in profile
+		// Check if section has override in profile.
+		// Exception: for "role" section, dynamic SystemPromptOverride (from agent
+		// definition) takes precedence over static SectionOverrides (from profile).
+		// This ensures each agent keeps its own identity even when using a shared
+		// profile like ExploreProfile.
 		if profile != nil && profile.SectionOverrides != nil {
 			if override, ok := profile.SectionOverrides[s.Name()]; ok {
-				tokens := EstimateTokens(override)
-				blocks = append(blocks, PromptBlock{
-					Name:            s.Name(),
-					Content:         override,
-					Cacheable:       s.Cacheable(),
-					EstimatedTokens: tokens,
-				})
-				sectionTokens[s.Name()] = [2]int{allocated, tokens}
-				continue
+				// Skip static override if dynamic override exists for this section.
+				hasDynamicOverride := s.Name() == "role" && ctx.SystemPromptOverride != ""
+				if !hasDynamicOverride {
+					tokens := EstimateTokens(override)
+					blocks = append(blocks, PromptBlock{
+						Name:            s.Name(),
+						Content:         override,
+						Cacheable:       s.Cacheable(),
+						EstimatedTokens: tokens,
+					})
+					sectionTokens[s.Name()] = [2]int{allocated, tokens}
+					continue
+				}
 			}
 		}
 

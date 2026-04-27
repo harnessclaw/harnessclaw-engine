@@ -25,5 +25,5 @@ func (s *CurrentDateSection) Render(ctx *prompt.PromptContext, budget int) (stri
 	if ctx.EnvInfo.Date == "" {
 		return "", nil
 	}
-	return fmt.Sprintf("IMPORTANT: Today's date is %s. The current year is %s. When the user says \"今年\" (this year), \"近期\" (recently), or any relative time reference, always use this date as the reference point.", ctx.EnvInfo.Date, ctx.EnvInfo.Date[:4]), nil
+	return fmt.Sprintf("重要：今天是 %s，当前年份是 %s 年。用户提到「今年」「近期」「最近」等相对时间时，以此日期为基准。", ctx.EnvInfo.Date, ctx.EnvInfo.Date[:4]), nil
 }

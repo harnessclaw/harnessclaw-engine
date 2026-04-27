@@ -25,8 +25,8 @@ func (s *MemorySection) Render(ctx *prompt.PromptContext, budget int) (string, e
 	}
 
 	var sb strings.Builder
-	sb.WriteString("# Memory\n\n")
-	sb.WriteString("User preferences and context:\n\n")
+	sb.WriteString("# 用户记忆\n\n")
+	sb.WriteString("用户偏好和上下文：\n\n")
 
 	// Estimate if we need to truncate
 	fullContent := s.buildFullContent(ctx.Memory)
@@ -40,11 +40,11 @@ func (s *MemorySection) Render(ctx *prompt.PromptContext, budget int) (string, e
 
 func (s *MemorySection) buildFullContent(memory map[string]string) string {
 	var sb strings.Builder
-	sb.WriteString("# Memory\n\n")
-	sb.WriteString("User preferences and context:\n\n")
+	sb.WriteString("# 用户记忆\n\n")
+	sb.WriteString("用户偏好和上下文：\n\n")
 
 	for key, value := range memory {
-		sb.WriteString(fmt.Sprintf("- %s: %s\n", key, value))
+		sb.WriteString(fmt.Sprintf("- %s：%s\n", key, value))
 	}
 
 	return sb.String()
@@ -52,7 +52,7 @@ func (s *MemorySection) buildFullContent(memory map[string]string) string {
 
 func (s *MemorySection) buildTruncatedContent(memory map[string]string, budget int) string {
 	var sb strings.Builder
-	sb.WriteString("# Memory\n\n")
+	sb.WriteString("# 用户记忆\n\n")
 
 	// Simple truncation: include entries until budget exhausted
 	remaining := budget - 50 // Reserve for header

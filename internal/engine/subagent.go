@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -111,6 +112,10 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	}
 
 	// Step 5: Initialize conversation context.
+	// Three modes:
+	//   Fork:    full parent history + new prompt (maximum context, risk of attention dilution)
+	//   Distill: compressed summary + new prompt (balanced: relevant context without noise)
+	//   Spawn:   blank session + new prompt (minimum context, maximum focus)
 	var systemPromptOverride string
 	if cfg.Fork && len(cfg.ParentMessages) > 0 {
 		// Fork mode: copy parent conversation and append new prompt.
@@ -133,6 +138,20 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			CreatedAt: time.Now(),
 		})
 		systemPromptOverride = cfg.SystemPromptOverride
+	} else if cfg.ContextSummary != "" {
+		// Distill mode: inject compressed context + task prompt as a single user
+		// message. Using one message avoids wasting tokens on a synthetic assistant
+		// turn and prevents the false-confirmation bias that "I understand" creates.
+		// The XML tags let the model distinguish background from task instruction.
+		distillPrompt := "<context-summary>\n" + cfg.ContextSummary + "\n</context-summary>\n\n<task>\n" + cfg.Prompt + "\n</task>"
+		sess.AddMessage(types.Message{
+			Role: types.RoleUser,
+			Content: []types.ContentBlock{{
+				Type: types.ContentTypeText,
+				Text: distillPrompt,
+			}},
+			CreatedAt: time.Now(),
+		})
 	} else {
 		// Spawn mode: blank session with just the prompt.
 		sess.AddMessage(types.Message{
@@ -146,11 +165,35 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	}
 
 	// Step 6: Build filtered ToolPool.
+	// First filter by AgentType (coarse), then by AgentDefinition.AllowedTools (fine).
 	pool := tool.NewToolPool(qe.registry, nil, nil)
 	pool = pool.FilteredFor(cfg.AgentType)
 
-	// Step 7: Resolve prompt profile (skip for fork mode with override).
-	profile := resolveSubAgentProfile(cfg.SubagentType)
+	// Look up agent definition for tool/skill/profile customization.
+	var agentDef *agent.AgentDefinition
+	if qe.defRegistry != nil && cfg.SubagentType != "" {
+		agentDef = qe.defRegistry.Get(cfg.SubagentType)
+	}
+
+	if agentDef != nil && len(agentDef.AllowedTools) > 0 {
+		pool = pool.FilterByNames(agentDef.AllowedTools)
+		logger.Debug("tool pool filtered by agent definition",
+			zap.String("agent", cfg.SubagentType),
+			zap.Int("tools_after_filter", pool.Size()),
+			zap.Strings("allowed", agentDef.AllowedTools),
+		)
+	}
+
+	// Step 7: Resolve prompt profile.
+	// Priority: AgentDefinition.Profile > subagentType string mapping > WorkerProfile.
+	var profile *prompt.AgentProfile
+	if agentDef != nil && agentDef.Profile != "" {
+		profile = prompt.ResolveProfileByName(agentDef.Profile)
+		logger.Debug("profile from agent definition", zap.String("profile", agentDef.Profile))
+	}
+	if profile == nil {
+		profile = resolveSubAgentProfile(cfg.SubagentType)
+	}
 
 	// Step 8: Build permission checker.
 	// Use InheritedChecker with parent's session-approved tools.
@@ -172,12 +215,29 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		ClientTools:          false, // sub-agents always server-side
 	}
 
+	// Build allowed skills map.
+	// Priority: SpawnConfig.AllowedSkills > AgentDefinition.Skills > nil (all skills).
+	var allowedSkills map[string]bool
+	if len(cfg.AllowedSkills) > 0 {
+		allowedSkills = make(map[string]bool, len(cfg.AllowedSkills))
+		for _, s := range cfg.AllowedSkills {
+			allowedSkills[s] = true
+		}
+	} else if agentDef != nil && len(agentDef.Skills) > 0 {
+		allowedSkills = make(map[string]bool, len(agentDef.Skills))
+		for _, s := range agentDef.Skills {
+			allowedSkills[s] = true
+		}
+	}
+
 	lc := &loopConfig{
 		pool:                 pool,
 		profile:              profile,
 		permChecker:          permChecker,
 		config:               subConfig,
 		systemPromptOverride: systemPromptOverride,
+		subagentType:         cfg.SubagentType,
+		allowedSkills:        allowedSkills,
 		logger:               logger,
 	}
 
@@ -213,6 +273,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	var terminal types.Terminal
 	var textBuf strings.Builder
 	var cumulativeUsage types.Usage
+	var deliverables []types.Deliverable
 
 	done := make(chan struct{})
 	go func() {
@@ -225,6 +286,21 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		switch evt.Type {
 		case types.EngineEventText:
 			textBuf.WriteString(evt.Text)
+		case types.EngineEventToolEnd:
+			// Detect deliverables: FileWrite tool_end with render_hint "file_info".
+			if evt.ToolResult != nil && evt.ToolResult.Metadata != nil {
+				if hint, _ := evt.ToolResult.Metadata["render_hint"].(string); hint == "file_info" {
+					d := types.Deliverable{
+						FilePath:  strVal(evt.ToolResult.Metadata, "file_path"),
+						Language:  strVal(evt.ToolResult.Metadata, "language"),
+						ByteSize:  intVal(evt.ToolResult.Metadata, "bytes_written"),
+						ToolUseID: evt.ToolUseID,
+					}
+					if d.FilePath != "" {
+						deliverables = append(deliverables, d)
+					}
+				}
+			}
 		case types.EngineEventDone:
 			if evt.Usage != nil {
 				cumulativeUsage = *evt.Usage
@@ -317,15 +393,57 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		zap.Duration("elapsed", elapsed),
 	)
 
-	// Step 14: Return SpawnResult.
-	return &agent.SpawnResult{
-		Output:    textBuf.String(),
-		Terminal:  &terminal,
-		Usage:     &cumulativeUsage,
-		SessionID: sessionID,
-		AgentID:   agentID,
-		NumTurns:  terminal.Turn,
-	}, nil
+	// Step 14: Return SpawnResult with structured fields.
+	// - Output: full text (stored in TaskRegistry for reference)
+	// - Summary: extracted from <summary> tag (returned to emma in tool_result)
+	// - Status: derived from terminal reason
+	fullOutput := textBuf.String()
+	summary := parseSummaryTag(fullOutput)
+
+	// Derive status from terminal reason.
+	status := "completed"
+	switch terminal.Reason {
+	case types.TerminalMaxTurns:
+		status = "max_turns"
+	case types.TerminalModelError:
+		status = "error"
+	case types.TerminalAbortedStreaming, types.TerminalAbortedTools:
+		status = "aborted"
+	}
+
+	// Build the output that emma sees in tool_result:
+	// Only summary + deliverable list, NOT the full output.
+	var emmaOutput strings.Builder
+	emmaOutput.WriteString(summary)
+	if len(deliverables) > 0 {
+		emmaOutput.WriteString("\n\n产出文件：\n")
+		for _, d := range deliverables {
+			emmaOutput.WriteString(fmt.Sprintf("- %s（%s，%d 字节）\n", d.FilePath, d.Language, d.ByteSize))
+		}
+	}
+
+	spawnResult := &agent.SpawnResult{
+		Output:       emmaOutput.String(),
+		Summary:      summary,
+		Status:       status,
+		Attempts:     1, // TODO: increment when task-level retry is implemented
+		Deliverables: deliverables,
+		Terminal:     &terminal,
+		Usage:        &cumulativeUsage,
+		SessionID:    sessionID,
+		AgentID:      agentID,
+		NumTurns:     terminal.Turn,
+	}
+
+	// Record full result in TaskRegistry for future reference (context passing, debugging).
+	// Store the full output separately — emma only sees the summary.
+	fullResult := *spawnResult
+	fullResult.Output = fullOutput // preserve full sub-agent output
+	qe.taskRegistryMu.Lock()
+	qe.taskRegistry[agentID] = &fullResult
+	qe.taskRegistryMu.Unlock()
+
+	return spawnResult, nil
 }
 
 // getSessionApprovedTools returns the list of tool names approved for a session.
@@ -350,6 +468,8 @@ type loopConfig struct {
 	permChecker          permission.Checker
 	config               QueryEngineConfig
 	systemPromptOverride string
+	subagentType         string          // agent definition name (e.g., "developer", "researcher")
+	allowedSkills        map[string]bool // nil = all skills; non-nil = whitelist
 	logger               *zap.Logger
 }
 
@@ -414,7 +534,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 		// Build system prompt.
 		systemPrompt := lc.systemPromptOverride
 		if systemPrompt == "" {
-			systemPrompt = qe.buildSubAgentSystemPrompt(ctx, sess, messages, lc.profile)
+			systemPrompt = qe.buildSubAgentSystemPrompt(ctx, sess, messages, lc.profile, lc.subagentType, lc.allowedSkills)
 		}
 
 		req := &provider.ChatRequest{
@@ -496,7 +616,13 @@ func (qe *QueryEngine) runSubAgentLoop(
 			return types.Terminal{Reason: types.TerminalAbortedTools, Message: "sub-agent cancelled before tool execution", Turn: ls.turn}
 		}
 
-		results := executor.ExecuteBatch(ctx, toolCalls, out)
+		// Inject allowed skills into context so SkillTool can enforce the whitelist.
+		execCtx := ctx
+		if lc.allowedSkills != nil {
+			execCtx = tool.WithAllowedSkills(execCtx, lc.allowedSkills)
+		}
+
+		results := executor.ExecuteBatch(execCtx, toolCalls, out)
 
 		if ctx.Err() != nil {
 			return types.Terminal{Reason: types.TerminalAbortedTools, Message: "sub-agent cancelled during tool execution", Turn: ls.turn}
@@ -542,11 +668,16 @@ func (qe *QueryEngine) runSubAgentLoop(
 
 // buildSubAgentSystemPrompt builds a system prompt for the sub-agent using
 // the given profile, without touching the parent's prompt cache.
+// subagentType is the agent definition name (e.g., "developer", "researcher")
+// used to look up the worker's identity from the definition registry.
+// When allowedSkills is non-nil, only the listed skills appear in the prompt.
 func (qe *QueryEngine) buildSubAgentSystemPrompt(
 	_ context.Context,
 	sess *session.Session,
 	messages []types.Message,
 	profile *prompt.AgentProfile,
+	subagentType string,
+	allowedSkills map[string]bool,
 ) string {
 	if qe.promptBuilder == nil {
 		return qe.config.SystemPrompt
@@ -557,16 +688,45 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 		totalTokens += msg.Tokens
 	}
 
+	// Build skill listing, filtering by allowedSkills if set.
+	skillListing := qe.getSkillListingFiltered(allowedSkills)
+
+	// Look up agent definition to build worker identity, tool filter, and skills.
+	var workerIdentity string
+	var def *agent.AgentDefinition
+	if qe.defRegistry != nil && subagentType != "" {
+		def = qe.defRegistry.Get(subagentType)
+	}
+	if def != nil {
+		if def.SystemPrompt != "" {
+			// Use custom system prompt if set (e.g., from YAML).
+			workerIdentity = def.SystemPrompt
+		} else if def.DisplayName != "" {
+			// Auto-generate identity from definition metadata.
+			var identity strings.Builder
+			identity.WriteString(fmt.Sprintf("你叫%s，是 emma 团队的搭档。\n", def.DisplayName))
+			if def.Description != "" {
+				identity.WriteString(fmt.Sprintf("你的专长：%s。\n", def.Description))
+			}
+			if def.Personality != "" {
+				identity.WriteString(fmt.Sprintf("你的风格：%s。\n", def.Personality))
+			}
+			identity.WriteString("\nemma 派你来执行一项具体任务，请专注完成。")
+			workerIdentity = identity.String()
+		}
+	}
+
 	promptCtx := &prompt.PromptContext{
-		SessionID:         sess.ID,
-		Turn:              len(messages),
-		Session:           sess,
-		Tools:             qe.registry,
-		TotalTokensUsed:   totalTokens,
-		ContextWindowSize: 200000,
-		Memory:            make(map[string]string),
-		EnvInfo:           qe.getEnvSnapshot(),
-		SkillListing:      qe.getSkillListing(),
+		SessionID:            sess.ID,
+		Turn:                 len(messages),
+		Session:              sess,
+		Tools:                qe.registry,
+		TotalTokensUsed:      totalTokens,
+		ContextWindowSize:    200000,
+		Memory:               make(map[string]string),
+		EnvInfo:              qe.getEnvSnapshot(),
+		SkillListing:         skillListing,
+		SystemPromptOverride: workerIdentity,
 	}
 
 	output, err := qe.promptBuilder.Build(promptCtx, profile)
@@ -575,10 +735,64 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 		return qe.config.SystemPrompt
 	}
 
-	return output.ToSystemPrompt()
+	result := output.ToSystemPrompt()
+	qe.logger.Debug("========== SUB-AGENT SYSTEM PROMPT START ==========\n"+result+"\n========== SUB-AGENT SYSTEM PROMPT END ==========",
+		zap.String("session_id", sess.ID),
+		zap.String("profile", profile.Name),
+		zap.Int("char_count", len(result)),
+		zap.Int("estimated_tokens", prompt.EstimateTokens(result)),
+		zap.Int("block_count", len(output.Blocks)),
+	)
+
+	return result
 }
 
 // resolveSubAgentProfile maps a subagent_type string to a prompt profile.
 func resolveSubAgentProfile(subagentType string) *prompt.AgentProfile {
 	return prompt.ResolveProfileBySubagentType(subagentType)
+}
+
+// strVal safely extracts a string from a metadata map.
+func strVal(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// intVal safely extracts an int from a metadata map.
+// Handles both int and float64 (JSON numbers decode as float64).
+func intVal(m map[string]any, key string) int {
+	switch v := m[key].(type) {
+	case int:
+		return v
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+// summaryTagRe matches <summary>...</summary> in sub-agent output.
+// Uses (?s) so . matches newlines within the tag.
+var summaryTagRe = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
+
+// parseSummaryTag extracts the content of the first <summary> tag from text.
+// Fallback: returns the first non-empty paragraph, truncated to 200 chars.
+func parseSummaryTag(text string) string {
+	if m := summaryTagRe.FindStringSubmatch(text); len(m) > 1 {
+		return strings.TrimSpace(m[1])
+	}
+
+	// Fallback: first non-empty paragraph.
+	for _, para := range strings.Split(text, "\n\n") {
+		p := strings.TrimSpace(para)
+		if p != "" {
+			if len([]rune(p)) > 200 {
+				return string([]rune(p)[:200]) + "..."
+			}
+			return p
+		}
+	}
+	return ""
 }

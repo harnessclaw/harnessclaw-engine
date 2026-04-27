@@ -170,6 +170,23 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 	if result.Terminal != nil {
 		metadata["terminal_reason"] = string(result.Terminal.Reason)
 	}
+	if len(result.Deliverables) > 0 {
+		metadata["deliverables"] = result.Deliverables
+		metadata["has_deliverables"] = true
+	}
+
+	// Emit deliverable events for each file produced by the sub-agent.
+	if out, ok := tool.GetEventOut(ctx); ok && len(result.Deliverables) > 0 {
+		for _, d := range result.Deliverables {
+			d := d // capture
+			out <- types.EngineEvent{
+				Type:        types.EngineEventDeliverable,
+				AgentID:     result.AgentID,
+				AgentName:   cfg.Name,
+				Deliverable: &d,
+			}
+		}
+	}
 
 	// Determine if the sub-agent ended in an error state.
 	isError := false
