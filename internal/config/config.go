@@ -48,6 +48,14 @@ type Config struct {
 	Tools      ToolsConfig      `mapstructure:"tools"`
 	Permission PermissionConfig `mapstructure:"permission"`
 	Skills     SkillsConfig     `mapstructure:"skills"`
+	Console    ConsoleConfig    `mapstructure:"console"`
+}
+
+// ConsoleConfig holds Console management API server settings.
+type ConsoleConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Host    string `mapstructure:"host"`
+	Port    int    `mapstructure:"port"`
 }
 
 // SkillsConfig holds skill loading settings.
@@ -251,6 +259,9 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("tools.tavily_search.max_results", 5)
 	v.SetDefault("permission.mode", "default")
 	v.SetDefault("skills.dirs", []string{"~/.harnessclaw/workspace/skills"})
+	v.SetDefault("console.enabled", true)
+	v.SetDefault("console.host", "0.0.0.0")
+	v.SetDefault("console.port", 8090)
 
 	// Config file
 	if configPath != "" {

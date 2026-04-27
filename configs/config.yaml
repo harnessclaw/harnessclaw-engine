@@ -111,6 +111,12 @@ skills:
   dirs:
     # - "~/.harnessclaw/workspace/skills/"
 
+# --- Console Management API ---
+console:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8090
+
 # --- Permission ---
 permission:
   mode: "default"        # default, plan, bypass, acceptEdits, dontAsk
