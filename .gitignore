@@ -34,9 +34,13 @@ configs/config_self.yaml
 # Dependency
 vendor/
 
-# docs
+# docs — local-only design / draft / API docs (only docs/protocols/ and docs/release-rules.md are tracked)
 docs/refactor
 docs/prompt
+docs/design/
+docs/api/
+docs/multi-agent-design.md
+docs/agent-yaml-reference.md
 
 # Debug
 __debug_bin*

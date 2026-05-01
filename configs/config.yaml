@@ -56,7 +56,20 @@ channels:
     ping_interval: "30s"
     write_timeout: "10s"
     max_message_size: 524288   # 512KB
-    client_tools: true
+    # client_tools sets the DEFAULT routing for tools that don't opt in
+    # to a specific side. Per-tool overrides (e.g. AskUserQuestion always
+    # client, regardless of this flag) take precedence — see
+    # internal/tool.ClientRoutedTool.
+    #
+    #   true  — delegate-everything mode (Claude Code CLI style: client
+    #           runs Bash/Edit/Read/etc.). Pick this when your client
+    #           knows how to execute every registered tool.
+    #   false — server-runs-everything mode (web UI style: server has API
+    #           keys for WebSearch, spawns sub-agents, etc.). The client
+    #           still receives tool.call for tools marked client-routed
+    #           (AskUserQuestion). This is the right setting for emma's
+    #           web UI.
+    client_tools: false
   http:
     enabled: true
     host: "0.0.0.0"

@@ -49,6 +49,9 @@ import (
 	"harnessclaw-go/internal/task"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/agenttool"
+	"harnessclaw-go/internal/tool/askuserquestion"
+	orchestratetool "harnessclaw-go/internal/tool/orchestrate"
+	"harnessclaw-go/internal/tool/specialists"
 	"harnessclaw-go/internal/tool/bash"
 	"harnessclaw-go/internal/tool/fileedit"
 	"harnessclaw-go/internal/tool/fileread"
@@ -134,6 +137,9 @@ func main() {
 		// ArtifactGet is always enabled — it allows the LLM to retrieve
 		// full content from the artifact store for large tool results.
 		{true, func() tool.Tool { return artifacttool.NewGetTool() }},
+		// AskUserQuestion is L1's clarification mechanism. Always enabled
+		// (no config — it's a passthrough to the WebSocket client).
+		{true, func() tool.Tool { return askuserquestion.New(logger) }},
 	}
 	for _, bt := range builtInTools {
 		if bt.enabled {
@@ -236,12 +242,24 @@ func main() {
 	}
 	systemPrompt += " - Skills directories: " + strings.Join(cfg.Skills.Dirs, ", ")
 
+	// L2 (worker / sub-agent) settings live on QueryEngineConfig directly.
+	// L1 settings (emma profile, restricted tool palette, small loop) are
+	// applied by NewL1Engine below and overwrite the main-agent fields here.
 	engCfg := engine.QueryEngineConfig{
 		MaxTurns:             cfg.Engine.MaxTurns,
 		AutoCompactThreshold: cfg.Engine.AutoCompactThreshold,
 		ToolTimeout:          cfg.Engine.ToolTimeout,
 		MaxTokens:            16384,
 		SystemPrompt:         systemPrompt,
+		// ClientTools comes from the WebSocket channel config since L1's
+		// only delivery surface for client-routed tools (AskUserQuestion,
+		// etc.) is the WebSocket. Forgetting this defaults Go's zero value
+		// (false), which silently drops AskUserQuestion calls into the
+		// server-side fallback — the warning users see in production.
+		ClientTools: cfg.Channel.WebSocket.ClientTools,
+		// MainAgentProfile / DisplayName / AllowedTools / MaxTurns are filled
+		// in by NewL1Engine; setting non-default values here would be
+		// overwritten anyway.
 	}
 	eng := engine.NewQueryEngine(llmProvider, registry, sessionMgr, compactor, permChecker, bus, logger, engCfg, cmdRegistry)
 	logger.Info("engine initialized",
@@ -249,12 +267,37 @@ func main() {
 		zap.Float64("compact_threshold", engCfg.AutoCompactThreshold),
 	)
 
-	// Register Agent tool (post-engine: needs engine as AgentSpawner).
+	// Wrap the QueryEngine in an L1Engine. From this point on, the channel
+	// layer talks to `l1` (user-facing); Agent/Orchestrate tools continue to
+	// use `eng` directly to spawn L2 sub-agents.
+	l1 := engine.NewL1Engine(eng, engine.DefaultL1Config(), logger)
+	logger.Info("L1 engine wrapped",
+		zap.String("profile", l1.Config().Profile.Name),
+		zap.String("display_name", l1.Config().DisplayName),
+		zap.Strings("allowed_tools", l1.Config().AllowedTools),
+		zap.Int("max_turns", l1.Config().MaxTurns),
+	)
+
+	// Register Task tool (post-engine: needs engine as AgentSpawner).
 	// ToolPool is rebuilt per query loop, so late registration is safe.
+	//
+	// In the 3-tier architecture the Task tool (formerly "Agent") is not in
+	// emma's tool palette (see L1Engine.AllowedTools). It is reachable from
+	// L2 Specialists, which declares "Task" in its AgentDefinition.AllowedTools
+	// and bypasses the AgentType blacklist (see internal/engine/subagent.go
+	// filter logic).
 	if err := registry.Register(agenttool.New(eng, logger)); err != nil {
-		logger.Fatal("failed to register agent tool", zap.Error(err))
+		logger.Fatal("failed to register task tool", zap.Error(err))
 	}
-	logger.Info("agent tool registered")
+	logger.Info("task tool registered")
+
+	// Register Specialists tool — the L1→L2 dispatch entry point. emma sees
+	// this tool as her single delegation channel; Specialists itself spawns
+	// L3 sub-agents internally via the Task tool above.
+	if err := registry.Register(specialists.New(eng, logger)); err != nil {
+		logger.Fatal("failed to register specialists tool", zap.Error(err))
+	}
+	logger.Info("specialists tool registered")
 
 	// --- Step 8.5: Initialize multi-agent infrastructure ---
 	agentReg := agent.NewAgentRegistry()
@@ -327,6 +370,16 @@ func main() {
 	}
 	logger.Info("agent definitions summary", zap.Int("total", len(agentDefReg.All())))
 
+	// Register Orchestrate tool (Phase-2 multi-step coordinator).
+	// The roster combines built-in profile names with all loaded agent
+	// definitions; it is queried per Execute() call so newly-registered
+	// definitions are picked up automatically.
+	orchestrateRoster := &agentDefRoster{reg: agentDefReg}
+	if err := registry.Register(orchestratetool.New(eng, orchestrateRoster, logger)); err != nil {
+		logger.Fatal("failed to register orchestrate tool", zap.Error(err))
+	}
+	logger.Info("orchestrate tool registered")
+
 	// Inject multi-agent dependencies into the engine.
 	eng.SetAgentRegistry(agentReg)
 	eng.SetMessageBroker(broker)
@@ -374,7 +427,9 @@ func main() {
 		)
 	}
 
-	rtr := router.New(eng, channels, middlewares, logger)
+	// The router talks to L1 — that is the only user-facing engine.
+	// L2 sub-agents are reached only indirectly via Agent/Orchestrate tools.
+	rtr := router.New(l1, channels, middlewares, logger)
 	logger.Info("router initialized",
 		zap.Int("middleware_count", len(middlewares)),
 		zap.Int("channel_count", len(channels)),
@@ -693,4 +748,41 @@ func defaultDBPath(name string) string {
 		return filepath.Join(".harnessclaw", "db", name)
 	}
 	return filepath.Join(home, ".harnessclaw", "db", name)
+}
+
+// agentDefRoster adapts the agent definition registry to the Orchestrate
+// tool's AgentRoster interface. It also includes built-in profile names so
+// the Planner can route to non-team profiles like Explore/Plan/general-purpose.
+type agentDefRoster struct {
+	reg *agent.AgentDefinitionRegistry
+}
+
+// builtInRosterAgents are the always-available profile names the Planner
+// may target, in addition to agent definitions registered at runtime.
+var builtInRosterAgents = []string{
+	"general-purpose",
+	"Explore",
+	"Plan",
+	"worker",
+}
+
+func (r *agentDefRoster) AvailableSubagentTypes() []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, 16)
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, n := range builtInRosterAgents {
+		add(n)
+	}
+	if r.reg != nil {
+		for _, name := range r.reg.Names() {
+			add(name)
+		}
+	}
+	return out
 }
