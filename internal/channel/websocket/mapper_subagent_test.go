@@ -56,6 +56,37 @@ func TestMapSubAgentStart(t *testing.T) {
 	}
 }
 
+// TestMapSubAgentStart_TaskTextPropagates guards the task-visibility fix:
+// the full prompt the parent dispatched (EngineEvent.AgentTask) must reach
+// the wire as `task` so the client can show "researcher 接到的任务：…".
+// Without it, only the 3-5-word AgentDesc gets through and the sub-agent's
+// real mission stays invisible.
+func TestMapSubAgentStart_TaskTextPropagates(t *testing.T) {
+	m := NewEventMapper("s_task", false)
+	event := &types.EngineEvent{
+		Type:      types.EngineEventSubAgentStart,
+		AgentID:   "agent_research_1",
+		AgentName: "researcher",
+		AgentDesc: "调研 LLM 推理",
+		AgentTask: "调研大模型推理优化的最新进展，重点关注 vLLM、SGLang、KV-cache 优化方向，整理一份给老板的简报",
+		AgentType: "sync",
+	}
+	msgs, err := m.Map(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg SubAgentStartMessage
+	if err := json.Unmarshal(msgs[0], &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.Description != "调研 LLM 推理" {
+		t.Errorf("description: got %q", msg.Description)
+	}
+	if msg.Task != event.AgentTask {
+		t.Errorf("task: got %q\nwant %q", msg.Task, event.AgentTask)
+	}
+}
+
 func TestMapSubAgentStart_MinimalFields(t *testing.T) {
 	m := NewEventMapper("s2", false)
 	event := &types.EngineEvent{
@@ -186,6 +217,46 @@ func TestMapSubAgentEnd_NoUsage(t *testing.T) {
 	}
 	if msg.Status != "error" {
 		t.Errorf("expected status error, got %s", msg.Status)
+	}
+}
+
+// TestMapAgentIntent guards the new agent.intent wire frame: when the
+// main agent (emma) calls a tool, the framework strips the required
+// `intent` field and emits an agent_intent EngineEvent with it. The
+// mapper must turn that into an agent.intent message carrying the
+// progress sentence the user will actually see.
+func TestMapAgentIntent(t *testing.T) {
+	m := NewEventMapper("s_int", false)
+	event := &types.EngineEvent{
+		Type:      types.EngineEventAgentIntent,
+		AgentID:   "",
+		AgentName: "emma",
+		ToolUseID: "tu_42",
+		ToolName:  "WebSearch",
+		Intent:    "正在搜索 vLLM 推理优化的最新论文",
+	}
+	msgs, err := m.Map(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 frame, got %d", len(msgs))
+	}
+	var msg AgentIntentMessage
+	if err := json.Unmarshal(msgs[0], &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.Type != MsgTypeAgentIntent {
+		t.Errorf("type: got %q, want %q", msg.Type, MsgTypeAgentIntent)
+	}
+	if msg.Intent != event.Intent {
+		t.Errorf("intent: got %q", msg.Intent)
+	}
+	if msg.ToolUseID != "tu_42" || msg.ToolName != "WebSearch" {
+		t.Errorf("tool attribution lost: %+v", msg)
+	}
+	if msg.AgentName != "emma" {
+		t.Errorf("agent_name: got %q", msg.AgentName)
 	}
 }
 

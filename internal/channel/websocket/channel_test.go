@@ -630,8 +630,8 @@ func TestIntegration_WebSocket_RoundTrip(t *testing.T) {
 	if initMsg.SessionID != "test-session" {
 		t.Errorf("expected session_id 'test-session', got %q", initMsg.SessionID)
 	}
-	if initMsg.ProtocolVersion != "1.9" {
-		t.Errorf("expected protocol_version '1.9', got %q", initMsg.ProtocolVersion)
+	if initMsg.ProtocolVersion != "1.11" {
+		t.Errorf("expected protocol_version '1.11', got %q", initMsg.ProtocolVersion)
 	}
 
 	// Send a user.message.
@@ -770,6 +770,348 @@ func TestTrySend_NonBlocking(t *testing.T) {
 	// Third send should not block and return false.
 	if c.TrySend([]byte("3")) {
 		t.Error("expected TrySend to return false on full buffer")
+	}
+}
+
+// ============================================================
+// L3 propagation end-to-end test
+// ============================================================
+//
+// TestIntegration_WebSocket_L3SubAgentChain exercises the full L1→L2→L3
+// observability chain on the wire:
+//
+//   emma (L1, the parent session)
+//     └─ Specialists (L2, dispatched as a sync sub-agent — the events below
+//                    are what L2's forwarding loop in subagent.go bubbles up
+//                    when a deeper L3 sub-agent runs underneath it)
+//           └─ researcher (L3, doing actual work)
+//
+// We feed the channel exactly the event sequence that L2's forwarding loop
+// produces (subagent_start / subagent_event / deliverable / subagent_end),
+// and assert that the WebSocket client receives the full set of wire frames
+// — `subagent.start`, `subagent.event`, `deliverable.ready`, `subagent.end`
+// — with the correct AgentID/AgentName/payload fields.
+//
+// Pre-fix regression: the L2 SpawnSync forwarding loop only matched its own
+// ToolStart/ToolEnd, dropping events that originated below it. The unit
+// test TestSpawnSync_PassesThroughDeeperLayerEvents in internal/engine
+// guards the in-process forwarding; this test guards the wire-format
+// translation that follows.
+func TestIntegration_WebSocket_L3SubAgentChain(t *testing.T) {
+	ch, addr := startTestChannel(t)
+
+	const (
+		l3AgentID    = "agent_l3researcher"
+		l3AgentName  = "researcher"
+		l3ToolUseID  = "tu_l3_websearch"
+		l3ToolName   = "WebSearch"
+		l3ToolInput  = `{"query":"latest LLM inference papers"}`
+		l3ToolOutput = "found 8 results"
+		l3FilePath   = "~/.harnessclaw/workspace/deliverables/llm-inference-report.md"
+		l3Language   = "markdown"
+		l3ByteSize   = 2048
+	)
+
+	// The mock handler simulates what happens after L2's forwarding loop:
+	// it pushes the sequence of bubbled-up L3 events into the channel as if
+	// they had just been forwarded from a deeper sub-agent.
+	mockHandler := func(ctx context.Context, msg *types.IncomingMessage) error {
+		events := []types.EngineEvent{
+			// 1) L3 sub-agent starts — Specialists just dispatched it.
+			//    AgentTask carries the full prompt so the client can show
+			//    "researcher 接到的任务：…" instead of just the short label.
+			{
+				Type:          types.EngineEventSubAgentStart,
+				AgentID:       l3AgentID,
+				AgentName:     l3AgentName,
+				AgentDesc:     "信息调研专家",
+				AgentTask:     "调研大模型推理优化的最新进展，重点关注 vLLM/SGLang/KV-cache 方向",
+				AgentType:     "sync",
+				ParentAgentID: "agent_specialists_l2",
+			},
+			// 2) L3 calls a tool — wrapped as subagent.event by the deeper layer.
+			{
+				Type:      types.EngineEventSubAgentEvent,
+				AgentID:   l3AgentID,
+				AgentName: l3AgentName,
+				SubAgentEvent: &types.SubAgentEventData{
+					EventType: "tool_start",
+					ToolName:  l3ToolName,
+					ToolUseID: l3ToolUseID,
+					ToolInput: l3ToolInput,
+				},
+			},
+			// 3) L3's tool completes.
+			{
+				Type:      types.EngineEventSubAgentEvent,
+				AgentID:   l3AgentID,
+				AgentName: l3AgentName,
+				SubAgentEvent: &types.SubAgentEventData{
+					EventType: "tool_end",
+					ToolName:  l3ToolName,
+					ToolUseID: l3ToolUseID,
+					Output:    l3ToolOutput,
+				},
+			},
+			// 4) L3 produced a file — must surface as deliverable.ready so
+			//    the client can render/download it.
+			{
+				Type:      types.EngineEventDeliverable,
+				AgentID:   l3AgentID,
+				AgentName: l3AgentName,
+				Deliverable: &types.Deliverable{
+					FilePath: l3FilePath,
+					Language: l3Language,
+					ByteSize: l3ByteSize,
+				},
+			},
+			// 5) L3 finishes. AgentStatus drives the wire `status` field.
+			{
+				Type:        types.EngineEventSubAgentEnd,
+				AgentID:     l3AgentID,
+				AgentName:   l3AgentName,
+				AgentStatus: "completed",
+				Duration:    1234,
+				Usage:       &types.Usage{InputTokens: 200, OutputTokens: 150},
+				Terminal:    &types.Terminal{Reason: types.TerminalCompleted, Turn: 4},
+			},
+			// 6) Top-level done so the client knows this whole turn ended.
+			{
+				Type: types.EngineEventDone,
+				Terminal: &types.Terminal{
+					Reason: types.TerminalCompleted,
+					Turn:   1,
+				},
+				Usage: &types.Usage{InputTokens: 250, OutputTokens: 180},
+			},
+		}
+		for i := range events {
+			if err := ch.SendEvent(ctx, msg.SessionID, &events[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- ch.Start(ctx, mockHandler) }()
+	time.Sleep(100 * time.Millisecond)
+
+	if err := ch.Health(); err != nil {
+		t.Fatal("channel not healthy:", err)
+	}
+
+	// Connect WebSocket client.
+	wsURL := "ws://" + addr + "/ws"
+	ws, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal("dial failed:", err)
+	}
+	defer ws.Close(websocket.StatusNormalClosure, "test done")
+
+	// Bootstrap session.
+	createMsg, _ := json.Marshal(ClientMessage{
+		Type:      MsgTypeSessionCreate,
+		SessionID: "l3-chain-session",
+	})
+	if err := ws.Write(ctx, websocket.MessageText, createMsg); err != nil {
+		t.Fatal("write session.create:", err)
+	}
+	if _, _, err := ws.Read(ctx); err != nil {
+		t.Fatal("read session.created:", err)
+	}
+
+	// Trigger the handler.
+	userMsg, _ := json.Marshal(ClientMessage{
+		Type:    MsgTypeUserMessage,
+		EventID: "evt_user_l3",
+		Text:    "research latest LLM inference work and write a report",
+	})
+	if err := ws.Write(ctx, websocket.MessageText, userMsg); err != nil {
+		t.Fatal("write user.message:", err)
+	}
+
+	// Expected wire frames (one per engine event, since none of these split):
+	//   subagent.start, subagent.event, subagent.event, deliverable.ready,
+	//   subagent.end, task.end
+	const expectedFrameCount = 6
+	frames := make([][]byte, 0, expectedFrameCount)
+	readCtx, readCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer readCancel()
+	for i := 0; i < expectedFrameCount; i++ {
+		_, data, err := ws.Read(readCtx)
+		if err != nil {
+			t.Fatalf("read frame #%d failed: %v (got %d frames so far)", i, err, len(frames))
+		}
+		frames = append(frames, data)
+	}
+
+	// Decode the type of each frame for ordering assertion.
+	gotTypes := make([]string, len(frames))
+	for i, raw := range frames {
+		var env struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &env); err != nil {
+			t.Fatalf("frame %d: invalid JSON: %v\nframe: %s", i, err, string(raw))
+		}
+		gotTypes[i] = env.Type
+	}
+	wantTypes := []string{
+		string(MsgTypeSubAgentStart),
+		string(MsgTypeSubAgentEvent),
+		string(MsgTypeSubAgentEvent),
+		string(MsgTypeDeliverableReady),
+		string(MsgTypeSubAgentEnd),
+		string(MsgTypeTaskEnd),
+	}
+	for i, want := range wantTypes {
+		if gotTypes[i] != want {
+			t.Errorf("frame %d: got type %q, want %q\nfull sequence: %v",
+				i, gotTypes[i], want, gotTypes)
+		}
+	}
+
+	// --- subagent.start ---
+	var startMsg SubAgentStartMessage
+	if err := json.Unmarshal(frames[0], &startMsg); err != nil {
+		t.Fatalf("decode subagent.start: %v", err)
+	}
+	if startMsg.AgentID != l3AgentID {
+		t.Errorf("subagent.start agent_id: got %q, want %q", startMsg.AgentID, l3AgentID)
+	}
+	if startMsg.AgentName != l3AgentName {
+		t.Errorf("subagent.start agent_name: got %q, want %q", startMsg.AgentName, l3AgentName)
+	}
+	if startMsg.AgentType != "sync" {
+		t.Errorf("subagent.start agent_type: got %q, want %q", startMsg.AgentType, "sync")
+	}
+	if startMsg.ParentAgentID != "agent_specialists_l2" {
+		t.Errorf("subagent.start parent_agent_id should preserve L2 chain, got %q", startMsg.ParentAgentID)
+	}
+	wantTask := "调研大模型推理优化的最新进展，重点关注 vLLM/SGLang/KV-cache 方向"
+	if startMsg.Task != wantTask {
+		t.Errorf("subagent.start task: got %q\nwant %q", startMsg.Task, wantTask)
+	}
+	if startMsg.SessionID != "l3-chain-session" {
+		t.Errorf("subagent.start session_id: got %q", startMsg.SessionID)
+	}
+
+	// --- subagent.event (tool_start) ---
+	var toolStart SubAgentEventMessage
+	if err := json.Unmarshal(frames[1], &toolStart); err != nil {
+		t.Fatalf("decode subagent.event[tool_start]: %v", err)
+	}
+	if toolStart.AgentID != l3AgentID {
+		t.Errorf("subagent.event[tool_start] agent_id: got %q, want %q", toolStart.AgentID, l3AgentID)
+	}
+	if toolStart.Payload == nil {
+		t.Fatal("subagent.event[tool_start] payload is nil")
+	}
+	if toolStart.Payload.EventType != "tool_start" {
+		t.Errorf("payload.event_type: got %q, want tool_start", toolStart.Payload.EventType)
+	}
+	if toolStart.Payload.ToolName != l3ToolName {
+		t.Errorf("payload.tool_name: got %q, want %q", toolStart.Payload.ToolName, l3ToolName)
+	}
+	if toolStart.Payload.ToolUseID != l3ToolUseID {
+		t.Errorf("payload.tool_use_id: got %q, want %q", toolStart.Payload.ToolUseID, l3ToolUseID)
+	}
+	if toolStart.Payload.ToolInput != l3ToolInput {
+		t.Errorf("payload.tool_input: got %q, want %q", toolStart.Payload.ToolInput, l3ToolInput)
+	}
+
+	// --- subagent.event (tool_end) ---
+	var toolEnd SubAgentEventMessage
+	if err := json.Unmarshal(frames[2], &toolEnd); err != nil {
+		t.Fatalf("decode subagent.event[tool_end]: %v", err)
+	}
+	if toolEnd.Payload == nil || toolEnd.Payload.EventType != "tool_end" {
+		t.Errorf("expected tool_end payload, got %+v", toolEnd.Payload)
+	}
+	if toolEnd.Payload != nil && toolEnd.Payload.Output != l3ToolOutput {
+		t.Errorf("tool_end output: got %q, want %q", toolEnd.Payload.Output, l3ToolOutput)
+	}
+
+	// --- deliverable.ready ---
+	var deliverable DeliverableReadyMessage
+	if err := json.Unmarshal(frames[3], &deliverable); err != nil {
+		t.Fatalf("decode deliverable.ready: %v", err)
+	}
+	if deliverable.AgentID != l3AgentID {
+		t.Errorf("deliverable agent_id: got %q, want %q", deliverable.AgentID, l3AgentID)
+	}
+	if deliverable.AgentName != l3AgentName {
+		t.Errorf("deliverable agent_name: got %q, want %q", deliverable.AgentName, l3AgentName)
+	}
+	if deliverable.FilePath != l3FilePath {
+		t.Errorf("deliverable file_path: got %q, want %q", deliverable.FilePath, l3FilePath)
+	}
+	if deliverable.Language != l3Language {
+		t.Errorf("deliverable language: got %q, want %q", deliverable.Language, l3Language)
+	}
+	if deliverable.ByteSize != l3ByteSize {
+		t.Errorf("deliverable byte_size: got %d, want %d", deliverable.ByteSize, l3ByteSize)
+	}
+
+	// --- subagent.end ---
+	var endMsg SubAgentEndMessage
+	if err := json.Unmarshal(frames[4], &endMsg); err != nil {
+		t.Fatalf("decode subagent.end: %v", err)
+	}
+	if endMsg.AgentID != l3AgentID {
+		t.Errorf("subagent.end agent_id: got %q, want %q", endMsg.AgentID, l3AgentID)
+	}
+	if endMsg.Status != "completed" {
+		t.Errorf("subagent.end status: got %q, want completed", endMsg.Status)
+	}
+	if endMsg.DurationMs != 1234 {
+		t.Errorf("subagent.end duration_ms: got %d, want 1234", endMsg.DurationMs)
+	}
+	if endMsg.NumTurns != 4 {
+		t.Errorf("subagent.end num_turns: got %d, want 4", endMsg.NumTurns)
+	}
+	if endMsg.Usage == nil {
+		t.Fatal("subagent.end usage is nil")
+	}
+	if endMsg.Usage.InputTokens != 200 || endMsg.Usage.OutputTokens != 150 {
+		t.Errorf("subagent.end usage: got %+v, want input=200/output=150", endMsg.Usage)
+	}
+
+	// --- task.end (top-level turn end) ---
+	var taskEnd TaskEndMessage
+	if err := json.Unmarshal(frames[5], &taskEnd); err != nil {
+		t.Fatalf("decode task.end: %v", err)
+	}
+	if taskEnd.Status != "success" {
+		t.Errorf("task.end status: got %q, want success", taskEnd.Status)
+	}
+
+	// Sanity: every frame must carry the originating session_id so the client
+	// can route correctly when multiplexed.
+	for i, raw := range frames {
+		var env struct {
+			SessionID string `json:"session_id"`
+		}
+		_ = json.Unmarshal(raw, &env)
+		if env.SessionID != "l3-chain-session" {
+			t.Errorf("frame %d (%s): session_id %q, want l3-chain-session",
+				i, gotTypes[i], env.SessionID)
+		}
+	}
+
+	// Shutdown.
+	cancel()
+	select {
+	case err := <-startErr:
+		if err != nil && err != http.ErrServerClosed {
+			t.Errorf("unexpected start error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("shutdown timed out")
 	}
 }
 

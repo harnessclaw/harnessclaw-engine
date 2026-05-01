@@ -117,6 +117,25 @@ func (te *ToolExecutor) executeSingle(
 	tc types.ToolCall,
 	out chan<- types.EngineEvent,
 ) (result types.ToolResult) {
+	// Strip the framework-required `intent` field before doing anything
+	// else. ToolPool.Schemas injected `intent` into every tool's input
+	// schema so the model is forced to fill it; here we lift it out so
+	// (a) the user gets a real-time progress sentence as the call begins,
+	// and (b) the underlying tool's own input schema stays unaware of
+	// the convention. If the model didn't supply intent (validation
+	// would normally have rejected it, but providers sometimes relax
+	// constraints), we still execute — silence is better than a hard fail.
+	cleanInput, intent := stripIntent(tc.Input)
+	tc.Input = cleanInput
+	if intent != "" {
+		out <- types.EngineEvent{
+			Type:      types.EngineEventAgentIntent,
+			ToolUseID: tc.ID,
+			ToolName:  tc.Name,
+			Intent:    intent,
+		}
+	}
+
 	// Emit tool_start event.
 	out <- types.EngineEvent{
 		Type:      types.EngineEventToolStart,
@@ -321,4 +340,43 @@ func permKeyLabel(permKey, toolName string) string {
 		return prefix + " " + suffix
 	}
 	return toolName
+}
+
+// stripIntent extracts and removes the `intent` field from a JSON tool
+// input. Returns (cleaned JSON, intent text). If the input is not a JSON
+// object or has no intent field, the input is returned unchanged with an
+// empty intent — the caller treats empty intent as "model didn't fill it"
+// and degrades gracefully (no progress event but the tool still runs).
+//
+// We marshal back via map iteration so this is robust to unknown extra
+// fields the tool's own schema might have. Note that JSON object key
+// order is not preserved across this round-trip — fine for tool inputs
+// since Go's json package treats object property order as insignificant.
+func stripIntent(raw string) (string, string) {
+	if raw == "" {
+		return raw, ""
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		// Not an object (could be array/scalar/malformed). Leave it alone.
+		return raw, ""
+	}
+	intentRaw, ok := m[tool.IntentFieldName]
+	if !ok {
+		return raw, ""
+	}
+	delete(m, tool.IntentFieldName)
+
+	var intent string
+	if err := json.Unmarshal(intentRaw, &intent); err != nil {
+		// Field present but not a string — pass through, no progress.
+		return raw, ""
+	}
+
+	cleaned, err := json.Marshal(m)
+	if err != nil {
+		// Should never happen on a freshly-decoded map, but be safe.
+		return raw, intent
+	}
+	return string(cleaned), strings.TrimSpace(intent)
 }

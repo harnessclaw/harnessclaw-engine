@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -31,6 +32,7 @@ const (
 	MsgTypeSubAgentStart     WSMessageType = "subagent.start"
 	MsgTypeSubAgentEnd       WSMessageType = "subagent.end"
 	MsgTypeSubAgentEvent     WSMessageType = "subagent.event"     // real-time sub-agent streaming
+	MsgTypeAgentIntent       WSMessageType = "agent.intent"       // model-supplied progress sentence before a tool runs
 	// Phase 1.5
 	MsgTypeAgentRouted      WSMessageType = "agent.routed"
 	// Phase 2
@@ -53,6 +55,35 @@ const (
 	MsgTypeDeliverableReady  WSMessageType = "deliverable.ready"
 	MsgTypeError             WSMessageType = "error"
 	MsgTypePong              WSMessageType = "pong"
+
+	// --- Emit lifecycle events (protocol v1.11). The framework emits
+	// these around the boundaries of a request, a plan, and each step in
+	// the plan so observers can render the multi-agent execution tree
+	// without having to parse the LLM transcript.
+	//
+	// NOTE: step.* (NOT task.*) is used for plan-step lifecycle. The
+	// task.* namespace is reserved for the v1.7 user-facing TodoList
+	// system (§6.8); reusing the prefix would make a one-level type
+	// switch ambiguous on the client. ---
+	MsgTypeTraceStarted   WSMessageType = "trace.started"
+	MsgTypeTraceFinished  WSMessageType = "trace.finished"
+	MsgTypeTraceFailed    WSMessageType = "trace.failed"
+	MsgTypePlanCreated    WSMessageType = "plan.created"
+	MsgTypePlanUpdated    WSMessageType = "plan.updated"
+	MsgTypePlanCompleted  WSMessageType = "plan.completed"
+	MsgTypePlanFailed     WSMessageType = "plan.failed"
+	MsgTypeStepDispatched WSMessageType = "step.dispatched"
+	MsgTypeStepStarted    WSMessageType = "step.started"
+	MsgTypeStepProgress   WSMessageType = "step.progress"
+	MsgTypeStepCompleted  WSMessageType = "step.completed"
+	MsgTypeStepFailed     WSMessageType = "step.failed"
+	MsgTypeStepSkipped    WSMessageType = "step.skipped"
+	MsgTypeAgentHeartbeat WSMessageType = "agent.heartbeat"
+
+	// Session continuity (v1.11+): client-driven event replay after a
+	// reconnect. See §3.6 for the retention contract.
+	MsgTypeSessionResumed      WSMessageType = "session.resumed"
+	MsgTypeSessionResumeFailed WSMessageType = "session.resume_failed"
 )
 
 // RenderHint classifies tool output for client-side rendering.
@@ -91,6 +122,7 @@ const (
 	MsgTypePermissionResponse WSMessageType = "permission.response" // client approves/denies a permission request
 	MsgTypeSessionUpdate      WSMessageType = "session.update"
 	MsgTypeSessionInterrupt   WSMessageType = "session.interrupt"
+	MsgTypeSessionResume      WSMessageType = "session.resume" // client requests event replay after reconnect
 	MsgTypePing               WSMessageType = "ping"
 )
 
@@ -126,6 +158,10 @@ type Capabilities struct {
 	Messaging   bool `json:"messaging"`
 	AsyncAgent  bool `json:"async_agent"`
 	Teams       bool `json:"teams"`
+	// Emit declares whether the server emits structured lifecycle events
+	// (trace.*, plan.*, task.dispatched/completed/failed, agent.heartbeat)
+	// with envelope/display/metrics envelopes. v1.11+.
+	Emit bool `json:"emit"`
 }
 
 // MessageStartMessage signals the beginning of an LLM response message.
@@ -267,6 +303,12 @@ type PermissionOptionWire struct {
 }
 
 // SubAgentStartMessage is sent when a sub-agent session begins.
+//
+// Description is the short label dispatched alongside the task ("调研 LLM
+// 推理"). Task carries the full prompt text the parent agent handed down,
+// so the client can render "researcher 接到的任务：…" — without it, only
+// the 3-5-word label reaches the user and the sub-agent's actual mission
+// is invisible.
 type SubAgentStartMessage struct {
 	Type          WSMessageType `json:"type"` // "subagent.start"
 	EventID       string        `json:"event_id"`
@@ -274,6 +316,7 @@ type SubAgentStartMessage struct {
 	AgentID       string        `json:"agent_id"`
 	AgentName     string        `json:"agent_name,omitempty"`
 	Description   string        `json:"description,omitempty"`
+	Task          string        `json:"task,omitempty"`
 	AgentType     string        `json:"agent_type"`
 	ParentAgentID string        `json:"parent_agent_id,omitempty"`
 }
@@ -290,6 +333,26 @@ type SubAgentEndMessage struct {
 	NumTurns    int           `json:"num_turns,omitempty"`
 	Usage       *UsageInfo    `json:"usage,omitempty"`
 	DeniedTools []string      `json:"denied_tools,omitempty"`
+}
+
+// AgentIntentMessage carries a per-tool progress sentence the model
+// provided via the framework-required `intent` field on every tool call.
+// Emitted **before** tool.start so the user sees "researcher 正在搜索 vLLM
+// 论文" the moment the call is dispatched.
+//
+// AgentID/AgentName identify which agent issued the call: empty for the
+// main agent (emma); populated when the call originated inside a sub-agent
+// (the SpawnSync forwarding loop wraps it as subagent.event{event_type=intent}
+// instead — this top-level frame is for emma's own tool calls).
+type AgentIntentMessage struct {
+	Type      WSMessageType `json:"type"` // "agent.intent"
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	AgentID   string        `json:"agent_id,omitempty"`
+	AgentName string        `json:"agent_name,omitempty"`
+	ToolUseID string        `json:"tool_use_id"`
+	ToolName  string        `json:"tool_name"`
+	Intent    string        `json:"intent"`
 }
 
 // SubAgentEventMessage carries real-time streaming content from a sub-agent.
@@ -494,6 +557,382 @@ type UsageInfo struct {
 	CacheWrite   int `json:"cache_write_tokens,omitempty"`
 }
 
+// ---------------------------------------------------------------------------
+// Emit envelope (v1.11+): common metadata attached to lifecycle events.
+// ---------------------------------------------------------------------------
+
+// EnvelopeWire is the on-the-wire representation of internal/emit.Envelope.
+// All emit.* lifecycle events carry one. Consumers can route on envelope
+// fields without parsing the per-type payload.
+//
+// The envelope is ADDITIVE — emit events still carry the message-level
+// top-level fields (event_id, session_id) defined in §4 Message Format.
+// The wire `event_id` IS the envelope event id; there is no duplication.
+// `agent_id` lives only in the envelope for emit events; the legacy
+// agent.* / subagent.* events keep their existing top-level agent_id.
+type EnvelopeWire struct {
+	TraceID       string `json:"trace_id"`
+	ParentEventID string `json:"parent_event_id,omitempty"`
+	TaskID        string `json:"task_id,omitempty"`
+	ParentTaskID  string `json:"parent_task_id,omitempty"`
+	Seq           int64  `json:"seq"`
+	Timestamp     string `json:"timestamp"`
+	AgentRole     string `json:"agent_role"`
+	AgentID       string `json:"agent_id,omitempty"`
+	AgentRunID    string `json:"agent_run_id,omitempty"`
+	Severity      string `json:"severity"`
+}
+
+// DisplayWire is the wire form of emit.Display — UI rendering hints.
+type DisplayWire struct {
+	Title       string `json:"title,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	Icon        string `json:"icon,omitempty"`
+	Visibility  string `json:"visibility,omitempty"`
+	PersonaHint string `json:"persona_hint,omitempty"`
+}
+
+// MetricsWire is the wire form of emit.Metrics — cost / perf telemetry.
+type MetricsWire struct {
+	DurationMs int64   `json:"duration_ms,omitempty"`
+	TokensIn   int     `json:"tokens_in,omitempty"`
+	TokensOut  int     `json:"tokens_out,omitempty"`
+	CacheRead  int     `json:"cache_read_tokens,omitempty"`
+	CacheWrite int     `json:"cache_write_tokens,omitempty"`
+	CostUSD    float64 `json:"cost_usd,omitempty"`
+	Model      string  `json:"model,omitempty"`
+}
+
+// envelopeFromTypes converts the engine-side emit.Envelope into the wire
+// envelope. Returns nil if env is nil. The Timestamp is rendered in
+// RFC3339 with millisecond precision (UTC) so clients can parse it
+// consistently.
+func envelopeFromTypes(env *emit.Envelope) *EnvelopeWire {
+	if env == nil {
+		return nil
+	}
+	return &EnvelopeWire{
+		TraceID:       env.TraceID,
+		ParentEventID: env.ParentEventID,
+		TaskID:        env.TaskID,
+		ParentTaskID:  env.ParentTaskID,
+		Seq:           env.Seq,
+		Timestamp:     env.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z"),
+		AgentRole:     string(env.AgentRole),
+		AgentID:       env.AgentID,
+		AgentRunID:    env.AgentRunID,
+		Severity:      string(env.Severity),
+	}
+}
+
+func displayFromTypes(d *emit.Display) *DisplayWire {
+	if d == nil {
+		return nil
+	}
+	return &DisplayWire{
+		Title:       d.Title,
+		Summary:     d.Summary,
+		Icon:        string(d.Icon),
+		Visibility:  string(d.Visibility),
+		PersonaHint: d.PersonaHint,
+	}
+}
+
+func metricsFromTypes(m *emit.Metrics) *MetricsWire {
+	if m == nil {
+		return nil
+	}
+	return &MetricsWire{
+		DurationMs: m.DurationMs,
+		TokensIn:   m.TokensIn,
+		TokensOut:  m.TokensOut,
+		CacheRead:  m.CacheRead,
+		CacheWrite: m.CacheWrite,
+		CostUSD:    m.CostUSD,
+		Model:      m.Model,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Emit lifecycle messages (v1.11+).
+// ---------------------------------------------------------------------------
+
+// TraceStartedMessage opens a new trace (one user-input → assistant-reply
+// round). Every other event for that round carries the same trace_id in
+// its envelope and is causally nested under this one.
+type TraceStartedMessage struct {
+	Type      WSMessageType `json:"type"` // "trace.started"
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	RequestID string        `json:"request_id,omitempty"`
+	Envelope  *EnvelopeWire `json:"envelope"`
+	Display   *DisplayWire  `json:"display,omitempty"`
+	Payload   TraceStartedPayload `json:"payload"`
+}
+
+// TraceStartedPayload describes what triggered the trace.
+type TraceStartedPayload struct {
+	UserInputSummary string `json:"user_input_summary,omitempty"`
+	Channel          string `json:"channel,omitempty"`
+}
+
+// TraceFinishedMessage closes a trace successfully. Metrics carries the
+// cumulative cost/duration for the whole request.
+type TraceFinishedMessage struct {
+	Type      WSMessageType `json:"type"` // "trace.finished"
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	RequestID string        `json:"request_id,omitempty"`
+	Envelope  *EnvelopeWire `json:"envelope"`
+	Display   *DisplayWire  `json:"display,omitempty"`
+	Metrics   *MetricsWire  `json:"metrics,omitempty"`
+	Payload   TraceFinishedPayload `json:"payload"`
+}
+
+// TraceFinishedPayload summarises the trace outcome.
+type TraceFinishedPayload struct {
+	OutputSummary string `json:"output_summary,omitempty"`
+	NumTurns      int    `json:"num_turns,omitempty"`
+}
+
+// TraceFailedMessage closes a trace with an error.
+type TraceFailedMessage struct {
+	Type      WSMessageType `json:"type"` // "trace.failed"
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	RequestID string        `json:"request_id,omitempty"`
+	Envelope  *EnvelopeWire `json:"envelope"`
+	Display   *DisplayWire  `json:"display,omitempty"`
+	Metrics   *MetricsWire  `json:"metrics,omitempty"`
+	Payload   FailurePayload `json:"payload"`
+}
+
+// FailurePayload is the shared shape used by *.failed events. It splits
+// the developer-facing detail (Type, Code, Message) from the user-facing
+// fallback (UserMessage) so L1 can speak in persona.
+//
+// The shape is intentionally aligned with §6.12 ErrorDetail so that a
+// single monitoring rule (`error.type == "tool_timeout"`) can match
+// both connection-level errors and emit lifecycle failures.
+type FailurePayload struct {
+	Error    ErrorBody `json:"error"`
+	Recovery *Recovery `json:"recovery,omitempty"`
+}
+
+// ErrorBody is the per-failure error block. Mirrors §6.12 ErrorDetail
+// plus a UserMessage field for the persona-friendly fallback.
+type ErrorBody struct {
+	// Type is the controlled enum (see emit.ErrorType for values).
+	// Required. Unknown values MUST be treated as "internal_error".
+	Type string `json:"type"`
+	// Code is a free-form machine-readable subtype scoped to the type
+	// (e.g. type="tool_timeout" + code="BASH_TIMEOUT"). Optional.
+	Code string `json:"code,omitempty"`
+	// Message is the developer-facing description (may include stack
+	// info, command, internal IDs).
+	Message string `json:"message"`
+	// UserMessage is the persona-friendly fallback. L1 SHOULD quote
+	// this rather than the raw Message when relaying to the user.
+	UserMessage string `json:"user_message,omitempty"`
+	// Retryable signals whether automatic retry is sensible.
+	Retryable bool `json:"retryable,omitempty"`
+}
+
+// Recovery describes what the framework chose to do about a failure.
+type Recovery struct {
+	Action     string `json:"action"`     // "retry" | "fallback" | "abort"
+	NextTaskID string `json:"next_task_id,omitempty"`
+}
+
+// PlanCreatedMessage carries the validated plan once the L2 layer has
+// produced and accepted it.
+type PlanCreatedMessage struct {
+	Type      WSMessageType `json:"type"` // "plan.created"
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	Envelope  *EnvelopeWire `json:"envelope"`
+	Display   *DisplayWire  `json:"display,omitempty"`
+	Payload   PlanPayload   `json:"payload"`
+}
+
+// PlanUpdatedMessage carries a re-planned graph (e.g. after a step
+// failure forced the planner to revise).
+type PlanUpdatedMessage struct {
+	Type      WSMessageType `json:"type"` // "plan.updated"
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	Envelope  *EnvelopeWire `json:"envelope"`
+	Display   *DisplayWire  `json:"display,omitempty"`
+	Payload   PlanPayload   `json:"payload"`
+}
+
+// PlanCompletedMessage signals the plan finished (all steps terminal).
+type PlanCompletedMessage struct {
+	Type      WSMessageType `json:"type"` // "plan.completed"
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	Envelope  *EnvelopeWire `json:"envelope"`
+	Display   *DisplayWire  `json:"display,omitempty"`
+	Metrics   *MetricsWire  `json:"metrics,omitempty"`
+	Payload   PlanPayload   `json:"payload"`
+}
+
+// PlanFailedMessage signals the plan itself failed (e.g. PlanAgent could
+// not produce a valid plan after MaxPlannerAttempts, or every step in
+// the plan failed). Distinguished from plan.completed so the client can
+// surface a different state.
+type PlanFailedMessage struct {
+	Type      WSMessageType  `json:"type"` // "plan.failed"
+	EventID   string         `json:"event_id"`
+	SessionID string         `json:"session_id"`
+	Envelope  *EnvelopeWire  `json:"envelope"`
+	Display   *DisplayWire   `json:"display,omitempty"`
+	Metrics   *MetricsWire   `json:"metrics,omitempty"`
+	Payload   FailurePayload `json:"payload"`
+}
+
+// PlanPayload is the shared body for plan.* events.
+type PlanPayload struct {
+	PlanID   string             `json:"plan_id"`
+	Goal     string             `json:"goal,omitempty"`
+	Strategy string             `json:"strategy,omitempty"`
+	Status   string             `json:"status,omitempty"` // "created" | "updated" | "completed" | "failed"
+	Tasks    []PlanTaskInfoWire `json:"tasks,omitempty"`
+}
+
+// PlanTaskInfoWire mirrors types.PlanTaskInfo for the wire.
+type PlanTaskInfoWire struct {
+	TaskID            string   `json:"task_id"`
+	SubagentType      string   `json:"subagent_type"`
+	DependsOn         []string `json:"depends_on,omitempty"`
+	UserFacingTitle   string   `json:"user_facing_title,omitempty"`
+	UserFacingSummary string   `json:"user_facing_summary,omitempty"`
+}
+
+// StepDispatchedMessage signals that L2 dispatched a sub-agent for one
+// step of the active plan.
+type StepDispatchedMessage struct {
+	Type      WSMessageType         `json:"type"` // "step.dispatched"
+	EventID   string                `json:"event_id"`
+	SessionID string                `json:"session_id"`
+	Envelope  *EnvelopeWire         `json:"envelope"`
+	Display   *DisplayWire          `json:"display,omitempty"`
+	Payload   StepDispatchedPayload `json:"payload"`
+}
+
+// StepDispatchedPayload describes the dispatch. step_id is the L2-step
+// identifier (== envelope.task_id); subagent_type is which worker class
+// will pick it up.
+type StepDispatchedPayload struct {
+	StepID       string `json:"step_id"`
+	SubagentType string `json:"subagent_type,omitempty"`
+	AgentID      string `json:"agent_id,omitempty"`
+	InputSummary string `json:"input_summary,omitempty"`
+}
+
+// StepStartedMessage signals that the worker assigned to a dispatched
+// step has actually begun execution. Lets the client distinguish "queued"
+// from "running" — task.dispatched alone may sit in the wave queue for
+// some time when MaxParallel is set.
+type StepStartedMessage struct {
+	Type      WSMessageType      `json:"type"` // "step.started"
+	EventID   string             `json:"event_id"`
+	SessionID string             `json:"session_id"`
+	Envelope  *EnvelopeWire      `json:"envelope"`
+	Display   *DisplayWire       `json:"display,omitempty"`
+	Payload   StepStartedPayload `json:"payload"`
+}
+
+// StepStartedPayload identifies the step + worker that just started.
+type StepStartedPayload struct {
+	StepID  string `json:"step_id"`
+	AgentID string `json:"agent_id,omitempty"`
+}
+
+// StepCompletedMessage closes a dispatched step with success.
+type StepCompletedMessage struct {
+	Type      WSMessageType        `json:"type"` // "step.completed"
+	EventID   string               `json:"event_id"`
+	SessionID string               `json:"session_id"`
+	Envelope  *EnvelopeWire        `json:"envelope"`
+	Display   *DisplayWire         `json:"display,omitempty"`
+	Metrics   *MetricsWire         `json:"metrics,omitempty"`
+	Payload   StepCompletedPayload `json:"payload"`
+}
+
+// StepCompletedPayload describes the completion.
+type StepCompletedPayload struct {
+	StepID        string   `json:"step_id"`
+	OutputSummary string   `json:"output_summary,omitempty"`
+	Attempts      int      `json:"attempts,omitempty"`
+	Deliverables  []string `json:"deliverables,omitempty"`
+}
+
+// StepFailedMessage closes a dispatched step with failure.
+type StepFailedMessage struct {
+	Type      WSMessageType  `json:"type"` // "step.failed"
+	EventID   string         `json:"event_id"`
+	SessionID string         `json:"session_id"`
+	Envelope  *EnvelopeWire  `json:"envelope"`
+	Display   *DisplayWire   `json:"display,omitempty"`
+	Metrics   *MetricsWire   `json:"metrics,omitempty"`
+	Payload   FailurePayload `json:"payload"`
+}
+
+// StepSkippedMessage marks a step as skipped — typically because an
+// upstream dependency failed. Skipped steps never run.
+type StepSkippedMessage struct {
+	Type      WSMessageType      `json:"type"` // "step.skipped"
+	EventID   string             `json:"event_id"`
+	SessionID string             `json:"session_id"`
+	Envelope  *EnvelopeWire      `json:"envelope"`
+	Display   *DisplayWire       `json:"display,omitempty"`
+	Payload   StepSkippedPayload `json:"payload"`
+}
+
+// StepSkippedPayload describes why the step was skipped.
+type StepSkippedPayload struct {
+	StepID string `json:"step_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// StepProgressMessage reports incremental progress for a long-running
+// step. Producers MUST throttle these (≥ 200ms between events) to avoid
+// flooding the client.
+type StepProgressMessage struct {
+	Type      WSMessageType       `json:"type"` // "step.progress"
+	EventID   string              `json:"event_id"`
+	SessionID string              `json:"session_id"`
+	Envelope  *EnvelopeWire       `json:"envelope"`
+	Display   *DisplayWire        `json:"display,omitempty"`
+	Payload   StepProgressPayload `json:"payload"`
+}
+
+// StepProgressPayload describes the progress tick.
+type StepProgressPayload struct {
+	StepID         string  `json:"step_id"`
+	ProgressPct    float64 `json:"progress_pct,omitempty"` // 0.0 — 1.0
+	Stage          string  `json:"stage,omitempty"`
+	ItemsProcessed int     `json:"items_processed,omitempty"`
+}
+
+// AgentHeartbeatMessage proves a long-running agent is still alive.
+// Clients use this to detect stuck agents (started but no finished/failed).
+type AgentHeartbeatMessage struct {
+	Type      WSMessageType `json:"type"` // "agent.heartbeat"
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	Envelope  *EnvelopeWire `json:"envelope"`
+	Payload   AgentHeartbeatPayload `json:"payload"`
+}
+
+// AgentHeartbeatPayload identifies which agent emitted the heartbeat.
+type AgentHeartbeatPayload struct {
+	AgentID    string `json:"agent_id"`
+	Stage      string `json:"stage,omitempty"`
+	UptimeMs   int64  `json:"uptime_ms,omitempty"`
+}
+
 // AssistantMessage delivers a complete assistant turn (non-streaming fallback).
 type AssistantMessage struct {
 	Type      WSMessageType    `json:"type"`
@@ -551,6 +990,38 @@ type ClientMessage struct {
 	Approved  *bool  `json:"approved,omitempty"` // pointer to distinguish unset from false
 	Scope     string `json:"scope,omitempty"`    // "once" (default) or "session"
 	Message   string `json:"message,omitempty"`  // reuse for denial reason
+
+	// session.resume fields (v1.11+). The client supplies the trace it
+	// was watching and the last seq it actually received; the server
+	// responds with session.resumed (events replayed) or
+	// session.resume_failed (events expired / unknown trace).
+	TraceID string `json:"trace_id,omitempty"`
+	LastSeq int64  `json:"last_seq,omitempty"`
+}
+
+// SessionResumedMessage acknowledges a successful resume. After this
+// message the server replays buffered events whose seq > last_seq, in
+// the original order, before any new events.
+type SessionResumedMessage struct {
+	Type      WSMessageType `json:"type"` // "session.resumed"
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	TraceID   string        `json:"trace_id"`
+	FromSeq   int64         `json:"from_seq"` // first replayed seq (inclusive)
+	ToSeq     int64         `json:"to_seq"`   // last replayed seq (inclusive)
+}
+
+// SessionResumeFailedMessage signals that resume could not proceed —
+// usually because the requested trace is older than the retention
+// window. The client should fall back to a full refresh (reload state
+// from REST history if available, or simply discard the in-memory
+// representation of that trace).
+type SessionResumeFailedMessage struct {
+	Type      WSMessageType `json:"type"` // "session.resume_failed"
+	EventID   string        `json:"event_id"`
+	SessionID string        `json:"session_id"`
+	TraceID   string        `json:"trace_id,omitempty"`
+	Reason    string        `json:"reason"` // "events_expired" | "unknown_trace" | "session_not_found"
 }
 
 // ContentBlocks parses the Content field into a normalised slice of content

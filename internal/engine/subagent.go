@@ -13,6 +13,7 @@ import (
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/artifact"
 	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/prompt/texts"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
@@ -165,23 +166,32 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	}
 
 	// Step 6: Build filtered ToolPool.
-	// First filter by AgentType (coarse), then by AgentDefinition.AllowedTools (fine).
-	pool := tool.NewToolPool(qe.registry, nil, nil)
-	pool = pool.FilteredFor(cfg.AgentType)
-
-	// Look up agent definition for tool/skill/profile customization.
+	//
+	// Filtering policy:
+	//   - If AgentDefinition.AllowedTools is non-empty, treat it as an
+	//     authoritative whitelist that bypasses AgentType blacklist.
+	//     This lets specialised agents like "specialists" (L2) re-enable
+	//     tools that are blanket-blocked for sync sub-agents (e.g. Agent).
+	//   - Otherwise apply the default AgentType-based blacklist.
+	//
+	// Look up agent definition first so we know which path to take.
 	var agentDef *agent.AgentDefinition
 	if qe.defRegistry != nil && cfg.SubagentType != "" {
 		agentDef = qe.defRegistry.Get(cfg.SubagentType)
 	}
 
+	pool := tool.NewToolPool(qe.registry, nil, nil)
 	if agentDef != nil && len(agentDef.AllowedTools) > 0 {
+		// Explicit whitelist — bypass AgentType blacklist entirely.
 		pool = pool.FilterByNames(agentDef.AllowedTools)
-		logger.Debug("tool pool filtered by agent definition",
+		logger.Debug("tool pool restricted by agent definition whitelist",
 			zap.String("agent", cfg.SubagentType),
-			zap.Int("tools_after_filter", pool.Size()),
+			zap.Int("tools", pool.Size()),
 			zap.Strings("allowed", agentDef.AllowedTools),
 		)
+	} else {
+		// No whitelist — apply default AgentType blacklist.
+		pool = pool.FilteredFor(cfg.AgentType)
 	}
 
 	// Step 7: Resolve prompt profile.
@@ -242,12 +252,21 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	}
 
 	// Step 10: Emit subagent.start event.
+	//
+	// AgentTask carries the full prompt the parent dispatched. The client
+	// can render it as "researcher 接到的任务：…" so the user sees what
+	// each L3 was actually asked to do — without that, only the 3-5-word
+	// AgentDesc reaches the wire and the sub-agent's actual mission is
+	// invisible. We truncate at 800 runes so a long context-summary
+	// preamble doesn't bloat the wire payload; the sub-agent's own loop
+	// still receives the full prompt.
 	if cfg.ParentOut != nil {
 		cfg.ParentOut <- types.EngineEvent{
 			Type:          types.EngineEventSubAgentStart,
 			AgentID:       agentID,
 			AgentName:     cfg.Name,
 			AgentDesc:     cfg.Description,
+			AgentTask:     truncateRunes(cfg.Prompt, 800),
 			AgentType:     string(cfg.AgentType),
 			ParentAgentID: cfg.ParentSessionID,
 		}
@@ -307,26 +326,61 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			}
 		}
 
-		// Forward events to parent's output channel for real-time streaming.
-		// Wrap in EngineEventSubAgentEvent so they don't interfere with
-		// the parent's message lifecycle in the EventMapper.
+		// Forward observability events to the parent's output channel.
+		//
+		// L1/L2 隔离：sub-agent LLM 文本 (EngineEventText) is intentionally
+		// NOT forwarded — only the L1 main agent (emma) generates user-facing
+		// prose. The spawning parent reads the sub-agent's output via
+		// SpawnResult.Summary in the tool_result and polishes its own reply.
+		//
+		// Two forwarding paths:
+		//
+		//  1. THIS sub-agent's own tool lifecycle (ToolStart/ToolEnd) — wrap
+		//     as SubAgentEvent stamped with this layer's agentID, so the
+		//     parent can render "Specialists is calling Task / WebSearch".
+		//
+		//  2. Events that already came from a deeper layer (e.g. L3 events
+		//     bubbling through L2 on their way to L1) — these arrive here as
+		//     SubAgentStart/SubAgentEnd/SubAgentEvent/Deliverable and must
+		//     be forwarded *as-is* with their original AgentID preserved.
+		//     Without this, the WebSocket client never sees L3 lifecycle when
+		//     L2 (Specialists) dispatches L3 via the Task tool.
+		//
+		// See docs/protocols/websocket.md v1.10.
 		if cfg.ParentOut != nil {
-			var inner *types.SubAgentEventData
 			switch evt.Type {
-			case types.EngineEventText:
-				inner = &types.SubAgentEventData{
-					EventType: "text",
-					Text:      evt.Text,
+			case types.EngineEventAgentIntent:
+				// The sub-agent's executor stripped `intent` off the tool
+				// input and emitted this — wrap it as subagent_event so it
+				// reaches the wire stamped with this layer's agent identity
+				// (mirroring how tool_start/tool_end are wrapped). The
+				// client renders "researcher 正在搜 vLLM" without needing
+				// to dig into the inner ToolInput JSON.
+				cfg.ParentOut <- types.EngineEvent{
+					Type:      types.EngineEventSubAgentEvent,
+					AgentID:   agentID,
+					AgentName: cfg.Name,
+					SubAgentEvent: &types.SubAgentEventData{
+						EventType: "intent",
+						ToolName:  evt.ToolName,
+						ToolUseID: evt.ToolUseID,
+						Intent:    evt.Intent,
+					},
 				}
 			case types.EngineEventToolStart:
-				inner = &types.SubAgentEventData{
-					EventType: "tool_start",
-					ToolName:  evt.ToolName,
-					ToolUseID: evt.ToolUseID,
-					ToolInput: evt.ToolInput,
+				cfg.ParentOut <- types.EngineEvent{
+					Type:      types.EngineEventSubAgentEvent,
+					AgentID:   agentID,
+					AgentName: cfg.Name,
+					SubAgentEvent: &types.SubAgentEventData{
+						EventType: "tool_start",
+						ToolName:  evt.ToolName,
+						ToolUseID: evt.ToolUseID,
+						ToolInput: evt.ToolInput,
+					},
 				}
 			case types.EngineEventToolEnd:
-				inner = &types.SubAgentEventData{
+				inner := &types.SubAgentEventData{
 					EventType: "tool_end",
 					ToolName:  evt.ToolName,
 					ToolUseID: evt.ToolUseID,
@@ -335,14 +389,21 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 					inner.Output = evt.ToolResult.Content
 					inner.IsError = evt.ToolResult.IsError
 				}
-			}
-			if inner != nil {
 				cfg.ParentOut <- types.EngineEvent{
 					Type:          types.EngineEventSubAgentEvent,
 					AgentID:       agentID,
 					AgentName:     cfg.Name,
 					SubAgentEvent: inner,
 				}
+			case types.EngineEventSubAgentStart,
+				types.EngineEventSubAgentEnd,
+				types.EngineEventSubAgentEvent,
+				types.EngineEventDeliverable:
+				// Pass through unchanged — the deeper layer already stamped
+				// the correct AgentID/AgentName, and re-wrapping would lose
+				// that attribution. ParentAgentID stitches the chain back
+				// together for the WebSocket client.
+				cfg.ParentOut <- evt
 			}
 		}
 	}
@@ -395,7 +456,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 
 	// Step 14: Return SpawnResult with structured fields.
 	// - Output: full text (stored in TaskRegistry for reference)
-	// - Summary: extracted from <summary> tag (returned to emma in tool_result)
+	// - Summary: extracted from <summary> tag (returned to the spawning parent in tool_result)
 	// - Status: derived from terminal reason
 	fullOutput := textBuf.String()
 	summary := parseSummaryTag(fullOutput)
@@ -411,19 +472,20 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		status = "aborted"
 	}
 
-	// Build the output that emma sees in tool_result:
-	// Only summary + deliverable list, NOT the full output.
-	var emmaOutput strings.Builder
-	emmaOutput.WriteString(summary)
+	// Build the output the spawning parent (typically the L1 main agent)
+	// sees in tool_result: only summary + deliverable list, NOT the full
+	// sub-agent transcript. The full transcript is preserved in TaskRegistry.
+	var parentVisibleOutput strings.Builder
+	parentVisibleOutput.WriteString(summary)
 	if len(deliverables) > 0 {
-		emmaOutput.WriteString("\n\n产出文件：\n")
+		parentVisibleOutput.WriteString("\n\n产出文件：\n")
 		for _, d := range deliverables {
-			emmaOutput.WriteString(fmt.Sprintf("- %s（%s，%d 字节）\n", d.FilePath, d.Language, d.ByteSize))
+			parentVisibleOutput.WriteString(fmt.Sprintf("- %s（%s，%d 字节）\n", d.FilePath, d.Language, d.ByteSize))
 		}
 	}
 
 	spawnResult := &agent.SpawnResult{
-		Output:       emmaOutput.String(),
+		Output:       parentVisibleOutput.String(),
 		Summary:      summary,
 		Status:       status,
 		Attempts:     1, // TODO: increment when task-level retry is implemented
@@ -436,7 +498,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	}
 
 	// Record full result in TaskRegistry for future reference (context passing, debugging).
-	// Store the full output separately — emma only sees the summary.
+	// Store the full output separately — the spawning parent only sees the summary.
 	fullResult := *spawnResult
 	fullResult.Output = fullOutput // preserve full sub-agent output
 	qe.taskRegistryMu.Lock()
@@ -534,7 +596,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 		// Build system prompt.
 		systemPrompt := lc.systemPromptOverride
 		if systemPrompt == "" {
-			systemPrompt = qe.buildSubAgentSystemPrompt(ctx, sess, messages, lc.profile, lc.subagentType, lc.allowedSkills)
+			systemPrompt = qe.buildSubAgentSystemPrompt(ctx, sess, messages, lc.profile, lc.subagentType, lc.allowedSkills, lc.pool)
 		}
 
 		req := &provider.ChatRequest{
@@ -622,7 +684,12 @@ func (qe *QueryEngine) runSubAgentLoop(
 			execCtx = tool.WithAllowedSkills(execCtx, lc.allowedSkills)
 		}
 
-		results := executor.ExecuteBatch(execCtx, toolCalls, out)
+		// Sub-agents also honour per-tool client routing — AskUserQuestion
+		// is filtered out of sub-agent pools by the AllAgentDisallowed
+		// blacklist, but using the same dispatcher keeps the routing rule
+		// in one place and makes future "must-route-to-client" tools
+		// (e.g. user confirmations from a worker) work consistently.
+		results := qe.dispatchToolBatch(execCtx, executor, lc.pool, toolCalls, out)
 
 		if ctx.Err() != nil {
 			return types.Terminal{Reason: types.TerminalAbortedTools, Message: "sub-agent cancelled during tool execution", Turn: ls.turn}
@@ -671,6 +738,9 @@ func (qe *QueryEngine) runSubAgentLoop(
 // subagentType is the agent definition name (e.g., "developer", "researcher")
 // used to look up the worker's identity from the definition registry.
 // When allowedSkills is non-nil, only the listed skills appear in the prompt.
+// pool is the filtered ToolPool whose schemas the LLM actually sees — passed
+// in so the rendered "# 可用工具" block matches the callable set rather than
+// the global registry.
 func (qe *QueryEngine) buildSubAgentSystemPrompt(
 	_ context.Context,
 	sess *session.Session,
@@ -678,6 +748,7 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 	profile *prompt.AgentProfile,
 	subagentType string,
 	allowedSkills map[string]bool,
+	pool *tool.ToolPool,
 ) string {
 	if qe.promptBuilder == nil {
 		return qe.config.SystemPrompt
@@ -701,19 +772,28 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 		if def.SystemPrompt != "" {
 			// Use custom system prompt if set (e.g., from YAML).
 			workerIdentity = def.SystemPrompt
-		} else if def.DisplayName != "" {
-			// Auto-generate identity from definition metadata.
-			var identity strings.Builder
-			identity.WriteString(fmt.Sprintf("你叫%s，是 emma 团队的搭档。\n", def.DisplayName))
-			if def.Description != "" {
-				identity.WriteString(fmt.Sprintf("你的专长：%s。\n", def.Description))
-			}
-			if def.Personality != "" {
-				identity.WriteString(fmt.Sprintf("你的风格：%s。\n", def.Personality))
-			}
-			identity.WriteString("\nemma 派你来执行一项具体任务，请专注完成。")
-			workerIdentity = identity.String()
+		} else {
+			// Auto-generate identity from definition metadata. The leader
+			// name is injected from QueryEngineConfig.MainAgentDisplayName
+			// so engine code stays free of "emma" literals — running under
+			// a different main-agent name is config, not code.
+			workerIdentity = texts.BuildWorkerIdentity(
+				def.DisplayName,
+				qe.config.MainAgentDisplayName,
+				def.Description,
+				def.Personality,
+			)
 		}
+	}
+
+	// Inject the filtered tool set so ToolsSection renders only the tools
+	// the LLM can actually call. Without this the prompt would list the
+	// entire global registry while the schema list is restricted by
+	// AgentDefinition.AllowedTools / AgentType blacklist — a mismatch that
+	// wastes tokens and tempts the model into doomed tool calls.
+	var availableTools []tool.Tool
+	if pool != nil {
+		availableTools = pool.All()
 	}
 
 	promptCtx := &prompt.PromptContext{
@@ -721,6 +801,7 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 		Turn:                 len(messages),
 		Session:              sess,
 		Tools:                qe.registry,
+		AvailableTools:       availableTools,
 		TotalTokensUsed:      totalTokens,
 		ContextWindowSize:    200000,
 		Memory:               make(map[string]string),
@@ -771,6 +852,21 @@ func intVal(m map[string]any, key string) int {
 	default:
 		return 0
 	}
+}
+
+// truncateRunes truncates s to at most n runes (NOT bytes), appending an
+// ellipsis when truncation actually happened. Used for wire payloads
+// where the source may be Chinese or other multibyte text — byte-level
+// truncation would split a codepoint and produce \xe5 garbage.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n < 4 {
+		return string(r[:n])
+	}
+	return string(r[:n-3]) + "..."
 }
 
 // summaryTagRe matches <summary>...</summary> in sub-agent output.

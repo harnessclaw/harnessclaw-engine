@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/tool"
 )
 
 // ToolsSection renders available tool descriptions.
@@ -20,11 +21,15 @@ func (s *ToolsSection) Cacheable() bool  { return false }
 func (s *ToolsSection) MinTokens() int   { return 200 }
 
 func (s *ToolsSection) Render(ctx *prompt.PromptContext, budget int) (string, error) {
-	if ctx.Tools == nil {
-		return "", nil
+	// Prefer the runtime-filtered tool set. Falling back to the full registry
+	// is only safe when the caller hasn't applied an AllowedTools whitelist
+	// (i.e. the LLM-visible schemas equal Tools.All()).
+	var tools []tool.Tool
+	if len(ctx.AvailableTools) > 0 {
+		tools = ctx.AvailableTools
+	} else if ctx.Tools != nil {
+		tools = ctx.Tools.All()
 	}
-
-	tools := ctx.Tools.All()
 	if len(tools) == 0 {
 		return "", nil
 	}

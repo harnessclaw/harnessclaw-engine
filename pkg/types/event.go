@@ -1,5 +1,7 @@
 package types
 
+import "harnessclaw-go/internal/emit"
+
 // StreamEventType classifies events emitted by an LLM provider stream.
 type StreamEventType string
 
@@ -38,6 +40,13 @@ const (
 	EngineEventSubAgentStart     EngineEventType = "subagent_start"     // sub-agent session begins
 	EngineEventSubAgentEnd       EngineEventType = "subagent_end"       // sub-agent session completes
 	EngineEventSubAgentEvent     EngineEventType = "subagent_event"     // real-time sub-agent streaming event
+	// AgentIntent fires immediately before a tool executes, carrying the
+	// model-supplied "intent" field that every tool's input schema now
+	// requires. It gives the user a per-call progress sentence ("正在搜索
+	// vLLM 论文") without depending on prompt-side cooperation — the JSON
+	// schema validator forces the model to fill `intent` before the call
+	// is even dispatched. See ToolPool.Schemas / ToolExecutor.executeSingle.
+	EngineEventAgentIntent       EngineEventType = "agent_intent"
 
 	// Phase 1.5: @-mention routing
 	EngineEventAgentRouted     EngineEventType = "agent_routed"      // @-mention routed to agent
@@ -63,6 +72,42 @@ const (
 	EngineEventTeamMemberJoin  EngineEventType = "team_member_join"  // member joined
 	EngineEventTeamMemberLeft  EngineEventType = "team_member_left"  // member left
 	EngineEventTeamDeleted     EngineEventType = "team_deleted"      // team dissolved
+
+	// Trace lifecycle (one user-input → assistant-reply round).
+	// Emitted by the engine entry point (QueryEngine.ProcessMessage) at the
+	// boundary of a request — all other events for that request are nested
+	// between the started/finished pair.
+	EngineEventTraceStarted  EngineEventType = "trace_started"
+	EngineEventTraceFinished EngineEventType = "trace_finished"
+	EngineEventTraceFailed   EngineEventType = "trace_failed"
+
+	// Plan lifecycle (orchestrator role). Emitted by PlanExecutor when a
+	// validated plan begins / finishes. Plans are the unit of work for the
+	// orchestrator; clients render them as a parent task with children.
+	EngineEventPlanCreated   EngineEventType = "plan_created"
+	EngineEventPlanUpdated   EngineEventType = "plan_updated"
+	EngineEventPlanCompleted EngineEventType = "plan_completed"
+	EngineEventPlanFailed    EngineEventType = "plan_failed"
+
+	// Step dispatch / completion (orchestrator per-step). Emitted by the
+	// PlanExecutor for each step in the plan as it transitions through
+	// dispatched → started → completed/failed/skipped.
+	//
+	// NOTE: deliberately NOT named task_*. The user-facing TodoList in
+	// §6.8 owns the task.* namespace; reusing it would make a one-level
+	// type switch ambiguous on the client. See websocket.md v1.11
+	// changelog for the rename rationale.
+	EngineEventStepDispatched EngineEventType = "step_dispatched"
+	EngineEventStepStarted    EngineEventType = "step_started"
+	EngineEventStepProgress   EngineEventType = "step_progress"
+	EngineEventStepCompleted  EngineEventType = "step_completed"
+	EngineEventStepFailed     EngineEventType = "step_failed"
+	EngineEventStepSkipped    EngineEventType = "step_skipped"
+
+	// AgentHeartbeat is emitted by long-running agents to prove they are
+	// still alive. Clients that expect a started→finished pair within a
+	// time budget watch for missing heartbeats to surface stuck agents.
+	EngineEventAgentHeartbeat EngineEventType = "agent_heartbeat"
 )
 
 // EngineEvent is a single event emitted from the engine to a channel.
@@ -81,10 +126,15 @@ type EngineEvent struct {
 	Model             string             `json:"model,omitempty"`       // set on message_start
 	StopReason        string             `json:"stop_reason,omitempty"` // set on message_delta
 
+	// Intent is the model-supplied progress sentence on agent_intent events
+	// ("正在搜 vLLM 论文"). Stays empty for other event types.
+	Intent string `json:"intent,omitempty"`
+
 	// Sub-agent fields (set on subagent_start / subagent_end)
 	AgentID       string   `json:"agent_id,omitempty"`
 	AgentName     string   `json:"agent_name,omitempty"`
-	AgentDesc     string   `json:"agent_desc,omitempty"`
+	AgentDesc     string   `json:"agent_desc,omitempty"`     // short label, 3-5 words ("调研 LLM 推理")
+	AgentTask     string   `json:"agent_task,omitempty"`     // full task prompt the parent dispatched (set on subagent_start so the user can see what each L3 was actually asked to do)
 	AgentType     string   `json:"agent_type,omitempty"`
 	ParentAgentID string   `json:"parent_agent_id,omitempty"`
 	Duration      int64    `json:"duration_ms,omitempty"`
@@ -101,6 +151,75 @@ type EngineEvent struct {
 	SubAgentEvent *SubAgentEventData `json:"subagent_event,omitempty"`
 	// Deliverable file produced by a sub-agent (for deliverable type)
 	Deliverable   *Deliverable       `json:"deliverable,omitempty"`
+
+	// --- Emit envelope/display/metrics (optional). Filled by the engine
+	// at emit time so observers can route, render, and bill without
+	// parsing per-type payloads. See internal/emit for the contract. ---
+	Envelope *emit.Envelope `json:"envelope,omitempty"`
+	Display  *emit.Display  `json:"display,omitempty"`
+	Metrics  *emit.Metrics  `json:"metrics,omitempty"`
+
+	// PlanEvent carries plan lifecycle data (plan_created / plan_updated /
+	// plan_completed). Includes the task graph so clients can render the
+	// full plan hierarchy in one event.
+	PlanEvent *PlanEvent `json:"plan_event,omitempty"`
+
+	// TaskDispatch carries per-step dispatch / completion / failure data
+	// for the orchestrate (L2) layer. Identifies which step ran which
+	// sub-agent and exposes the summary for UI rendering.
+	TaskDispatch *TaskDispatch `json:"task_dispatch,omitempty"`
+}
+
+// PlanEvent carries an L2 plan and its lifecycle status for plan_*
+// events. Status values: "created", "updated", "completed", "failed".
+type PlanEvent struct {
+	PlanID   string         `json:"plan_id"`
+	Goal     string         `json:"goal,omitempty"`
+	Strategy string         `json:"strategy,omitempty"` // "sequential" | "parallel" | "mixed"
+	Status   string         `json:"status"`             // "created" | "updated" | "completed" | "failed"
+	Tasks    []PlanTaskInfo `json:"tasks,omitempty"`    // initial task graph at plan_created
+}
+
+// PlanTaskInfo describes one step in a plan, including its dependency
+// graph and a user-facing title/summary for UI rendering.
+type PlanTaskInfo struct {
+	TaskID            string   `json:"task_id"`
+	SubagentType      string   `json:"subagent_type"`
+	DependsOn         []string `json:"depends_on,omitempty"`
+	UserFacingTitle   string   `json:"user_facing_title,omitempty"`
+	UserFacingSummary string   `json:"user_facing_summary,omitempty"`
+}
+
+// TaskDispatch carries the data emitted on step_dispatched /
+// step_started / step_completed / step_failed / step_skipped (and
+// reused for plan_failed). The fields populated depend on the event:
+//
+//	dispatched: TaskID, SubagentType, InputSummary
+//	started:    TaskID, AgentID
+//	completed:  TaskID, OutputSummary, Attempts, Deliverables
+//	failed:     TaskID, ErrorType, ErrorCode, Error, UserMessage, Retryable, Attempts
+//	skipped:    TaskID, Reason
+//
+// Naming preserved for backwards compatibility with internal callers;
+// the wire payload uses step_id rather than task_id (see protocol.go).
+type TaskDispatch struct {
+	TaskID        string   `json:"task_id"`
+	SubagentType  string   `json:"subagent_type,omitempty"`
+	AgentID       string   `json:"agent_id,omitempty"`
+	InputSummary  string   `json:"input_summary,omitempty"`
+	OutputSummary string   `json:"output_summary,omitempty"`
+	Attempts      int      `json:"attempts,omitempty"`
+	// ErrorType is the controlled enum string from emit.ErrorType
+	// (e.g. "tool_timeout"). Required on failed events.
+	ErrorType string `json:"error_type,omitempty"`
+	// ErrorCode is the free-form machine-readable subtype (e.g.
+	// "BASH_TIMEOUT"). Optional, scoped to the producing component.
+	ErrorCode string `json:"error_code,omitempty"`
+	Error     string `json:"error,omitempty"`        // developer-facing message
+	UserMessage string `json:"user_message,omitempty"` // user-facing fallback for L1
+	Retryable bool   `json:"retryable,omitempty"`
+	Reason    string `json:"reason,omitempty"` // for step_skipped
+	Deliverables []string `json:"deliverables,omitempty"` // file paths produced
 }
 
 // TaskEvent carries task state change info.
@@ -116,14 +235,45 @@ type TaskEvent struct {
 // SubAgentEventData carries a sub-agent's real-time streaming content.
 // This wraps the inner event so it doesn't interfere with the parent's
 // message lifecycle in the EventMapper.
+//
+// EventType drives which fields are meaningful:
+//   - "tool_start"    — ToolName, ToolInput, ToolUseID
+//   - "tool_end"      — ToolName, ToolUseID, Output, IsError
+//   - "intent"        — ToolName, ToolUseID, Intent (model-supplied progress
+//                       sentence emitted just before a tool runs; lets the
+//                       client render "researcher 正在搜索 vLLM 论文" with
+//                       no prompt-side cooperation since the JSON schema
+//                       requires `intent` on every tool call)
+//
+// Reserved (not forwarded today, kept so message_id/error_message etc. don't
+// get re-invented later):
+//   - "message_start" / "message_delta" / "message_stop" — LLM call lifecycle;
+//     intentionally suppressed because tokens / stop_reason are technical
+//     metrics, not task-level information
+//   - "error"        — sub-agent internal failures (TODO: surface these so
+//                      LLM stream errors stop being invisible)
+//   - "text"         — emma owns user-facing prose
 type SubAgentEventData struct {
-	EventType string `json:"event_type"`           // inner event type: "text", "tool_start", "tool_end", etc.
-	Text      string `json:"text,omitempty"`        // for text events
-	ToolName  string `json:"tool_name,omitempty"`   // for tool events
+	EventType string `json:"event_type"`            // inner event type
+	Text      string `json:"text,omitempty"`        // for text events (not forwarded today)
+	ToolName  string `json:"tool_name,omitempty"`   // for tool / intent events
 	ToolInput string `json:"tool_input,omitempty"`  // for tool_start
-	ToolUseID string `json:"tool_use_id,omitempty"` // for tool events
+	ToolUseID string `json:"tool_use_id,omitempty"` // for tool / intent events
 	IsError   bool   `json:"is_error,omitempty"`    // for tool_end errors
 	Output    string `json:"output,omitempty"`      // for tool_end output
+
+	// Intent is the model-supplied progress sentence on "intent" events,
+	// extracted from the required `intent` field of the tool's input.
+	Intent string `json:"intent,omitempty"`
+
+	// Reserved — populated by future event types. Kept here so we don't
+	// mint another wrapper struct when message lifecycle / error
+	// forwarding is enabled.
+	MessageID    string `json:"message_id,omitempty"`
+	Model        string `json:"model,omitempty"`
+	StopReason   string `json:"stop_reason,omitempty"`
+	Usage        *Usage `json:"usage,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 // AgentMessageEvent carries inter-agent message summary.

@@ -16,7 +16,15 @@ type PromptContext struct {
 
 	// --- From existing engine types ---
 	Session *session.Session // conversation history, metadata
-	Tools   *tool.Registry   // registered tools
+	Tools   *tool.Registry   // registered tools (full registry; fallback when AvailableTools is nil)
+
+	// AvailableTools, when non-nil, is the actually-callable filtered tool
+	// set for this agent (after AllowedTools whitelist / AgentType blacklist).
+	// ToolsSection prefers it over Tools.All() to keep the rendered "# 可用工具"
+	// list in sync with the schema list sent to the LLM. Sub-agents with an
+	// AllowedTools whitelist (e.g. Specialists) MUST populate this — otherwise
+	// the prompt advertises tools the runtime will reject.
+	AvailableTools []tool.Tool
 
 	// --- Prompt-specific config ---
 	SystemPromptOverride string // if set, overrides the role section
