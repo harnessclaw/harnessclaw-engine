@@ -24,21 +24,31 @@ const (
 // Blacklists block specific tools; whitelists define the only tools allowed.
 // ---------------------------------------------------------------------------
 
-// AllAgentDisallowed lists tools blocked for ALL sub-agents.
+// AllAgentDisallowed lists tools blocked for ALL sub-agents by default.
+//
+// Important: AgentDefinition.AllowedTools acts as an EXPLICIT WHITELIST
+// that bypasses this blacklist. Specialists (L2) declares
+// AllowedTools=["Task", ...], which lets it use the Task tool to dispatch
+// L3 even though Task is in this list. See subagent.go's filter pipeline.
+//
 // Reason for each entry:
 //   - TaskOutput: prevents recursion
 //   - ExitPlanMode: plan mode is a main thread abstraction
 //   - EnterPlanMode: plan mode is a main thread abstraction
-//   - AskUserQuestion: sub-agents cannot prompt the user directly
+//   - AskUserQuestion: only emma (L1) is allowed to prompt the user
 //   - TaskStop: requires access to main thread task state
-//   - Agent: blocked to prevent recursion (may be conditionally enabled)
+//   - Task: prevents arbitrary recursion (Specialists overrides via whitelist)
+//   - Orchestrate: legacy multi-step tool, emma-only
+//   - Specialists: L2 coordinator entry point; emma-only — L3 cannot recurse to L2
 var AllAgentDisallowed = map[string]bool{
 	"TaskOutput":      true,
 	"ExitPlanMode":    true,
 	"EnterPlanMode":   true,
 	"AskUserQuestion": true,
 	"TaskStop":        true,
-	"Agent":           true, // conditionally enabled for internal users in TS via USER_TYPE=ant
+	"Task":            true, // bypassed by AgentDefinition.AllowedTools whitelist (Specialists)
+	"Orchestrate":     true, // legacy multi-step tool, emma-only
+	"Specialists":     true, // L2 entry point — only emma may invoke
 }
 
 // CustomAgentDisallowed is the blacklist for custom agents.

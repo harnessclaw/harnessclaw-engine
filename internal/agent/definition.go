@@ -222,6 +222,19 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 
 	// --- 系统级 agent（不在用户可见的搭档表中） ---
 	r.Register(&AgentDefinition{
+		Name:        "specialists",
+		DisplayName: "Specialists",
+		Description: "L2 调度统筹者：拆解任务、派 L3 sub-agent、整合产出、检查质量",
+		AgentType:   tool.AgentTypeSync,
+		Profile:     "specialists",
+		// Specialists needs an explicit tool whitelist so it can use the
+		// Task tool to dispatch L3 sub-agents. The tool filter pipeline
+		// in subagent.go treats AllowedTools as authoritative — it
+		// bypasses the AgentType blacklist (which would otherwise block
+		// Task for sync sub-agents).
+		AllowedTools: []string{"Task", "WebSearch", "TavilySearch"},
+	})
+	r.Register(&AgentDefinition{
 		Name:        "general-purpose",
 		DisplayName: "通用执行者",
 		Description: "通用 agent，处理不属于特定搭档领域的复杂多步骤任务",

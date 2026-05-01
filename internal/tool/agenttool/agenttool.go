@@ -20,8 +20,13 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// ToolName is the registered name of the Agent tool.
-const ToolName = "Agent"
+// ToolName is the registered name of the dispatch tool.
+//
+// Renamed from "Agent" to "Task" to disambiguate from the L1/L2/L3 agent
+// concept in the architecture: this tool's job is to create a *task* and
+// hand it to a sub-agent. The package name (agenttool) is kept for
+// historical continuity — only the LLM-facing string changed.
+const ToolName = "Task"
 
 // AgentTool spawns sub-agents to handle complex, multi-step tasks.
 type AgentTool struct {
@@ -230,21 +235,22 @@ func resolveAgentType(subagentType string) tool.AgentType {
 	}
 }
 
-const agentToolDescription = `Launch a sub-agent to handle complex, multi-step tasks autonomously.
+const agentToolDescription = `Create a task and dispatch it to a sub-agent that will execute it autonomously.
 
-The Agent tool spawns specialized sub-agents that execute their own query loops
-with filtered tool sets. Each sub-agent type has specific capabilities:
+The Task tool spawns a specialized sub-agent (worker / explore / plan / specific
+team member) that runs its own query loop with a filtered tool set. Each
+sub-agent type has specific capabilities:
 
-- general-purpose: Full tool access (minus recursive Agent calls). Use for
+- general-purpose: Full tool access (minus recursive Task calls). Use for
   tasks requiring file edits, bash commands, and multi-step reasoning.
-- Explore: Read-only agent for codebase exploration. Has access to Glob, Grep,
-  Read, and search tools. Use for finding files, understanding code structure.
-- Plan: Planning agent with limited tools. Use for designing implementation
-  approaches before coding.
+- Explore / researcher: Read-only sub-agent for exploration / research.
+- Plan: Read-only sub-agent for designing implementation approaches.
+- writer / analyst / developer / lifestyle / scheduler: Specialised
+  team members for their respective domains.
 
 Usage notes:
-- Always include a short description summarizing what the agent will do.
-- The sub-agent runs synchronously — this tool blocks until the agent completes.
-- Sub-agents cannot spawn further sub-agents (no recursion).
+- Always include a short description summarizing the task.
+- This tool runs synchronously — it blocks until the sub-agent completes.
+- Sub-agents cannot recursively call Task on themselves (no infinite recursion).
 - Sub-agents cannot prompt the user for input or approval.
-- Provide clear, detailed prompts so the agent can work autonomously.`
+- Provide clear, detailed prompts so the sub-agent can work autonomously.`

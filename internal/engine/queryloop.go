@@ -15,6 +15,7 @@ import (
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/artifact"
 	"harnessclaw-go/internal/command"
+	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/sections"
@@ -38,6 +39,29 @@ type QueryEngineConfig struct {
 	// When true, tool calls are sent to the client via tool_call events
 	// instead of being executed server-side.
 	ClientTools bool
+
+	// MainAgentProfile is the prompt profile used for the user-facing main
+	// agent (the one invoked via ProcessMessage). Sub-agents resolve their
+	// own profile via SpawnConfig.SubagentType — this field is for the
+	// non-spawn path only. When nil, falls back to WorkerProfile, which is
+	// safe but generic; production deployments should always inject this.
+	MainAgentProfile *prompt.AgentProfile
+
+	// MainAgentDisplayName is the friendly leader name interpolated into
+	// worker identity prompts (e.g., "你叫小林，是 emma 团队的搭档"). Empty
+	// disables the substitution and keeps a generic worker identity.
+	MainAgentDisplayName string
+
+	// MainAgentAllowedTools restricts the tools advertised to the main
+	// agent's LLM. Empty means no restriction (all enabled tools visible).
+	// L1Engine sets this to ["Agent","Orchestrate"] so emma can only delegate.
+	MainAgentAllowedTools []string
+
+	// MainAgentMaxTurns overrides MaxTurns for the user-facing main agent
+	// loop only. When > 0, the main loop terminates after this many turns;
+	// sub-agents continue to derive their cap from MaxTurns. L1Engine
+	// typically sets this to 10 to enforce a "small" L1 loop.
+	MainAgentMaxTurns int
 }
 
 // DefaultQueryEngineConfig returns production defaults.
@@ -120,6 +144,11 @@ type QueryEngine struct {
 	artifactMu          sync.RWMutex
 	artifactStores      map[string]*artifact.Store            // session_id → store
 	artifactReplacements map[string]*artifact.ReplacementState // session_id → state
+
+	// emitSeq dispenses per-trace sequence numbers for the emit envelope.
+	// Backed by sync.Map internally so concurrent traces don't contend on a
+	// global mutex.
+	emitSeq *emit.Sequencer
 }
 
 // promptCacheEntry stores a cached system prompt and the conditions under which it was built.
@@ -162,8 +191,13 @@ func NewQueryEngine(
 	promptRegistry.Register(sections.NewTaskSection())
 	promptBuilder := prompt.NewBuilder(promptRegistry, logger)
 
-	// Use emma profile by default (main agent facing the user)
-	promptProfile := prompt.EmmaProfile
+	// Main-agent profile is supplied via QueryEngineConfig. Falling back to
+	// WorkerProfile keeps the engine generic — the L1Engine wrapper is
+	// responsible for plugging in the user-facing profile (emma).
+	promptProfile := cfg.MainAgentProfile
+	if promptProfile == nil {
+		promptProfile = prompt.WorkerProfile
+	}
 
 	return &QueryEngine{
 		provider:          prov,
@@ -185,6 +219,36 @@ func NewQueryEngine(
 		artifactStores:       make(map[string]*artifact.Store),
 		artifactReplacements: make(map[string]*artifact.ReplacementState),
 		taskRegistry:         make(map[string]*agent.SpawnResult),
+		emitSeq:              emit.NewSequencer(),
+	}
+}
+
+// newEnvelope builds an emit envelope with the next seq number for the
+// given trace. parentEventID, taskID, parentTaskID may be empty when
+// not applicable. The caller is responsible for passing the right
+// agent_role / agent_id / agent_run_id.
+func (qe *QueryEngine) newEnvelope(
+	traceID string,
+	parentEventID string,
+	taskID string,
+	parentTaskID string,
+	role emit.AgentRole,
+	agentID string,
+	agentRunID string,
+	severity emit.Severity,
+) *emit.Envelope {
+	return &emit.Envelope{
+		EventID:       emit.NewEventID(),
+		TraceID:       traceID,
+		ParentEventID: parentEventID,
+		TaskID:        taskID,
+		ParentTaskID:  parentTaskID,
+		Seq:           qe.emitSeq.Next(traceID),
+		Timestamp:     time.Now().UTC(),
+		AgentRole:     role,
+		AgentID:       agentID,
+		AgentRunID:    agentRunID,
+		Severity:      severity,
 	}
 }
 
@@ -256,6 +320,22 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 
 	sess.AddMessage(*msg)
 
+	// Open a fresh trace for this user request. The trace_id rides on
+	// every emit envelope produced during this round so observers can
+	// stitch related events back together. Attach it to the request
+	// context so deeply-nested tools (Orchestrate, Specialists, Agent)
+	// can pull it back out and emit under the same trace.
+	traceID := emit.NewTraceID()
+	mainAgentRunID := emit.NewAgentRunID()
+	startedAt := time.Now()
+	userInputSummary := truncateForDisplay(extractMessageText(msg), 240)
+
+	traceCtx := &emit.TraceContext{
+		TraceID:   traceID,
+		Sequencer: qe.emitSeq,
+	}
+	ctx = emit.WithTrace(ctx, traceCtx)
+
 	// Create a cancellable context for this query.
 	qCtx, cancel := context.WithCancel(ctx)
 
@@ -272,12 +352,29 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 			delete(qe.cancels, sessionID)
 			qe.mu.Unlock()
 			cancel()
+			// Release the per-trace seq counter so memory does not grow
+			// unboundedly on a long-running server.
+			qe.emitSeq.Drop(traceID)
 		}()
 
 		qe.eventBus.Publish(event.Event{
 			Topic:   event.TopicQueryStarted,
 			Payload: map[string]string{"session_id": sessionID},
 		})
+
+		// Emit trace.started before any work begins. Carries a short
+		// summary of the user input + a Display block that the client
+		// can render as a request card.
+		out <- types.EngineEvent{
+			Type:     types.EngineEventTraceStarted,
+			Text:     userInputSummary,
+			Envelope: qe.newEnvelope(traceID, "", "", "", emit.RolePersona, "main", mainAgentRunID, emit.SeverityInfo),
+			Display: &emit.Display{
+				Title:      "新对话开始",
+				Summary:    userInputSummary,
+				Visibility: emit.VisibilityCollapsed,
+			},
+		}
 
 		terminal := qe.runQueryLoop(qCtx, sess, out)
 
@@ -287,6 +384,53 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 		})
 
 		cumUsage := qe.cumulativeUsageFor(sess.ID)
+		duration := time.Since(startedAt).Milliseconds()
+
+		// Choose between trace.finished (success) and trace.failed (any
+		// non-completed terminal reason). The body of *.failed carries a
+		// developer-facing message; the L1 persona will translate it
+		// into user-facing prose itself, so we don't try to localize here.
+		traceEventType := types.EngineEventTraceFinished
+		traceTitle := "对话已完成"
+		traceSeverity := emit.SeverityInfo
+		var traceErr error
+		switch terminal.Reason {
+		case types.TerminalCompleted:
+			// success — keep defaults
+		case types.TerminalAbortedStreaming, types.TerminalAbortedTools:
+			traceEventType = types.EngineEventTraceFailed
+			traceTitle = "对话已中断"
+			traceSeverity = emit.SeverityWarn
+			traceErr = fmt.Errorf("aborted: %s", terminal.Reason)
+		default:
+			traceEventType = types.EngineEventTraceFailed
+			traceTitle = "对话失败"
+			traceSeverity = emit.SeverityError
+			if terminal.Message != "" {
+				traceErr = fmt.Errorf("%s: %s", terminal.Reason, terminal.Message)
+			} else {
+				traceErr = fmt.Errorf("%s", terminal.Reason)
+			}
+		}
+
+		out <- types.EngineEvent{
+			Type:     traceEventType,
+			Terminal: &terminal,
+			Error:    traceErr,
+			Envelope: qe.newEnvelope(traceID, "", "", "", emit.RolePersona, "main", mainAgentRunID, traceSeverity),
+			Display: &emit.Display{
+				Title:      traceTitle,
+				Visibility: emit.VisibilityCollapsed,
+			},
+			Metrics: &emit.Metrics{
+				DurationMs: duration,
+				TokensIn:   cumUsage.InputTokens,
+				TokensOut:  cumUsage.OutputTokens,
+				CacheRead:  cumUsage.CacheRead,
+				CacheWrite: cumUsage.CacheWrite,
+			},
+		}
+
 		out <- types.EngineEvent{
 			Type:     types.EngineEventDone,
 			Terminal: &terminal,
@@ -295,6 +439,19 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 	}()
 
 	return out, nil
+}
+
+// truncateForDisplay clips a string to n runes for safe inclusion in a
+// Display.Summary or .Title field. The "…" suffix signals truncation.
+func truncateForDisplay(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // extractMessageText extracts the text content from a message's content blocks.
@@ -676,6 +833,14 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 	// Build the ToolPool once per query loop from the registry.
 	pool := tool.NewToolPool(qe.registry, nil /*mcpTools*/, nil /*denyRules*/)
 
+	// Restrict the main-agent tool palette when configured. L1Engine uses
+	// this to expose only delegation tools (Agent, Orchestrate) — sub-agents
+	// keep the full palette via the SpawnSync path, which builds its own
+	// pool independently in subagent.go.
+	if len(qe.config.MainAgentAllowedTools) > 0 {
+		pool = pool.FilterByNames(qe.config.MainAgentAllowedTools)
+	}
+
 	// Create the approval function that sends permission requests to the client via `out`.
 	approvalFn := func(ctx context.Context, evtOut chan<- types.EngineEvent, req *types.PermissionRequest) *types.PermissionResponse {
 		return qe.requestPermissionApproval(ctx, evtOut, sess.ID, req)
@@ -710,11 +875,17 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		// prefix never changes between turns, preserving prompt cache hits.
 		messages = artifact.CompactMessages(messages, artRS)
 
-		// Check max turns.
-		if ls.turn > qe.config.MaxTurns {
+		// Check max turns. The main-agent loop honours MainAgentMaxTurns
+		// when set (L1Engine uses it to enforce a small L1 loop); sub-agents
+		// continue to use MaxTurns directly via runSubAgentLoop.
+		mainMax := qe.config.MaxTurns
+		if qe.config.MainAgentMaxTurns > 0 {
+			mainMax = qe.config.MainAgentMaxTurns
+		}
+		if ls.turn > mainMax {
 			return types.Terminal{
 				Reason:  types.TerminalMaxTurns,
-				Message: fmt.Sprintf("reached max turns (%d)", qe.config.MaxTurns),
+				Message: fmt.Sprintf("reached max turns (%d)", mainMax),
 				Turn:    ls.turn - 1,
 			}
 		}
@@ -869,15 +1040,13 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 			return types.Terminal{Reason: types.TerminalAbortedTools, Message: "cancelled before tool execution", Turn: ls.turn}
 		}
 
-		var results []types.ToolResult
-
-		if qe.config.ClientTools {
-			// Client-side tool execution: emit tool.call events and wait for results.
-			results = qe.executeClientTools(ctx, toolCalls, out)
-		} else {
-			// Server-side tool execution (legacy).
-			results = executor.ExecuteBatch(ctx, toolCalls, out)
-		}
+		// Per-tool routing: split the batch into client-routed and
+		// server-routed groups. A tool that implements ClientRoutedTool
+		// (e.g. AskUserQuestion) ALWAYS goes to the client. Everything
+		// else follows the global ClientTools flag — true means
+		// delegate-everything (Claude Code CLI mode), false means
+		// run-server-side (web UI mode).
+		results := qe.dispatchToolBatch(ctx, executor, pool, toolCalls, out)
 
 		// Check if cancelled during tool execution.
 		if ctx.Err() != nil {
@@ -937,22 +1106,122 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 	}
 }
 
-// executeClientTools sends tool.call events to the client and waits for tool.result responses.
+// dispatchToolBatch routes each tool call to either the client (via
+// tool.call) or the server-side executor based on per-tool policy:
+//
+//   - Tools implementing tool.ClientRoutedTool with IsClientRouted()=true
+//     ALWAYS go to the client (e.g. AskUserQuestion — only the UI can ask
+//     a human).
+//   - All other tools follow the global QueryEngineConfig.ClientTools
+//     flag: true delegates everything (CLI mode), false runs server-side
+//     (web UI mode where the server has API keys / sub-agent capability).
+//
+// The returned slice preserves the original toolCalls order so the LLM
+// sees results aligned with its tool_use indices.
+func (qe *QueryEngine) dispatchToolBatch(
+	ctx context.Context,
+	executor *ToolExecutor,
+	pool *tool.ToolPool,
+	toolCalls []types.ToolCall,
+	out chan<- types.EngineEvent,
+) []types.ToolResult {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+
+	results := make([]types.ToolResult, len(toolCalls))
+
+	// Partition by routing policy. Indices into the original slice are
+	// preserved so we can stitch results back in order.
+	var clientCalls, serverCalls []types.ToolCall
+	var clientIdx, serverIdx []int
+	for i, tc := range toolCalls {
+		if qe.routeToClient(pool, tc.Name) {
+			clientCalls = append(clientCalls, tc)
+			clientIdx = append(clientIdx, i)
+		} else {
+			serverCalls = append(serverCalls, tc)
+			serverIdx = append(serverIdx, i)
+		}
+	}
+
+	// Run server-side batch first — it's typically the long-running side
+	// (network calls, sub-agent spawns) and starting it before blocking
+	// on the client lets the two run in parallel from goroutines started
+	// inside ExecuteBatch.
+	if len(serverCalls) > 0 {
+		serverResults := executor.ExecuteBatch(ctx, serverCalls, out)
+		for j, r := range serverResults {
+			results[serverIdx[j]] = r
+		}
+	}
+
+	if len(clientCalls) > 0 {
+		clientResults := qe.executeClientTools(ctx, pool, clientCalls, out)
+		for j, r := range clientResults {
+			results[clientIdx[j]] = r
+		}
+	}
+
+	return results
+}
+
+// routeToClient decides whether a tool call should be sent to the
+// connected client (true) or executed server-side (false).
+func (qe *QueryEngine) routeToClient(pool *tool.ToolPool, toolName string) bool {
+	// Per-tool override: tools that can ONLY work client-side opt in via
+	// ClientRoutedTool. This bypasses the global flag — even with
+	// ClientTools=false (web UI mode), AskUserQuestion still goes client.
+	if t := pool.Get(toolName); t != nil {
+		if cr, ok := t.(tool.ClientRoutedTool); ok && cr.IsClientRouted() {
+			return true
+		}
+	}
+	// Otherwise honour the global flag.
+	return qe.config.ClientTools
+}
+
+// executeClientTools sends tool.call events to the client and waits for
+// tool.result responses. Wait semantics depend on the tool kind:
+//
+//   - Human-interactive tools (ClientRoutedTool, e.g. AskUserQuestion):
+//     wait INDEFINITELY for the user. The only exits are session abort
+//     (ctx cancelled) or the client returning a result. Applying an
+//     artificial timeout to a human-in-the-loop call would silently
+//     drop the user's pending answer — same reasoning as
+//     requestPermissionApproval (§6.4.3).
+//
+//   - Delegation tools (CLI mode, ClientTools=true): apply
+//     QueryEngineConfig.ToolTimeout so a crashed or hung client doesn't
+//     pin the engine forever. The client can call tool.progress to
+//     reset the timer for legitimately long operations.
+//
+// The pool is needed to look each tool up and check its routing. Calls
+// for tools missing from the pool fall through to the delegation
+// (timed) branch — defensive default.
 func (qe *QueryEngine) executeClientTools(
 	ctx context.Context,
+	pool *tool.ToolPool,
 	toolCalls []types.ToolCall,
 	out chan<- types.EngineEvent,
 ) []types.ToolResult {
 	results := make([]types.ToolResult, len(toolCalls))
 
-	// Register pending tool calls.
+	// Register pending tool calls and remember per-call wait policy.
 	pendingChs := make([]chan *types.ToolResultPayload, len(toolCalls))
+	humanInteractive := make([]bool, len(toolCalls))
 	for i, tc := range toolCalls {
 		ch := make(chan *types.ToolResultPayload, 1)
 		pendingChs[i] = ch
 		qe.toolMu.Lock()
 		qe.pendingTools[tc.ID] = &pendingToolCall{resultCh: ch}
 		qe.toolMu.Unlock()
+
+		if t := pool.Get(tc.Name); t != nil {
+			if cr, ok := t.(tool.ClientRoutedTool); ok && cr.IsClientRouted() {
+				humanInteractive[i] = true
+			}
+		}
 
 		// Emit tool.call event to the client.
 		out <- types.EngineEvent{
@@ -963,20 +1232,33 @@ func (qe *QueryEngine) executeClientTools(
 		}
 	}
 
-	// Wait for all results.
+	// Wait for all results. Human-interactive calls don't have a timeout
+	// branch in their select — the user gets all the time they need.
 	for i, tc := range toolCalls {
-		select {
-		case <-ctx.Done():
-			results[i] = types.ToolResult{
-				Content: "execution cancelled",
-				IsError: true,
+		if humanInteractive[i] {
+			select {
+			case <-ctx.Done():
+				results[i] = types.ToolResult{
+					Content: "execution cancelled",
+					IsError: true,
+				}
+			case payload := <-pendingChs[i]:
+				results[i] = toolResultFromPayload(payload)
 			}
-		case payload := <-pendingChs[i]:
-			results[i] = toolResultFromPayload(payload)
-		case <-time.After(qe.config.ToolTimeout):
-			results[i] = types.ToolResult{
-				Content: fmt.Sprintf("tool %s timed out waiting for client result", tc.Name),
-				IsError: true,
+		} else {
+			select {
+			case <-ctx.Done():
+				results[i] = types.ToolResult{
+					Content: "execution cancelled",
+					IsError: true,
+				}
+			case payload := <-pendingChs[i]:
+				results[i] = toolResultFromPayload(payload)
+			case <-time.After(qe.config.ToolTimeout):
+				results[i] = types.ToolResult{
+					Content: fmt.Sprintf("tool %s timed out waiting for client result", tc.Name),
+					IsError: true,
+				}
 			}
 		}
 
