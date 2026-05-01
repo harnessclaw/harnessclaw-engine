@@ -194,8 +194,22 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 		return &types.ToolResult{Content: "No results found for: " + query}, nil
 	}
 
-	// Build Content for LLM: full text of each result.
-	// Build Metadata for WebSocket client: URLs for display.
+	// Two-stage retrieval design (since 2026-04):
+	//   stage 1 (this tool)  → return only Title + URL + Summary per result
+	//   stage 2 (LLM choice) → if a summary looks promising, the LLM calls
+	//                          WebFetch on that URL to get the full page
+	//
+	// Why summary-only:
+	//   - Cuts injected context by ~10× (typical: 5 results × 200-char
+	//     summary = ~1.5 KB, vs. 5 × 3 KB full text = 15 KB)
+	//   - Keeps tool_result under the 4 KB artifact threshold so the LLM
+	//     sees the WHOLE summary list, not a truncated preview
+	//   - Lets the LLM be selective — only fetch what's actually useful
+	//     instead of paying for everything upfront
+	//
+	// Build Content for LLM: title + URL + summary per result, plus a
+	// trailing hint about the WebFetch follow-up.
+	// Build Metadata for the WebSocket client: URLs for display.
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Search results for %q:\n\n", query))
 
@@ -210,18 +224,29 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 		sb.WriteString(fmt.Sprintf("Title: %s\n", r.Title))
 		sb.WriteString(fmt.Sprintf("URL: %s\n", r.URL))
 
-		// Prefer full text; fall back to snippet.
-		text := r.FullText
-		if text == "" {
-			text = r.Snippet
+		// Summary preference order:
+		//   1. Snippet from the search API (preferred — already curated)
+		//   2. First MaxSummaryChars of FullText (defensive fallback when
+		//      the API only returned full text and no abstract)
+		summary := r.Snippet
+		if summary == "" && r.FullText != "" {
+			summary = truncate(r.FullText, MaxSummaryChars)
 		}
-		if text != "" {
-			sb.WriteString(fmt.Sprintf("Content:\n%s\n", text))
+		if summary != "" {
+			sb.WriteString(fmt.Sprintf("Summary:\n%s\n", summary))
 		}
 		sb.WriteString("\n")
 
 		urlEntries = append(urlEntries, urlEntry{URL: r.URL, Title: r.Title})
 	}
+
+	// Footer: explicitly cue the next step. Without this prompt the LLM
+	// often answers from summaries alone even when the user clearly needs
+	// detail — it doesn't know fetching is cheap and on-policy.
+	sb.WriteString("---\n")
+	sb.WriteString("Note: only summaries are shown above. If a result looks relevant ")
+	sb.WriteString("but the summary is not enough to answer, call the WebFetch tool ")
+	sb.WriteString("with that URL to retrieve the full page content.\n")
 
 	return &types.ToolResult{
 		Content: sb.String(),
@@ -233,6 +258,11 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 		},
 	}, nil
 }
+
+// MaxSummaryChars caps the per-result summary length. Snippets from the
+// iFly search API are usually 100-300 chars and won't be touched; the cap
+// only fires on the defensive FullText fallback when no snippet exists.
+const MaxSummaryChars = 500
 
 // buildSignedURL constructs the authorization-signed URL for the iFly search API.
 func (t *WebSearchTool) buildSignedURL() string {
@@ -360,12 +390,21 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-const webSearchDescription = `Searches the web and returns relevant results with full content.
+const webSearchDescription = `Searches the web and returns title + URL + a SHORT SUMMARY for each result.
+
+This is a two-stage retrieval pattern:
+- Stage 1 (this tool): get titles + URLs + short summaries of relevant pages
+- Stage 2 (WebFetch): if a summary alone is not enough to answer, call WebFetch on the URL to get the full page content
 
 Usage:
 - Provide a search query to find relevant web pages
-- Returns search results with title, URL, and full page content
-- You can directly use the returned content to answer questions without calling WebFetch
-- Only use WebFetch if the search result content is insufficient and you need more detail from a specific URL
+- Returns up to N results, each with: Title, URL, and a short Summary (typically 100-300 chars)
+- Skim the summaries first — for many factual / "what / who / when" questions the summaries already answer the user
+- For questions that need detail (full article body, code samples, exact wording), pick the most promising URL and call WebFetch on it
+- Avoid WebFetching every URL — only fetch when the summary is genuinely insufficient
+
+Why summaries first:
+- The full page text of 5 results can run to 15+ KB, which forces context truncation
+- Summaries keep the picture wide (you see all results) and let you pay the full-text cost only on the URLs that matter
 
 Use this tool BEFORE WebFetch when you need to find information online. Do not guess URLs — search first.`

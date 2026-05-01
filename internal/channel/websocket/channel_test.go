@@ -630,8 +630,8 @@ func TestIntegration_WebSocket_RoundTrip(t *testing.T) {
 	if initMsg.SessionID != "test-session" {
 		t.Errorf("expected session_id 'test-session', got %q", initMsg.SessionID)
 	}
-	if initMsg.ProtocolVersion != "1.11" {
-		t.Errorf("expected protocol_version '1.11', got %q", initMsg.ProtocolVersion)
+	if initMsg.ProtocolVersion != "1.12" {
+		t.Errorf("expected protocol_version '1.12', got %q", initMsg.ProtocolVersion)
 	}
 
 	// Send a user.message.

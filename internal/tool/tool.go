@@ -121,6 +121,21 @@ type PermissionPreChecker interface {
 	CheckPermission(ctx context.Context, input json.RawMessage) PermissionPreResult
 }
 
+// ClientRoutedTool marks tools whose execution **must** happen on the
+// connected client (e.g. AskUserQuestion, which can only render in the UI
+// where the human is sitting). When IsClientRouted returns true, the
+// engine sends a tool.call wire message regardless of the global
+// QueryEngineConfig.ClientTools flag, and never falls through to the
+// tool's server-side Execute() method.
+//
+// Tools that can run on either side (Bash, Read, Edit, Write — used in
+// the Claude Code CLI delegation model) should NOT implement this; they
+// are routed by the global ClientTools flag, which matches the
+// "everything client" delegation contract those tools were designed for.
+type ClientRoutedTool interface {
+	IsClientRouted() bool
+}
+
 // ContextModifier lets a tool modify the execution context after completion.
 // This is used by tools like SkillTool to inject allowedTools, model overrides, etc.
 type ContextModifier interface {

@@ -237,6 +237,28 @@ func (c *Conn) readPump(ctx context.Context, handler channel.MessageHandler, abo
 		case MsgTypeSessionUpdate:
 			c.logger.Debug("session.update received (not yet implemented)")
 
+		case MsgTypeSessionResume:
+			// v1.11+: client wants events replayed after a reconnect.
+			// Server-side event retention is a planned follow-on; until
+			// the buffer is in place we always answer with
+			// session.resume_failed so the client falls back to a full
+			// refresh per protocol §3.6. The protocol contract is
+			// stable now even though the implementation is partial.
+			c.logger.Info("session.resume received",
+				zap.String("trace_id", msg.TraceID),
+				zap.Int64("last_seq", msg.LastSeq),
+			)
+			resp := SessionResumeFailedMessage{
+				Type:      MsgTypeSessionResumeFailed,
+				EventID:   "evt_" + uuid.New().String()[:8],
+				SessionID: c.sessionID,
+				TraceID:   msg.TraceID,
+				Reason:    "not_implemented",
+			}
+			if data, err := json.Marshal(resp); err == nil {
+				c.TrySend(data)
+			}
+
 		case MsgTypePing:
 			// Send pong response.
 			pong := struct {
@@ -278,7 +300,7 @@ func (c *Conn) handleSessionCreate(msg ClientMessage, registry *ConnRegistry, cl
 		Type:            MsgTypeSessionCreated,
 		EventID:         "evt_" + uuid.New().String()[:8],
 		SessionID:       sessionID,
-		ProtocolVersion: "1.9",
+		ProtocolVersion: "1.12",
 		Session: SessionInfo{
 			Capabilities: Capabilities{
 				Streaming:  true,
@@ -290,6 +312,7 @@ func (c *Conn) handleSessionCreate(msg ClientMessage, registry *ConnRegistry, cl
 				Messaging:  true,
 				AsyncAgent: true,
 				Teams:      true,
+				Emit:       true,
 			},
 		},
 	}
