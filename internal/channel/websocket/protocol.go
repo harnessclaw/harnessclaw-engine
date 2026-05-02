@@ -279,6 +279,10 @@ type ToolEndMessage struct {
 	Language   string         `json:"language,omitempty"`
 	FilePath   string         `json:"file_path,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
+	// Artifacts surfaces refs produced by this tool call (v1.13+):
+	// per-call refs from ArtifactWrite, or the aggregated ref list
+	// from Specialists / Task tools. See §6.4.4 + §10.6.
+	Artifacts []types.ArtifactRef `json:"artifacts,omitempty"`
 }
 
 // PermissionRequestMessage is sent by the server when a tool needs user approval.
@@ -333,6 +337,11 @@ type SubAgentEndMessage struct {
 	NumTurns    int           `json:"num_turns,omitempty"`
 	Usage       *UsageInfo    `json:"usage,omitempty"`
 	DeniedTools []string      `json:"denied_tools,omitempty"`
+	// Artifacts is the aggregated list of artifacts this sub-agent
+	// produced (v1.13+). Sourced from SubmitTaskResult-validated refs
+	// when contract mode is in play, else from all ArtifactWrite calls.
+	// See §6.6 + §10.6.
+	Artifacts []types.ArtifactRef `json:"artifacts,omitempty"`
 }
 
 // AgentIntentMessage carries a per-tool progress sentence the model

@@ -702,6 +702,180 @@ func TestIntegration_WebSocket_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestIntegration_WebSocket_SubAgentFramesReachClient is a smoke test
+// for the user-reported "SubAgent 模块没有渲染" issue. Proves the full
+// pipeline (engine event → channel.SendEvent → mapper → WebSocket
+// connection write → bytes on the wire → client decode) for the three
+// sub-agent event types that drive the SubAgent UI block:
+//
+//   - subagent.start        — opens the panel
+//   - subagent.event        — per-tool real-time updates
+//   - subagent.end          — closes the panel + carries artifacts list
+//
+// If this test passes but the frontend still doesn't render, the issue
+// is on the frontend side (no renderer / wrong type matching), not the
+// backend.
+func TestIntegration_WebSocket_SubAgentFramesReachClient(t *testing.T) {
+	ch, addr := startTestChannel(t)
+
+	mockHandler := func(ctx context.Context, msg *types.IncomingMessage) error {
+		// Simulate emma → Specialists → writer flow with one ArtifactWrite.
+		events := []types.EngineEvent{
+			{
+				Type:          types.EngineEventSubAgentStart,
+				AgentID:       "agent_l2",
+				AgentName:     "specialists",
+				AgentDesc:     "派 writer 写邮件",
+				AgentTask:     "写一封专业的邮件，关于实习生作息安排",
+				AgentType:     "sync",
+				ParentAgentID: msg.SessionID,
+			},
+			{
+				Type:      types.EngineEventSubAgentEvent,
+				AgentID:   "agent_l2",
+				AgentName: "specialists",
+				SubAgentEvent: &types.SubAgentEventData{
+					EventType: "tool_end",
+					ToolName:  "ArtifactWrite",
+					ToolUseID: "tu_xxx",
+					Output:    `{"artifact_id":"art_aaa","size_bytes":1240}`,
+					IsError:   false,
+					Artifacts: []types.ArtifactRef{
+						{ArtifactID: "art_aaa", Name: "intern-schedule-email.md", Type: "file", Role: "draft_email", SizeBytes: 1240},
+					},
+				},
+			},
+			{
+				Type:        types.EngineEventSubAgentEnd,
+				AgentID:     "agent_l2",
+				AgentName:   "specialists",
+				AgentStatus: "completed",
+				Duration:    8200,
+				Terminal:    &types.Terminal{Reason: types.TerminalCompleted, Turn: 3},
+				Artifacts: []types.ArtifactRef{
+					{ArtifactID: "art_aaa", Name: "intern-schedule-email.md", Type: "file", Role: "draft_email", SizeBytes: 1240},
+				},
+			},
+			{
+				Type:     types.EngineEventDone,
+				Terminal: &types.Terminal{Reason: types.TerminalCompleted, Turn: 1},
+				Usage:    &types.Usage{InputTokens: 100, OutputTokens: 50},
+			},
+		}
+		for i := range events {
+			if err := ch.SendEvent(ctx, msg.SessionID, &events[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startErr := make(chan error, 1)
+	go func() { startErr <- ch.Start(ctx, mockHandler) }()
+	time.Sleep(100 * time.Millisecond)
+
+	wsURL := "ws://" + addr + "/ws"
+	ws, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal("dial:", err)
+	}
+	defer ws.Close(websocket.StatusNormalClosure, "done")
+
+	// session.create handshake.
+	createMsg, _ := json.Marshal(ClientMessage{Type: MsgTypeSessionCreate, SessionID: "test-sa"})
+	if err := ws.Write(ctx, websocket.MessageText, createMsg); err != nil {
+		t.Fatal("write session.create:", err)
+	}
+	if _, _, err := ws.Read(ctx); err != nil { // session.created
+		t.Fatal("read session.created:", err)
+	}
+
+	// Trigger the handler.
+	userData, _ := json.Marshal(ClientMessage{Type: MsgTypeUserMessage, EventID: "u1", Text: "go"})
+	if err := ws.Write(ctx, websocket.MessageText, userData); err != nil {
+		t.Fatal("write user.message:", err)
+	}
+
+	// Read frames until we see task.end. Capture each by type.
+	readCtx, readCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer readCancel()
+	byType := map[string][]byte{}
+	for {
+		_, data, err := ws.Read(readCtx)
+		if err != nil {
+			t.Fatalf("read failed: %v (got types so far: %v)", err, mapKeys(byType))
+		}
+		var env struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(data, &env)
+		byType[env.Type] = data
+		if env.Type == "task.end" {
+			break
+		}
+	}
+
+	// Assertion 1: all three SubAgent frames arrived on the wire.
+	for _, want := range []string{"subagent.start", "subagent.event", "subagent.end"} {
+		if _, ok := byType[want]; !ok {
+			t.Errorf("missing %q frame on the wire (got %v)\n"+
+				"backend wire layer is dropping SubAgent events", want, mapKeys(byType))
+		}
+	}
+
+	// Assertion 2: subagent.start carries the fields the UI needs to open the panel.
+	if frame := byType["subagent.start"]; frame != nil {
+		var msg SubAgentStartMessage
+		if err := json.Unmarshal(frame, &msg); err != nil {
+			t.Fatalf("unmarshal subagent.start: %v\n%s", err, string(frame))
+		}
+		if msg.AgentID != "agent_l2" || msg.AgentName != "specialists" || msg.Description == "" {
+			t.Errorf("subagent.start missing render fields: %+v", msg)
+		}
+	}
+
+	// Assertion 3: subagent.event payload reaches the wire including artifacts.
+	if frame := byType["subagent.event"]; frame != nil {
+		var msg SubAgentEventMessage
+		if err := json.Unmarshal(frame, &msg); err != nil {
+			t.Fatalf("unmarshal subagent.event: %v\n%s", err, string(frame))
+		}
+		if msg.Payload == nil || msg.Payload.EventType != "tool_end" || len(msg.Payload.Artifacts) != 1 {
+			t.Errorf("subagent.event payload incomplete on wire: payload=%+v\nframe=%s", msg.Payload, string(frame))
+		}
+	}
+
+	// Assertion 4: subagent.end carries the aggregated artifacts (the
+	// header card the UI uses to render produced files).
+	if frame := byType["subagent.end"]; frame != nil {
+		var msg SubAgentEndMessage
+		if err := json.Unmarshal(frame, &msg); err != nil {
+			t.Fatalf("unmarshal subagent.end: %v\n%s", err, string(frame))
+		}
+		if len(msg.Artifacts) != 1 {
+			t.Errorf("subagent.end.artifacts dropped on wire: got %d (frame: %s)",
+				len(msg.Artifacts), string(frame))
+		}
+		if msg.AgentID == "" || msg.Status != "completed" {
+			t.Errorf("subagent.end missing core fields: %+v", msg)
+		}
+	}
+
+	cancel()
+	<-startErr
+}
+
+// mapKeys returns sorted-ish keys for stable error messages.
+func mapKeys(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func TestIntegration_WebSocket_MultipleClients(t *testing.T) {
 	ch, addr := startTestChannel(t)
 

@@ -289,3 +289,91 @@ func TestMapSubAgentEnd_MaxTurnsStatus(t *testing.T) {
 		t.Errorf("expected num_turns 10, got %d", msg.NumTurns)
 	}
 }
+
+// TestMapSubAgentEnd_ArtifactsReachWire is the regression test for the
+// 2026-05-02 wire-drop bug: Engine populated event.Artifacts (from
+// SpawnResult.SubmittedArtifacts) but mapSubAgentEnd silently discarded
+// it before serialising to the wire. Frontend then saw subagent.end
+// without artifacts and couldn't render the produced-files panel.
+func TestMapSubAgentEnd_ArtifactsReachWire(t *testing.T) {
+	m := NewEventMapper("s1", false)
+	event := &types.EngineEvent{
+		Type:        types.EngineEventSubAgentEnd,
+		AgentID:     "agent_writer",
+		AgentName:   "writer",
+		AgentStatus: "completed",
+		Duration:    8200,
+		Terminal:    &types.Terminal{Reason: types.TerminalCompleted, Turn: 3},
+		Artifacts: []types.ArtifactRef{
+			{
+				ArtifactID:  "art_a1b2c3",
+				Name:        "intern-schedule-email.md",
+				Type:        "file",
+				MIMEType:    "text/markdown",
+				SizeBytes:   1240,
+				Description: "实习生作息安排邮件正稿",
+				Role:        "draft_email",
+			},
+		},
+	}
+
+	msgs, err := m.Map(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg SubAgentEndMessage
+	if err := json.Unmarshal(msgs[0], &msg); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.Artifacts) != 1 {
+		t.Fatalf("artifacts dropped before wire: want 1, got %d (raw frame: %s)", len(msg.Artifacts), string(msgs[0]))
+	}
+	got := msg.Artifacts[0]
+	if got.ArtifactID != "art_a1b2c3" {
+		t.Errorf("wire ArtifactID = %q, want art_a1b2c3", got.ArtifactID)
+	}
+	if got.Name != "intern-schedule-email.md" {
+		t.Errorf("wire Name = %q, want file name surfaced for UI", got.Name)
+	}
+	if got.Role != "draft_email" {
+		t.Errorf("wire Role = %q, want draft_email", got.Role)
+	}
+}
+
+// TestMapToolEnd_ArtifactsReachWire — same fix on the tool.end path.
+// The Specialists / Task tools put aggregated SubmittedArtifacts on
+// EngineEvent.Artifacts (via metadata["artifacts"] lifted by executor).
+// The mapper used to drop them.
+func TestMapToolEnd_ArtifactsReachWire(t *testing.T) {
+	m := NewEventMapper("s1", false)
+	event := &types.EngineEvent{
+		Type:      types.EngineEventToolEnd,
+		ToolUseID: "tu_main_1",
+		ToolName:  "Specialists",
+		ToolResult: &types.ToolResult{
+			Content: "完成了 Q4 邮件",
+			IsError: false,
+			Metadata: map[string]any{
+				"render_hint": "agent",
+			},
+		},
+		Artifacts: []types.ArtifactRef{
+			{ArtifactID: "art_xxx", Name: "report.md", Type: "file", Role: "draft_email"},
+		},
+	}
+
+	msgs, err := m.Map(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg ToolEndMessage
+	if err := json.Unmarshal(msgs[0], &msg); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.Artifacts) != 1 {
+		t.Fatalf("tool.end Artifacts dropped before wire: got %d (frame: %s)", len(msg.Artifacts), string(msgs[0]))
+	}
+	if msg.Artifacts[0].Name != "report.md" {
+		t.Errorf("Artifacts[0].Name = %q, want report.md", msg.Artifacts[0].Name)
+	}
+}

@@ -426,6 +426,15 @@ func (m *EventMapper) mapToolEnd(event *types.EngineEvent) ([][]byte, error) {
 		Language:   language,
 		FilePath:   filePath,
 		Metadata:   metadata,
+		// Surface produced artifacts on the wire so the frontend can
+		// render artifact cards without parsing tool result JSON. The
+		// engine-side executor populates event.Artifacts from
+		// metadata["artifacts"] (Task/Specialists aggregate) or from the
+		// render_hint=artifact extraction path (single ArtifactWrite).
+		// Without this assignment the Refs land in the engine event but
+		// vanish before reaching the wire — the bug operators noticed
+		// when "subagent calls produced artifacts but UI was empty".
+		Artifacts: event.Artifacts,
 	}
 	b, err := json.Marshal(msg)
 	if err != nil {
@@ -540,6 +549,11 @@ func (m *EventMapper) mapSubAgentEnd(event *types.EngineEvent) ([][]byte, error)
 		DurationMs:  event.Duration,
 		Usage:       usage,
 		DeniedTools: event.DeniedTools,
+		// Aggregated produced artifacts (v1.13+). The engine populates
+		// this from SpawnResult.SubmittedArtifacts (contract mode) or
+		// the broader ArtifactWrite collection (legacy). Same wire-drop
+		// bug as ToolEnd above — fixed here.
+		Artifacts: event.Artifacts,
 	}
 	if event.Terminal != nil {
 		msg.NumTurns = event.Terminal.Turn
