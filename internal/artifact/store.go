@@ -1,195 +1,210 @@
-// Package artifact provides a session-scoped content store for large tool results.
-//
-// When a tool produces output exceeding a configurable threshold, the full
-// content is persisted in the Store and the session message receives a
-// compact preview instead of the full text. This avoids sending the same
-// large payload to the LLM on every subsequent turn, significantly reducing
-// input token usage.
 package artifact
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
-	"sync"
+	"context"
+	"encoding/json"
+	"errors"
 	"time"
 )
 
-// DefaultThreshold is the minimum content length (in bytes) for a tool result
-// to be persisted as an artifact. Results shorter than this are kept inline.
-const DefaultThreshold = 4096
+// ErrNotFound is returned when the requested artifact does not exist (or
+// has expired and been garbage-collected). Tools translate this into a
+// human-readable error so the LLM can recover without crashing the loop.
+var ErrNotFound = errors.New("artifact: not found")
 
-// DefaultPreviewLen is the number of leading characters included in the
-// preview that replaces the full content in the session message.
-const DefaultPreviewLen = 2048
+// ErrAccessDenied is returned when the caller's scope cannot read the
+// artifact (e.g. trying to read a trace-scoped artifact from a different
+// trace). Listed separately from ErrNotFound to avoid leaking existence
+// information across scope boundaries.
+var ErrAccessDenied = errors.New("artifact: access denied")
 
-// Artifact holds a single persisted tool result.
-type Artifact struct {
-	ID        string         `json:"id"`
-	ToolUseID string         `json:"tool_use_id"`
-	ToolName  string         `json:"tool_name"`
-	Content   string         `json:"content"`
-	Summary   string         `json:"summary"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
-	Size      int            `json:"size"`
-	CreatedAt time.Time      `json:"created_at"`
+// ReadMode controls how much of an artifact Read returns. Doc §5 — the
+// LLM is expected to scan metadata first, peek at preview, then fetch
+// full content only when it knows it needs the bytes.
+type ReadMode string
+
+const (
+	// ModeMetadata returns name/description/preview/size; no Content.
+	ModeMetadata ReadMode = "metadata"
+	// ModePreview returns metadata + the truncated preview only.
+	ModePreview ReadMode = "preview"
+	// ModeFull returns metadata + the entire Content payload.
+	ModeFull ReadMode = "full"
+)
+
+// IsValidMode is a small helper; tools use it to validate input from the
+// LLM before hitting the store.
+func IsValidMode(m ReadMode) bool {
+	return m == ModeMetadata || m == ModePreview || m == ModeFull
 }
 
-// Store is a concurrency-safe, session-scoped artifact store.
-type Store struct {
-	mu        sync.RWMutex
-	artifacts map[string]*Artifact // id → artifact
-	byToolUse map[string]string    // tool_use_id → artifact id
+// SaveInput is what producers hand to Store.Save. The store fills in the
+// derived fields (ID, CreatedAt, ExpiresAt, Size, Checksum, Preview, Version)
+// — producers only specify intent.
+type SaveInput struct {
+	Type        Type
+	MIMEType    string
+	Encoding    string
+	Name        string
+	Description string
+	Content     string
+	Schema      json.RawMessage
+	Tags        []string
+
+	Producer  Producer
+	TraceID   string
+	SessionID string
+
+	// ParentArtifactID, when non-empty, marks this Save as a new version
+	// of an existing artifact. The store reads parent.Version and writes
+	// parent.Version+1.
+	ParentArtifactID string
+
+	// Access defaults to {Scope: ScopeTrace, ReadableBy: ["*"]} when zero.
+	Access Access
+
+	// TTL overrides the store's default. Zero means use store default.
+	TTL time.Duration
 }
 
-// NewStore creates an empty artifact store.
-func NewStore() *Store {
-	return &Store{
-		artifacts: make(map[string]*Artifact),
-		byToolUse: make(map[string]string),
-	}
+// ListFilter narrows artifact.List output. Empty filter means "all
+// artifacts visible in scope" — backends apply scope filtering first.
+type ListFilter struct {
+	TraceID   string
+	SessionID string
+	AgentID   string
+	Tag       string
 }
 
-// Save persists content as an artifact and returns the generated ID.
-func (s *Store) Save(toolUseID, toolName, content string, meta map[string]any) string {
-	id := generateID()
-	now := time.Now()
+// Store is the storage-agnostic interface tools and the engine talk to.
+// Implementations live alongside their backing tech (memory.go / sqlite).
+//
+// Concurrency: every method must be safe for concurrent calls from many
+// goroutines. The artifact records returned by Get/List are safe to
+// mutate locally — callers never share them.
+type Store interface {
+	// Save persists a new artifact and returns the stored record (with
+	// ID, CreatedAt, etc. populated). Doc §8 — Save always produces a
+	// new ID; "modifying" an artifact means producing a new version.
+	Save(ctx context.Context, in *SaveInput) (*Artifact, error)
 
-	art := &Artifact{
-		ID:        id,
-		ToolUseID: toolUseID,
-		ToolName:  toolName,
-		Content:   content,
-		Summary:   truncate(content, 200),
-		Metadata:  meta,
-		Size:      len(content),
-		CreatedAt: now,
-	}
+	// Get returns the full artifact by ID. ErrNotFound when absent or
+	// expired.
+	Get(ctx context.Context, id string) (*Artifact, error)
 
-	s.mu.Lock()
-	s.artifacts[id] = art
-	if toolUseID != "" {
-		s.byToolUse[toolUseID] = id
-	}
-	s.mu.Unlock()
+	// List returns artifacts matching filter, sorted by CreatedAt desc.
+	List(ctx context.Context, filter *ListFilter) ([]*Artifact, error)
 
-	return id
+	// Delete removes an artifact. Used by the TTL janitor and by
+	// session/trace cleanup; tools never call this directly.
+	Delete(ctx context.Context, id string) error
+
+	// PurgeExpired deletes all artifacts whose ExpiresAt is before `now`.
+	// Returns the count purged. Called periodically by the janitor.
+	PurgeExpired(ctx context.Context, now time.Time) (int, error)
+
+	// Close releases any underlying resources (DB handles, etc.).
+	Close() error
 }
 
-// Get returns an artifact by ID, or nil if not found.
-func (s *Store) Get(id string) *Artifact {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	a := s.artifacts[id]
-	if a == nil {
-		return nil
-	}
-	cp := *a
-	return &cp
+// Config holds tunables shared by every backend.
+type Config struct {
+	// DefaultTTL is applied when SaveInput.TTL is zero. Doc §9 recommends
+	// 1h for intermediate artifacts; production may bump session/user
+	// scoped artifacts via per-call overrides.
+	DefaultTTL time.Duration
+
+	// PreviewBytes overrides the default preview size cap.
+	PreviewBytes int
 }
 
-// GetByToolUse returns an artifact by the tool_use_id that produced it.
-func (s *Store) GetByToolUse(toolUseID string) *Artifact {
-	s.mu.RLock()
-	id, ok := s.byToolUse[toolUseID]
-	s.mu.RUnlock()
-	if !ok {
-		return nil
-	}
-	return s.Get(id)
-}
-
-// Ref returns a compact reference string suitable for inclusion in a message
-// sent to the LLM. It contains a short summary and instructions for retrieval.
-func (s *Store) Ref(id string) string {
-	s.mu.RLock()
-	a := s.artifacts[id]
-	s.mu.RUnlock()
-	if a == nil {
-		return ""
-	}
-	return fmt.Sprintf("[Artifact %s: %s (%d chars)] Full content available via artifact_id=%s",
-		a.ID, a.Summary, a.Size, a.ID)
-}
-
-// Preview builds an inline preview for a newly persisted artifact. The preview
-// includes the leading portion of the content plus a footer noting the artifact ID.
-func (s *Store) Preview(id string, maxLen int) string {
-	s.mu.RLock()
-	a := s.artifacts[id]
-	s.mu.RUnlock()
-	if a == nil {
-		return ""
-	}
-	if maxLen <= 0 {
-		maxLen = DefaultPreviewLen
-	}
-	preview := truncate(a.Content, maxLen)
-	if len(a.Content) > maxLen {
-		preview += fmt.Sprintf("\n\n... [truncated, full content persisted as artifact %s (%d chars). Use ArtifactGet to retrieve.]",
-			a.ID, a.Size)
-	}
-	return preview
-}
-
-// List returns a shallow copy of all stored artifacts, ordered by creation time.
-func (s *Store) List() []*Artifact {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]*Artifact, 0, len(s.artifacts))
-	for _, a := range s.artifacts {
-		cp := *a
-		result = append(result, &cp)
-	}
-	return result
-}
-
-// Len returns the number of stored artifacts.
-func (s *Store) Len() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.artifacts)
-}
-
-// TotalSize returns the sum of all artifact content sizes in bytes.
-func (s *Store) TotalSize() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	total := 0
-	for _, a := range s.artifacts {
-		total += a.Size
-	}
-	return total
-}
-
-// Restore inserts an artifact with its original ID, preserving all fields.
-// This is used when loading artifacts from persistent storage (e.g. SQLite).
-// If an artifact with the same ID already exists, it is overwritten.
-func (s *Store) Restore(art *Artifact) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.artifacts[art.ID] = art
-	if art.ToolUseID != "" {
-		s.byToolUse[art.ToolUseID] = art.ID
+// DefaultConfig returns the production-safe defaults.
+func DefaultConfig() Config {
+	return Config{
+		DefaultTTL:   1 * time.Hour,
+		PreviewBytes: DefaultPreviewBytes,
 	}
 }
 
-// generateID returns a unique artifact ID of the form "art_" + 8 hex chars.
-func generateID() string {
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		// Fallback to timestamp-based ID if crypto/rand fails.
-		return fmt.Sprintf("art_%08x", time.Now().UnixNano()&0xFFFFFFFF)
+// resolveSaveInput fills in defaults / derived fields. Shared by all
+// backends so the on-disk shape is identical regardless of where the
+// artifact landed.
+func resolveSaveInput(in *SaveInput, cfg Config, parent *Artifact, now time.Time) *Artifact {
+	previewBytes := cfg.PreviewBytes
+	if previewBytes <= 0 {
+		previewBytes = DefaultPreviewBytes
 	}
-	return "art_" + hex.EncodeToString(b)
+	ttl := in.TTL
+	if ttl <= 0 {
+		ttl = cfg.DefaultTTL
+	}
+
+	access := in.Access
+	if access.Scope == "" {
+		access.Scope = ScopeTrace
+	}
+	if access.ReadableBy == nil {
+		access.ReadableBy = []string{"*"}
+	}
+
+	version := 1
+	parentID := in.ParentArtifactID
+	if parent != nil {
+		version = parent.Version + 1
+		// Derive the trace/session from parent if caller didn't say,
+		// keeping the version chain inside one scope.
+		if in.TraceID == "" {
+			in.TraceID = parent.TraceID
+		}
+		if in.SessionID == "" {
+			in.SessionID = parent.SessionID
+		}
+	}
+
+	a := &Artifact{
+		ID:               NewID(),
+		TraceID:          in.TraceID,
+		SessionID:        in.SessionID,
+		Type:             in.Type,
+		MIMEType:         in.MIMEType,
+		Encoding:         in.Encoding,
+		Name:             in.Name,
+		Description:      in.Description,
+		Size:             len(in.Content),
+		Checksum:         Checksum(in.Content),
+		Preview:          MakePreview(in.Content, previewBytes),
+		Schema:           in.Schema,
+		Producer:         in.Producer,
+		CreatedAt:        now,
+		Version:          version,
+		ParentArtifactID: parentID,
+		Access:           access,
+		Tags:             append([]string(nil), in.Tags...),
+		Content:          in.Content,
+	}
+	if ttl > 0 {
+		a.ExpiresAt = now.Add(ttl)
+	}
+	if a.URI == "" {
+		a.URI = "artifact://" + a.ID
+	}
+	return a
 }
 
-// truncate returns the first n characters of s (rune-safe).
-func truncate(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
+// canRead checks whether requester is allowed by the artifact's Access.
+// MVP rule: "*" allows everyone in scope; otherwise the requester's
+// AgentID must match an entry in ReadableBy. Scope itself is enforced by
+// the caller via ListFilter / context (we don't carry session_id into
+// every Get to keep the interface narrow).
+func canRead(a *Artifact, agentID string) bool {
+	if len(a.Access.ReadableBy) == 0 {
+		// Empty list means "only producer".
+		return agentID != "" && agentID == a.Producer.AgentID
 	}
-	return string(runes[:n])
+	for _, allowed := range a.Access.ReadableBy {
+		if allowed == "*" || allowed == agentID {
+			return true
+		}
+	}
+	return false
 }

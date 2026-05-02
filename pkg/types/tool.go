@@ -13,10 +13,6 @@ type ToolResult struct {
 	IsError  bool           `json:"is_error"`
 	Metadata map[string]any `json:"metadata,omitempty"`
 
-	// ArtifactID references a stored artifact when the tool result content
-	// was persisted to the artifact store (large results only).
-	ArtifactID string `json:"artifact_id,omitempty"`
-
 	// NewMessages are additional messages to inject into the conversation
 	// AFTER the tool_result message. Used by SkillTool to inject the
 	// expanded skill prompt as user messages (matching TS newMessages pattern).

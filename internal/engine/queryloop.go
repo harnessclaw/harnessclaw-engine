@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/artifact"
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/internal/engine/compact"
@@ -88,15 +87,16 @@ type pendingPermission struct {
 
 // QueryEngine is the concrete Engine implementation that runs the 5-phase query loop.
 type QueryEngine struct {
-	provider    provider.Provider
-	registry    *tool.Registry
-	cmdRegistry *command.Registry
-	sessionMgr  *session.Manager
-	compactor   compact.Compactor
-	permChecker permission.Checker
-	eventBus    *event.Bus
-	logger      *zap.Logger
-	config      QueryEngineConfig
+	provider     provider.Provider
+	registry     *tool.Registry
+	cmdRegistry  *command.Registry
+	sessionMgr   *session.Manager
+	compactor    compact.Compactor
+	permChecker  permission.Checker
+	eventBus     *event.Bus
+	logger       *zap.Logger
+	config       QueryEngineConfig
+	artifactStore any // *artifact.Store; kept untyped here to avoid the import cycle
 
 	// Prompt builder for structured system prompt assembly.
 	promptBuilder *prompt.Builder
@@ -140,11 +140,6 @@ type QueryEngine struct {
 	taskRegistryMu sync.RWMutex
 	taskRegistry   map[string]*agent.SpawnResult // agentID → full result
 
-	// Per-session artifact stores and replacement states.
-	artifactMu          sync.RWMutex
-	artifactStores      map[string]*artifact.Store            // session_id → store
-	artifactReplacements map[string]*artifact.ReplacementState // session_id → state
-
 	// emitSeq dispenses per-trace sequence numbers for the emit envelope.
 	// Backed by sync.Map internally so concurrent traces don't contend on a
 	// global mutex.
@@ -182,7 +177,6 @@ func NewQueryEngine(
 	promptRegistry.Register(sections.NewTeamSection())
 	promptRegistry.Register(sections.NewPrinciplesSection())
 	promptRegistry.Register(sections.NewToolsSection())
-	// TODO(phase2): register ArtifactsSection in worker profile when artifact system is used by sub-agents.
 	promptRegistry.Register(sections.NewArtifactsSection())
 	promptRegistry.Register(sections.NewEnvSection())
 	promptRegistry.Register(sections.NewMemorySection())
@@ -216,10 +210,8 @@ func NewQueryEngine(
 		pendingPerms:      make(map[string]*pendingPermission),
 		sessionAllowTools: make(map[string]map[string]bool),
 		promptCache:       make(map[string]*promptCacheEntry),
-		artifactStores:       make(map[string]*artifact.Store),
-		artifactReplacements: make(map[string]*artifact.ReplacementState),
-		taskRegistry:         make(map[string]*agent.SpawnResult),
-		emitSeq:              emit.NewSequencer(),
+		taskRegistry:      make(map[string]*agent.SpawnResult),
+		emitSeq:           emit.NewSequencer(),
 	}
 }
 
@@ -262,38 +254,19 @@ func (qe *QueryEngine) RegisterPromptSection(section prompt.Section) {
 	}
 }
 
-// getArtifactStore returns the artifact store and replacement state for a
-// session, creating them on first access.
-func (qe *QueryEngine) getArtifactStore(sessionID string) (*artifact.Store, *artifact.ReplacementState) {
-	qe.artifactMu.RLock()
-	store, ok1 := qe.artifactStores[sessionID]
-	rs, ok2 := qe.artifactReplacements[sessionID]
-	qe.artifactMu.RUnlock()
-
-	if ok1 && ok2 {
-		return store, rs
-	}
-
-	qe.artifactMu.Lock()
-	defer qe.artifactMu.Unlock()
-
-	// Double-check after acquiring write lock.
-	if s, ok := qe.artifactStores[sessionID]; ok {
-		return s, qe.artifactReplacements[sessionID]
-	}
-
-	store = artifact.NewStore()
-	rs = artifact.NewReplacementState()
-	qe.artifactStores[sessionID] = store
-	qe.artifactReplacements[sessionID] = rs
-	return store, rs
-}
-
 // SetDefRegistry configures the agent definition registry and initializes
 // the @-mention parser for routing user messages to specialized agents.
 func (qe *QueryEngine) SetDefRegistry(reg *agent.AgentDefinitionRegistry) {
 	qe.defRegistry = reg
 	qe.mentionParser = NewMentionParser(reg)
+}
+
+// SetArtifactStore configures the artifact backing store. Pass an
+// *artifact.Store; kept as `any` so the engine package doesn't import
+// internal/artifact (the import only flows the other way through the
+// tool layer).
+func (qe *QueryEngine) SetArtifactStore(store any) {
+	qe.artifactStore = store
 }
 
 // ProcessMessage implements Engine. It appends the user message to the session
@@ -822,14 +795,6 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		defer qe.messageBroker.Unregister(sess.ID)
 	}
 
-	// Get or create per-session artifact store for large tool result persistence.
-	artStore, artRS := qe.getArtifactStore(sess.ID)
-
-	// Wire artifact store into the compactor for artifact-aware compaction.
-	if lc, ok := qe.compactor.(*compact.LLMCompactor); ok {
-		lc.SetArtifactStore(artStore)
-	}
-
 	// Build the ToolPool once per query loop from the registry.
 	pool := tool.NewToolPool(qe.registry, nil /*mcpTools*/, nil /*denyRules*/)
 
@@ -846,7 +811,17 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		return qe.requestPermissionApproval(ctx, evtOut, sess.ID, req)
 	}
 	executor := NewToolExecutor(pool, qe.permChecker, qe.logger, qe.config.ToolTimeout, approvalFn)
-	executor.SetArtifactStore(artifact.AsToolStore(artStore))
+	if qe.artifactStore != nil {
+		executor.SetArtifactStore(qe.artifactStore)
+	}
+	producer := tool.ArtifactProducer{
+		AgentID:   "main",
+		SessionID: sess.ID,
+	}
+	if tc := emit.FromContext(ctx); tc != nil {
+		producer.TraceID = tc.TraceID
+	}
+	executor.SetArtifactProducer(producer)
 
 	for {
 		ls.turn++
@@ -868,12 +843,6 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 				messages = compacted
 			}
 		}
-
-		// Apply artifact references: replace old tool_result content with
-		// compact previews for results that were persisted as artifacts.
-		// This uses frozen decisions (ReplacementState) so the message
-		// prefix never changes between turns, preserving prompt cache hits.
-		messages = artifact.CompactMessages(messages, artRS)
 
 		// Check max turns. The main-agent loop honours MainAgentMaxTurns
 		// when set (L1Engine uses it to enforce a small L1 loop); sub-agents
@@ -1056,21 +1025,6 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		// Append tool result messages to session, then inject any NewMessages
 		// (e.g., SkillTool injects skill prompts as user messages after tool_result).
 		for i, tc := range toolCalls {
-			content := results[i].Content
-			var artID string
-
-			// Persist large tool results as artifacts. The content in the
-			// session message is replaced with a preview; the full content
-			// stays in the artifact store for later retrieval via ArtifactGet.
-			content, artID = artifact.PersistAndReplace(
-				artStore, artRS,
-				tc.ID, tc.Name,
-				content, results[i].IsError,
-				results[i].Metadata,
-				artifact.DefaultThreshold,
-				artifact.DefaultPreviewLen,
-			)
-
 			toolMsg := types.Message{
 				Role: types.RoleUser,
 				Content: []types.ContentBlock{
@@ -1078,9 +1032,8 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 						Type:       types.ContentTypeToolResult,
 						ToolUseID:  tc.ID,
 						ToolName:   tc.Name,
-						ToolResult: content,
+						ToolResult: results[i].Content,
 						IsError:    results[i].IsError,
-						ArtifactID: artID,
 					},
 				},
 				CreatedAt: time.Now(),

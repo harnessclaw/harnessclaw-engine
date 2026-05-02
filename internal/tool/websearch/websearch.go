@@ -202,8 +202,6 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 	// Why summary-only:
 	//   - Cuts injected context by ~10× (typical: 5 results × 200-char
 	//     summary = ~1.5 KB, vs. 5 × 3 KB full text = 15 KB)
-	//   - Keeps tool_result under the 4 KB artifact threshold so the LLM
-	//     sees the WHOLE summary list, not a truncated preview
 	//   - Lets the LLM be selective — only fetch what's actually useful
 	//     instead of paying for everything upfront
 	//

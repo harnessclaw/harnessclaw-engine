@@ -88,6 +88,17 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		Model:        input.Model,
 		Fork:         input.Fork,
 		Timeout:      5 * time.Minute, // default 5min timeout per design doc
+		// Forward the deliverable contract (doc §3 mechanisms 3+4): when
+		// declared, the framework refuses to terminate the L3 loop until
+		// SubmitTaskResult validates against this list. Empty = no
+		// contract; sub-agent terminates on plain end_turn (legacy path).
+		ExpectedOutputs: input.ExpectedOutputs,
+		// TaskID gives every artifact this dispatch produces a uniform
+		// producer.task_id stamp — SubmitTaskResult's M4 validation
+		// rejects refs whose stamp doesn't match. Generated here from
+		// the tool_use_id so each Task tool invocation is its own task.
+		TaskID:        deriveTaskID(ctx),
+		TaskStartedAt: time.Now().UTC(),
 	}
 
 	// Extract parent session ID from context if available.
@@ -99,6 +110,24 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 	if out, ok := tool.GetEventOut(ctx); ok {
 		cfg.ParentOut = out
 	}
+
+	// DEBUG: dispatch.in — what L2 (or whoever called Task) handed to
+	// this tool. Logs the full contract so operators can diagnose
+	// "L3 didn't write the right artifact" by comparing the contract
+	// the LLM passed against what came back in dispatch.out.
+	t.logger.Debug("dispatch.in",
+		zap.String("tool", "Task"),
+		zap.String("parent_session_id", cfg.ParentSessionID),
+		zap.String("subagent_type", input.SubagentType),
+		zap.String("name", input.Name),
+		zap.Int("prompt_len", len(input.Prompt)),
+		zap.String("prompt_preview", truncate(input.Prompt, 400)),
+		zap.Int("expected_outputs", len(input.ExpectedOutputs)),
+		zap.Strings("expected_roles", expectedRoleList(input.ExpectedOutputs)),
+		zap.String("task_id", cfg.TaskID),
+		zap.Bool("fork", input.Fork),
+		zap.Bool("run_in_background", input.RunInBackground),
+	)
 
 	t.logger.Info("spawning sub-agent",
 		zap.String("subagent_type", input.SubagentType),
@@ -175,6 +204,13 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 	if result.Terminal != nil {
 		metadata["terminal_reason"] = string(result.Terminal.Reason)
 	}
+	// Surface produced artifacts so the executor can lift them onto the
+	// tool.end event. Same rationale as Specialists: gives the WebSocket
+	// a single anchor point for "what came out of this Task call" without
+	// the frontend having to aggregate from sub-agent events.
+	if len(result.SubmittedArtifacts) > 0 {
+		metadata["artifacts"] = result.SubmittedArtifacts
+	}
 	if len(result.Deliverables) > 0 {
 		metadata["deliverables"] = result.Deliverables
 		metadata["has_deliverables"] = true
@@ -193,17 +229,50 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		}
 	}
 
-	// Determine if the sub-agent ended in an error state.
-	isError := false
-	if result.Terminal != nil {
-		switch result.Terminal.Reason {
-		case types.TerminalModelError, types.TerminalPromptTooLong, types.TerminalBlockingLimit:
-			isError = true
+	// Determine if the sub-agent ended in an error state. On hard errors
+	// the loop often produced empty Output; returning that to the parent
+	// LLM as IsError=true with no content tempts the parent to fabricate
+	// "what happened". BuildFailureContent renders a structured report
+	// (reason / detail / contract_failures) the parent can quote back
+	// to the user honestly. See agent/failure.go.
+	isError := agent.IsTerminalError(result)
+	content := result.Output
+	if isError {
+		label := input.Name
+		if label == "" {
+			label = input.SubagentType
 		}
+		if label == "" {
+			label = "sub-agent"
+		}
+		content = agent.BuildFailureContent(result, label)
+		t.logger.Warn("sub-agent failed; surfacing structured error to parent",
+			zap.String("agent_id", result.AgentID),
+			zap.String("subagent_type", input.SubagentType),
+			zap.Int("contract_failures", len(result.ContractFailures)),
+		)
 	}
 
+	// DEBUG: dispatch.out — exactly what the calling LLM (typically L2
+	// Specialists) will see as tool_result.Content. The
+	// submitted_artifacts count is the field to watch: 0 with isError=false
+	// means the L3 finished but nothing came back across the contract —
+	// either the dispatch had no expected_outputs, or the framework's
+	// gating let it through inappropriately.
+	t.logger.Debug("dispatch.out",
+		zap.String("tool", "Task"),
+		zap.String("subagent_type", input.SubagentType),
+		zap.Bool("is_error", isError),
+		zap.Int("content_len", len(content)),
+		zap.String("content_preview", truncate(content, 600)),
+		zap.Int("submitted_artifacts", len(result.SubmittedArtifacts)),
+		zap.Int("deliverables", len(result.Deliverables)),
+		zap.Int("contract_failures", len(result.ContractFailures)),
+		zap.Duration("duration", time.Since(startTime)),
+	)
+
 	return &types.ToolResult{
-		Content:  result.Output,
+		Content:  content,
 		IsError:  isError,
 		Metadata: metadata,
 	}, nil
@@ -219,6 +288,47 @@ func (t *AgentTool) InterruptBehavior() tool.InterruptMode {
 // Sub-agent output is capped at 50000 characters.
 func (t *AgentTool) MaxResultSizeChars() int {
 	return 50000
+}
+
+// truncate clips a string to at most n bytes, rune-safe, with a marker
+// when it actually cut. Used in debug log fields so dumping a 50KB
+// prompt body doesn't blow the log line.
+func truncate(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && (s[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	if cut == 0 {
+		return ""
+	}
+	return s[:cut] + "...[truncated]"
+}
+
+// expectedRoleList yields just the role names from a contract, suitable
+// for a single zap.Strings field. Lets ops see "this dispatch demanded
+// findings_report + comparison_table" without parsing JSON.
+func expectedRoleList(outs []types.ExpectedOutput) []string {
+	roles := make([]string, 0, len(outs))
+	for _, o := range outs {
+		roles = append(roles, o.Role)
+	}
+	return roles
+}
+
+// deriveTaskID returns a stable identifier for this Task dispatch. We use
+// the parent's tool_use_id (one per invocation of the Task tool) so the
+// task_id stamp on every produced artifact maps 1:1 to the LLM's tool_use
+// in the trace — debugging "which dispatch produced this artifact" then
+// boils down to grepping the task_id. Falls back to a synthesised ID when
+// no ToolUseContext is present (test paths).
+func deriveTaskID(ctx context.Context) string {
+	if tuc, ok := tool.GetToolUseContext(ctx); ok && tuc.Core.ToolCallID != "" {
+		return "task_" + tuc.Core.ToolCallID
+	}
+	return fmt.Sprintf("task_%d", time.Now().UnixNano())
 }
 
 // resolveAgentType maps a subagent_type string to the tool.AgentType enum.

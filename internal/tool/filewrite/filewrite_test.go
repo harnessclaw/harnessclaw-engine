@@ -9,21 +9,7 @@ import (
 	"testing"
 
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/tool"
 )
-
-// mockArtifactStore implements tool.ArtifactStore for testing.
-type mockArtifactStore struct {
-	artifacts map[string]tool.ArtifactContent
-}
-
-func (m *mockArtifactStore) Get(id string) tool.ArtifactContent {
-	return m.artifacts[id]
-}
-
-func newMockStore(items map[string]tool.ArtifactContent) *mockArtifactStore {
-	return &mockArtifactStore{artifacts: items}
-}
 
 func enabledCfg() config.ToolConfig {
 	return config.ToolConfig{Enabled: true}
@@ -60,9 +46,6 @@ func TestDescription(t *testing.T) {
 	if desc == "" {
 		t.Error("description should not be empty")
 	}
-	if !strings.Contains(desc, "artifact_ref") {
-		t.Error("description should mention artifact_ref")
-	}
 }
 
 func TestInputSchema(t *testing.T) {
@@ -72,7 +55,7 @@ func TestInputSchema(t *testing.T) {
 	if !ok {
 		t.Fatal("schema should have properties")
 	}
-	for _, field := range []string{"file_path", "content", "artifact_ref"} {
+	for _, field := range []string{"file_path", "content"} {
 		if _, ok := props[field]; !ok {
 			t.Errorf("schema should have %s property", field)
 		}
@@ -81,8 +64,8 @@ func TestInputSchema(t *testing.T) {
 	if !ok {
 		t.Fatal("schema should have required array")
 	}
-	if len(required) != 1 || required[0] != "file_path" {
-		t.Errorf("required = %v, want [file_path]", required)
+	if len(required) != 2 {
+		t.Errorf("required = %v, want [file_path content]", required)
 	}
 }
 
@@ -94,14 +77,12 @@ func TestValidateInput(t *testing.T) {
 		input   string
 		wantErr bool
 	}{
-		{"valid with content", `{"file_path":"/tmp/test.txt","content":"hello"}`, false},
-		{"valid with artifact_ref", `{"file_path":"/tmp/test.txt","artifact_ref":"art_abc12345"}`, false},
-		{"valid with both (artifact_ref wins)", `{"file_path":"/tmp/test.txt","content":"hello","artifact_ref":"art_abc12345"}`, false},
+		{"valid", `{"file_path":"/tmp/test.txt","content":"hello"}`, false},
 		{"missing file_path", `{"content":"hello"}`, true},
 		{"empty file_path", `{"file_path":"","content":"hello"}`, true},
 		{"relative file_path", `{"file_path":"relative/path.txt","content":"hello"}`, true},
-		{"no content or artifact_ref", `{"file_path":"/tmp/test.txt"}`, true},
-		{"empty content and no artifact_ref", `{"file_path":"/tmp/test.txt","content":""}`, true},
+		{"missing content", `{"file_path":"/tmp/test.txt"}`, true},
+		{"empty content", `{"file_path":"/tmp/test.txt","content":""}`, true},
 		{"invalid json", `not json`, true},
 	}
 
@@ -132,7 +113,6 @@ func TestExecuteWriteContent(t *testing.T) {
 		t.Errorf("content = %q, want success message", result.Content)
 	}
 
-	// Verify file content.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("failed to read written file: %v", err)
@@ -141,7 +121,6 @@ func TestExecuteWriteContent(t *testing.T) {
 		t.Errorf("file content = %q, want 'hello world'", string(data))
 	}
 
-	// Verify metadata.
 	if result.Metadata["file_path"] != path {
 		t.Errorf("metadata file_path = %v, want %s", result.Metadata["file_path"], path)
 	}
@@ -153,7 +132,6 @@ func TestExecuteWriteContent(t *testing.T) {
 func TestExecuteRequiresExistingDir(t *testing.T) {
 	ft := New(enabledCfg())
 	dir := t.TempDir()
-	// Try to write to a non-existent subdirectory
 	path := filepath.Join(dir, "sub", "dir", "test.txt")
 
 	input := json.RawMessage(`{"file_path":"` + path + `","content":"nested"}`)
@@ -174,7 +152,6 @@ func TestExecutePreservesPermissions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.sh")
 
-	// Create file with executable permission.
 	if err := os.WriteFile(path, []byte("#!/bin/sh"), 0755); err != nil {
 		t.Fatalf("failed to create initial file: %v", err)
 	}
@@ -197,111 +174,6 @@ func TestExecutePreservesPermissions(t *testing.T) {
 	}
 }
 
-func TestExecuteArtifactRef(t *testing.T) {
-	ft := New(enabledCfg())
-	dir := t.TempDir()
-	path := filepath.Join(dir, "from_artifact.txt")
-
-	store := newMockStore(map[string]tool.ArtifactContent{
-		"art_abc12345": {ID: "art_abc12345", Content: "artifact content here", Size: 21},
-	})
-	ctx := tool.WithArtifactStore(context.Background(), store)
-
-	input := json.RawMessage(`{"file_path":"` + path + `","artifact_ref":"art_abc12345"}`)
-	result, err := ft.Execute(ctx, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Errorf("unexpected error result: %s", result.Content)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read written file: %v", err)
-	}
-	if string(data) != "artifact content here" {
-		t.Errorf("file content = %q, want 'artifact content here'", string(data))
-	}
-	if result.Metadata["bytes_written"] != 21 {
-		t.Errorf("metadata bytes_written = %v, want 21", result.Metadata["bytes_written"])
-	}
-}
-
-func TestExecuteArtifactRefOverridesContent(t *testing.T) {
-	ft := New(enabledCfg())
-	dir := t.TempDir()
-	path := filepath.Join(dir, "override.txt")
-
-	store := newMockStore(map[string]tool.ArtifactContent{
-		"art_xyz99999": {ID: "art_xyz99999", Content: "from artifact", Size: 13},
-	})
-	ctx := tool.WithArtifactStore(context.Background(), store)
-
-	// Both content and artifact_ref provided — artifact_ref should win.
-	input := json.RawMessage(`{"file_path":"` + path + `","content":"from inline","artifact_ref":"art_xyz99999"}`)
-	result, err := ft.Execute(ctx, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.IsError {
-		t.Errorf("unexpected error result: %s", result.Content)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read written file: %v", err)
-	}
-	if string(data) != "from artifact" {
-		t.Errorf("file content = %q, want 'from artifact'", string(data))
-	}
-}
-
-func TestExecuteArtifactRefNotFound(t *testing.T) {
-	ft := New(enabledCfg())
-	dir := t.TempDir()
-	path := filepath.Join(dir, "notfound.txt")
-
-	store := newMockStore(map[string]tool.ArtifactContent{})
-	ctx := tool.WithArtifactStore(context.Background(), store)
-
-	input := json.RawMessage(`{"file_path":"` + path + `","artifact_ref":"art_nonexist"}`)
-	result, err := ft.Execute(ctx, input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected error for not-found artifact")
-	}
-	if !strings.Contains(result.Content, "not found") {
-		t.Errorf("content = %q, should mention 'not found'", result.Content)
-	}
-
-	// File should not be created.
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("file should not exist when artifact is not found")
-	}
-}
-
-func TestExecuteArtifactRefNoStore(t *testing.T) {
-	ft := New(enabledCfg())
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nostore.txt")
-
-	// Context without artifact store.
-	input := json.RawMessage(`{"file_path":"` + path + `","artifact_ref":"art_abc12345"}`)
-	result, err := ft.Execute(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected error when artifact store not available")
-	}
-	if !strings.Contains(result.Content, "not available") {
-		t.Errorf("content = %q, should mention 'not available'", result.Content)
-	}
-}
-
 func TestExecuteInvalidInput(t *testing.T) {
 	ft := New(enabledCfg())
 
@@ -312,22 +184,6 @@ func TestExecuteInvalidInput(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Error("expected error for invalid json")
-	}
-}
-
-func TestExecuteNoContentOrArtifactRef(t *testing.T) {
-	ft := New(enabledCfg())
-	dir := t.TempDir()
-	path := filepath.Join(dir, "empty.txt")
-
-	// Valid JSON but no content or artifact_ref.
-	input := json.RawMessage(`{"file_path":"` + path + `"}`)
-	result, err := ft.Execute(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected error when neither content nor artifact_ref provided")
 	}
 }
 
@@ -358,7 +214,6 @@ func TestExecuteLanguageDetection(t *testing.T) {
 				t.Errorf("unexpected error: %s", result.Content)
 			}
 			lang := result.Metadata["language"]
-			// Only check when we know the tool maps it.
 			if tt.lang != "" && lang != tt.lang {
 				t.Errorf("language for %s = %v, want %s", tt.ext, lang, tt.lang)
 			}

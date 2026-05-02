@@ -36,7 +36,7 @@ type AgentProfile struct {
 var (
 	// EmmaProfile is the main agent profile — emma only.
 	// Emma is a routing/coordination layer: she talks to the user and dispatches
-	// work to sub-agents. She does NOT use tools, artifacts, or skills directly.
+	// work to sub-agents. She does NOT use tools or skills directly.
 	EmmaProfile = &AgentProfile{
 		Name:        "emma",
 		Description: "Emma — the main AI secretary facing the user",
@@ -60,6 +60,7 @@ var (
 			"role",
 			"principles",
 			"tools",
+			"artifacts", // findings are typically large enough to warrant ArtifactWrite
 			"env",
 		},
 		SectionOverrides: map[string]string{
@@ -80,6 +81,7 @@ var (
 			"currentdate",
 			"role",
 			"principles",
+			"artifacts", // structured plans are reusable artifacts
 			"env",
 			"task",
 		},
@@ -107,6 +109,7 @@ var (
 			"team", // Specialists needs to see the L3 roster to dispatch correctly
 			"principles",
 			"tools",
+			"artifacts", // L2 must understand artifacts to integrate L3 outputs
 			"env",
 		},
 		ExcludeSections: []string{
@@ -155,6 +158,7 @@ var (
 			"role",
 			"principles",
 			"tools",
+			"artifacts", // workers are the primary artifact producers
 			"env",
 			"task",
 		},

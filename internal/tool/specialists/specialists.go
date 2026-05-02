@@ -124,6 +124,18 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		Timeout:         15 * time.Minute, // L2 may run multiple L3 dispatches
 	}
 
+	// DEBUG: dispatch.in — what emma's LLM just handed to the Specialists
+	// tool. Pair with `dispatch.out` below to see the round-trip; pair with
+	// `spawn.start` / `spawn.end` (subagent.go) to see L2's interior. The
+	// task_preview captures the full prompt body the L2 will receive.
+	t.logger.Debug("dispatch.in",
+		zap.String("tool", "Specialists"),
+		zap.String("parent_session_id", parentSessionID),
+		zap.Int("task_len", len(in.Task)),
+		zap.String("task_preview", truncate(in.Task, 400)),
+		zap.String("description", in.Description),
+	)
+
 	t.logger.Info("dispatch to specialists",
 		zap.String("task", truncate(in.Task, 120)),
 		zap.String("description", in.Description),
@@ -165,6 +177,13 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	if result.Terminal != nil {
 		metadata["terminal_reason"] = string(result.Terminal.Reason)
 	}
+	// Surface produced artifacts so the executor can lift them onto the
+	// L1 tool.end event. Without this, the WebSocket sees a final
+	// tool.end with empty artifacts and has to scrape sub-agent events
+	// to know what was produced. Doc §10.
+	if len(result.SubmittedArtifacts) > 0 {
+		metadata["artifacts"] = result.SubmittedArtifacts
+	}
 
 	// Surface deliverable events so the WebSocket client can render files.
 	if parentOut != nil && len(result.Deliverables) > 0 {
@@ -179,16 +198,39 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		}
 	}
 
-	isError := false
-	if result.Terminal != nil {
-		switch result.Terminal.Reason {
-		case types.TerminalModelError, types.TerminalPromptTooLong, types.TerminalBlockingLimit:
-			isError = true
-		}
+	// On terminal failures (LLM error / prompt-too-long / blocking-limit /
+	// contract violation cap), the sub-agent often produced no Output —
+	// returning an empty Content with IsError=true gives emma's LLM no
+	// information and tempts it to fabricate. Build a structured failure
+	// report from result.Terminal.Message + ContractFailures instead.
+	isError := agent.IsTerminalError(result)
+	content := result.Output
+	if isError {
+		content = agent.BuildFailureContent(result, "Specialists")
+		t.logger.Warn("specialists failed; surfacing structured error to parent",
+			zap.String("agent_id", result.AgentID),
+			zap.String("status", result.Status),
+			zap.Int("contract_failures", len(result.ContractFailures)),
+		)
 	}
 
+	// DEBUG: dispatch.out — exactly what emma's LLM will see as
+	// tool_result.Content. This is the highest-signal log line for
+	// diagnosing "emma fabricated content" / "emma can't find the
+	// artifact" issues — if the artifact_id isn't in the preview, emma
+	// can't reference it no matter how good her prompting is.
+	t.logger.Debug("dispatch.out",
+		zap.String("tool", "Specialists"),
+		zap.Bool("is_error", isError),
+		zap.Int("content_len", len(content)),
+		zap.String("content_preview", truncate(content, 600)),
+		zap.Int("submitted_artifacts", len(result.SubmittedArtifacts)),
+		zap.Int("deliverables", len(result.Deliverables)),
+		zap.Duration("duration", time.Since(startTime)),
+	)
+
 	return &types.ToolResult{
-		Content:  result.Output,
+		Content:  content,
 		IsError:  isError,
 		Metadata: metadata,
 	}, nil

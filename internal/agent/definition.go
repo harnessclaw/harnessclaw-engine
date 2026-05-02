@@ -232,7 +232,13 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 		// in subagent.go treats AllowedTools as authoritative — it
 		// bypasses the AgentType blacklist (which would otherwise block
 		// Task for sync sub-agents).
-		AllowedTools: []string{"Task", "WebSearch", "TavilySearch"},
+		//
+		// ArtifactWrite/ArtifactRead are listed explicitly because the
+		// whitelist semantics drop EVERYTHING not named here — including
+		// tools that are on by default for unrestricted L3 workers. Without
+		// these two, L2 cannot persist its integrated output or read back
+		// what its L3 children produced, breaking the doc §6.A loop.
+		AllowedTools: []string{"Task", "WebSearch", "TavilySearch", "ArtifactWrite", "ArtifactRead"},
 	})
 	r.Register(&AgentDefinition{
 		Name:        "general-purpose",

@@ -12,6 +12,7 @@ import (
 
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/artifact"
+	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/texts"
 	"harnessclaw-go/internal/engine/session"
@@ -78,6 +79,27 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 
 	logger.Info("spawning synchronous sub-agent")
 
+	// DEBUG: spawn.start data-flow snapshot — what just came in over the
+	// dispatch boundary. Counts only (no full prompt body) so the line
+	// stays grep-friendly; full prompt is dumped via the LLM-request
+	// debug line a few turns later. Pair with `spawn.end` below to see
+	// both ends of one sub-agent execution.
+	logger.Debug("spawn.start",
+		zap.String("agent_id", agentID),
+		zap.String("subagent_type", cfg.SubagentType),
+		zap.String("name", cfg.Name),
+		zap.String("description", cfg.Description),
+		zap.Int("prompt_len", len(cfg.Prompt)),
+		zap.String("prompt_preview", truncateForLog(cfg.Prompt, 200)),
+		zap.Int("expected_outputs", len(cfg.ExpectedOutputs)),
+		zap.Int("required_outputs", countRequired(cfg.ExpectedOutputs)),
+		zap.String("task_id", cfg.TaskID),
+		zap.Bool("fork", cfg.Fork),
+		zap.Int("parent_messages", len(cfg.ParentMessages)),
+		zap.Int("context_summary_len", len(cfg.ContextSummary)),
+		zap.Int("allowed_skills", len(cfg.AllowedSkills)),
+	)
+
 	// Step 1: Apply timeout.
 	if cfg.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -112,7 +134,40 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		},
 	}
 
-	// Step 5: Initialize conversation context.
+	// Step 5a: Compose available-artifacts preamble. Doc §6 mode A —
+	// instead of L2 pasting content into L3's prompt, the framework
+	// surfaces a list of trace-scoped artifact metadata so L3 can
+	// ArtifactRead what it actually needs. The preamble stays empty
+	// when the trace has no artifacts yet, making this a no-op for
+	// the common single-task path.
+	artPreamble := qe.composeArtifactPreamble(ctx, logger)
+
+	// Step 5a': Render the deliverable contract preamble (doc §3 M1).
+	// Empty when the dispatcher didn't supply ExpectedOutputs, in which
+	// case we don't add anything — keeps simple-task prompts identical
+	// to the legacy path.
+	contractPreamble := agent.RenderExpectedOutputs(cfg.ExpectedOutputs)
+
+	// composeUserMessage stacks the two framework-injected blocks above
+	// the per-mode body. Order matters:
+	//   1. <available-artifacts>     — what the L3 may consume
+	//   2. <expected-outputs>        — what the L3 must produce
+	//   3. <task> ... </task>        — the actual instruction
+	// Reading top-down, the LLM sees inputs → contract → instruction,
+	// matching the order it should think in.
+	composeUserMessage := func(body string) string {
+		var parts []string
+		if artPreamble != "" {
+			parts = append(parts, artPreamble)
+		}
+		if contractPreamble != "" {
+			parts = append(parts, contractPreamble)
+		}
+		parts = append(parts, body)
+		return joinNonEmpty(parts, "\n\n")
+	}
+
+	// Step 5b: Initialize conversation context.
 	// Three modes:
 	//   Fork:    full parent history + new prompt (maximum context, risk of attention dilution)
 	//   Distill: compressed summary + new prompt (balanced: relevant context without noise)
@@ -130,11 +185,16 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 				CreatedAt: time.Now(),
 			})
 		}
+		// In fork mode the new task message is a fresh user turn; wrap
+		// it with <task> via WrapTaskWithPreamble so the LLM doesn't
+		// confuse the artifact list with the inherited conversation.
+		taskBody := artifact.WrapTaskWithPreamble(cfg.Prompt, nil, 0) // wrapper handles "no artifacts → passthrough"
+		taskBody = composeUserMessage(taskBody)
 		sess.AddMessage(types.Message{
 			Role: types.RoleUser,
 			Content: []types.ContentBlock{{
 				Type: types.ContentTypeText,
-				Text: cfg.Prompt,
+				Text: taskBody,
 			}},
 			CreatedAt: time.Now(),
 		})
@@ -149,17 +209,25 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			Role: types.RoleUser,
 			Content: []types.ContentBlock{{
 				Type: types.ContentTypeText,
-				Text: distillPrompt,
+				Text: composeUserMessage(distillPrompt),
 			}},
 			CreatedAt: time.Now(),
 		})
 	} else {
 		// Spawn mode: blank session with just the prompt.
+		// Wrap with <task> whenever the framework prepends ANY block —
+		// either the artifact preamble or the expected-outputs contract.
+		// Otherwise the LLM may treat the closing list as part of its
+		// own instructions.
+		body := cfg.Prompt
+		if artPreamble != "" || contractPreamble != "" {
+			body = "<task>\n" + cfg.Prompt + "\n</task>"
+		}
 		sess.AddMessage(types.Message{
 			Role: types.RoleUser,
 			Content: []types.ContentBlock{{
 				Type: types.ContentTypeText,
-				Text: cfg.Prompt,
+				Text: composeUserMessage(body),
 			}},
 			CreatedAt: time.Now(),
 		})
@@ -249,6 +317,10 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		subagentType:         cfg.SubagentType,
 		allowedSkills:        allowedSkills,
 		logger:               logger,
+		agentID:              agentID,
+		taskID:               cfg.TaskID,
+		taskStartedAt:        cfg.TaskStartedAt,
+		expectedOutputs:      cfg.ExpectedOutputs,
 	}
 
 	// Step 10: Emit subagent.start event.
@@ -289,16 +361,22 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// Step 11-12: Run query loop, drain events, collect text output.
 	// Forward events to ParentOut for real-time client streaming.
 	out := make(chan types.EngineEvent, 64)
-	var terminal types.Terminal
+	var loopResult subAgentLoopResult
 	var textBuf strings.Builder
 	var cumulativeUsage types.Usage
 	var deliverables []types.Deliverable
+	// producedArtifacts accumulates Refs from every tool_end event the
+	// sub-agent emitted (the executor stamps them when render_hint=artifact).
+	// Attached to the subagent_end event so the UI can render one card
+	// listing "this sub-agent's outputs" without re-scanning the per-tool
+	// stream. See doc §10.
+	var producedArtifacts []types.ArtifactRef
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		defer close(out)
-		terminal = qe.runSubAgentLoop(ctx, sess, lc, out)
+		loopResult = qe.runSubAgentLoop(ctx, sess, lc, out)
 	}()
 
 	for evt := range out {
@@ -319,6 +397,13 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 						deliverables = append(deliverables, d)
 					}
 				}
+			}
+			// Aggregate artifacts the executor stamped on this tool_end
+			// (single Ref per ArtifactWrite). Buffered until subagent_end
+			// rather than emitted twice — the per-tool emission happens
+			// further down when we forward as subagent_event.
+			if len(evt.Artifacts) > 0 {
+				producedArtifacts = append(producedArtifacts, evt.Artifacts...)
 			}
 		case types.EngineEventDone:
 			if evt.Usage != nil {
@@ -389,6 +474,13 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 					inner.Output = evt.ToolResult.Content
 					inner.IsError = evt.ToolResult.IsError
 				}
+				// Per-tool artifact surfacing (doc §10): if this tool_end
+				// carries Refs, forward them at the inner-event level so
+				// the UI can light up cards as each ArtifactWrite lands,
+				// not only at the aggregated subagent_end.
+				if len(evt.Artifacts) > 0 {
+					inner.Artifacts = append([]types.ArtifactRef(nil), evt.Artifacts...)
+				}
 				cfg.ParentOut <- types.EngineEvent{
 					Type:          types.EngineEventSubAgentEvent,
 					AgentID:       agentID,
@@ -411,6 +503,8 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 
 	elapsed := time.Since(startTime)
 
+	terminal := loopResult.Terminal
+
 	// Step 13: Emit subagent.end event.
 	agentStatus := "completed"
 	switch terminal.Reason {
@@ -420,6 +514,14 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		agentStatus = "model_error"
 	case types.TerminalAbortedStreaming, types.TerminalAbortedTools:
 		agentStatus = "aborted"
+	}
+	// Prefer SubmitTaskResult-validated artifacts when present — that's
+	// the canonical "deliverables" set. Fall back to the broader
+	// produced-while-running list (everything any tool wrote) when the
+	// task had no contract.
+	endArtifacts := producedArtifacts
+	if len(loopResult.SubmittedArtifacts) > 0 {
+		endArtifacts = loopResult.SubmittedArtifacts
 	}
 	if cfg.ParentOut != nil {
 		cfg.ParentOut <- types.EngineEvent{
@@ -433,6 +535,11 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 				Reason: terminal.Reason,
 				Turn:   terminal.Turn,
 			},
+			// Doc §10 aggregated form — every artifact this sub-agent
+			// produced, in tool-call order. The UI uses this to render a
+			// single "outputs" card on the sub-agent panel without having
+			// to replay the per-tool stream.
+			Artifacts: endArtifacts,
 		}
 	}
 	if qe.eventBus != nil {
@@ -452,6 +559,8 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		zap.String("terminal_reason", string(terminal.Reason)),
 		zap.Int("turns", terminal.Turn),
 		zap.Duration("elapsed", elapsed),
+		zap.Int("submitted_artifacts", len(loopResult.SubmittedArtifacts)),
+		zap.Int("contract_failures", len(loopResult.ContractFailures)),
 	)
 
 	// Step 14: Return SpawnResult with structured fields.
@@ -473,12 +582,36 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	}
 
 	// Build the output the spawning parent (typically the L1 main agent)
-	// sees in tool_result: only summary + deliverable list, NOT the full
-	// sub-agent transcript. The full transcript is preserved in TaskRegistry.
+	// sees in tool_result. Three sections, top-down:
+	//   1. <summary> — what the sub-agent reports it did
+	//   2. 产出 artifact — IDs the parent can quote / ArtifactRead
+	//   3. 产出文件 — FileWrite-side deliverables (legacy path)
+	//
+	// Why artifacts must surface here: the LLM only reads tool_result
+	// content; subagent_end events go to the WebSocket client. Without
+	// listing the IDs, emma has no way to reference produced artifacts
+	// in her reply (e.g. "详情见 art_xxx") — she'd have to either
+	// fabricate IDs or re-paste content. The `[role]` prefix lets emma
+	// pick the right artifact when the contract had multiple roles.
+	//
+	// The full sub-agent transcript is preserved in TaskRegistry; this
+	// view is intentionally narrow so emma's context stays tight.
 	var parentVisibleOutput strings.Builder
 	parentVisibleOutput.WriteString(summary)
+	if refs := loopResult.SubmittedArtifacts; len(refs) > 0 {
+		parentVisibleOutput.WriteString("\n\n产出 artifact：\n")
+		for _, a := range refs {
+			fmt.Fprintf(&parentVisibleOutput, "- [%s] %s — %s（%s, %s）\n",
+				roleOrDash(a.Role),
+				a.ArtifactID,
+				artifactDisplayName(a),
+				a.Type,
+				artifact.HumanSize(a.SizeBytes),
+			)
+		}
+	}
 	if len(deliverables) > 0 {
-		parentVisibleOutput.WriteString("\n\n产出文件：\n")
+		parentVisibleOutput.WriteString("\n产出文件：\n")
 		for _, d := range deliverables {
 			parentVisibleOutput.WriteString(fmt.Sprintf("- %s（%s，%d 字节）\n", d.FilePath, d.Language, d.ByteSize))
 		}
@@ -495,6 +628,10 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		SessionID:    sessionID,
 		AgentID:      agentID,
 		NumTurns:     terminal.Turn,
+		// Surface contract validation outcome (doc §3 M3/M4): the parent
+		// reads these to decide between "integrate" / "retry" / "abort".
+		SubmittedArtifacts: loopResult.SubmittedArtifacts,
+		ContractFailures:   loopResult.ContractFailures,
 	}
 
 	// Record full result in TaskRegistry for future reference (context passing, debugging).
@@ -504,6 +641,26 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	qe.taskRegistryMu.Lock()
 	qe.taskRegistry[agentID] = &fullResult
 	qe.taskRegistryMu.Unlock()
+
+	// DEBUG: spawn.end data-flow snapshot — pair with `spawn.start` to
+	// see one full sub-agent run. parent_visible_preview shows EXACTLY
+	// what the dispatching tool will hand back to the parent LLM as
+	// tool_result.Content (after BuildFailureContent or summary+artifacts
+	// composition). This is the load-bearing field for "did emma see
+	// the artifacts?" debugging.
+	logger.Debug("spawn.end",
+		zap.String("agent_id", agentID),
+		zap.String("status", status),
+		zap.String("terminal_reason", string(terminal.Reason)),
+		zap.Int("turns", terminal.Turn),
+		zap.Duration("elapsed", elapsed),
+		zap.Int("parent_visible_len", len(spawnResult.Output)),
+		zap.String("parent_visible_preview", truncateForLog(spawnResult.Output, 400)),
+		zap.Int("submitted_artifacts", len(spawnResult.SubmittedArtifacts)),
+		zap.Strings("submitted_ids", refIDs(spawnResult.SubmittedArtifacts)),
+		zap.Int("deliverables", len(spawnResult.Deliverables)),
+		zap.Int("contract_failures", len(spawnResult.ContractFailures)),
+	)
 
 	return spawnResult, nil
 }
@@ -533,23 +690,41 @@ type loopConfig struct {
 	subagentType         string          // agent definition name (e.g., "developer", "researcher")
 	allowedSkills        map[string]bool // nil = all skills; non-nil = whitelist
 	logger               *zap.Logger
+	// agentID is the spawned sub-agent's identifier. Stamped onto every
+	// artifact this loop writes so lineage (doc §4 producer.agent_id) is
+	// preserved across spawn.
+	agentID string
+	// taskID is the orchestrator's identifier for this work unit. Empty
+	// when no contract was supplied (legacy / simple-task path).
+	taskID string
+	// taskStartedAt anchors the temporal "no time travel" check applied
+	// by SubmitTaskResult. Zero disables that check.
+	taskStartedAt time.Time
+	// expectedOutputs is the deliverable contract supplied by the parent.
+	// Length 0 = no contract; loop terminates on end_turn as before.
+	// Length > 0 = SubmitTaskResult required; loop refuses to terminate
+	// without a passing submit (M3 + M4 from doc §3).
+	expectedOutputs []types.ExpectedOutput
 }
 
 // runSubAgentLoop is a variant of runQueryLoop parameterized by loopConfig.
 // It uses the provided pool, profile, and permission checker instead of
 // the engine's defaults.
+//
+// When lc.expectedOutputs is non-empty the loop refuses to terminate
+// until SubmitTaskResult has been called AND its M4 validation passed.
+// On end_turn without a passing submit, a SYSTEM reminder is appended
+// and the loop continues; bounded by maxSubmitNudges to avoid spinning.
+// Validation rejections from SubmitTaskResult itself are bounded by
+// maxSubmitRejects independently.
 func (qe *QueryEngine) runSubAgentLoop(
 	ctx context.Context,
 	sess *session.Session,
 	lc *loopConfig,
 	out chan<- types.EngineEvent,
-) types.Terminal {
+) subAgentLoopResult {
 	ls := &loopState{}
 	logger := lc.logger
-
-	// Sub-agents get their own artifact store (independent of parent).
-	artStore := artifact.NewStore()
-	artRS := artifact.NewReplacementState()
 
 	// Sub-agent approval function auto-approves everything.
 	approvalFn := func(_ context.Context, _ chan<- types.EngineEvent, req *types.PermissionRequest) *types.PermissionResponse {
@@ -561,7 +736,39 @@ func (qe *QueryEngine) runSubAgentLoop(
 		}
 	}
 	executor := NewToolExecutor(lc.pool, lc.permChecker, logger, lc.config.ToolTimeout, approvalFn)
-	executor.SetArtifactStore(artifact.AsToolStore(artStore))
+	if qe.artifactStore != nil {
+		executor.SetArtifactStore(qe.artifactStore)
+	}
+	subProducer := tool.ArtifactProducer{
+		AgentID:   lc.agentID,
+		SessionID: sess.ID,
+		// TaskID stamps every artifact this sub-agent writes with the
+		// orchestrator-assigned task identifier. SubmitTaskResult's M4
+		// validation rejects artifacts whose producer.task_id ≠ this
+		// value, blocking failure mode #8 (claiming someone else's
+		// artifact as your output).
+		TaskID: lc.taskID,
+	}
+	if tc := emit.FromContext(ctx); tc != nil {
+		subProducer.TraceID = tc.TraceID
+	}
+	executor.SetArtifactProducer(subProducer)
+	executor.SetTaskContract(tool.TaskContract{
+		TaskID:          lc.taskID,
+		TaskStartedAt:   lc.taskStartedAt,
+		ExpectedOutputs: lc.expectedOutputs,
+	})
+
+	// Submission state. Tracked as the loop runs so we know whether
+	// end_turn is acceptable and whether to nudge / fail.
+	var (
+		submitAccepted     bool
+		submitArtifacts    []types.ArtifactRef
+		submitNudges       int
+		submitRejects      int
+		contractFailures   []string
+	)
+	hasContract := len(lc.expectedOutputs) > 0
 
 	for {
 		ls.turn++
@@ -581,15 +788,15 @@ func (qe *QueryEngine) runSubAgentLoop(
 			}
 		}
 
-		// Apply artifact references for sub-agent context.
-		messages = artifact.CompactMessages(messages, artRS)
-
 		// Check max turns.
 		if ls.turn > lc.config.MaxTurns {
-			return types.Terminal{
-				Reason:  types.TerminalMaxTurns,
-				Message: fmt.Sprintf("sub-agent reached max turns (%d)", lc.config.MaxTurns),
-				Turn:    ls.turn - 1,
+			return subAgentLoopResult{
+				Terminal: types.Terminal{
+					Reason:  types.TerminalMaxTurns,
+					Message: fmt.Sprintf("sub-agent reached max turns (%d)", lc.config.MaxTurns),
+					Turn:    ls.turn - 1,
+				},
+				ContractFailures: contractFailures,
 			}
 		}
 
@@ -629,10 +836,10 @@ func (qe *QueryEngine) runSubAgentLoop(
 			out <- types.EngineEvent{Type: types.EngineEventMessageStop}
 
 			if ctx.Err() != nil {
-				return types.Terminal{Reason: types.TerminalAbortedStreaming, Message: "sub-agent cancelled", Turn: ls.turn}
+				return subAgentLoopResult{Terminal: types.Terminal{Reason: types.TerminalAbortedStreaming, Message: "sub-agent cancelled", Turn: ls.turn}, ContractFailures: contractFailures}
 			}
 			logger.Error("sub-agent LLM call failed after retries", zap.Error(llmErr))
-			return types.Terminal{Reason: types.TerminalModelError, Message: llmErr.Error(), Turn: ls.turn}
+			return subAgentLoopResult{Terminal: types.Terminal{Reason: types.TerminalModelError, Message: llmErr.Error(), Turn: ls.turn}, ContractFailures: contractFailures}
 		}
 
 		// Events were already streamed in real-time by retryLLMCall.
@@ -664,18 +871,56 @@ func (qe *QueryEngine) runSubAgentLoop(
 		assistantMsg := buildAssistantMessage(textBuf, toolCalls, ls.lastUsage)
 		sess.AddMessage(assistantMsg)
 
-		// ---- Phase 5 (part A): No tool calls = done ----
+		// ---- Phase 5 (part A): No tool calls = LLM tried to terminate ----
 		if len(toolCalls) == 0 {
-			return types.Terminal{
-				Reason:  types.TerminalCompleted,
-				Message: "sub-agent finished",
-				Turn:    ls.turn,
+			// Legacy / no-contract path: end_turn is terminal.
+			if !hasContract {
+				return subAgentLoopResult{
+					Terminal: types.Terminal{
+						Reason:  types.TerminalCompleted,
+						Message: "sub-agent finished",
+						Turn:    ls.turn,
+					},
+				}
 			}
+			// Contract path: only end_turn AFTER a passing submit terminates.
+			if submitAccepted {
+				return subAgentLoopResult{
+					Terminal: types.Terminal{
+						Reason:  types.TerminalCompleted,
+						Message: "sub-agent finished with passing submission",
+						Turn:    ls.turn,
+					},
+					SubmittedArtifacts: submitArtifacts,
+				}
+			}
+			// LLM tried to end without submitting → nudge (M2 from doc §3).
+			submitNudges++
+			if submitNudges > maxSubmitNudges {
+				logger.Warn("sub-agent end_turn without submission, exceeded nudge cap",
+					zap.Int("nudges", submitNudges),
+				)
+				return subAgentLoopResult{
+					Terminal: types.Terminal{
+						Reason:  types.TerminalMaxTurns,
+						Message: fmt.Sprintf("L3 declined to call SubmitTaskResult after %d reminders", maxSubmitNudges),
+						Turn:    ls.turn,
+					},
+					ContractFailures: append(contractFailures,
+						fmt.Sprintf("missing SubmitTaskResult after %d nudges", maxSubmitNudges)),
+				}
+			}
+			logger.Info("nudging sub-agent to call SubmitTaskResult",
+				zap.Int("nudge", submitNudges),
+				zap.Int("cap", maxSubmitNudges),
+			)
+			sess.AddMessage(buildSubmitNudgeMessage(submitNudges, lc.expectedOutputs))
+			continue
 		}
 
 		// ---- Phase 4: Server-side tool execution ----
 		if ctx.Err() != nil {
-			return types.Terminal{Reason: types.TerminalAbortedTools, Message: "sub-agent cancelled before tool execution", Turn: ls.turn}
+			return subAgentLoopResult{Terminal: types.Terminal{Reason: types.TerminalAbortedTools, Message: "sub-agent cancelled before tool execution", Turn: ls.turn}, ContractFailures: contractFailures}
 		}
 
 		// Inject allowed skills into context so SkillTool can enforce the whitelist.
@@ -692,33 +937,19 @@ func (qe *QueryEngine) runSubAgentLoop(
 		results := qe.dispatchToolBatch(execCtx, executor, lc.pool, toolCalls, out)
 
 		if ctx.Err() != nil {
-			return types.Terminal{Reason: types.TerminalAbortedTools, Message: "sub-agent cancelled during tool execution", Turn: ls.turn}
+			return subAgentLoopResult{Terminal: types.Terminal{Reason: types.TerminalAbortedTools, Message: "sub-agent cancelled during tool execution", Turn: ls.turn}, ContractFailures: contractFailures}
 		}
 
 		// Append tool results to session.
 		for i, tc := range toolCalls {
-			content := results[i].Content
-			var artID string
-
-			// Persist large tool results as artifacts.
-			content, artID = artifact.PersistAndReplace(
-				artStore, artRS,
-				tc.ID, tc.Name,
-				content, results[i].IsError,
-				results[i].Metadata,
-				artifact.DefaultThreshold,
-				artifact.DefaultPreviewLen,
-			)
-
 			toolMsg := types.Message{
 				Role: types.RoleUser,
 				Content: []types.ContentBlock{{
 					Type:       types.ContentTypeToolResult,
 					ToolUseID:  tc.ID,
 					ToolName:   tc.Name,
-					ToolResult: content,
+					ToolResult: results[i].Content,
 					IsError:    results[i].IsError,
-					ArtifactID: artID,
 				}},
 				CreatedAt: time.Now(),
 			}
@@ -727,9 +958,77 @@ func (qe *QueryEngine) runSubAgentLoop(
 			for _, nm := range results[i].NewMessages {
 				sess.AddMessage(nm)
 			}
+
+			// Observe SubmitTaskResult outcomes — both accepted and
+			// rejected cases land here. Render hint is the unique signal
+			// the submit tool emits (decoupled from package import).
+			if hint, _ := results[i].Metadata["render_hint"].(string); hint == "task_submission" {
+				accepted, _ := results[i].Metadata["submission_accepted"].(bool)
+				if accepted {
+					submitAccepted = true
+					if refs, ok := results[i].Metadata["submitted_artifacts"].([]types.ArtifactRef); ok {
+						submitArtifacts = refs
+					}
+					logger.Info("submission accepted",
+						zap.Int("artifacts", len(submitArtifacts)),
+					)
+				} else {
+					submitRejects++
+					if reason, ok := results[i].Metadata["reason"].(string); ok {
+						contractFailures = append(contractFailures, reason)
+					}
+					logger.Info("submission rejected",
+						zap.Int("reject_count", submitRejects),
+						zap.Int("cap", maxSubmitRejects),
+					)
+					if submitRejects > maxSubmitRejects {
+						return subAgentLoopResult{
+							Terminal: types.Terminal{
+								Reason:  types.TerminalMaxTurns,
+								Message: fmt.Sprintf("SubmitTaskResult rejected %d times — abandoning task", submitRejects),
+								Turn:    ls.turn,
+							},
+							ContractFailures: contractFailures,
+						}
+					}
+				}
+			}
 		}
 
 		// ---- Phase 5 (part B): Continue loop ----
+	}
+}
+
+// buildSubmitNudgeMessage assembles the SYSTEM-style reminder injected
+// when an L3 reaches end_turn without a passing SubmitTaskResult.
+// Listed by [SYSTEM] tag so the LLM treats it as framework directive,
+// not a user input. Includes the contract roles so the model has
+// everything it needs to make progress.
+func buildSubmitNudgeMessage(nudge int, outs []types.ExpectedOutput) types.Message {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[SYSTEM] 你尚未调用 SubmitTaskResult 提交产物。任务未完成，请立即调用 (提示 %d/%d)。\n",
+		nudge, maxSubmitNudges)
+	if nudge >= 2 {
+		b.WriteString("强制提示：先用 ArtifactWrite 把每份产出写入 store，再用 SubmitTaskResult 提交 ID 列表。\n")
+	}
+	if nudge >= maxSubmitNudges {
+		b.WriteString("这是最后一次机会，再不提交将判定任务失败。\n")
+	}
+	if len(outs) > 0 {
+		b.WriteString("\n本任务必交 role 列表：\n")
+		for _, o := range outs {
+			if o.Required {
+				fmt.Fprintf(&b, "- %s\n", o.Role)
+			}
+		}
+	}
+	return types.Message{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{{
+			Type: types.ContentTypeText,
+			Text: b.String(),
+		}},
+		CreatedAt: time.Now(),
 	}
 }
 
@@ -763,20 +1062,45 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 	skillListing := qe.getSkillListingFiltered(allowedSkills)
 
 	// Look up agent definition to build worker identity, tool filter, and skills.
+	//
+	// workerIdentity becomes PromptContext.SystemPromptOverride, which
+	// (per builder.go) takes precedence over the profile's static
+	// SectionOverrides["role"]. The decision tree:
+	//
+	//   1. def.SystemPrompt set                    → honour it (explicit author intent)
+	//   2. def.IsTeamMember=true                   → BuildWorkerIdentity (personalised "你叫小林…")
+	//   3. profile has no role SectionOverride     → BuildWorkerIdentity (otherwise the
+	//                                                role section falls through to
+	//                                                IdentitySection which returns the
+	//                                                L1 emma persona — leaking emma's
+	//                                                identity into L3 prompts)
+	//   4. profile has role SectionOverride        → leave empty so the profile's
+	//                                                static role text wins
+	//                                                (Specialists / Explore / Plan)
+	//
+	// Without case 3, dispatching `general-purpose` (IsTeamMember=false,
+	// WorkerProfile has no role override) would silently install emma's
+	// IdentitySection content into the L3 role section.
 	var workerIdentity string
 	var def *agent.AgentDefinition
 	if qe.defRegistry != nil && subagentType != "" {
 		def = qe.defRegistry.Get(subagentType)
 	}
 	if def != nil {
-		if def.SystemPrompt != "" {
-			// Use custom system prompt if set (e.g., from YAML).
+		profileHasRoleOverride := profile != nil &&
+			profile.SectionOverrides != nil &&
+			profile.SectionOverrides["role"] != ""
+		switch {
+		case def.SystemPrompt != "":
 			workerIdentity = def.SystemPrompt
-		} else {
-			// Auto-generate identity from definition metadata. The leader
-			// name is injected from QueryEngineConfig.MainAgentDisplayName
-			// so engine code stays free of "emma" literals — running under
-			// a different main-agent name is config, not code.
+		case def.IsTeamMember:
+			workerIdentity = texts.BuildWorkerIdentity(
+				def.DisplayName,
+				qe.config.MainAgentDisplayName,
+				def.Description,
+				def.Personality,
+			)
+		case !profileHasRoleOverride:
 			workerIdentity = texts.BuildWorkerIdentity(
 				def.DisplayName,
 				qe.config.MainAgentDisplayName,
@@ -831,6 +1155,152 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 // resolveSubAgentProfile maps a subagent_type string to a prompt profile.
 func resolveSubAgentProfile(subagentType string) *prompt.AgentProfile {
 	return prompt.ResolveProfileBySubagentType(subagentType)
+}
+
+// subAgentLoopResult bundles the loop's terminal state with the
+// contract-validation outcome (doc §3 mechanism M3/M4). SpawnSync reads
+// it to populate SpawnResult.SubmittedArtifacts / ContractFailures so the
+// parent agent gets a structured view of "what landed" without parsing
+// streamed events.
+type subAgentLoopResult struct {
+	Terminal           types.Terminal
+	SubmittedArtifacts []types.ArtifactRef
+	ContractFailures   []string
+}
+
+// maxSubmitNudges caps how many times the loop will re-prompt an L3 that
+// reaches end_turn without a passing SubmitTaskResult. Doc §7 — three
+// strikes covers honest mistakes (forgot, mis-roled, missing required)
+// without giving an adversarial / broken model unlimited turns.
+const maxSubmitNudges = 3
+
+// maxSubmitRejects caps how many failed validations (M4) we accept
+// before declaring the task lost. Distinct from nudges: a nudge happens
+// when the LLM didn't call submit; a reject when it called submit but
+// the artifacts didn't pass. Both share a cap of 3 — same logic, same
+// philosophy.
+const maxSubmitRejects = 3
+
+// joinNonEmpty stitches non-empty strings with sep. Used to compose the
+// task user message from preamble blocks where any block may be absent.
+// strings.Join would emit duplicate separators when middle entries are "".
+func joinNonEmpty(parts []string, sep string) string {
+	out := ""
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		if out != "" {
+			out += sep
+		}
+		out += p
+	}
+	return out
+}
+
+// roleOrDash returns the role string, falling back to "-" when empty.
+// Used in the artifact list emma sees so the format stays uniform when
+// some artifacts have a role (contract-mode submissions) and others
+// don't (no-contract dispatches just produce refs).
+func roleOrDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// artifactDisplayName picks the most human-readable label for the
+// artifact line in the parent-visible output. Preference order:
+//   1. Name — what the producer called the file ("q4-report.md")
+//   2. Description — short human prose ("Q4 销量调研报告")
+//   3. ID — last resort
+// Without this, ListArtifacts entries with empty Name look like raw IDs.
+func artifactDisplayName(a types.ArtifactRef) string {
+	if a.Name != "" {
+		return a.Name
+	}
+	if a.Description != "" {
+		return a.Description
+	}
+	return a.ArtifactID
+}
+
+// countRequired returns how many ExpectedOutputs are marked Required.
+// Used by the spawn.start debug log to preview the contract — operators
+// can see at a glance "this dispatch demands 2 mandatory outputs".
+func countRequired(outs []types.ExpectedOutput) int {
+	n := 0
+	for _, o := range outs {
+		if o.Required {
+			n++
+		}
+	}
+	return n
+}
+
+// refIDs extracts just the artifact_ids from a Refs slice, suitable for
+// dumping into a single zap.Strings field. Keeps the spawn.end log line
+// compact while still letting operators trace artifacts across logs.
+func refIDs(refs []types.ArtifactRef) []string {
+	ids := make([]string, 0, len(refs))
+	for _, r := range refs {
+		ids = append(ids, r.ArtifactID)
+	}
+	return ids
+}
+
+// composeArtifactPreamble queries the artifact store for everything visible
+// in the current trace and formats it as the doc §6.A preamble. Returns ""
+// when the engine has no store wired, when ctx carries no trace, or when
+// the trace has no artifacts yet — callers can safely concatenate.
+//
+// Failure to query is logged at warn level but never aborts the spawn:
+// the preamble is a hint, not a load-bearing input. Falling through to an
+// empty preamble keeps the L3 spawn path resilient to a transient store
+// hiccup.
+func (qe *QueryEngine) composeArtifactPreamble(ctx context.Context, logger *zap.Logger) string {
+	if qe.artifactStore == nil {
+		return ""
+	}
+	store, ok := qe.artifactStore.(artifact.Store)
+	if !ok {
+		// Engine was wired with a non-conforming value. Surface once at
+		// warn so the misconfiguration is visible, then degrade gracefully.
+		logger.Warn("artifact store has unexpected type; preamble disabled")
+		return ""
+	}
+	tc := emit.FromContext(ctx)
+	if tc == nil || tc.TraceID == "" {
+		return ""
+	}
+	arts, err := store.List(ctx, &artifact.ListFilter{TraceID: tc.TraceID})
+	if err != nil {
+		logger.Warn("artifact list for preamble failed; skipping",
+			zap.String("trace_id", tc.TraceID),
+			zap.Error(err),
+		)
+		return ""
+	}
+	if len(arts) == 0 {
+		return ""
+	}
+	// INFO log so the server log shows "L3 was handed N artifacts on spawn"
+	// — without this the §6.A injection is invisible from outside. Listing
+	// the IDs (capped) lets operators correlate the spawn line with later
+	// ArtifactRead events from the L3.
+	ids := make([]string, 0, len(arts))
+	for i, a := range arts {
+		if i >= 5 {
+			break
+		}
+		ids = append(ids, a.ID)
+	}
+	logger.Info("artifact preamble injected for sub-agent",
+		zap.String("trace_id", tc.TraceID),
+		zap.Int("count", len(arts)),
+		zap.Strings("ids", ids),
+	)
+	return artifact.RenderAvailableList(arts, artifact.DefaultPreambleMaxItems)
 }
 
 // strVal safely extracts a string from a metadata map.

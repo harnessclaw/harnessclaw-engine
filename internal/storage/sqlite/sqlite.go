@@ -14,7 +14,6 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"harnessclaw-go/internal/artifact"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/pkg/types"
 )
@@ -59,24 +58,6 @@ func New(dbPath string) (*Store, error) {
 	if _, err := db.Exec(ddl); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create table: %w", err)
-	}
-
-	// Create artifacts table for persisting large tool result content.
-	const artifactDDL = `CREATE TABLE IF NOT EXISTS artifacts (
-		id          TEXT PRIMARY KEY,
-		session_id  TEXT NOT NULL,
-		tool_use_id TEXT NOT NULL,
-		tool_name   TEXT NOT NULL DEFAULT '',
-		content     TEXT NOT NULL,
-		summary     TEXT NOT NULL DEFAULT '',
-		metadata    TEXT NOT NULL DEFAULT '{}',
-		size        INTEGER NOT NULL DEFAULT 0,
-		created_at  TEXT NOT NULL
-	);
-	CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id)`
-	if _, err := db.Exec(artifactDDL); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create artifacts table: %w", err)
 	}
 
 	return &Store{db: db}, nil
@@ -258,107 +239,4 @@ func (s *Store) ListSessions(_ context.Context, filter *session.SessionFilter) (
 // Close closes the underlying database.
 func (s *Store) Close() error {
 	return s.db.Close()
-}
-
-// SaveArtifacts persists all artifacts from a Store, associating them
-// with the given session ID. Uses INSERT OR REPLACE for idempotency.
-func (s *Store) SaveArtifacts(_ context.Context, sessionID string, store *artifact.Store) error {
-	arts := store.List()
-	if len(arts) == 0 {
-		return nil
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO artifacts
-		(id, session_id, tool_use_id, tool_name, content, summary, metadata, size, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("prepare stmt: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, art := range arts {
-		metaJSON, err := json.Marshal(art.Metadata)
-		if err != nil {
-			metaJSON = []byte("{}")
-		}
-		_, err = stmt.Exec(
-			art.ID,
-			sessionID,
-			art.ToolUseID,
-			art.ToolName,
-			art.Content,
-			art.Summary,
-			string(metaJSON),
-			art.Size,
-			art.CreatedAt.Format(time.RFC3339Nano),
-		)
-		if err != nil {
-			return fmt.Errorf("insert artifact %s: %w", art.ID, err)
-		}
-	}
-
-	return tx.Commit()
-}
-
-// LoadArtifacts restores artifacts for a session into the given Store.
-// Returns the number of artifacts loaded.
-func (s *Store) LoadArtifacts(_ context.Context, sessionID string, store *artifact.Store) (int, error) {
-	rows, err := s.db.Query(
-		`SELECT id, tool_use_id, tool_name, content, summary, metadata, size, created_at
-		 FROM artifacts WHERE session_id = ?`, sessionID,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("query artifacts: %w", err)
-	}
-	defer rows.Close()
-
-	count := 0
-	for rows.Next() {
-		var (
-			id, toolUseID, toolName string
-			content, summary        string
-			metaStr, createdStr     string
-			size                    int
-		)
-		if err := rows.Scan(&id, &toolUseID, &toolName, &content, &summary, &metaStr, &size, &createdStr); err != nil {
-			return count, fmt.Errorf("scan artifact: %w", err)
-		}
-
-		var meta map[string]any
-		if err := json.Unmarshal([]byte(metaStr), &meta); err != nil {
-			meta = nil
-		}
-
-		// Use Save to insert into the in-memory store. The ID will be
-		// regenerated, but for restored artifacts we want to preserve
-		// the original ID. Use RestoreArtifact for that.
-		store.Restore(&artifact.Artifact{
-			ID:        id,
-			ToolUseID: toolUseID,
-			ToolName:  toolName,
-			Content:   content,
-			Summary:   summary,
-			Metadata:  meta,
-			Size:      size,
-			CreatedAt: func() time.Time { t, _ := time.Parse(time.RFC3339Nano, createdStr); return t }(),
-		})
-		count++
-	}
-
-	return count, rows.Err()
-}
-
-// DeleteArtifacts removes all artifacts for a session.
-func (s *Store) DeleteArtifacts(_ context.Context, sessionID string) error {
-	_, err := s.db.Exec("DELETE FROM artifacts WHERE session_id = ?", sessionID)
-	if err != nil {
-		return fmt.Errorf("delete artifacts: %w", err)
-	}
-	return nil
 }

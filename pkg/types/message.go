@@ -32,10 +32,6 @@ type ContentBlock struct {
 	ToolInput  string      `json:"tool_input,omitempty"`  // JSON string
 	ToolResult string      `json:"tool_result,omitempty"` // JSON string
 	IsError    bool        `json:"is_error,omitempty"`
-
-	// ArtifactID links this tool_result to a stored artifact. When set,
-	// ToolResult may contain a preview instead of the full content.
-	ArtifactID string `json:"artifact_id,omitempty"`
 }
 
 // Message represents a single message in a conversation.

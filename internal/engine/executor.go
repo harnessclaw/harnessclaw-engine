@@ -23,12 +23,25 @@ type PermissionApprovalFunc func(ctx context.Context, out chan<- types.EngineEve
 // It enforces permission checks, timeouts, and the parallel-read / serial-write
 // execution model that mirrors the TypeScript engine.
 type ToolExecutor struct {
-	pool          *tool.ToolPool
-	permChecker   permission.Checker
-	logger        *zap.Logger
-	timeout       time.Duration
-	approvalFn    PermissionApprovalFunc // nil = deny on Ask (legacy behavior)
-	artifactStore tool.ArtifactStore     // optional; injected into tool context when non-nil
+	pool        *tool.ToolPool
+	permChecker permission.Checker
+	logger      *zap.Logger
+	timeout     time.Duration
+	approvalFn  PermissionApprovalFunc // nil = deny on Ask (legacy behavior)
+
+	// artifactStore is the *artifact.Store the artifact tools read/write
+	// from. Stored as `any` so this layer doesn't import the artifact
+	// package — keeping the engine→artifact dependency one-way clean.
+	artifactStore any
+	// artifactProducer is the identity stamp every artifact written from
+	// this executor inherits. Set by the engine when constructing the
+	// executor for a given session/agent.
+	artifactProducer tool.ArtifactProducer
+	// taskContract carries the deliverable expectations + temporal
+	// boundary the SubmitTaskResult tool reads back during M4 validation.
+	// Empty contract = no enforcement; the loop terminates on plain
+	// end_turn as before.
+	taskContract tool.TaskContract
 }
 
 // NewToolExecutor creates a tool executor.
@@ -48,11 +61,25 @@ func NewToolExecutor(
 	}
 }
 
-// SetArtifactStore sets the artifact store that will be injected into tool
-// execution contexts. Tools like ArtifactGet and Write (with artifact_ref)
-// use this to access stored artifacts.
-func (te *ToolExecutor) SetArtifactStore(store tool.ArtifactStore) {
+// SetArtifactStore wires the artifact store the executor injects into
+// each tool's context. Pass an *artifact.Store; the executor stores it
+// untyped to avoid the import cycle.
+func (te *ToolExecutor) SetArtifactStore(store any) {
 	te.artifactStore = store
+}
+
+// SetArtifactProducer fixes the producer identity stamp the executor
+// attaches to every artifact written by tools running through it.
+func (te *ToolExecutor) SetArtifactProducer(p tool.ArtifactProducer) {
+	te.artifactProducer = p
+}
+
+// SetTaskContract installs the deliverable contract reachable from tool
+// execution context. SubmitTaskResult uses it to validate every claimed
+// artifact_id against the parent's expectations. Pass a zero-value
+// TaskContract on legacy / unrestricted dispatches.
+func (te *ToolExecutor) SetTaskContract(c tool.TaskContract) {
+	te.taskContract = c
 }
 
 // ExecuteBatch runs a batch of tool calls. Read-only and concurrency-safe tools
@@ -144,14 +171,77 @@ func (te *ToolExecutor) executeSingle(
 		ToolInput: tc.Input,
 	}
 
+	// Track wall-clock duration so the tool_end log carries it. This is
+	// the load-bearing observability hook — without it the server logs
+	// only show LLM lifecycle, never which tool ran in which sub-agent
+	// and how long each took. Duration goes on the structured log only;
+	// the wire event already carries timestamps via the envelope.
+	startedAt := time.Now()
+
 	defer func() {
+		dur := time.Since(startedAt)
+
 		// Emit tool_end event.
-		out <- types.EngineEvent{
+		evt := types.EngineEvent{
 			Type:       types.EngineEventToolEnd,
 			ToolUseID:  tc.ID,
 			ToolName:   tc.Name,
 			ToolResult: &result,
 		}
+		// Doc §10: surface produced artifacts on the wire as Refs, not
+		// content. Two metadata shapes are accepted:
+		//   1. metadata["artifacts"] = []ArtifactRef — used by Task /
+		//      Specialists tools that aggregate refs from sub-agent
+		//      submissions. Lift the list directly.
+		//   2. render_hint=artifact + scalar fields — used by per-call
+		//      ArtifactWrite. Build a single Ref via the helper.
+		// First-shape wins so dispatch tools' aggregated lists aren't
+		// downgraded to a single-Ref view.
+		if list, ok := result.Metadata["artifacts"].([]types.ArtifactRef); ok && len(list) > 0 {
+			evt.Artifacts = list
+		} else if ref, ok := artifactRefFromMetadata(result.Metadata); ok {
+			evt.Artifacts = []types.ArtifactRef{ref}
+		}
+		out <- evt
+
+		// Server-log line per tool execution. Logged at INFO so operators
+		// can watch L2/L3 lifecycle in production without flipping to
+		// debug. Includes:
+		//   - agent_id: which sub-agent layer ran this — lets you skim the
+		//     log and see "L2 calls Task → L3 calls WebSearch → L3 calls
+		//     ArtifactWrite → L2 calls ArtifactRead" without correlation.
+		//   - artifact_id: when the tool produced one, so the §10 chain
+		//     (write → emit → store → read) is traceable from the log alone.
+		fields := []zap.Field{
+			zap.String("tool", tc.Name),
+			zap.String("tool_use_id", tc.ID),
+			zap.String("agent_id", te.artifactProducer.AgentID),
+			zap.Duration("duration", dur),
+			zap.Bool("is_error", result.IsError),
+		}
+		if len(evt.Artifacts) > 0 {
+			fields = append(fields,
+				zap.String("artifact_id", evt.Artifacts[0].ArtifactID),
+				zap.String("artifact_name", evt.Artifacts[0].Name),
+			)
+		}
+		// On error, surface the result content (truncated) so operators
+		// can debug from the log without re-running with --debug. Without
+		// this, "tool executed is_error=true" is a dead-end log line —
+		// you have to grep upstream events or attach a debugger to find
+		// out why a tool failed. The truncation keeps long stack traces /
+		// validation lists from blowing the log line size.
+		if result.IsError {
+			snippet := result.Content
+			if len(snippet) > 500 {
+				snippet = snippet[:500] + "...[truncated]"
+			}
+			fields = append(fields,
+				zap.String("error_content", snippet),
+				zap.String("tool_input", truncateForLog(tc.Input, 300)),
+			)
+		}
+		te.logger.Info("tool executed", fields...)
 	}()
 
 	// Panic recovery — a tool must never crash the engine.
@@ -298,11 +388,17 @@ func (te *ToolExecutor) executeSingle(
 	// emit events (e.g., Agent tool for subagent.start/end) can access it.
 	execCtx = tool.WithEventOut(execCtx, out)
 
-	// Inject the artifact store so tools (ArtifactGet, Write with artifact_ref)
-	// can access stored artifacts.
+	// Inject the artifact store + producer stamp so ArtifactRead /
+	// ArtifactWrite can run without each tool needing its own wiring.
 	if te.artifactStore != nil {
-		execCtx = tool.WithArtifactStore(execCtx, te.artifactStore)
+		execCtx = tool.WithArtifactStoreValue(execCtx, te.artifactStore)
 	}
+	execCtx = tool.WithArtifactProducer(execCtx, te.artifactProducer)
+	// Task contract reaches SubmitTaskResult so M3/M4 validation can
+	// match each claimed artifact against the parent's contract. Always
+	// attach — when the contract is zero-value the validating tool
+	// degrades to existence-only checks.
+	execCtx = tool.WithTaskContract(execCtx, te.taskContract)
 
 	tr, err := t.Execute(execCtx, rawInput)
 	if err != nil {
@@ -340,6 +436,79 @@ func permKeyLabel(permKey, toolName string) string {
 		return prefix + " " + suffix
 	}
 	return toolName
+}
+
+// artifactRefFromMetadata builds a wire-shape ArtifactRef from a tool's
+// result metadata. Returns false when the metadata does not describe an
+// artifact (i.e. render_hint is missing or set to anything other than
+// "artifact") — keeping the test there means tools that don't deal with
+// artifacts cost zero allocation in the common path.
+//
+// Field names must stay in lock-step with the artifact write tool's
+// metadata shape (internal/tool/artifacttool/write.go). The tool's
+// comment block points back here.
+func artifactRefFromMetadata(meta map[string]any) (types.ArtifactRef, bool) {
+	if meta == nil {
+		return types.ArtifactRef{}, false
+	}
+	hint, _ := meta["render_hint"].(string)
+	if hint != "artifact" {
+		return types.ArtifactRef{}, false
+	}
+	id, _ := meta["artifact_id"].(string)
+	if id == "" {
+		// render_hint says artifact but no ID — refuse to emit a partial
+		// Ref. This protects clients from receiving entries they can't
+		// dereference (which would look like data corruption from the UI).
+		return types.ArtifactRef{}, false
+	}
+	ref := types.ArtifactRef{ArtifactID: id}
+	if v, ok := meta["name"].(string); ok {
+		ref.Name = v
+	}
+	if v, ok := meta["type"].(string); ok {
+		ref.Type = v
+	}
+	if v, ok := meta["mime_type"].(string); ok {
+		ref.MIMEType = v
+	}
+	if v, ok := meta["description"].(string); ok {
+		ref.Description = v
+	}
+	if v, ok := meta["preview_text"].(string); ok {
+		ref.PreviewText = v
+	}
+	if v, ok := meta["uri"].(string); ok {
+		ref.URI = v
+	}
+	// Size may arrive as int or float64 depending on JSON round-trip path.
+	switch v := meta["size"].(type) {
+	case int:
+		ref.SizeBytes = v
+	case int64:
+		ref.SizeBytes = int(v)
+	case float64:
+		ref.SizeBytes = int(v)
+	}
+	return ref, true
+}
+
+// truncateForLog clips s to at most n bytes (rune-safe) for log output.
+// Avoids dumping entire 50KB tool inputs into a log line when the error
+// snippet just needs the first ~few hundred chars to reveal the cause.
+func truncateForLog(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	// Drop trailing partial rune if we sliced mid-codepoint.
+	cut := n
+	for cut > 0 && (s[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	if cut == 0 {
+		return ""
+	}
+	return s[:cut] + "...[truncated]"
 }
 
 // stripIntent extracts and removes the `intent` field from a JSON tool

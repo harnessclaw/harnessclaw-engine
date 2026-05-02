@@ -42,4 +42,17 @@ type SpawnResult struct {
 
 	// NumTurns is the number of query loop iterations completed.
 	NumTurns int
+
+	// SubmittedArtifacts is the list of refs the L3 declared via the
+	// SubmitTaskResult tool. Populated on tasks that had ExpectedOutputs;
+	// nil otherwise. The parent (L2) reads this to integrate without
+	// re-scanning the per-tool stream — it's the canonical "deliverables"
+	// set, distinct from the looser "everything this agent wrote" view.
+	SubmittedArtifacts []types.ArtifactRef
+
+	// ContractFailures records per-validation-failure reasons when the
+	// L3 hit the retry cap without a passing SubmitTaskResult. Empty on
+	// success. Used by the parent to decide whether to retry, downgrade,
+	// or escalate.
+	ContractFailures []string
 }

@@ -142,14 +142,10 @@ func TestFormat_IncludesTwoStageHint(t *testing.T) {
 	}
 }
 
-func TestFormat_StaysUnderArtifactThreshold(t *testing.T) {
+func TestFormat_StaysCompact(t *testing.T) {
 	// 5 typical-sized results × 250-char summary should comfortably fit
-	// under the 4 KB artifact threshold so the LLM sees ALL summaries
-	// without truncation. If this test fails after a future change, the
-	// summary-first design has regressed and the LLM will start seeing
-	// "[truncated, full content persisted as artifact ...]" instead of
-	// the actual results.
-	const artifactThreshold = 4096
+	// under 4 KB so the LLM sees ALL summaries without strain on context.
+	const compactBudget = 4096
 	results := make([]searchResult, 5)
 	for i := range results {
 		results[i] = searchResult{
@@ -159,9 +155,7 @@ func TestFormat_StaysUnderArtifactThreshold(t *testing.T) {
 		}
 	}
 	out := formatResultsForLLM("typical query", results)
-	if len(out) >= artifactThreshold {
-		t.Errorf("formatted output is %d bytes, exceeds %d artifact threshold — "+
-			"the LLM will see a truncated preview instead of full result list",
-			len(out), artifactThreshold)
+	if len(out) >= compactBudget {
+		t.Errorf("formatted output is %d bytes, exceeds %d budget", len(out), compactBudget)
 	}
 }

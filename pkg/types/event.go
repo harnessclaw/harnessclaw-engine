@@ -152,6 +152,16 @@ type EngineEvent struct {
 	// Deliverable file produced by a sub-agent (for deliverable type)
 	Deliverable   *Deliverable       `json:"deliverable,omitempty"`
 
+	// Artifacts is the list of cross-agent artifacts surfaced by this event.
+	// Doc §10: events carry references (lightweight metadata + ID), never
+	// the artifact content itself. Populated on:
+	//   - tool_end: a single ref when ArtifactWrite ran in this call.
+	//   - subagent_end: aggregated refs of every artifact this sub-agent
+	//     produced during its run, so the UI can render a single card listing
+	//     all outputs.
+	// Empty / omitted on every other event type.
+	Artifacts []ArtifactRef `json:"artifacts,omitempty"`
+
 	// --- Emit envelope/display/metrics (optional). Filled by the engine
 	// at emit time so observers can route, render, and bill without
 	// parsing per-type payloads. See internal/emit for the contract. ---
@@ -274,6 +284,12 @@ type SubAgentEventData struct {
 	StopReason   string `json:"stop_reason,omitempty"`
 	Usage        *Usage `json:"usage,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
+
+	// Artifacts surfaces the artifact produced by this tool call (when
+	// the wrapped event was a tool_end carrying ArtifactRef on the wire).
+	// Forwarded so the parent layer (and its UI) can render produced
+	// artifacts per-tool, mirroring what subagent_end shows aggregated.
+	Artifacts []ArtifactRef `json:"artifacts,omitempty"`
 }
 
 // AgentMessageEvent carries inter-agent message summary.

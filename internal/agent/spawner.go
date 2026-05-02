@@ -88,6 +88,34 @@ type SpawnConfig struct {
 	// When set, SpawnSync emits subagent.start/end events on this channel
 	// so they reach the WebSocket client.
 	ParentOut chan<- types.EngineEvent
+
+	// ExpectedOutputs declares what artifacts the sub-agent must deliver.
+	// When non-empty:
+	//   - the framework injects an `<expected-outputs>` block into the
+	//     L3 task prompt so the LLM sees its contract
+	//   - SubmitTaskResult schema is restricted: artifacts.minItems is
+	//     set to count(required), and each submitted artifact must
+	//     declare a role drawn from this list
+	//   - the loop refuses to terminate until SubmitTaskResult passes
+	//     server-side validation (doc §3 mechanisms M3/M4)
+	// Empty means "no contract" — the L3 may end_turn without submitting,
+	// preserving backward compatibility for simple tasks.
+	ExpectedOutputs []types.ExpectedOutput
+
+	// TaskID is the orchestrator-assigned identifier for this work unit.
+	// Stamped into producer.task_id on every artifact this sub-agent
+	// writes, and used by SubmitTaskResult validation to confirm the
+	// submitted artifacts originated in THIS task (preventing failure
+	// mode #8 — submitting a foreign artifact's id). Empty when the
+	// dispatcher didn't assign one (legacy path).
+	TaskID string
+
+	// TaskStartedAt is the timestamp the orchestrator considers this task
+	// to have begun. SubmitTaskResult rejects artifacts whose CreatedAt
+	// is before this — guarding against the "claim a pre-existing
+	// artifact as my output" form of failure #8.
+	// Zero means "no temporal check" (legacy path).
+	TaskStartedAt time.Time
 }
 
 // Message is a minimal message type for fork-mode context passing.

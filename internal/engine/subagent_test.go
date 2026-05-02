@@ -3,13 +3,16 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/artifact"
 	"harnessclaw-go/internal/command"
+	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/texts"
 	"harnessclaw-go/internal/engine/session"
@@ -18,6 +21,8 @@ import (
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/storage/memory"
 	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tool/artifacttool"
+	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -26,6 +31,11 @@ import (
 type subagentMockProvider struct {
 	responses []subagentMockResponse
 	callIdx   int
+	recorded  []recordedReq
+	// responseFn, when set, overrides `responses` — gives the test
+	// just-in-time control over each response (e.g. constructing turn-N
+	// tool inputs from store state created by turn-(N-1)).
+	responseFn func(callIdx int) subagentMockResponse
 }
 
 type subagentMockResponse struct {
@@ -38,7 +48,49 @@ type subagentMockResponse struct {
 
 func (m *subagentMockProvider) Name() string { return "mock-subagent" }
 
-func (m *subagentMockProvider) Chat(_ context.Context, _ *provider.ChatRequest) (*provider.ChatStream, error) {
+// recordedReqs captures every Chat() request the engine made — opt-in via
+// the new SpawnSync_PreambleInjection test, harmless to existing callers.
+type recordedReq struct {
+	System   string
+	Messages []types.Message
+}
+
+func (m *subagentMockProvider) lastUserText() string {
+	if len(m.recorded) == 0 {
+		return ""
+	}
+	last := m.recorded[len(m.recorded)-1]
+	for _, msg := range last.Messages {
+		if msg.Role != types.RoleUser {
+			continue
+		}
+		for _, cb := range msg.Content {
+			if cb.Type == types.ContentTypeText {
+				return cb.Text
+			}
+		}
+	}
+	return ""
+}
+
+func (m *subagentMockProvider) Chat(_ context.Context, req *provider.ChatRequest) (*provider.ChatStream, error) {
+	if req != nil {
+		m.recorded = append(m.recorded, recordedReq{
+			System:   req.System,
+			Messages: append([]types.Message(nil), req.Messages...),
+		})
+	}
+	// JIT response path: tests that need to inspect store/loop state
+	// before deciding what the LLM "says" use this. The function is
+	// called once per Chat with the current call index.
+	if m.responseFn != nil {
+		resp := m.responseFn(m.callIdx)
+		m.callIdx++
+		if resp.err != nil {
+			return nil, resp.err
+		}
+		return newSubagentMockStream(resp.text, resp.toolCalls, resp.stopReason, resp.usage), nil
+	}
 	if m.callIdx >= len(m.responses) {
 		stream := newSubagentMockStream("", nil, "end_turn", &types.Usage{InputTokens: 10, OutputTokens: 5})
 		return stream, nil
@@ -353,6 +405,591 @@ func TestSpawnSync_Timeout(t *testing.T) {
 	}
 	t.Logf("terminal reason: %s (timeout test)", result.Terminal.Reason)
 }
+
+// TestBuildSubAgentSystemPrompt_SpecialistsKeepsStaticRole guards against the
+// regression where the L2 Specialists role section silently turned into a
+// generic "你叫Specialists，是 emma 团队的搭档" worker identity, dropping the
+// "L2 调度统筹者" methodology, the no-recursion guard, and the
+// "you cannot ask the user" rule.
+//
+// Cause: BuildWorkerIdentity used to fire whenever DisplayName was set. That
+// produced a SystemPromptOverride which the prompt builder treats as
+// strictly-higher-priority than profile.SectionOverrides["role"]. The fix
+// gates BuildWorkerIdentity on IsTeamMember=true.
+func TestBuildSubAgentSystemPrompt_SpecialistsKeepsStaticRole(t *testing.T) {
+	prov := &subagentMockProvider{}
+	eng := newSubagentTestEngine(prov)
+	eng.config.MainAgentDisplayName = "emma"
+
+	reg := agent.NewAgentDefinitionRegistry()
+	reg.RegisterBuiltins() // pulls in the real "specialists" + team-member defs
+	eng.SetDefRegistry(reg)
+
+	sess := &session.Session{ID: "sess_test"}
+	got := eng.buildSubAgentSystemPrompt(
+		context.Background(),
+		sess,
+		nil, // no prior messages
+		prompt.SpecialistsProfile,
+		"specialists",
+		nil,
+		nil,
+	)
+
+	// Must contain the methodology that lives only in SpecialistsRole.
+	for _, want := range []string{
+		"纯粹的调度统筹者",
+		"不能向用户追问",
+		"不能递归调用",
+	} {
+		if !contains(got, want) {
+			t.Errorf("Specialists prompt missing %q — SpecialistsRole was dropped\nfull prompt:\n%s", want, got)
+		}
+	}
+
+	// Must NOT contain the BuildWorkerIdentity stub (the symptom string).
+	// BuildWorkerIdentity emits "你叫Specialists" with no space; the legitimate
+	// SpecialistsRole has "你叫 Specialists" WITH a space — that's the literal
+	// signature distinguishing the two paths.
+	if contains(got, "你叫Specialists，") {
+		t.Errorf("Specialists prompt contains the BuildWorkerIdentity stub — fix regressed\n%s", got)
+	}
+}
+
+// TestBuildSubAgentSystemPrompt_GeneralPurposeDoesNotLeakEmma is a regression
+// guard for the leak found 2026-05-02:
+//
+// general-purpose has IsTeamMember=false and uses WorkerProfile, which has
+// no SectionOverrides["role"]. Before the fix, the IsTeamMember gate
+// caused workerIdentity="" → role section fell back to IdentitySection
+// → the L3 received emma's L1 persona prompt verbatim ("你是 emma...").
+//
+// Fix: also fire BuildWorkerIdentity when the profile has no role
+// override, so the role slot always carries the sub-agent's own
+// identity rather than the leader's.
+func TestBuildSubAgentSystemPrompt_GeneralPurposeDoesNotLeakEmma(t *testing.T) {
+	prov := &subagentMockProvider{}
+	eng := newSubagentTestEngine(prov)
+	eng.config.MainAgentDisplayName = "emma"
+
+	reg := agent.NewAgentDefinitionRegistry()
+	reg.RegisterBuiltins()
+	eng.SetDefRegistry(reg)
+
+	sess := &session.Session{ID: "sess_test"}
+	got := eng.buildSubAgentSystemPrompt(
+		context.Background(),
+		sess,
+		nil,
+		prompt.WorkerProfile,
+		"general-purpose",
+		nil,
+		nil,
+	)
+
+	// The general-purpose agent's role identity should mention "通用执行者"
+	// (its DisplayName), not emma's full persona. Either of these two
+	// signatures would prove emma's identity leaked through.
+	for _, leak := range []string{
+		"我是 emma",       // a phrase from texts.EmmaIdentity
+		"你叫 emma",
+	} {
+		if strings.Contains(got, leak) {
+			t.Errorf("general-purpose prompt leaked emma identity (%q)\nfull prompt:\n%s", leak, got)
+		}
+	}
+	// And it should carry SOMETHING that identifies it as the sub-agent.
+	if !strings.Contains(got, "通用执行者") && !strings.Contains(got, "general-purpose") {
+		t.Errorf("general-purpose prompt missing its own identity; got:\n%s", got)
+	}
+}
+
+// TestBuildSubAgentSystemPrompt_TeamMemberKeepsPersonalIdentity verifies the
+// other half of the gate: team members (IsTeamMember=true) still get a
+// personalized "你叫XX..." identity on top of their shared profile.
+func TestBuildSubAgentSystemPrompt_TeamMemberKeepsPersonalIdentity(t *testing.T) {
+	prov := &subagentMockProvider{}
+	eng := newSubagentTestEngine(prov)
+	eng.config.MainAgentDisplayName = "emma"
+
+	reg := agent.NewAgentDefinitionRegistry()
+	reg.RegisterBuiltins()
+	eng.SetDefRegistry(reg)
+
+	sess := &session.Session{ID: "sess_test"}
+	got := eng.buildSubAgentSystemPrompt(
+		context.Background(),
+		sess,
+		nil,
+		prompt.WorkerProfile,
+		"writer", // IsTeamMember=true, DisplayName="小林"
+		nil,
+		nil,
+	)
+
+	if !contains(got, "你叫小林") {
+		t.Errorf("team-member prompt should carry personalized identity; got:\n%s", got)
+	}
+}
+
+// TestSpawnSync_InjectsArtifactPreamble proves the doc §6.A loop end-to-end:
+// when the parent stored an artifact in the trace, SpawnSync prepends a
+// concise <available-artifacts> block to the L3's task message so L3 can
+// decide what to ArtifactRead. Without this, L3 has no way to discover
+// inputs short of L2 pasting them into the prompt — exactly the failure
+// mode the artifact design replaces.
+func TestSpawnSync_InjectsArtifactPreamble(t *testing.T) {
+	prov := &subagentMockProvider{
+		responses: []subagentMockResponse{
+			{text: "ok", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
+		},
+	}
+	eng := newSubagentTestEngine(prov)
+
+	store := artifact.NewMemoryStore(artifact.DefaultConfig())
+	eng.SetArtifactStore(store)
+
+	const traceID = "tr_preamble_test"
+
+	// Seed: a "parent" artifact, scoped to the trace we'll spawn under.
+	if _, err := store.Save(context.Background(), &artifact.SaveInput{
+		Type:        artifact.TypeFile,
+		Name:        "input.md",
+		Description: "parent's findings",
+		Content:     "trace-scoped sample content for preamble check",
+		Producer:    artifact.Producer{AgentID: "agent_parent"},
+		TraceID:     traceID,
+	}); err != nil {
+		t.Fatalf("seed artifact: %v", err)
+	}
+
+	// Carry trace_id on ctx the same way the real query loop does.
+	ctx := emit.WithTrace(context.Background(), &emit.TraceContext{
+		TraceID:   traceID,
+		Sequencer: emit.NewSequencer(),
+	})
+
+	if _, err := eng.SpawnSync(ctx, &agent.SpawnConfig{
+		Prompt:          "整理 input.md 关键点",
+		AgentType:       tool.AgentTypeSync,
+		ParentSessionID: "parent_x",
+	}); err != nil {
+		t.Fatalf("SpawnSync: %v", err)
+	}
+
+	got := prov.lastUserText()
+	mustContain := []string{
+		"<available-artifacts>",
+		"art_",                 // some ID was rendered
+		"input.md",             // name surfaced for read decision
+		"parent's findings",    // description surfaced
+		"<task>",               // task wrapper present so L3 can split context
+		"整理 input.md 关键点",      // original task body preserved verbatim
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(got, want) {
+			t.Errorf("L3 user message missing %q\nfull text:\n%s", want, got)
+		}
+	}
+
+	// Order check: preamble must come BEFORE task — otherwise the LLM
+	// reads the question first and may answer before noticing it had inputs.
+	if pAt, tAt := strings.Index(got, "<available-artifacts>"), strings.Index(got, "<task>"); pAt > tAt {
+		t.Errorf("preamble must precede <task>; got preamble@%d task@%d", pAt, tAt)
+	}
+}
+
+// TestSpawnSync_NoPreambleWhenStoreEmpty guards the no-op path — when the
+// trace has zero artifacts, the L3 task message must come through verbatim.
+// Adding an empty <available-artifacts/> would teach the LLM that artifacts
+// exist when they don't, leading it to call ArtifactRead with hallucinated IDs.
+func TestSpawnSync_NoPreambleWhenStoreEmpty(t *testing.T) {
+	prov := &subagentMockProvider{
+		responses: []subagentMockResponse{
+			{text: "ok", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
+		},
+	}
+	eng := newSubagentTestEngine(prov)
+	eng.SetArtifactStore(artifact.NewMemoryStore(artifact.DefaultConfig()))
+
+	ctx := emit.WithTrace(context.Background(), &emit.TraceContext{
+		TraceID:   "tr_empty",
+		Sequencer: emit.NewSequencer(),
+	})
+
+	if _, err := eng.SpawnSync(ctx, &agent.SpawnConfig{
+		Prompt:          "写一句问候",
+		AgentType:       tool.AgentTypeSync,
+		ParentSessionID: "parent_empty",
+	}); err != nil {
+		t.Fatalf("SpawnSync: %v", err)
+	}
+
+	got := prov.lastUserText()
+	if strings.Contains(got, "<available-artifacts>") {
+		t.Errorf("empty store must produce no preamble; got:\n%s", got)
+	}
+	if strings.TrimSpace(got) != "写一句问候" {
+		t.Errorf("task body should pass through verbatim; got %q", got)
+	}
+}
+
+// TestSpawnSync_SurfacesArtifactsOnSubAgentEnd proves doc §10 end-to-end:
+//
+//	(1) A sub-agent calls ArtifactWrite mid-run.
+//	(2) The executor stamps an ArtifactRef on the tool_end event.
+//	(3) SpawnSync forwards a per-tool subagent_event carrying the Ref AND
+//	    aggregates it onto the closing subagent_end.
+//
+// Without these wires the front-end can't render produced artifacts
+// without parsing tool result JSON — which is exactly the coupling §10
+// is designed to remove.
+func TestSpawnSync_SurfacesArtifactsOnSubAgentEnd(t *testing.T) {
+	// Two-turn script: turn 1 calls ArtifactWrite, turn 2 ends.
+	prov := &subagentMockProvider{
+		responses: []subagentMockResponse{
+			{
+				toolCalls: []types.ToolCall{
+					{
+						ID:   "tu_write_1",
+						Name: artifacttool.WriteToolName,
+						Input: `{
+							"intent":"persist findings",
+							"type":"file",
+							"name":"q4-report.md",
+							"description":"Q4 metrics summary",
+							"mime_type":"text/markdown",
+							"content":"# Q4\nrevenue up 20%"
+						}`,
+					},
+				},
+				stopReason: "tool_use",
+				usage:      &types.Usage{InputTokens: 10, OutputTokens: 5},
+			},
+			{text: "<summary>done</summary>", stopReason: "end_turn", usage: &types.Usage{InputTokens: 5, OutputTokens: 5}},
+		},
+	}
+	eng := newSubagentTestEngine(prov, artifacttool.NewWriteTool())
+
+	store := artifact.NewMemoryStore(artifact.DefaultConfig())
+	eng.SetArtifactStore(store)
+
+	// ParentOut: capture every event the sub-agent forwards so we can
+	// verify both the per-tool subagent_event and the aggregated
+	// subagent_end paths.
+	parentOut := make(chan types.EngineEvent, 64)
+
+	ctx := emit.WithTrace(context.Background(), &emit.TraceContext{
+		TraceID:   "tr_artifacts_e2e",
+		Sequencer: emit.NewSequencer(),
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := eng.SpawnSync(ctx, &agent.SpawnConfig{
+			Prompt:          "store the report",
+			AgentType:       tool.AgentTypeSync,
+			ParentSessionID: "p_artifacts",
+			ParentOut:       parentOut,
+		})
+		close(parentOut)
+		done <- err
+	}()
+
+	var (
+		sawPerToolRef    bool
+		subAgentEndRefs  []types.ArtifactRef
+	)
+	for evt := range parentOut {
+		switch evt.Type {
+		case types.EngineEventSubAgentEvent:
+			if evt.SubAgentEvent != nil &&
+				evt.SubAgentEvent.EventType == "tool_end" &&
+				evt.SubAgentEvent.ToolName == artifacttool.WriteToolName {
+				if len(evt.SubAgentEvent.Artifacts) == 1 &&
+					evt.SubAgentEvent.Artifacts[0].ArtifactID != "" {
+					sawPerToolRef = true
+				}
+			}
+		case types.EngineEventSubAgentEnd:
+			subAgentEndRefs = evt.Artifacts
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("SpawnSync: %v", err)
+	}
+
+	if !sawPerToolRef {
+		t.Errorf("no tool_end forwarded with ArtifactRef — UI would miss real-time artifact cards")
+	}
+
+	if len(subAgentEndRefs) != 1 {
+		t.Fatalf("subagent_end Artifacts: want 1, got %d (%+v)", len(subAgentEndRefs), subAgentEndRefs)
+	}
+	got := subAgentEndRefs[0]
+	if got.ArtifactID == "" {
+		t.Error("aggregated Ref has empty ArtifactID")
+	}
+	if got.Name != "q4-report.md" {
+		t.Errorf("aggregated Ref.Name = %q, want q4-report.md", got.Name)
+	}
+	if got.Description != "Q4 metrics summary" {
+		t.Errorf("aggregated Ref.Description = %q", got.Description)
+	}
+	if got.Type != "file" {
+		t.Errorf("aggregated Ref.Type = %q, want file", got.Type)
+	}
+	if got.URI == "" {
+		t.Error("aggregated Ref.URI should be populated so the UI can build a fetch link")
+	}
+	if got.SizeBytes <= 0 {
+		t.Error("aggregated Ref.SizeBytes should reflect content length")
+	}
+
+	// Sanity: the artifact actually landed in the store under the right ID.
+	if _, err := store.Get(ctx, got.ArtifactID); err != nil {
+		t.Errorf("store.Get(%s) failed — Ref ID does not match a real artifact: %v", got.ArtifactID, err)
+	}
+}
+
+// TestSpecialistsAllowedTools_IncludesArtifactTools is a regression guard:
+// the Specialists L2 AgentDefinition uses an explicit AllowedTools whitelist
+// that bypasses every other filter. Adding a tool to the registry doesn't
+// help if it isn't named here. The two artifact tools are listed
+// explicitly so L2 can persist its integrated output and read back what
+// L3 produced — without them the doc §6.A loop dead-ends on integration.
+func TestSpecialistsAllowedTools_IncludesArtifactTools(t *testing.T) {
+	reg := agent.NewAgentDefinitionRegistry()
+	reg.RegisterBuiltins()
+	def := reg.Get("specialists")
+	if def == nil {
+		t.Fatal("specialists definition missing")
+	}
+	allowed := make(map[string]bool, len(def.AllowedTools))
+	for _, name := range def.AllowedTools {
+		allowed[name] = true
+	}
+	for _, want := range []string{"ArtifactWrite", "ArtifactRead"} {
+		if !allowed[want] {
+			t.Errorf("Specialists AllowedTools missing %q — L2 will be unable to use artifact tools", want)
+		}
+	}
+}
+
+// TestSpawnSync_ContractGated_HappyPath drives an L3 through the full
+// Milestone A flow with a mock provider that does the right thing:
+//
+//	turn 1: ArtifactWrite — produces the deliverable artifact
+//	turn 2: SubmitTaskResult — submits the ID with matching role
+//	turn 3: end_turn       — loop terminates because submission passed
+//
+// Asserts: SpawnResult.SubmittedArtifacts is populated with the validated
+// ref, no contract failures, status="completed".
+func TestSpawnSync_ContractGated_HappyPath(t *testing.T) {
+	store := artifact.NewMemoryStore(artifact.DefaultConfig())
+
+	contract := []types.ExpectedOutput{
+		{Role: "findings_report", Type: "file", MinSizeBytes: 50, Required: true},
+	}
+
+	// JIT provider: each Chat() reads live store state to decide what to
+	// "say". This avoids the race where turn 2 needs a real artifact_id
+	// produced by turn 1.
+	//
+	// Turn 0: model calls ArtifactWrite — produces an art_id.
+	// Turn 1: model calls SubmitTaskResult, citing the art_id from turn 0.
+	// Turn 2: end_turn (loop terminates because submission was accepted).
+	prov := &subagentMockProvider{}
+	prov.responseFn = func(callIdx int) subagentMockResponse {
+		switch callIdx {
+		case 0:
+			return subagentMockResponse{
+				toolCalls: []types.ToolCall{{
+					ID:    "tu_write",
+					Name:  artifacttool.WriteToolName,
+					Input: writeInputJSON("findings_report", strings.Repeat("F", 100)),
+				}},
+				stopReason: "tool_use",
+				usage:      &types.Usage{InputTokens: 1, OutputTokens: 1},
+			}
+		case 1:
+			arts, _ := store.List(context.Background(), &artifact.ListFilter{})
+			if len(arts) == 0 {
+				t.Fatal("turn 1: expected at least one artifact in store from turn 0")
+			}
+			return subagentMockResponse{
+				toolCalls: []types.ToolCall{{
+					ID:    "tu_submit",
+					Name:  submittool.ToolName,
+					Input: submitInputJSON(arts[0].ID, "findings_report", "filed"),
+				}},
+				stopReason: "tool_use",
+				usage:      &types.Usage{InputTokens: 1, OutputTokens: 1},
+			}
+		default:
+			return subagentMockResponse{
+				text:       "<summary>findings filed</summary>",
+				stopReason: "end_turn",
+				usage:      &types.Usage{InputTokens: 1, OutputTokens: 1},
+			}
+		}
+	}
+
+	eng := newSubagentTestEngine(prov, artifacttool.NewWriteTool(), submittool.New())
+	eng.SetArtifactStore(store)
+
+	ctx := emit.WithTrace(context.Background(), &emit.TraceContext{
+		TraceID:   "tr_happy",
+		Sequencer: emit.NewSequencer(),
+	})
+
+	res, err := eng.SpawnSync(ctx, &agent.SpawnConfig{
+		Prompt:          "produce findings",
+		AgentType:       tool.AgentTypeSync,
+		ParentSessionID: "p_happy",
+		ExpectedOutputs: contract,
+		TaskID:          "task_happy_path",
+		TaskStartedAt:   time.Now().Add(-1 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("SpawnSync: %v", err)
+	}
+	if res.Status != "completed" {
+		t.Errorf("status = %q, want completed (loop should terminate after passing submit)", res.Status)
+	}
+	if len(res.SubmittedArtifacts) != 1 {
+		t.Fatalf("SubmittedArtifacts: want 1, got %d", len(res.SubmittedArtifacts))
+	}
+	got := res.SubmittedArtifacts[0]
+	if got.Role != "findings_report" {
+		t.Errorf("Ref.Role = %q, want findings_report", got.Role)
+	}
+	if got.SizeBytes < 50 {
+		t.Errorf("Ref.SizeBytes = %d, want >= 50", got.SizeBytes)
+	}
+	if len(res.ContractFailures) != 0 {
+		t.Errorf("expected no contract failures, got %d: %v", len(res.ContractFailures), res.ContractFailures)
+	}
+
+	// res.Output is what the dispatching tool surfaces to emma's LLM as
+	// tool_result.Content. The bug we're guarding here: emma must see
+	// the artifact_id + role + name in this string, otherwise she has no
+	// way to reference produced artifacts in her reply (she'd have to
+	// either fabricate IDs or re-paste content).
+	for _, want := range []string{
+		"产出 artifact",                  // section header
+		"[findings_report]",             // role tag
+		got.ArtifactID,                  // the actual ID emma needs to quote
+		"file",                          // type
+	} {
+		if !strings.Contains(res.Output, want) {
+			t.Errorf("res.Output missing %q (emma cannot reference artifacts without it)\nfull Output:\n%s", want, res.Output)
+		}
+	}
+}
+
+// TestSpawnSync_ContractGated_NudgesThenFails covers the M2 (force tool
+// call closure) path: an L3 that keeps trying to end_turn without ever
+// calling SubmitTaskResult must be nudged up to maxSubmitNudges times,
+// then the loop bails with a contract failure on the result.
+func TestSpawnSync_ContractGated_NudgesThenFails(t *testing.T) {
+	// The mock provider always returns end_turn with no tool calls.
+	// Each turn the loop should nudge once; after the cap it should
+	// terminate. Provide enough scripted responses to cover all nudges.
+	prov := &subagentMockProvider{
+		responses: []subagentMockResponse{
+			{text: "I'm done.", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
+			{text: "I'm done.", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
+			{text: "I'm done.", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
+			{text: "Last try.", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
+		},
+	}
+	eng := newSubagentTestEngine(prov, artifacttool.NewWriteTool(), submittool.New())
+	eng.SetArtifactStore(artifact.NewMemoryStore(artifact.DefaultConfig()))
+
+	res, err := eng.SpawnSync(context.Background(), &agent.SpawnConfig{
+		Prompt:          "produce findings",
+		AgentType:       tool.AgentTypeSync,
+		ParentSessionID: "p_nudge",
+		ExpectedOutputs: []types.ExpectedOutput{
+			{Role: "findings_report", Required: true},
+		},
+		TaskID:        "task_nudge",
+		TaskStartedAt: time.Now().Add(-1 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("SpawnSync: %v", err)
+	}
+	// Loop should NOT report success — the L3 never satisfied the contract.
+	if res.Status == "completed" {
+		t.Errorf("expected non-completed status, got %q", res.Status)
+	}
+	if len(res.ContractFailures) == 0 {
+		t.Errorf("expected ContractFailures populated; got none")
+	}
+	// At least one failure should describe the nudge cap.
+	joined := strings.Join(res.ContractFailures, " | ")
+	if !strings.Contains(joined, "nudges") && !strings.Contains(joined, "SubmitTaskResult") {
+		t.Errorf("contract failures should explain the nudge cap; got %q", joined)
+	}
+}
+
+// TestSpawnSync_NoContract_LegacyPathStillWorks verifies the
+// backward-compatibility lane: dispatches WITHOUT ExpectedOutputs go
+// through unchanged — end_turn terminates immediately, no submission
+// required, no contract failures.
+func TestSpawnSync_NoContract_LegacyPathStillWorks(t *testing.T) {
+	prov := &subagentMockProvider{
+		responses: []subagentMockResponse{
+			{text: "<summary>done</summary>", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
+		},
+	}
+	eng := newSubagentTestEngine(prov)
+	eng.SetArtifactStore(artifact.NewMemoryStore(artifact.DefaultConfig()))
+
+	res, err := eng.SpawnSync(context.Background(), &agent.SpawnConfig{
+		Prompt:          "say hi",
+		AgentType:       tool.AgentTypeSync,
+		ParentSessionID: "p_legacy",
+		// No ExpectedOutputs / no TaskID — legacy path
+	})
+	if err != nil {
+		t.Fatalf("SpawnSync: %v", err)
+	}
+	if res.Status != "completed" {
+		t.Errorf("legacy path: status = %q, want completed", res.Status)
+	}
+	if len(res.SubmittedArtifacts) != 0 {
+		t.Error("legacy path should not populate SubmittedArtifacts")
+	}
+}
+
+// writeInputJSON produces a minimal ArtifactWrite input for tests.
+func writeInputJSON(role, content string) string {
+	body, _ := json.Marshal(map[string]any{
+		"intent":      "writing for test",
+		"type":        "file",
+		"name":        role,
+		"description": role,
+		"content":     content,
+	})
+	return string(body)
+}
+
+// submitInputJSON produces a SubmitTaskResult input pointing at a single ID.
+func submitInputJSON(artifactID, role, summary string) string {
+	body, _ := json.Marshal(map[string]any{
+		"intent":  "submit results",
+		"summary": summary,
+		"artifacts": []map[string]any{
+			{"artifact_id": artifactID, "role": role},
+		},
+	})
+	return string(body)
+}
+
+// silence unused-import warning in case texts ever stops being referenced
+var _ = texts.SpecialistsRole
 
 // Verify that the compile-time interface check passes.
 var _ agent.AgentSpawner = (*QueryEngine)(nil)
