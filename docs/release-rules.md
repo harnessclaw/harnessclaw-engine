@@ -19,6 +19,7 @@
 
 - 标题使用祈使句，简短明确，不加句号
 - 一个 commit 只做一类主变更，不混杂多类无关修改
+- commit内容不要过长，参考示例内容
 - 用户可见功能变更优先使用 `feat` / `fix`
 - 发版准备 commit 统一使用 `chore(release): prepare x.y.z`
 - **禁止在 commit message 中添加 `Co-Authored-By` 字段（包括但不限于 AI 生成的署名）**

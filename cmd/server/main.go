@@ -31,6 +31,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/api"
+	"harnessclaw-go/internal/artifact"
 	"harnessclaw-go/internal/channel"
 	wsch "harnessclaw-go/internal/channel/websocket"
 	"harnessclaw-go/internal/command"
@@ -49,9 +50,11 @@ import (
 	"harnessclaw-go/internal/task"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/agenttool"
+	"harnessclaw-go/internal/tool/artifacttool"
 	"harnessclaw-go/internal/tool/askuserquestion"
 	orchestratetool "harnessclaw-go/internal/tool/orchestrate"
 	"harnessclaw-go/internal/tool/specialists"
+	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/internal/tool/bash"
 	"harnessclaw-go/internal/tool/fileedit"
 	"harnessclaw-go/internal/tool/fileread"
@@ -64,7 +67,6 @@ import (
 	"harnessclaw-go/internal/tool/webfetch"
 	"harnessclaw-go/internal/tool/websearch"
 	"harnessclaw-go/internal/tool/tavilysearch"
-	"harnessclaw-go/internal/tool/artifacttool"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -134,12 +136,18 @@ func main() {
 		{cfg.Tools.WebFetch.Enabled, func() tool.Tool { return webfetch.New(cfg.Tools.WebFetch, logger) }},
 		{cfg.Tools.WebSearch.Enabled, func() tool.Tool { return websearch.New(cfg.Tools.WebSearch, logger) }},
 		{cfg.Tools.TavilySearch.Enabled, func() tool.Tool { return tavilysearch.New(cfg.Tools.TavilySearch, logger) }},
-		// ArtifactGet is always enabled — it allows the LLM to retrieve
-		// full content from the artifact store for large tool results.
-		{true, func() tool.Tool { return artifacttool.NewGetTool() }},
 		// AskUserQuestion is L1's clarification mechanism. Always enabled
 		// (no config — it's a passthrough to the WebSocket client).
 		{true, func() tool.Tool { return askuserquestion.New(logger) }},
+		// ArtifactWrite / ArtifactRead are the cross-agent shared-data
+		// channel (doc §5). Always on — agents are expected to use them
+		// instead of pasting large outputs back into the prompt.
+		{true, func() tool.Tool { return artifacttool.NewWriteTool() }},
+		{true, func() tool.Tool { return artifacttool.NewReadTool() }},
+		// SubmitTaskResult is the L3 task-completion declaration
+		// (doc §3 M3+M4). Always on; only fires when the dispatcher
+		// supplied an ExpectedOutputs contract.
+		{true, func() tool.Tool { return submittool.New() }},
 	}
 	for _, bt := range builtInTools {
 		if bt.enabled {
@@ -224,6 +232,26 @@ func main() {
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	defer cleanupCancel()
 	go runIdleCleanup(cleanupCtx, sessionMgr, logger)
+
+	// --- Step 7.5: Open artifact store + start TTL janitor ---
+	// The store is the cross-agent shared-data channel (doc §3). Backed
+	// by a dedicated SQLite file so the session DB and the artifact DB
+	// can be tuned and rotated independently.
+	artifactDBPath := defaultDBPath("artifacts.db")
+	artifactStore, err := artifact.NewSQLiteStore(artifactDBPath, artifact.DefaultConfig())
+	if err != nil {
+		logger.Fatal("failed to initialize artifact store",
+			zap.String("path", artifactDBPath),
+			zap.Error(err),
+		)
+	}
+	defer artifactStore.Close()
+	logger.Info("artifact store initialized", zap.String("path", artifactDBPath))
+
+	janitor := artifact.NewJanitor(artifactStore, 0 /*default 10m*/, logger)
+	janitorCtx, janitorCancel := context.WithCancel(context.Background())
+	defer janitorCancel()
+	go janitor.Run(janitorCtx)
 
 	// --- Step 8: Create query engine ---
 	compactor := compact.NewLLMCompactor(llmProvider, logger)
@@ -384,6 +412,7 @@ func main() {
 	eng.SetAgentRegistry(agentReg)
 	eng.SetMessageBroker(broker)
 	eng.SetDefRegistry(agentDefReg)
+	eng.SetArtifactStore(artifactStore)
 
 	// Register task tools (scoped to a default scope for now).
 	defaultScope := "default"
