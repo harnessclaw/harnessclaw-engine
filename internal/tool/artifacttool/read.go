@@ -36,7 +36,8 @@ func NewReadTool() *ReadTool {
 
 func (*ReadTool) Name() string             { return ReadToolName }
 func (*ReadTool) Description() string      { return readDescription }
-func (*ReadTool) IsReadOnly() bool         { return true }
+func (*ReadTool) IsReadOnly() bool                  { return true }
+func (*ReadTool) SafetyLevel() tool.SafetyLevel { return tool.SafetySafe }
 func (*ReadTool) IsEnabled() bool          { return true }
 func (*ReadTool) IsConcurrencySafe() bool  { return true }
 
@@ -47,12 +48,12 @@ func (*ReadTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"artifact_id": map[string]any{
 				"type":        "string",
-				"description": "The ID returned by ArtifactWrite (format art_<hex>).",
+				"description": "ArtifactWrite 返回的 ID，格式 art_<hex>。",
 			},
 			"mode": map[string]any{
 				"type":        "string",
 				"enum":        []string{"metadata", "preview", "full"},
-				"description": "How much to return. 'metadata' = name/description/preview only. 'preview' = same as metadata (kept separate to mirror the doc; the actual preview is included in either). 'full' = entire content. Default: preview.",
+				"description": "返回多少内容。'metadata' = 仅 name/description/preview；'preview' = 同 metadata（默认；preview 字段在两者中都包含）；'full' = 完整 content。",
 			},
 		},
 		"required": []string{"artifact_id"},
@@ -61,13 +62,19 @@ func (*ReadTool) InputSchema() map[string]any {
 
 // ValidateInput rejects calls the store would reject anyway. ID format
 // check filters out obvious hallucinations (doc §12).
+//
+// Hallucination diagnosis: when the format mismatch matches a UUID pattern
+// (4 hex groups separated by dashes, total 32 hex + 4 dashes), we tell the
+// LLM directly that it fabricated this — generic "invalid format" errors
+// don't break the loop because the LLM thinks it just typo'd. The
+// hallucination case warrants a STOP-AND-ESCALATE instruction, not a retry.
 func (*ReadTool) ValidateInput(raw json.RawMessage) error {
 	var in readInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return fmt.Errorf("invalid input: %w", err)
 	}
 	if !artifact.IsValidID(in.ArtifactID) {
-		return fmt.Errorf("artifact_id has invalid format: %q (expected art_<24 hex chars>)", in.ArtifactID)
+		return fmt.Errorf("%s", buildInvalidIDMessage(in.ArtifactID))
 	}
 	if in.Mode == "" {
 		return nil
@@ -76,6 +83,66 @@ func (*ReadTool) ValidateInput(raw json.RawMessage) error {
 		return fmt.Errorf("mode must be metadata|preview|full, got %q", in.Mode)
 	}
 	return nil
+}
+
+// buildInvalidIDMessage crafts a context-aware rejection. The default
+// case names the format; the UUID case calls out fabrication directly so
+// the LLM doesn't just retry with another fake.
+func buildInvalidIDMessage(id string) string {
+	if looksLikeUUID(id) {
+		return fmt.Sprintf(
+			"artifact_id %q is a UUID — that is NOT how this system issues IDs. "+
+				"Real IDs are exactly art_<24 hex chars>, no dashes. "+
+				"You FABRICATED this id; do NOT retry with another guess. "+
+				"Either copy the exact id from a recent ArtifactWrite tool result, "+
+				"or call EscalateToPlanner to report the missing artifact reference.",
+			id)
+	}
+	return fmt.Sprintf(
+		"artifact_id %q has invalid format (expected art_<24 hex chars>). "+
+			"IDs must be copied verbatim from an ArtifactWrite return value — "+
+			"do not guess. If you don't have a real id, call EscalateToPlanner instead.",
+		id)
+}
+
+// looksLikeUUID returns true for the canonical UUID hex pattern in either
+// form: 8-4-4-4-12 with dashes (36 chars) or the same 32 hex compacted
+// without dashes. Both are common LLM hallucination shapes — the model
+// reaches for "what an ID looks like" from training data and our 24-hex
+// shorter form isn't represented there.
+func looksLikeUUID(id string) bool {
+	s := id
+	if len(s) > 4 && s[:4] == "art_" {
+		s = s[4:]
+	}
+	switch len(s) {
+	case 36: // dashed form
+		for i, c := range s {
+			isDashPos := i == 8 || i == 13 || i == 18 || i == 23
+			if isDashPos {
+				if c != '-' {
+					return false
+				}
+				continue
+			}
+			if !isHex(c) {
+				return false
+			}
+		}
+		return true
+	case 32: // compact form (no dashes)
+		for _, c := range s {
+			if !isHex(c) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func isHex(c rune) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
 }
 
 // Execute looks up the artifact and returns the requested detail level.
@@ -139,11 +206,17 @@ func (*ReadTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolR
 	}, nil
 }
 
-const readDescription = `Fetch a stored artifact by ID.
+const readDescription = `按 ID 取一份存好的 artifact。
 
-Modes (use the lightest one that answers your question):
-- metadata: name + description + preview + size. Use this to decide IF you need the artifact.
-- preview:  same as metadata (the preview field is already populated). Default.
-- full:     entire content. Only request this when you need the bytes — e.g. you must summarise/transform the content yourself.
+⚠️ 调用前红线 ⚠️
+- artifact_id **只能复制**：来自 ArtifactWrite 的返回值，或上游消息里明确给出的 ID。
+- **不允许猜、不允许编、不允许用 UUID 习惯（带 "-" 的）拼**。
+- 真实 ID = ` + "`art_`" + ` + 正好 24 个 16 进制字符（如 ` + "`art_2a7f0e8b4c9d11ef0a36e613`" + `）。
+- 不确定 ID 时，**不要调本工具**——sub-agent 用 EscalateToPlanner 上报，L2 在 summary 里说明缺失。
 
-Calling this on an unknown or expired artifact returns an error; treat it as recoverable (re-plan or ask).`
+三种 mode（用能解决你问题的最轻一档）：
+- metadata：name + description + preview + size。用来判断"我到底需不需要这份 artifact"。
+- preview：同 metadata（preview 字段在两者中都有）。**默认值**。
+- full：完整 content。只在确实需要按字节处理时才用——比如要自己做汇总/转换。
+
+读不存在或已过期的 artifact 会返回错误；把它当成可恢复错误处理（重规划或追问）。`
