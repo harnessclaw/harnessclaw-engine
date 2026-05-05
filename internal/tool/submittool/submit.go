@@ -60,6 +60,10 @@ const MaxSummaryChars = 200
 type submission struct {
 	Artifacts []submittedArtifact `json:"artifacts"`
 	Summary   string              `json:"summary"`
+	// Result is the structured payload validated against the agent's
+	// OutputSchema (when set). Optional for legacy / no-schema agents;
+	// required when TaskContract.OutputSchema is non-empty.
+	Result map[string]any `json:"result,omitempty"`
 }
 
 // submittedArtifact is one entry in the deliverable list.
@@ -78,7 +82,8 @@ func New() *Tool { return &Tool{} }
 
 func (*Tool) Name() string             { return ToolName }
 func (*Tool) Description() string      { return description }
-func (*Tool) IsReadOnly() bool         { return false }
+func (*Tool) IsReadOnly() bool                  { return false }
+func (*Tool) SafetyLevel() tool.SafetyLevel { return tool.SafetyCaution }
 func (*Tool) IsEnabled() bool          { return true }
 func (*Tool) IsConcurrencySafe() bool  { return false } // terminal action; serial
 
@@ -97,18 +102,18 @@ func (*Tool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"artifacts": map[string]any{
 				"type":        "array",
-				"description": "List of {artifact_id, role} pairs for every deliverable produced by this task. Each artifact_id must come from a prior ArtifactWrite call within THIS task — never fabricated, never reused from another task.",
+				"description": "{artifact_id, role} 列表，每个产出对应一项。artifact_id 必须是本任务内由 ArtifactWrite 返回的——不能编造，也不能复用其他任务的 ID。",
 				"minItems":    1,
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"artifact_id": map[string]any{
 							"type":        "string",
-							"description": "ID returned by ArtifactWrite (format art_<24 hex>).",
+							"description": "ArtifactWrite 返回的 ID，格式 art_<24 位十六进制>。",
 						},
 						"role": map[string]any{
 							"type":        "string",
-							"description": "Role drawn from <expected-outputs>; how this deliverable maps to the parent's contract.",
+							"description": "对应 <expected-outputs> 中的 role 名；表明此产出在父任务契约里扮演的角色。",
 						},
 					},
 					"required": []string{"artifact_id", "role"},
@@ -116,8 +121,12 @@ func (*Tool) InputSchema() map[string]any {
 			},
 			"summary": map[string]any{
 				"type":        "string",
-				"description": fmt.Sprintf("Process notes + ID list, ≤ %d characters. NO data content — that lives in the artifacts. Example: 'Q4 调研完成，发现 5 条核心结论 (art_xxx); 月度对比表 (art_yyy)。'", MaxSummaryChars),
+				"description": fmt.Sprintf("过程要点 + ID 引用，≤%d 字。绝不写正文内容——数据已在 artifact 里。示例：'Q4 调研完成，5 条核心结论 (art_xxx)；月度对比表 (art_yyy)。'", MaxSummaryChars),
 				"maxLength":   MaxSummaryChars,
+			},
+			"result": map[string]any{
+				"type":        "object",
+				"description": "结构化产出，必须满足 <sub-agent-contract> 块中声明的 output_schema。声明了 output_schema 的 sub-agent 必填；老式 agent 可省。字段名、enum 取值、最小值都会服务端校验，被拒会指出哪个字段不合格。",
 			},
 		},
 		"required": []string{"artifacts", "summary"},
@@ -206,19 +215,33 @@ func (*Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResul
 		failures = append(failures, msg)
 	}
 
+	// 3. Validate the structured `result` payload against the agent's
+	//    declared OutputSchema (P0-1). When the contract has a schema and
+	//    the LLM omitted `result` or got it wrong, the failure list lands
+	//    here with field-level reasons the next turn can act on.
+	if len(contract.OutputSchema) > 0 {
+		if schemaFails := validateAgainstSchema(contract.OutputSchema, s.Result); len(schemaFails) > 0 {
+			for _, f := range schemaFails {
+				failures = append(failures, "result."+f)
+			}
+		}
+	}
+
 	if len(failures) > 0 {
 		return rejected(formatFailures(failures))
 	}
 
-	// 3. Success path — emit a structured payload + a clear status string.
+	// Success path — emit a structured payload + a clear status string.
 	body, _ := json.Marshal(struct {
 		Status    string              `json:"status"`
 		Summary   string              `json:"summary"`
 		Artifacts []types.ArtifactRef `json:"artifacts"`
+		Result    map[string]any      `json:"result,omitempty"`
 	}{
 		Status:    "accepted",
 		Summary:   s.Summary,
 		Artifacts: validated,
+		Result:    s.Result,
 	})
 	return &types.ToolResult{
 		Content: string(body),
@@ -376,22 +399,28 @@ func utf8Len(s string) int {
 	return n
 }
 
-const description = `Declare task completion by submitting the produced artifacts.
+const description = `通过提交已产出的 artifact 声明任务完成。
 
-WHEN to call this tool:
-- The task was dispatched WITH an <expected-outputs> contract in your prompt — call this exactly once after writing every required artifact.
-- The task had no contract — do not call this tool; just emit your <summary> and stop.
+何时调用本工具：
+- 你是 sub-agent（prompt 中含 <sub-agent-contract> 块）——必须调用本工具 或 EscalateToPlanner 之一才能终止。仅 end_turn 会被拒绝，框架会最多催促 3 次后判任务失败。
+- 你不是 sub-agent 但任务带 <expected-outputs> 块——写完每个必交 artifact 后，必须调用一次。
+- 你不是 sub-agent 且没有 <expected-outputs> 块——请勿调用本工具，直接输出 <summary> 后结束即可。
 
-INPUT:
-- artifacts: list of {artifact_id, role} for each deliverable. The artifact_id MUST come from a prior ArtifactWrite call IN THIS task (the framework verifies this). The role MUST match an entry in the <expected-outputs> block.
-- summary: ≤ 200 chars. Process notes + ID references. NEVER paste artifact content here — the data already lives in artifacts.
+若 <sub-agent-contract> 与 <expected-outputs> 同时存在，必须双重满足：<expected-outputs> 中所有 required=true 的 role 都得出现在 artifacts 列表里。
 
-VALIDATION:
-The framework checks each artifact_id server-side:
-  - exists in the store
-  - was produced during THIS task (producer.task_id matches)
-  - was created AFTER the task started (no time travel)
-  - has non-zero content (no placeholders)
-  - matches the contract's type / mime_type / min_size_bytes / role
+输入字段：
+- artifacts：{artifact_id, role} 列表，每个产出对应一项。artifact_id 必须是本任务内由 ArtifactWrite 调用返回的（框架会做服务端校验）。role 在有 <expected-outputs> 时必须匹配其中条目；没有时则用一个描述性名称（如 "draft_email"、"summary_report"）。
+- summary：≤200 字。过程要点 + ID 引用。绝不能在这里粘贴 artifact 正文——数据已在 artifact 里。
+- result：当 <sub-agent-contract> 中声明了 output_schema 时必填。结构化字段必须满足该 schema（必填字段、enum 取值、最小值都会服务端校验）。
 
-If any check fails, the tool returns an error explaining what to fix. Re-write the offending artifact and call SubmitTaskResult again. After 3 rejections in a row, the loop terminates with task.failed.`
+服务端校验：
+框架对每个 artifact_id 做如下检查：
+  - 在 store 中存在
+  - 由本次任务产生（producer.task_id 匹配）
+  - 创建时间晚于任务开始时间（防"穿越"）
+  - content 非空（不接受占位符）
+  - 当存在 <expected-outputs> 契约时，匹配其声明的 type / mime_type / min_size_bytes / role
+
+任一项失败时，本工具会返回带具体原因的错误。重写有问题的 artifact 后再次调用 SubmitTaskResult。连续 3 次被拒，任务判失败。
+
+如果任务在当前作用域内确实无法完成（缺关键输入、约束冲突、能力差距），请改调 EscalateToPlanner——那是"我做不到"的合法出口，不算失败。`
