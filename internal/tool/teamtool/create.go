@@ -30,7 +30,7 @@ func NewCreate(teamMgr *agent.TeamManager, broker *agent.MessageBroker, logger *
 }
 
 func (t *CreateTool) Name() string            { return "TeamCreate" }
-func (t *CreateTool) Description() string      { return "Create a new team to coordinate multiple agents" }
+func (t *CreateTool) Description() string      { return "新建一个 team，用来协调多个 agent。" }
 func (t *CreateTool) IsReadOnly() bool         { return false }
 func (t *CreateTool) IsConcurrencySafe() bool  { return true }
 
@@ -38,8 +38,8 @@ func (t *CreateTool) InputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"team_name":   map[string]any{"type": "string", "description": "Name for the new team"},
-			"description": map[string]any{"type": "string", "description": "Team description/purpose"},
+			"team_name":   map[string]any{"type": "string", "description": "新 team 的名字。"},
+			"description": map[string]any{"type": "string", "description": "team 的简介或用途。"},
 		},
 		"required": []string{"team_name"},
 	}

@@ -59,7 +59,8 @@ func New(cfg config.WebSearchConfig, logger *zap.Logger) *WebSearchTool {
 
 func (t *WebSearchTool) Name() string            { return toolName }
 func (t *WebSearchTool) Description() string     { return webSearchDescription }
-func (t *WebSearchTool) IsReadOnly() bool         { return true }
+func (t *WebSearchTool) IsReadOnly() bool                  { return true }
+func (t *WebSearchTool) SafetyLevel() tool.SafetyLevel { return tool.SafetySafe }
 func (t *WebSearchTool) IsConcurrencySafe() bool  { return true }
 
 func (t *WebSearchTool) IsEnabled() bool {
@@ -72,7 +73,7 @@ func (t *WebSearchTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"query": map[string]any{
 				"type":        "string",
-				"description": "The search query",
+				"description": "搜索 query。",
 				"minLength":   2,
 			},
 		},
@@ -388,21 +389,21 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-const webSearchDescription = `Searches the web and returns title + URL + a SHORT SUMMARY for each result.
+const webSearchDescription = `网页搜索：每个结果返回标题 + URL + 简短摘要。
 
-This is a two-stage retrieval pattern:
-- Stage 1 (this tool): get titles + URLs + short summaries of relevant pages
-- Stage 2 (WebFetch): if a summary alone is not enough to answer, call WebFetch on the URL to get the full page content
+这是两段式检索模式：
+- 第 1 段（本工具）：拿到候选页面的标题 / URL / 简短摘要。
+- 第 2 段（WebFetch）：摘要不够回答时，对挑中的 URL 调 WebFetch 拿全文。
 
-Usage:
-- Provide a search query to find relevant web pages
-- Returns up to N results, each with: Title, URL, and a short Summary (typically 100-300 chars)
-- Skim the summaries first — for many factual / "what / who / when" questions the summaries already answer the user
-- For questions that need detail (full article body, code samples, exact wording), pick the most promising URL and call WebFetch on it
-- Avoid WebFetching every URL — only fetch when the summary is genuinely insufficient
+使用规范：
+- 传入一个搜索 query 找相关网页。
+- 最多返回 N 条结果，每条含 Title / URL / 简短 Summary（通常 100~300 字）。
+- 先快速扫摘要——对"是什么 / 谁 / 何时"这类事实型问题，摘要往往已经够答。
+- 需要细节（正文全文、代码片段、原句）时，挑最相关的 URL 调 WebFetch。
+- 不要对每个 URL 都 WebFetch——只在摘要确实不够时才取全文。
 
-Why summaries first:
-- The full page text of 5 results can run to 15+ KB, which forces context truncation
-- Summaries keep the picture wide (you see all results) and let you pay the full-text cost only on the URLs that matter
+为什么先看摘要：
+- 5 条结果的正文加起来 15KB 起步，会强制截断上下文。
+- 摘要让视野更宽（看到全部结果），只对值得的 URL 付全文成本。
 
-Use this tool BEFORE WebFetch when you need to find information online. Do not guess URLs — search first.`
+需要联网查信息时，先调本工具，再视情况 WebFetch。不要猜 URL——先搜索。`

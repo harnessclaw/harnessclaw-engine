@@ -28,7 +28,7 @@ func NewDelete(teamMgr *agent.TeamManager, logger *zap.Logger) *DeleteTool {
 }
 
 func (t *DeleteTool) Name() string            { return "TeamDelete" }
-func (t *DeleteTool) Description() string      { return "Remove a team and its task resources" }
+func (t *DeleteTool) Description() string      { return "删除一个 team 及其任务资源。" }
 func (t *DeleteTool) IsReadOnly() bool         { return false }
 func (t *DeleteTool) IsConcurrencySafe() bool  { return true }
 
@@ -36,7 +36,7 @@ func (t *DeleteTool) InputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"team_name": map[string]any{"type": "string", "description": "Name of the team to delete"},
+			"team_name": map[string]any{"type": "string", "description": "要删除的 team 名字。"},
 		},
 		"required": []string{"team_name"},
 	}

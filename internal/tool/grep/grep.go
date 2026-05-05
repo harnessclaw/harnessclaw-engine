@@ -47,7 +47,8 @@ func New(cfg config.ToolConfig) *GrepTool {
 
 func (t *GrepTool) Name() string                   { return toolName }
 func (t *GrepTool) Description() string            { return grepDescription }
-func (t *GrepTool) IsReadOnly() bool               { return true }
+func (t *GrepTool) IsReadOnly() bool                  { return true }
+func (t *GrepTool) SafetyLevel() tool.SafetyLevel { return tool.SafetySafe }
 func (t *GrepTool) IsConcurrencySafe() bool        { return true }
 func (t *GrepTool) IsEnabled() bool                { return t.cfg.Enabled }
 
@@ -57,36 +58,36 @@ func (t *GrepTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"pattern": map[string]any{
 				"type":        "string",
-				"description": "The regular expression pattern to search for in file contents",
+				"description": "要在文件内容中搜索的正则表达式。",
 			},
 			"path": map[string]any{
 				"type":        "string",
-				"description": "File or directory to search in. Defaults to current working directory.",
+				"description": "搜索的文件或目录。默认为当前工作目录。",
 			},
 			"glob": map[string]any{
 				"type":        "string",
-				"description": "Glob pattern to filter files (e.g. \"*.js\", \"*.{ts,tsx}\")",
+				"description": "用 glob 过滤文件（例如 \"*.js\"、\"*.{ts,tsx}\"）。",
 			},
 			"type": map[string]any{
 				"type":        "string",
-				"description": "File type to search (rg --type). Common types: js, py, go, java, etc.",
+				"description": "按文件类型过滤（rg --type）。常用：js、py、go、java 等。",
 			},
 			"output_mode": map[string]any{
 				"type":        "string",
-				"description": "Output mode: content, files_with_matches (default), count",
+				"description": "输出模式：content / files_with_matches（默认）/ count。",
 				"enum":        []string{"content", "files_with_matches", "count"},
 			},
 			"context": map[string]any{
 				"type":        "number",
-				"description": "Context lines around matches (rg -C)",
+				"description": "匹配行的上下文行数（rg -C）。",
 			},
 			"multiline": map[string]any{
 				"type":        "boolean",
-				"description": "Enable multiline matching (rg -U)",
+				"description": "启用跨行匹配（rg -U）。",
 			},
 			"head_limit": map[string]any{
 				"type":        "number",
-				"description": "Limit output to first N entries",
+				"description": "只返回前 N 条结果。",
 			},
 		},
 		"required": []string{"pattern"},
@@ -240,10 +241,10 @@ func buildRgArgs(gi *grepInput) []string {
 	return args
 }
 
-const grepDescription = `A powerful search tool built on ripgrep.
+const grepDescription = `基于 ripgrep 的高性能搜索工具。
 
-Usage:
-- Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+")
-- Filter files with glob parameter (e.g., "*.js", "**/*.tsx") or type parameter (e.g., "js", "py")
-- Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), "count" shows match counts
-- Use multiline: true for patterns spanning multiple lines`
+使用规范：
+- 支持完整正则（例如 "log.*Error"、"function\\s+\\w+"）。
+- 用 glob 参数（例 "*.js" / "**/*.tsx"）或 type 参数（例 "js" / "py"）过滤文件。
+- 输出模式：'content' 显示匹配行；'files_with_matches' 仅显示路径（默认）；'count' 显示匹配条数。
+- 跨行匹配请设 multiline: true。`

@@ -67,7 +67,8 @@ func New(cfg config.ToolConfig) *BashTool {
 
 func (b *BashTool) Name() string        { return toolName }
 func (b *BashTool) Description() string  { return getDescription() }
-func (b *BashTool) IsReadOnly() bool     { return false }
+func (b *BashTool) IsReadOnly() bool             { return false }
+func (b *BashTool) SafetyLevel() tool.SafetyLevel { return tool.SafetyDangerous }
 func (b *BashTool) IsEnabled() bool      { return b.cfg.Enabled }
 
 // InputSchema returns the JSON Schema describing accepted parameters.
@@ -77,19 +78,19 @@ func (b *BashTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"command": map[string]any{
 				"type":        "string",
-				"description": "The bash command to execute",
+				"description": "要执行的 bash 命令。",
 			},
 			"timeout": map[string]any{
 				"type":        "number",
-				"description": "Optional timeout in milliseconds (max 600000)",
+				"description": "可选超时时间（毫秒，最长 600000）。",
 			},
 			"description": map[string]any{
 				"type":        "string",
-				"description": "Clear, concise description of what this command does",
+				"description": "用一句话清楚说明这条命令在做什么。",
 			},
 			"run_in_background": map[string]any{
 				"type":        "boolean",
-				"description": "Set to true to run this command in the background",
+				"description": "为 true 时在后台运行该命令。",
 			},
 		},
 		"required": []string{"command"},

@@ -60,7 +60,8 @@ func NewWriteTool() *WriteTool {
 
 func (*WriteTool) Name() string             { return WriteToolName }
 func (*WriteTool) Description() string      { return writeDescription }
-func (*WriteTool) IsReadOnly() bool         { return false }
+func (*WriteTool) IsReadOnly() bool                  { return false }
+func (*WriteTool) SafetyLevel() tool.SafetyLevel { return tool.SafetyCaution }
 func (*WriteTool) IsEnabled() bool          { return true }
 func (*WriteTool) IsConcurrencySafe() bool  { return true } // appends to an immutable store
 
@@ -74,45 +75,45 @@ func (*WriteTool) InputSchema() map[string]any {
 			"type": map[string]any{
 				"type":        "string",
 				"enum":        []string{"structured", "file", "blob"},
-				"description": "What kind of artifact this is. structured=JSON-shaped data with a schema; file=text content (markdown/csv/source); blob=binary (only persist; never read full into LLM).",
+				"description": "artifact 类型。structured=带 schema 的 JSON 数据；file=文本内容（markdown/csv/源码）；blob=二进制（只保存，不允许 LLM 全量读取）。",
 			},
 			"name": map[string]any{
 				"type":        "string",
-				"description": "Short human-readable name (e.g., 'sales-2024.md'). Shown in UI cards and listings.",
+				"description": "可读的短文件名（例如 'sales-2024.md'）。用户界面卡片和列表里展示。",
 			},
 			"description": map[string]any{
 				"type":        "string",
-				"description": "One-line description of what this artifact is — helps downstream agents decide whether to read it.",
+				"description": "一行话讲清这是什么——帮下游 agent 决定要不要读。",
 			},
 			"mime_type": map[string]any{
 				"type":        "string",
-				"description": "MIME type (e.g., 'text/markdown', 'application/json', 'text/csv').",
+				"description": "MIME 类型（如 'text/markdown' / 'application/json' / 'text/csv'）。",
 			},
 			"content": map[string]any{
 				"type":        "string",
-				"description": "The artifact payload, inline. For binary data, base64-encode and set encoding='base64'.",
+				"description": "artifact 的实际内容（内联）。二进制内容请 base64 编码并设 encoding='base64'。",
 			},
 			"schema": map[string]any{
 				"type":        "object",
-				"description": "Optional JSON schema describing structured payloads (e.g., table column types). Pass through downstream consumers so they can parse correctly.",
+				"description": "可选 JSON schema，用于描述 structured 数据的形态（如表格列类型）。下游消费者用它正确解析。",
 			},
 			"tags": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "Free-form tags for later listing/search.",
+				"description": "自由格式标签，便于后续列表/检索。",
 			},
 			"parent_artifact_id": map[string]any{
 				"type":        "string",
-				"description": "When supplied, this write becomes a NEW VERSION of the named artifact. The store bumps the version number; the original is preserved.",
+				"description": "传入时，本次写入会变成那个 artifact 的新版本。store 自动升版本号，原版保留。",
 			},
 			"ttl_seconds": map[string]any{
 				"type":        "integer",
-				"description": "Lifetime override. Default 3600 (1h). Use a longer TTL only when the artifact must outlive the current trace.",
+				"description": "存活时间覆盖，默认 3600（1 小时）。只有需要跨当前 trace 长期保留时才设更长。",
 			},
 			"scope": map[string]any{
 				"type":        "string",
 				"enum":        []string{"trace", "session", "user"},
-				"description": "Visibility. 'trace' (default, safest) means only this user request can read it. 'session' allows future turns. 'user' requires explicit user pinning intent.",
+				"description": "可见范围。'trace'（默认，最安全）：只有本次用户请求能读。'session'：后续轮次可读。'user'：需要用户明确「留存」意图。",
 			},
 		},
 		"required": []string{"type", "content"},
@@ -247,15 +248,15 @@ func (*WriteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.Tool
 	}, nil
 }
 
-const writeDescription = `Persist data as an artifact and return an ID that other agents can reference.
+const writeDescription = `把数据持久化为 artifact，返回一个 ID 供其他 agent 引用。
 
-Use this when:
-- A tool produced output that another agent needs (don't paste it back into the prompt — store and pass the ID).
-- You generated a report/table/file the user wants to keep accessible.
-- A piece of data is large enough that re-pasting wastes tokens.
+何时使用：
+- 工具产出需要被另一个 agent 消费的数据（不要把内容粘回 prompt——存进来传 ID）。
+- 你生成了报告/表格/文件，用户想保留下来访问。
+- 数据足够大，反复粘贴会浪费 token。
 
-DO NOT use this for:
-- One-shot intermediate data only your own next turn will consume — keep that in your prompt directly.
-- Tiny constants (a single number, a yes/no answer).
+不要用于：
+- 只有你自己下一轮会消费的临时中间值——直接写在 prompt 里。
+- 极小的常量（一个数字、一个是/否答案）。
 
-The store assigns the artifact_id; never invent one. Always include a clear 'description' so downstream agents can decide whether to fetch.`
+artifact_id 由 store 分配，绝对不要自己编。每次都要写清楚 description，让下游 agent 能判断要不要 read。`

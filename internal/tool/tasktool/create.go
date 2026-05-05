@@ -21,7 +21,7 @@ func NewCreate(store task.Store, scopeID string) *CreateTool {
 }
 
 func (t *CreateTool) Name() string             { return "TaskCreate" }
-func (t *CreateTool) Description() string       { return "Create a new task in the task list" }
+func (t *CreateTool) Description() string       { return "向任务列表中添加一个新任务。" }
 func (t *CreateTool) IsReadOnly() bool          { return false }
 func (t *CreateTool) IsConcurrencySafe() bool   { return true }
 
@@ -29,9 +29,9 @@ func (t *CreateTool) InputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"subject":     map[string]any{"type": "string", "description": "Brief task title"},
-			"description": map[string]any{"type": "string", "description": "Detailed description"},
-			"activeForm":  map[string]any{"type": "string", "description": "Present continuous form for spinner"},
+			"subject":     map[string]any{"type": "string", "description": "简短的任务标题。"},
+			"description": map[string]any{"type": "string", "description": "详细描述。"},
+			"activeForm":  map[string]any{"type": "string", "description": "进度条用的进行时短语（例如 \"正在分析...\"）。"},
 		},
 		"required": []string{"subject", "description"},
 	}

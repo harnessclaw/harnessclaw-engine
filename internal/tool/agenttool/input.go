@@ -57,67 +57,67 @@ var inputSchema = map[string]any{
 	"properties": map[string]any{
 		"prompt": map[string]any{
 			"type":        "string",
-			"description": "The task instruction for the sub-agent to execute.",
+			"description": "派给 sub-agent 的任务指令。",
 		},
 		"subagent_type": map[string]any{
 			"type":        "string",
-			"description": "The type of sub-agent to spawn. Controls tool access and prompt profile.",
+			"description": "要 spawn 的 sub-agent 类型。决定工具集和 prompt profile。",
 			"enum":        []string{"general-purpose", "Explore", "Plan"},
 		},
 		"description": map[string]any{
 			"type":        "string",
-			"description": "A short (3-5 word) description of what the sub-agent will do.",
+			"description": "3-5 词的简短任务描述。",
 		},
 		"name": map[string]any{
 			"type":        "string",
-			"description": "Optional name for the sub-agent, used for identification in logs.",
+			"description": "可选 sub-agent 名字，用于日志中标识。",
 		},
 		"model": map[string]any{
 			"type":        "string",
-			"description": "Optional model override for this sub-agent. Empty inherits from parent.",
+			"description": "可选 model 覆盖。为空时继承父 agent 的 model。",
 		},
 		"fork": map[string]any{
 			"type":        "boolean",
-			"description": "When true, the sub-agent inherits the parent's conversation context.",
+			"description": "为 true 时 sub-agent 继承父 agent 的对话上下文。",
 		},
 		"run_in_background": map[string]any{
 			"type":        "boolean",
-			"description": "When true, the agent runs asynchronously and returns an agent ID immediately.",
+			"description": "为 true 时异步运行，立刻返回 agent ID。",
 		},
 		"expected_outputs": map[string]any{
 			"type":        "array",
-			"description": "Optional deliverable contract. Each entry declares one artifact the sub-agent MUST produce and submit via SubmitTaskResult. Use when the sub-agent's task has structured outputs (reports, tables, data files); omit for ad-hoc tasks. The framework enforces type/size/role match server-side, blocking 'I claim done but didn't actually produce X' failures.",
+			"description": "可选的「必交产物」契约。每一项声明一份 sub-agent 必须用 SubmitTaskResult 提交的 artifact。任务有结构化产出（报告/表格/数据文件）时使用；零散任务可省。框架会服务端校验 type / size / role 是否匹配，挡住「声称完成实际没产出」的失败。",
 			"items": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"role": map[string]any{
 						"type":        "string",
-						"description": "Contract identifier the sub-agent echoes back. Examples: 'comparison_table', 'findings_report'.",
+						"description": "契约标识，sub-agent 提交时按这个回报。示例：'comparison_table'、'findings_report'。",
 					},
 					"type": map[string]any{
 						"type":        "string",
 						"enum":        []string{"structured", "file", "blob"},
-						"description": "Required artifact kind (structured = JSON-shaped data with schema; file = text content; blob = binary).",
+						"description": "artifact 类型（structured = 带 schema 的 JSON 数据；file = 文本；blob = 二进制）。",
 					},
 					"mime_type": map[string]any{
 						"type":        "string",
-						"description": "Optional MIME constraint, e.g. 'text/csv', 'application/json'.",
+						"description": "可选 MIME 约束，例如 'text/csv'、'application/json'。",
 					},
 					"schema": map[string]any{
 						"type":        "object",
-						"description": "Optional JSON describing structured shape (column list, field types).",
+						"description": "可选 JSON 描述结构化形态（列、字段类型等）。",
 					},
 					"min_size_bytes": map[string]any{
 						"type":        "integer",
-						"description": "Minimum content size — guards against placeholder/empty submissions. Defaults to 1.",
+						"description": "最小内容字节数——挡占位 / 空提交。默认 1。",
 					},
 					"required": map[string]any{
 						"type":        "boolean",
-						"description": "When true, the sub-agent must submit this; when false, it's optional.",
+						"description": "为 true 表示必交；false 为可选。",
 					},
 					"acceptance_criteria": map[string]any{
 						"type":        "string",
-						"description": "Free-text quality bar (used by future LLM-as-judge scoring; informational for now).",
+						"description": "自由文本质量标准（未来用于 LLM-as-judge 评分，目前仅信息记录）。",
 					},
 				},
 				"required": []string{"role"},

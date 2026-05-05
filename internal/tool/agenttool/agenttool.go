@@ -69,9 +69,24 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 
 	input, err := parseInput(raw)
 	if err != nil {
+		// Without this log, a malformed Task input only shows up in the
+		// LLM's tool_result (IsError=true content) — the operator running
+		// the server has no way to see WHY the dispatch was malformed
+		// without enabling provider-level request dumps. Surface it once
+		// at Warn so logs alone tell the story.
+		t.logger.Warn("Task: parse input failed",
+			zap.Error(err),
+			zap.Int("raw_len", len(raw)),
+			zap.String("raw_preview", truncate(string(raw), 200)),
+		)
 		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
 	}
 	if err := input.validate(); err != nil {
+		t.logger.Warn("Task: validate input failed",
+			zap.Error(err),
+			zap.String("subagent_type", input.SubagentType),
+			zap.Int("prompt_len", len(input.Prompt)),
+		)
 		return &types.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
 
@@ -149,6 +164,12 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		}
 		agentID, err := asyncSpawner.SpawnAsync(ctx, cfg)
 		if err != nil {
+			t.logger.Error("Task: async spawn failed",
+				zap.Error(err),
+				zap.String("subagent_type", input.SubagentType),
+				zap.String("name", input.Name),
+				zap.Duration("duration", time.Since(startTime)),
+			)
 			return &types.ToolResult{
 				Content: fmt.Sprintf("Failed to spawn async agent: %s", err.Error()),
 				IsError: true,
@@ -246,10 +267,27 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 			label = "sub-agent"
 		}
 		content = agent.BuildFailureContent(result, label)
-		t.logger.Warn("sub-agent failed; surfacing structured error to parent",
+		// Failure-side logging policy: log the actual reason / message /
+		// first few failures, not just counts. Without this an operator
+		// staring at logs sees "contract_failures=2" and has to dig into
+		// the WebSocket / tool_result content to find what they were —
+		// painful when iterating on Specialists prompts. The truncation
+		// below stops a 50-failure cascade from blowing the log line.
+		var reason, msg string
+		if result.Terminal != nil {
+			reason = string(result.Terminal.Reason)
+			msg = result.Terminal.Message
+		}
+		t.logger.Warn("Task: sub-agent failed",
 			zap.String("agent_id", result.AgentID),
 			zap.String("subagent_type", input.SubagentType),
+			zap.String("name", input.Name),
+			zap.String("terminal_reason", reason),
+			zap.String("terminal_message", truncate(msg, 200)),
 			zap.Int("contract_failures", len(result.ContractFailures)),
+			zap.Strings("failure_sample", failureSample(result.ContractFailures, 3)),
+			zap.Bool("needs_planning", result.NeedsPlanning),
+			zap.String("escalation_reason", truncate(result.EscalationReason, 200)),
 		)
 	}
 
@@ -318,6 +356,26 @@ func expectedRoleList(outs []types.ExpectedOutput) []string {
 	return roles
 }
 
+// failureSample returns up to n failure strings, each capped at 120 chars
+// for log readability. Used in the Warn log when sub-agent fails — the
+// list itself can be long, but the first 3 reasons are usually enough to
+// see whether the failure is contract-shape (M4) / self-check / nudge cap
+// / something else.
+func failureSample(failures []string, n int) []string {
+	if len(failures) <= n {
+		out := make([]string, len(failures))
+		for i, f := range failures {
+			out[i] = truncate(f, 120)
+		}
+		return out
+	}
+	out := make([]string, n)
+	for i := 0; i < n; i++ {
+		out[i] = truncate(failures[i], 120)
+	}
+	return out
+}
+
 // deriveTaskID returns a stable identifier for this Task dispatch. We use
 // the parent's tool_use_id (one per invocation of the Task tool) so the
 // task_id stamp on every produced artifact maps 1:1 to the LLM's tool_use
@@ -345,22 +403,18 @@ func resolveAgentType(subagentType string) tool.AgentType {
 	}
 }
 
-const agentToolDescription = `Create a task and dispatch it to a sub-agent that will execute it autonomously.
+const agentToolDescription = `创建一个任务并派给 sub-agent 自主执行。
 
-The Task tool spawns a specialized sub-agent (worker / explore / plan / specific
-team member) that runs its own query loop with a filtered tool set. Each
-sub-agent type has specific capabilities:
+Task 工具会启动一个专业 sub-agent（worker / explore / plan 或具体团队成员），sub-agent 跑自己的 query loop，带受限工具集。各类型能力：
 
-- general-purpose: Full tool access (minus recursive Task calls). Use for
-  tasks requiring file edits, bash commands, and multi-step reasoning.
-- Explore / researcher: Read-only sub-agent for exploration / research.
-- Plan: Read-only sub-agent for designing implementation approaches.
-- writer / analyst / developer / lifestyle / scheduler: Specialised
-  team members for their respective domains.
+- general-purpose：除递归 Task 外的全部工具。适用于需要文件编辑、shell 命令、多步推理的任务。
+- Explore / researcher：只读型 sub-agent，用于代码库探索 / 资料调研。
+- Plan：只读型 sub-agent，用于方案设计、需求分析。
+- writer / analyst / developer / lifestyle / scheduler：各自领域的专业团队成员。
 
-Usage notes:
-- Always include a short description summarizing the task.
-- This tool runs synchronously — it blocks until the sub-agent completes.
-- Sub-agents cannot recursively call Task on themselves (no infinite recursion).
-- Sub-agents cannot prompt the user for input or approval.
-- Provide clear, detailed prompts so the sub-agent can work autonomously.`
+使用规范：
+- 必须传入简短的 description（3-5 词概括任务）。
+- 本工具同步执行——会阻塞直到 sub-agent 跑完。
+- sub-agent 不能递归调 Task（防止无限递归）。
+- sub-agent 不能向用户追问或请求授权。
+- prompt 写得清晰、详细，让 sub-agent 能独立完成任务。`

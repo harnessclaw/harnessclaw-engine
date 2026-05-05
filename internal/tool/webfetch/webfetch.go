@@ -76,7 +76,8 @@ func New(cfg config.ToolConfig, logger *zap.Logger) *WebFetchTool {
 
 func (t *WebFetchTool) Name() string            { return toolName }
 func (t *WebFetchTool) Description() string     { return webFetchDescription }
-func (t *WebFetchTool) IsReadOnly() bool         { return true }
+func (t *WebFetchTool) IsReadOnly() bool                   { return true }
+func (t *WebFetchTool) SafetyLevel() tool.SafetyLevel { return tool.SafetySafe }
 func (t *WebFetchTool) IsConcurrencySafe() bool  { return true }
 func (t *WebFetchTool) IsEnabled() bool          { return t.cfg.Enabled }
 
@@ -86,12 +87,12 @@ func (t *WebFetchTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"url": map[string]any{
 				"type":        "string",
-				"description": "The URL to fetch content from. Must be a publicly accessible URL.",
+				"description": "要抓取的 URL，必须公开可访问。",
 				"format":      "uri",
 			},
 			"prompt": map[string]any{
 				"type":        "string",
-				"description": "The prompt to run on the fetched content",
+				"description": "对抓取到的内容执行的 prompt（用于摘要/筛选）。",
 			},
 		},
 		"required": []string{"url", "prompt"},
@@ -310,12 +311,12 @@ func stripBasicHTML(s string) string {
 	return strings.TrimSpace(output)
 }
 
-const webFetchDescription = `Fetches content from a specified URL and processes it.
+const webFetchDescription = `抓取指定 URL 的内容并处理。
 
-IMPORTANT: This tool will FAIL for authenticated or private URLs. Before using this tool, check if the URL requires login or authentication (e.g. Google Docs, Confluence, Jira, Slack, Notion, Figma). If so, do NOT use this tool.
+重要：本工具对登录后/私有 URL 会失败。调用前先确认 URL 是否需要登录或鉴权（如 Google Docs / Confluence / Jira / Slack / Notion / Figma）。需要鉴权的请勿使用本工具。
 
-Usage:
-- Only use for publicly accessible URLs that you are confident will return content
-- The URL must be a fully-formed valid URL
-- HTTP URLs will be automatically upgraded to HTTPS
-- Do NOT guess or fabricate URLs — only use URLs from user messages or known documentation`
+使用规范：
+- 只用于你有把握能公开访问的 URL。
+- URL 必须是完整有效的（含协议 + 域名 + 路径）。
+- HTTP 会自动升级到 HTTPS。
+- 不要猜或者编 URL——只用用户消息中给出的、或文档里提到的 URL。`

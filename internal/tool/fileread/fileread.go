@@ -37,7 +37,8 @@ func New(cfg config.ToolConfig) *FileReadTool {
 
 func (t *FileReadTool) Name() string                   { return toolName }
 func (t *FileReadTool) Description() string            { return fileReadDescription }
-func (t *FileReadTool) IsReadOnly() bool               { return true }
+func (t *FileReadTool) IsReadOnly() bool                   { return true }
+func (t *FileReadTool) SafetyLevel() tool.SafetyLevel { return tool.SafetySafe }
 func (t *FileReadTool) IsConcurrencySafe() bool        { return true }
 func (t *FileReadTool) IsEnabled() bool                { return t.cfg.Enabled }
 
@@ -47,15 +48,15 @@ func (t *FileReadTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"file_path": map[string]any{
 				"type":        "string",
-				"description": "The absolute path to the file to read",
+				"description": "要读取文件的绝对路径。",
 			},
 			"offset": map[string]any{
 				"type":        "number",
-				"description": "The line number to start reading from. Only provide if the file is too large to read at once",
+				"description": "起始行号。仅在文件过大、需要读指定区段时使用。",
 			},
 			"limit": map[string]any{
 				"type":        "number",
-				"description": "The number of lines to read. Only provide if the file is too large to read at once.",
+				"description": "要读取的行数。仅在文件过大、需要读指定区段时使用。",
 			},
 		},
 		"required": []string{"file_path"},
@@ -151,10 +152,10 @@ func (t *FileReadTool) Execute(_ context.Context, input json.RawMessage) (*types
 	}, nil
 }
 
-const fileReadDescription = `Reads a file from the local filesystem. You can access any file directly by using this tool.
+const fileReadDescription = `读取本地文件系统中的文件。可以直接访问任意文件。
 
-Usage:
-- The file_path parameter must be an absolute path, not a relative path
-- By default, it reads up to 2000 lines starting from the beginning of the file
-- Use offset and limit for large files to read specific sections
-- Results are returned using cat -n format, with line numbers starting at 1`
+使用规范：
+- file_path 必须是绝对路径，不能相对路径。
+- 默认从文件开头读最多 2000 行。
+- 文件较大时用 offset 和 limit 读指定区段。
+- 返回结果按 cat -n 风格，行号从 1 开始。`

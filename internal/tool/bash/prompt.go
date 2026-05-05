@@ -2,36 +2,37 @@ package bash
 
 // getDescription returns the LLM-facing prompt text for the Bash tool.
 func getDescription() string {
-	return `Executes a given bash command and returns its output.
+	return `执行一条 bash 命令并返回输出。
 
-The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).
+工作目录在多次调用之间保持，但 shell 状态（如 export 的环境变量）不会保持。shell 环境从用户的 profile（bash 或 zsh）初始化。
 
-IMPORTANT: Avoid using this tool to run ` + "`find`" + `, ` + "`grep`" + `, ` + "`cat`" + `, ` + "`head`" + `, ` + "`tail`" + `, ` + "`sed`" + `, ` + "`awk`" + `, or ` + "`echo`" + ` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:
+重要：除非有明确指示或你已确认专用工具不行，否则不要用本工具跑 ` + "`find`" + `、` + "`grep`" + `、` + "`cat`" + `、` + "`head`" + `、` + "`tail`" + `、` + "`sed`" + `、` + "`awk`" + `、` + "`echo`" + ` 这类命令。请改用专用工具——它们交互更友好、权限审核也更直观：
 
- - File search: Use Glob (NOT find or ls)
- - Content search: Use Grep (NOT grep or rg)
- - Read files: Use FileRead (NOT cat/head/tail)
- - Edit files: Use FileEdit (NOT sed/awk)
- - Write files: Use FileWrite (NOT echo >/cat <<EOF)
- - Communication: Output text directly (NOT echo/printf)
-While the Bash tool can do similar things, it's better to use the built-in tools as they provide a better user experience and make it easier to review tool calls and give permission.
+ - 找文件：用 Glob（不要 find / ls）
+ - 找内容：用 Grep（不要 grep / rg）
+ - 读文件：用 FileRead（不要 cat / head / tail）
+ - 改文件：用 FileEdit（不要 sed / awk）
+ - 写文件：用 FileWrite（不要 echo > / cat <<EOF）
+ - 输出文本：直接 assistant 输出（不要 echo / printf）
 
-# Instructions
- - If your command will create new directories or files, first use this tool to run ` + "`ls`" + ` to verify the parent directory exists and is the correct location.
- - Always quote file paths that contain spaces with double quotes in your command (e.g., cd "path with spaces/file.txt")
- - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of ` + "`cd`" + `. You may use ` + "`cd`" + ` if the User explicitly requests it.
- - You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). By default, your command will timeout after 120000ms (2 minutes).
- - Write a clear, concise description of what your command does.
- - When issuing multiple commands:
-   - If the commands are independent and can run in parallel, make multiple Bash tool calls in a single message.
-   - If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together.
-   - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail.
-   - DO NOT use newlines to separate commands (newlines are ok in quoted strings).
- - For git commands:
-   - Prefer to create a new commit rather than amending an existing commit.
-   - Before running destructive operations (e.g., git reset --hard, git push --force, git checkout --), consider whether there is a safer alternative that achieves the same goal. Only use destructive operations when they are truly the best approach.
-   - Never skip hooks (--no-verify) or bypass signing (--no-gpg-sign, -c commit.gpgsign=false) unless the user has explicitly asked for it. If a hook fails, investigate and fix the underlying issue.
- - Avoid unnecessary ` + "`sleep`" + ` commands:
-   - Do not sleep between commands that can run immediately -- just run them.
-   - Do not retry failing commands in a sleep loop -- diagnose the root cause.`
+虽然 Bash 也能干同样的事，但内置工具体验更好，也方便审核与授权。
+
+# 使用规范
+ - 命令会创建新目录或文件时，先用本工具跑 ` + "`ls`" + ` 确认父目录存在且正确。
+ - 路径含空格时用双引号包起来（例：cd "path with spaces/file.txt"）。
+ - 整个会话尽量保持当前目录稳定——用绝对路径，少用 ` + "`cd`" + `。用户明确要求时才 ` + "`cd`" + `。
+ - 可选 timeout（毫秒，最长 600000 = 10 分钟）。默认 120000（2 分钟）。
+ - 写清楚 description 说明这条命令做什么。
+ - 多条命令的并行/串行：
+   - 互相独立可并行 → 同一条消息里发多次 Bash 调用。
+   - 互相依赖必须串行 → 单次 Bash 调用用 '&&' 串起来。
+   - 用 ';' 仅当串行执行但不在乎前面失败时。
+   - 不要用换行分隔命令（引号字符串里的换行无碍）。
+ - git 命令规范：
+   - 优先新建 commit，而非 amend。
+   - 跑破坏性操作（git reset --hard、git push --force、git checkout -- 等）前，先想想有没有更安全的替代方案；只有真没办法时才用。
+   - 用户没明确要求时，不要跳过 hooks（--no-verify）或绕过签名（--no-gpg-sign / -c commit.gpgsign=false）。hook 失败要去查根因。
+ - 避免无谓的 ` + "`sleep`" + `：
+   - 能立刻跑的命令之间不要 sleep——直接跑。
+   - 不要在 sleep 循环里重试失败命令——去查根因。`
 }

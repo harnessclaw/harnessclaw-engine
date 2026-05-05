@@ -47,11 +47,11 @@ func (s *SkillTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"skill": map[string]any{
 				"type":        "string",
-				"description": "The skill name. E.g., \"commit\", \"review-pr\", or \"pdf\"",
+				"description": "skill 名字。例如 \"commit\"、\"review-pr\"、\"pdf\"。",
 			},
 			"args": map[string]any{
 				"type":        "string",
-				"description": "Optional arguments for the skill",
+				"description": "传给 skill 的可选参数。",
 			},
 		},
 		"required": []string{"skill"},
@@ -210,23 +210,23 @@ func (s *SkillTool) CheckPermission(_ context.Context, input json.RawMessage) to
 	return tool.PermissionPreResult{Behavior: "passthrough"}
 }
 
-const skillToolDescription = `Execute a skill within the main conversation
+const skillToolDescription = `在主对话中执行一个 skill。
 
-When users ask you to perform tasks, check if any of the available skills match. Skills provide specialized capabilities and domain knowledge.
+用户让你做事时，先看看有没有匹配的可用 skill。Skill 提供专项能力和领域知识。
 
-When users reference a "slash command" or "/<something>" (e.g., "/commit", "/review-pr"), they are referring to a skill. Use this tool to invoke it.
+用户提到"slash 命令"或 "/<某个名字>"（如 "/commit"、"/review-pr"）就是在引用一个 skill。用本工具去调用它。
 
-How to invoke:
-- Use this tool with the skill name and optional arguments
-- Examples:
-  - skill: "pdf" - invoke the pdf skill
-  - skill: "commit", args: "-m 'Fix bug'" - invoke with arguments
-  - skill: "review-pr", args: "123" - invoke with arguments
+调用方式：
+- 提供 skill 名字 + 可选 args。
+- 示例：
+  - skill: "pdf" — 调用 pdf skill
+  - skill: "commit", args: "-m 'Fix bug'" — 带参数调用
+  - skill: "review-pr", args: "123"
 
-Important:
-- Available skills are listed in system-reminder messages in the conversation
-- When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response about the task
-- NEVER mention a skill without actually calling this tool
-- Do not invoke a skill that is already running
-- Do not use this tool for built-in CLI commands (like /help, /clear, etc.)
-- If you see a <command-name> tag in the current conversation turn, the skill has ALREADY been loaded - follow the instructions directly instead of calling this tool again`
+重要规则：
+- 可用 skill 列表在 system-reminder 消息里。
+- 用户请求匹配某个 skill 时，**强制要求**：先调用 Skill 工具，再做任何回应。
+- 不要光提 skill 名字而不真的调用本工具。
+- 不要重复调用一个正在跑的 skill。
+- 不要把本工具用在内置 CLI 命令（如 /help、/clear）上。
+- 如果当前对话已经出现 <command-name> 标签，说明 skill 已加载——按里面的指示直接执行，而不是再调一次本工具。`

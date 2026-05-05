@@ -32,7 +32,7 @@ func New(broker *agent.MessageBroker, agentName, teamID string, logger *zap.Logg
 }
 
 func (t *Tool) Name() string            { return "SendMessage" }
-func (t *Tool) Description() string      { return "Send a message to another agent" }
+func (t *Tool) Description() string      { return "向另一个 agent 发送消息。" }
 func (t *Tool) IsReadOnly() bool         { return false }
 func (t *Tool) IsConcurrencySafe() bool  { return true }
 
@@ -40,9 +40,9 @@ func (t *Tool) InputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"to":      map[string]any{"type": "string", "description": "Recipient agent name or '*' for broadcast"},
-			"message": map[string]any{"description": "Message content (string or structured object)"},
-			"summary": map[string]any{"type": "string", "description": "5-10 word preview"},
+			"to":      map[string]any{"type": "string", "description": "接收方 agent 名字，或 '*' 表示广播。"},
+			"message": map[string]any{"description": "消息内容（字符串或结构化对象）。"},
+			"summary": map[string]any{"type": "string", "description": "5-10 词的简短预览。"},
 		},
 		"required": []string{"to", "message"},
 	}

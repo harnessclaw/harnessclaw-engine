@@ -21,7 +21,7 @@ func NewUpdate(store task.Store, scopeID string) *UpdateTool {
 }
 
 func (t *UpdateTool) Name() string             { return "TaskUpdate" }
-func (t *UpdateTool) Description() string       { return "Update a task's status, owner, or other fields" }
+func (t *UpdateTool) Description() string       { return "更新任务的 status / owner 或其他字段。" }
 func (t *UpdateTool) IsReadOnly() bool          { return false }
 func (t *UpdateTool) IsConcurrencySafe() bool   { return true }
 
@@ -29,7 +29,7 @@ func (t *UpdateTool) InputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"taskId":       map[string]any{"type": "string", "description": "Task ID to update"},
+			"taskId":       map[string]any{"type": "string", "description": "要更新的任务 ID。"},
 			"status":       map[string]any{"type": "string", "enum": []string{"pending", "in_progress", "completed", "deleted"}},
 			"subject":      map[string]any{"type": "string"},
 			"description":  map[string]any{"type": "string"},

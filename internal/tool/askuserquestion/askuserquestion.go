@@ -96,22 +96,22 @@ func (t *Tool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"question": map[string]any{
 				"type":        "string",
-				"description": "The clarification question presented to the user. Be specific and brief — one or two sentences. Examples: \"你说的王总是XX公司那个？\", \"周五下午要订哪种类型的会议室？\".",
+				"description": "向用户澄清的问题。要具体、简短——一两句话。示例：\"你说的王总是XX公司那个？\"、\"周五下午要订哪种类型的会议室？\"。",
 				"minLength":   1,
 			},
 			"options": map[string]any{
 				"type":        "array",
-				"description": "Optional preset choices. The client renders them as selectable buttons or a dropdown. Omit to ask an open-ended question.",
+				"description": "可选预设项。客户端会渲染成按钮或下拉框。完全开放式提问可省略本字段。",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"label": map[string]any{
 							"type":        "string",
-							"description": "Short label shown on the option (e.g. \"是的\", \"周五上午\").",
+							"description": "选项的短标签（例如 \"是的\"、\"周五上午\"）。",
 						},
 						"description": map[string]any{
 							"type":        "string",
-							"description": "Optional longer explanation displayed alongside the label.",
+							"description": "可选的更长说明，紧贴 label 一起展示。",
 						},
 					},
 					"required": []string{"label"},
@@ -119,11 +119,11 @@ func (t *Tool) InputSchema() map[string]any {
 			},
 			"multi": map[string]any{
 				"type":        "boolean",
-				"description": "When true and options are provided, the user may select multiple options. Default false.",
+				"description": "为 true 且提供 options 时，用户可多选。默认 false。",
 			},
 			"allow_custom": map[string]any{
 				"type":        "boolean",
-				"description": "When true (default), the user may type free-text in addition to or instead of the preset options. Set false only for strictly-bounded yes/no style questions.",
+				"description": "为 true（默认）时用户可在预设外输入自由文本。仅在严格限定的是/否问题里设 false。",
 			},
 		},
 		"required": []string{"question"},
@@ -168,23 +168,23 @@ func (t *Tool) Execute(_ context.Context, raw json.RawMessage) (*types.ToolResul
 	}, nil
 }
 
-const askDescription = `Pause and ask the user for clarification when their request is ambiguous, key information is missing, or several reasonable choices need a human decision.
+const askDescription = `当用户的请求有歧义、关键信息缺失、或几种合理选择需要人来定时，暂停并向用户提问。
 
-Use AskUserQuestion when:
-- The request is vague ("help me with the report" — which report? what aspect?)
-- A named entity is ambiguous ("call 王总" — which 王总?)
-- Multiple reasonable interpretations exist and picking the wrong one would waste effort
-- A decision needs a value judgement that only the user can make
+何时使用 AskUserQuestion：
+- 请求模糊（"帮我搞下那份报告" —— 哪份？哪部分？）
+- 命名实体有歧义（"打给王总" —— 哪个王总？）
+- 存在多种合理解读，选错会浪费工作量。
+- 价值判断只有用户能做。
 
-Do NOT use AskUserQuestion when:
-- The answer is in the conversation history — re-read it
-- A reasonable default exists — proceed and tell the user what you assumed
-- The question can be answered by a quick search (use WebSearch / TavilySearch instead)
+不要用 AskUserQuestion：
+- 答案在对话历史里——回去重读。
+- 有合理默认值——按默认走，并告诉用户你假设了什么。
+- 一搜即得（改用 WebSearch / TavilySearch）。
 
-Input fields:
-- question: the clarification you want from the user (required, one or two sentences)
-- options: optional preset choices the user can pick from
-- multi: optional bool, when true and options are provided the user may select multiple
-- allow_custom: optional bool (default true) — when true the user may type a free-text answer beyond the preset options
+输入字段：
+- question：要向用户澄清的问题（必填，一两句话）。
+- options：可选预设选项，用户可从中挑。
+- multi：可选 bool，true 且提供 options 时允许多选。
+- allow_custom：可选 bool（默认 true）——为 true 时用户可在预设外输入自由文本。
 
-The tool blocks until the user responds. Treat the response as the user's intent and continue with the task.`
+工具会阻塞直到用户回复。把回复视为用户意图，继续推进任务。`

@@ -276,6 +276,83 @@ func (tp *ToolPool) FilterByNames(whitelist []string) *ToolPool {
 	return sub
 }
 
+// WithoutDangerousUnless returns a sub-pool with every SafetyDangerous
+// tool stripped, EXCEPT those whose name is in the keepList. Designed
+// for the L3 sub-agent path: a worker that doesn't explicitly list a
+// dangerous tool in AgentDefinition.AllowedTools should never see it.
+//
+// Tools that don't implement SafetyLeveler default to SafetyCaution
+// (see EffectiveSafetyLevel) — i.e. they pass this filter, which is the
+// fail-safe default.
+func (tp *ToolPool) WithoutDangerousUnless(keepList []string) *ToolPool {
+	keep := make(map[string]bool, len(keepList))
+	for _, n := range keepList {
+		keep[n] = true
+	}
+	var kept []Tool
+	for _, t := range tp.merged {
+		if EffectiveSafetyLevel(t) == SafetyDangerous && !keep[t.Name()] {
+			continue
+		}
+		kept = append(kept, t)
+	}
+	sub := &ToolPool{
+		merged: kept,
+		byName: make(map[string]Tool, len(kept)),
+	}
+	for _, t := range kept {
+		sub.byName[t.Name()] = t
+		if at, ok := t.(AliasedTool); ok {
+			for _, alias := range at.Aliases() {
+				if _, exists := sub.byName[alias]; !exists {
+					sub.byName[alias] = t
+				}
+			}
+		}
+	}
+	return sub
+}
+
+// WithoutNames returns a sub-pool with the named tools removed. Useful for
+// defense-in-depth filters — e.g. stripping dispatch tools (Task, Specialists,
+// Orchestrate) from L3 sub-agent pools regardless of what AllowedTools said,
+// so a misconfigured definition can't accidentally re-enable cross-tier
+// dispatch.
+//
+// Aliases of removed tools are dropped too, so calls under either the
+// canonical name or any alias resolve to nil after filtering.
+func (tp *ToolPool) WithoutNames(deny []string) *ToolPool {
+	if len(deny) == 0 {
+		return tp
+	}
+	denySet := make(map[string]bool, len(deny))
+	for _, n := range deny {
+		denySet[n] = true
+	}
+	var kept []Tool
+	for _, t := range tp.merged {
+		if denySet[t.Name()] {
+			continue
+		}
+		kept = append(kept, t)
+	}
+	sub := &ToolPool{
+		merged: kept,
+		byName: make(map[string]Tool, len(kept)),
+	}
+	for _, t := range kept {
+		sub.byName[t.Name()] = t
+		if at, ok := t.(AliasedTool); ok {
+			for _, alias := range at.Aliases() {
+				if _, exists := sub.byName[alias]; !exists {
+					sub.byName[alias] = t
+				}
+			}
+		}
+	}
+	return sub
+}
+
 // Size returns the number of tools in the pool.
 func (tp *ToolPool) Size() int {
 	return len(tp.merged)

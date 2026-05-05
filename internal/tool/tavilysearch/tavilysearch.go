@@ -52,7 +52,8 @@ func New(cfg config.TavilySearchConfig, logger *zap.Logger) *TavilySearchTool {
 }
 
 func (t *TavilySearchTool) Name() string           { return toolName }
-func (t *TavilySearchTool) IsReadOnly() bool        { return true }
+func (t *TavilySearchTool) IsReadOnly() bool                   { return true }
+func (t *TavilySearchTool) SafetyLevel() tool.SafetyLevel { return tool.SafetySafe }
 func (t *TavilySearchTool) IsConcurrencySafe() bool { return true }
 
 func (t *TavilySearchTool) IsEnabled() bool {
@@ -60,25 +61,24 @@ func (t *TavilySearchTool) IsEnabled() bool {
 }
 
 func (t *TavilySearchTool) Description() string {
-	return `Search the web using the Tavily API. Returns relevant results with snippets.
+	return `通过 Tavily API 搜索网页，返回带摘要的相关结果。
 
-When to use this tool:
-- Questions about events, facts, or data after your knowledge cutoff
-- User asks about "latest", "recent", "this year", or any time-sensitive topic
-- You need to verify a fact you are not confident about
-- User explicitly asks to search
+何时使用：
+- 问题涉及训练截止后的事件 / 事实 / 数据。
+- 用户提到"最新"、"近期"、"今年"或任何时效敏感话题。
+- 你需要核实一个自己不太有把握的事实。
+- 用户明确要求搜索。
 
-When NOT to use:
-- Programming syntax, math, logic — you already know these
-- User says "don't search" or the answer is clearly within your training data
+不要使用：
+- 编程语法、数学、逻辑——这些你已经会。
+- 用户说"不要搜"或答案明显在你的训练数据里。
 
-Two-stage pattern for deep research:
-1. Call TavilySearch with include_raw_content=false (default) to get snippets + URLs
-2. If a specific result needs deeper reading, call WebFetch on that URL
-This avoids flooding context with full-text from all results.
+深度调研的两段式：
+1. 先 TavilySearch include_raw_content=false（默认）拿摘要 + URL。
+2. 若某条结果需要深读，对该 URL 调 WebFetch。
+这样不会把全部结果的正文一次性灌进上下文。
 
-Set include_raw_content=true only when you need full article text from ALL results
-(e.g., "summarize these 3 articles"). This costs significantly more tokens.`
+include_raw_content=true 只在确实需要每条都拿全文时设（比如"汇总这 3 篇文章"），会显著消耗 token。`
 }
 
 func (t *TavilySearchTool) InputSchema() map[string]any {
@@ -87,47 +87,47 @@ func (t *TavilySearchTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"query": map[string]any{
 				"type":        "string",
-				"description": "The search query. For best results, rewrite the user's question into an effective search query in the language most likely to yield results.",
+				"description": "搜索 query。最佳实践：把用户问题改写成最易出结果的 query，并用最可能命中目标语料的语言。",
 				"minLength":   2,
 			},
 			"search_depth": map[string]any{
 				"type":        "string",
-				"description": "basic (default, 1 credit): single summary per URL. advanced (2 credits): multiple relevant chunks per URL, better for research.",
+				"description": "basic（默认，1 credit）：每个 URL 一个摘要。advanced（2 credits）：每 URL 多段相关片段，更适合研究。",
 				"enum":        []string{"basic", "advanced", "fast"},
 			},
 			"topic": map[string]any{
 				"type":        "string",
-				"description": "general (default), news (real-time media), or finance",
+				"description": "general（默认）/ news（实时媒体）/ finance（财经）。",
 				"enum":        []string{"general", "news", "finance"},
 			},
 			"max_results": map[string]any{
 				"type":        "integer",
-				"description": "Number of results (1-20, default 5)",
+				"description": "结果数量（1~20，默认 5）。",
 				"minimum":     1,
 				"maximum":     20,
 			},
 			"time_range": map[string]any{
 				"type":        "string",
-				"description": "Filter by recency: day, week, month, or year",
+				"description": "按时效过滤：day / week / month / year。",
 				"enum":        []string{"day", "week", "month", "year"},
 			},
 			"include_domains": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "Only include results from these domains",
+				"description": "只在这些域名内搜索。",
 			},
 			"exclude_domains": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "Exclude results from these domains",
+				"description": "排除这些域名。",
 			},
 			"include_answer": map[string]any{
 				"type":        "boolean",
-				"description": "Include a short AI-generated answer (default false)",
+				"description": "是否包含一段 AI 生成的简短答案（默认 false）。",
 			},
 			"include_raw_content": map[string]any{
 				"type":        "boolean",
-				"description": "Include full cleaned page content per result in markdown. Significantly increases token usage. Use only when you need full article text from all results. Default false — prefer the two-stage pattern (search snippets, then WebFetch specific URLs).",
+				"description": "是否在每条结果里返回 markdown 化的清洗后正文。会显著增加 token 用量。仅在确实需要每条都拿全文时启用。默认 false——更推荐两段式：先搜摘要，再对挑中的 URL 调 WebFetch。",
 			},
 		},
 		"required": []string{"query"},

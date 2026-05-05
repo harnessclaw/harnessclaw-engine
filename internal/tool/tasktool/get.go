@@ -21,7 +21,7 @@ func NewGet(store task.Store, scopeID string) *GetTool {
 }
 
 func (t *GetTool) Name() string             { return "TaskGet" }
-func (t *GetTool) Description() string       { return "Get a task by ID" }
+func (t *GetTool) Description() string       { return "按 ID 取一个任务。" }
 func (t *GetTool) IsReadOnly() bool          { return true }
 func (t *GetTool) IsConcurrencySafe() bool   { return true }
 
@@ -29,7 +29,7 @@ func (t *GetTool) InputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"taskId": map[string]any{"type": "string", "description": "Task ID to retrieve"},
+			"taskId": map[string]any{"type": "string", "description": "要查询的任务 ID。"},
 		},
 		"required": []string{"taskId"},
 	}

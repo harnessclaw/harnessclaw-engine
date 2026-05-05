@@ -34,14 +34,15 @@ func New(cfg config.ToolConfig) *FileWriteTool {
 
 func (t *FileWriteTool) Name() string        { return toolName }
 func (t *FileWriteTool) Description() string { return fileWriteDescription }
-func (t *FileWriteTool) IsReadOnly() bool    { return false }
+func (t *FileWriteTool) IsReadOnly() bool                { return false }
+func (t *FileWriteTool) SafetyLevel() tool.SafetyLevel { return tool.SafetyCaution }
 func (t *FileWriteTool) IsEnabled() bool     { return t.cfg.Enabled }
 
 func (t *FileWriteTool) InputSchema() map[string]any {
 	// Build default working directory path with cross-platform support
 	defaultDir := getDefaultWorkingDir()
 	filePathDesc := fmt.Sprintf(
-		"The absolute path to the file to write (must be absolute, not relative). If no specific location is mentioned, you may use %s as a default working directory.",
+		"要写入文件的绝对路径（必须绝对，不能相对）。未指定具体位置时，可用 %s 作为默认工作目录。",
 		defaultDir,
 	)
 
@@ -54,7 +55,7 @@ func (t *FileWriteTool) InputSchema() map[string]any {
 			},
 			"content": map[string]any{
 				"type":        "string",
-				"description": "The content to write to the file",
+				"description": "要写入文件的内容。",
 			},
 		},
 		"required": []string{"file_path", "content"},
@@ -116,12 +117,12 @@ func (t *FileWriteTool) Execute(_ context.Context, input json.RawMessage) (*type
 	}, nil
 }
 
-const fileWriteDescription = `Writes a file to the local filesystem.
+const fileWriteDescription = `把内容写入本地文件系统。
 
-Usage:
-- This tool will overwrite the existing file if there is one at the provided path.
-- The file_path parameter must be an absolute path, not a relative path.
-- You must ensure the target directory exists before writing. Use Bash to create it if needed.`
+使用规范：
+- 目标路径已存在文件时会被覆盖。
+- file_path 必须是绝对路径，不能相对路径。
+- 写入前必须确保目标目录存在；不存在请用 Bash 先创建。`
 
 // getDefaultWorkingDir returns the expanded default working directory path
 // for file operations, with cross-platform support.

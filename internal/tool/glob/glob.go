@@ -40,7 +40,8 @@ func New(cfg config.ToolConfig) *GlobTool {
 
 func (t *GlobTool) Name() string                   { return toolName }
 func (t *GlobTool) Description() string            { return globDescription }
-func (t *GlobTool) IsReadOnly() bool               { return true }
+func (t *GlobTool) IsReadOnly() bool                  { return true }
+func (t *GlobTool) SafetyLevel() tool.SafetyLevel { return tool.SafetySafe }
 func (t *GlobTool) IsConcurrencySafe() bool        { return true }
 func (t *GlobTool) IsEnabled() bool                { return t.cfg.Enabled }
 
@@ -50,11 +51,11 @@ func (t *GlobTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"pattern": map[string]any{
 				"type":        "string",
-				"description": "The glob pattern to match files against",
+				"description": "用于匹配文件的 glob 模式。",
 			},
 			"path": map[string]any{
 				"type":        "string",
-				"description": "The directory to search in. If not specified, the current working directory will be used.",
+				"description": "搜索的目录。未指定时使用当前工作目录。",
 			},
 		},
 		"required": []string{"pattern"},
@@ -208,9 +209,9 @@ func doubleStarMatch(pattern, name string) bool {
 	return matched
 }
 
-const globDescription = `Fast file pattern matching tool that works with any codebase size.
+const globDescription = `按文件名模式快速匹配文件，适用于任意规模的代码库。
 
-Usage:
-- Supports glob patterns like "**/*.js" or "src/**/*.ts"
-- Returns matching file paths sorted by modification time
-- Use this tool when you need to find files by name patterns`
+使用规范：
+- 支持 glob 模式，如 "**/*.js" 或 "src/**/*.ts"。
+- 返回按修改时间排序的匹配路径列表。
+- 需要按名字模式找文件时用本工具。`

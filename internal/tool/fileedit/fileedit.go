@@ -37,7 +37,8 @@ func New(cfg config.ToolConfig) *FileEditTool {
 
 func (t *FileEditTool) Name() string            { return toolName }
 func (t *FileEditTool) Description() string     { return fileEditDescription }
-func (t *FileEditTool) IsReadOnly() bool        { return false }
+func (t *FileEditTool) IsReadOnly() bool                { return false }
+func (t *FileEditTool) SafetyLevel() tool.SafetyLevel { return tool.SafetyCaution }
 func (t *FileEditTool) IsEnabled() bool         { return t.cfg.Enabled }
 
 func (t *FileEditTool) InputSchema() map[string]any {
@@ -46,20 +47,20 @@ func (t *FileEditTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"file_path": map[string]any{
 				"type":        "string",
-				"description": "The absolute path to the file to modify",
+				"description": "要修改文件的绝对路径。",
 			},
 			"old_string": map[string]any{
 				"type":        "string",
-				"description": "The text to replace",
+				"description": "要被替换的文本。",
 			},
 			"new_string": map[string]any{
 				"type":        "string",
-				"description": "The text to replace it with (must be different from old_string)",
+				"description": "替换后的文本（必须与 old_string 不同）。",
 			},
 			"replace_all": map[string]any{
 				"type":        "boolean",
 				"default":     false,
-				"description": "Replace all occurrences of old_string (default false)",
+				"description": "为 true 时替换文件中所有匹配（默认 false）。",
 			},
 		},
 		"required": []string{"file_path", "old_string", "new_string"},
@@ -147,9 +148,9 @@ func (t *FileEditTool) Execute(_ context.Context, input json.RawMessage) (*types
 	}, nil
 }
 
-const fileEditDescription = `Performs exact string replacements in files.
+const fileEditDescription = `在文件中做精确字符串替换。
 
-Usage:
-- The edit will FAIL if old_string is not unique in the file. Provide more context to make it unique or use replace_all.
-- Use replace_all for replacing and renaming strings across the file.
-- old_string and new_string must be different.`
+使用规范：
+- old_string 在文件中不唯一时，编辑会失败。要么补足够上下文让它唯一，要么用 replace_all。
+- 全局重命名 / 替换用 replace_all。
+- old_string 与 new_string 必须不同。`

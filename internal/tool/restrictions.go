@@ -1,5 +1,50 @@
 package tool
 
+// SafetyLevel classifies how risky a tool call is. Tools opt in via the
+// optional SafetyLeveler interface; tools that don't implement it default
+// to SafetyCaution — a deliberate "fail-safe" choice that forces authors
+// to explicitly downgrade rather than accidentally elevate.
+//
+// Three buckets cover what matters operationally:
+//   - SafetySafe:      pure read / lookup, no side effect (Read, Grep, Glob,
+//                      WebFetch, WebSearch, ArtifactRead).
+//   - SafetyCaution:   local mutation that's easily reversible
+//                      (Write, Edit, ArtifactWrite, FileWrite).
+//   - SafetyDangerous: shell/network with external side effects
+//                      (Bash, send_email, make_payment when added).
+//
+// The L3 sub-agent driver strips dangerous tools from the pool unless
+// they're explicitly listed in AgentDefinition.AllowedTools — protecting
+// against accidental exposure when a worker's whitelist is empty.
+type SafetyLevel string
+
+const (
+	SafetySafe      SafetyLevel = "safe"
+	SafetyCaution   SafetyLevel = "caution"
+	SafetyDangerous SafetyLevel = "dangerous"
+)
+
+// SafetyLeveler is implemented by tools that wish to declare their own
+// safety level. Tools that don't implement it inherit SafetyCaution from
+// EffectiveSafetyLevel — fail-safe.
+type SafetyLeveler interface {
+	SafetyLevel() SafetyLevel
+}
+
+// EffectiveSafetyLevel returns the tool's declared SafetyLevel, falling
+// back to SafetyCaution for tools that don't opt in. A central helper so
+// the policy lives in one place — caller doesn't have to know whether
+// the tool implements the interface.
+func EffectiveSafetyLevel(t Tool) SafetyLevel {
+	if sl, ok := t.(SafetyLeveler); ok {
+		lvl := sl.SafetyLevel()
+		if lvl != "" {
+			return lvl
+		}
+	}
+	return SafetyCaution
+}
+
 // AgentType classifies the agent context for tool filtering.
 // Mirrors the restriction sets from src/constants/tools.ts.
 type AgentType string
