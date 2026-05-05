@@ -3,6 +3,40 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
+## [0.0.7] - 2026-05-05
+
+### Added
+- Three-tier agent architecture: emma (L1, user-facing) → Specialists (L2, coordinator) → workers (L3, leaf executors), with strict per-tier tool filtering and prompt isolation
+- `TierSubAgent` contract on `AgentDefinition`: every L3 worker declares `OutputSchema`, `InputSchema`, `Limitations`, `ExampleTasks`, `CostTier`, and `Temperature`; `Tier` routes spawns to the strict L3 driver
+- `runSubAgentDriver`: leaf-only ReAct loop with self-check, nudge cap (3x), reject cap (3x), and SubmitTaskResult-or-EscalateToPlanner termination
+- 7 redesigned built-in workers (`writer`, `researcher`, `analyst`, `developer`, `travel_planner`, `recommender`, `scheduler`) as pure functional L3 with specialized `SystemPrompt` and per-worker schemas
+- `SubmitTaskResult` tool with server-side validation (lineage, temporal window, role/type/mime, OutputSchema)
+- `EscalateToPlanner` tool: L3 needs-planning escape hatch (paired with SubmitTaskResult)
+- `SpawnConfig.Inputs` + InputSchema validation in `SpawnSync` — validated before any LLM call
+- Artifact subsystem with task contract: SQLite-backed store at `~/.harnessclaw/db/artifacts.db`, `ArtifactRead` / `ArtifactWrite` tools, available-artifacts preamble auto-injected on sub-agent spawn, TTL janitor, parent-version chains
+- WebSocket forwarding of artifact refs and L3 sub-agent task/intent for richer client observability (protocol v1.12)
+- Plan-based DAG executor for `Orchestrate` tool with `PlannerListing` rich-metadata routing
+- Structured lifecycle event protocol via `internal/emit` package
+- `AskUserQuestion` tool for clarification flows; `WebSearch` updates
+- `SafetyLevel` classification (safe / caution / dangerous) on every built-in tool, with `WithoutDangerousUnless` filter for L3 pools
+- Minimal in-house JSON-schema validator (`ValidateAgainstSchema`) shared by SubmitTaskResult and InputSchema enforcement
+- `BuildFunctionalIdentity` for L3 workers — team-free, persona-free identity that does not leak emma's L1 prompt
+
+### Changed
+- Worker system prompts no longer inject team affiliation or personality for `TierSubAgent`; identity becomes purely functional
+- `lifestyle` worker split into single-responsibility `travel_planner` and `recommender`
+- Specialists / Orchestrate consume structured `PlannerListing` for richer routing decisions
+- All user-facing tool descriptions translated to Chinese for consistency
+- emma identity phrasing tightened in the L1 prompt
+- Artifact subsystem redesigned around the task contract (producer task_id stamping, expected-outputs render block)
+
+### Fixed
+- `ArtifactRead` defends against `artifact_id` hallucination: detects UUID-shaped fabrications (8-4-4-4-12 dashed and 32-hex compact) and instructs the LLM to escalate instead of retry, preventing the retry-then-fabricate loop that previously consumed long stretches of LLM time
+- Artifacts guidance section now shows the real ID format example and explicit "don't know an ID? EscalateToPlanner" instruction
+
+### Removed
+- `Personality` field is no longer rendered into TierSubAgent system prompts (kept on the definition for team-table metadata only)
+
 ## [0.0.6] - 2026-04-27
 
 ### Added
