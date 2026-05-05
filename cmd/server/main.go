@@ -148,6 +148,10 @@ func main() {
 		// (doc §3 M3+M4). Always on; only fires when the dispatcher
 		// supplied an ExpectedOutputs contract.
 		{true, func() tool.Tool { return submittool.New() }},
+		// EscalateToPlanner is the L3 needs-planning escape hatch.
+		// Pairs with SubmitTaskResult: every TierSubAgent worker must
+		// reach exactly one of the two before its loop terminates.
+		{true, func() tool.Tool { return submittool.NewEscalate() }},
 	}
 	for _, bt := range builtInTools {
 		if bt.enabled {
@@ -814,4 +818,11 @@ func (r *agentDefRoster) AvailableSubagentTypes() []string {
 		}
 	}
 	return out
+}
+
+func (r *agentDefRoster) ListForPlanner() []agent.PlannerListing {
+	if r.reg == nil {
+		return nil
+	}
+	return r.reg.ListForPlanner()
 }
