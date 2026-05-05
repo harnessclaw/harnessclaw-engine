@@ -6,6 +6,16 @@
 *.dylib
 /server
 
+# E2E probes — local-only, never committed (source + compiled binaries)
+/ask_e2e
+/emit_e2e
+/l3_e2e
+/subagent_e2e
+cmd/ask_e2e/
+cmd/emit_e2e/
+cmd/l3_e2e/
+cmd/subagent_e2e/
+
 # Build output
 dist/
 
