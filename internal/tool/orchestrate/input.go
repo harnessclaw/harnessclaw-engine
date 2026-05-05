@@ -40,15 +40,15 @@ var inputSchema = map[string]any{
 	"properties": map[string]any{
 		"intent": map[string]any{
 			"type":        "string",
-			"description": "Natural-language description of the multi-step task. The Planner expands this into a dependency graph of sub-agent steps.",
+			"description": "多步任务的自然语言描述。Planner 会把它展开成 sub-agent 步骤的依赖 DAG。",
 		},
 		"description": map[string]any{
 			"type":        "string",
-			"description": "Optional short (3-5 word) label for observability/logging.",
+			"description": "可选的 3-5 词标签，便于观测 / 日志。",
 		},
 		"available_agents": map[string]any{
 			"type":        "array",
-			"description": "Optional roster override. When empty, the engine's registered agents are used.",
+			"description": "可选的 agent 名单覆盖。为空时使用引擎已注册的全部 agent。",
 			"items":       map[string]any{"type": "string"},
 		},
 	},

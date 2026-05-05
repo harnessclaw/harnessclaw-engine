@@ -504,10 +504,11 @@ func TestBuildSubAgentSystemPrompt_GeneralPurposeDoesNotLeakEmma(t *testing.T) {
 	}
 }
 
-// TestBuildSubAgentSystemPrompt_TeamMemberKeepsPersonalIdentity verifies the
-// other half of the gate: team members (IsTeamMember=true) still get a
-// personalized "你叫XX..." identity on top of their shared profile.
-func TestBuildSubAgentSystemPrompt_TeamMemberKeepsPersonalIdentity(t *testing.T) {
+// TestBuildSubAgentSystemPrompt_WriterUsesSpecializedPrompt verifies that
+// TierSubAgent workers with a SystemPrompt set use that prompt for the role
+// section — not BuildFunctionalIdentity or BuildWorkerIdentity. For writer,
+// the specialized prompt contains "专业写作执行者" and workflow steps.
+func TestBuildSubAgentSystemPrompt_WriterUsesSpecializedPrompt(t *testing.T) {
 	prov := &subagentMockProvider{}
 	eng := newSubagentTestEngine(prov)
 	eng.config.MainAgentDisplayName = "emma"
@@ -522,13 +523,20 @@ func TestBuildSubAgentSystemPrompt_TeamMemberKeepsPersonalIdentity(t *testing.T)
 		sess,
 		nil,
 		prompt.WorkerProfile,
-		"writer", // IsTeamMember=true, DisplayName="小林"
+		"writer",
 		nil,
 		nil,
 	)
 
-	if !contains(got, "你叫小林") {
-		t.Errorf("team-member prompt should carry personalized identity; got:\n%s", got)
+	// Specialized system_prompt must be present.
+	if !contains(got, "专业写作执行者") {
+		t.Errorf("writer prompt missing specialized system_prompt; got:\n%s", got)
+	}
+	// Must NOT contain the emma persona or team-member framing.
+	for _, leak := range []string{"我是 emma", "你叫 emma", "团队的搭档"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("writer prompt leaked team identity (%q); got:\n%s", leak, got)
+		}
 	}
 }
 
@@ -977,6 +985,8 @@ func writeInputJSON(role, content string) string {
 }
 
 // submitInputJSON produces a SubmitTaskResult input pointing at a single ID.
+// No `result` field — caller must add one if the agent's OutputSchema
+// requires it (use submitInputWithResultJSON instead for that case).
 func submitInputJSON(artifactID, role, summary string) string {
 	body, _ := json.Marshal(map[string]any{
 		"intent":  "submit results",
@@ -984,6 +994,21 @@ func submitInputJSON(artifactID, role, summary string) string {
 		"artifacts": []map[string]any{
 			{"artifact_id": artifactID, "role": role},
 		},
+	})
+	return string(body)
+}
+
+// submitInputWithResultJSON is like submitInputJSON but includes a
+// `result` payload — required when the agent's TaskContract.OutputSchema
+// is non-empty (P0-1 enforcement).
+func submitInputWithResultJSON(artifactID, role, summary string, result map[string]any) string {
+	body, _ := json.Marshal(map[string]any{
+		"intent":  "submit results",
+		"summary": summary,
+		"artifacts": []map[string]any{
+			{"artifact_id": artifactID, "role": role},
+		},
+		"result": result,
 	})
 	return string(body)
 }
@@ -1391,7 +1416,9 @@ func TestQueryEngine_LeaderNameInjection(t *testing.T) {
 				Description: "测试搭档",
 			}
 			eng.defRegistry = agent.NewAgentDefinitionRegistry()
-			eng.defRegistry.Register(def)
+			if err := eng.defRegistry.Register(def); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
 
 			identity := buildWorkerIdentityForTest(eng, "tester")
 			if tc.mustContain != "" && !contains(identity, tc.mustContain) {

@@ -89,9 +89,30 @@ func retryLLMCall(
 			attemptOut = out
 		}
 
+		// Timing instrumentation: when something feels "stuck", we want to
+		// know which leg is responsible — the round-trip to the LLM
+		// gateway, the streaming consumption, or something between turns.
+		// One log line per attempt with msg/tool counts on the way in and
+		// elapsed + first-byte / completion deltas on the way out gives a
+		// clean picture without spamming under healthy traffic.
+		startedAt := time.Now()
+		logger.Info("llm.call begin",
+			zap.Int("attempt", attempt+1),
+			zap.Int("messages", len(req.Messages)),
+			zap.Int("tools", len(req.Tools)),
+			zap.Int("system_chars", len(req.System)),
+			zap.Int("max_tokens", req.MaxTokens),
+		)
 		result := doSingleLLMCall(ctx, prov, req, attemptOut)
+		elapsed := time.Since(startedAt)
 		if result.streamErr == nil {
-			// Success.
+			logger.Info("llm.call ok",
+				zap.Int("attempt", attempt+1),
+				zap.Duration("elapsed", elapsed),
+				zap.Int("text_chars", len(result.textBuf)),
+				zap.Int("tool_calls", len(result.toolCalls)),
+				zap.String("stop_reason", result.stopReason),
+			)
 			if attempt > 0 {
 				logger.Info("LLM call succeeded after retry",
 					zap.Int("attempt", attempt+1),
@@ -99,6 +120,11 @@ func retryLLMCall(
 			}
 			return result
 		}
+		logger.Warn("llm.call err",
+			zap.Int("attempt", attempt+1),
+			zap.Duration("elapsed", elapsed),
+			zap.Error(result.streamErr),
+		)
 
 		lastResult = result
 

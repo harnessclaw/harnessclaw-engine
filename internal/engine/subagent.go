@@ -20,6 +20,7 @@ import (
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -134,6 +135,26 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		},
 	}
 
+	// Look up the AgentDefinition early so the preamble composer can render
+	// the per-definition sub-agent contract (OutputSchema / Skills /
+	// Limitations) for TierSubAgent. The lookup is reused below for tool
+	// pool filtering and profile resolution, so this is just hoisting it.
+	var agentDef *agent.AgentDefinition
+	if qe.defRegistry != nil && cfg.SubagentType != "" {
+		agentDef = qe.defRegistry.Get(cfg.SubagentType)
+	}
+
+	// InputSchema validation: when the definition declares an input contract
+	// AND the caller provided structured inputs, validate before any LLM call.
+	// A mismatch means the dispatcher constructed a bad request — fail fast
+	// rather than letting the sub-agent guess from a partial prompt.
+	if agentDef != nil && len(agentDef.InputSchema) > 0 && len(cfg.Inputs) > 0 {
+		if fails := submittool.ValidateAgainstSchema(agentDef.InputSchema, cfg.Inputs); len(fails) > 0 {
+			return nil, fmt.Errorf("input schema validation failed for %q: %s",
+				cfg.SubagentType, strings.Join(fails, "; "))
+		}
+	}
+
 	// Step 5a: Compose available-artifacts preamble. Doc §6 mode A —
 	// instead of L2 pasting content into L3's prompt, the framework
 	// surfaces a list of trace-scoped artifact metadata so L3 can
@@ -142,23 +163,35 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// the common single-task path.
 	artPreamble := qe.composeArtifactPreamble(ctx, logger)
 
-	// Step 5a': Render the deliverable contract preamble (doc §3 M1).
+	// Step 5a': Render the per-spawn deliverable contract (doc §3 M1).
 	// Empty when the dispatcher didn't supply ExpectedOutputs, in which
 	// case we don't add anything — keeps simple-task prompts identical
 	// to the legacy path.
 	contractPreamble := agent.RenderExpectedOutputs(cfg.ExpectedOutputs)
 
-	// composeUserMessage stacks the two framework-injected blocks above
-	// the per-mode body. Order matters:
+	// Step 5a'': Render the per-definition sub-agent contract (TierSubAgent
+	// only). This carries the agent's PERMANENT contract — OutputSchema,
+	// Skills, Limitations — distinct from the per-spawn ExpectedOutputs.
+	// Without this preamble the L3 LLM has no way to learn its own output
+	// shape from the registry, so it would either guess (often wrong) or
+	// terminate on plain end_turn (rejected by the driver as not-yet-done).
+	subAgentPreamble := agent.RenderSubAgentContract(agentDef)
+
+	// composeUserMessage stacks the framework-injected blocks above the
+	// per-mode body. Order matters — the LLM reads top-down:
 	//   1. <available-artifacts>     — what the L3 may consume
-	//   2. <expected-outputs>        — what the L3 must produce
-	//   3. <task> ... </task>        — the actual instruction
-	// Reading top-down, the LLM sees inputs → contract → instruction,
-	// matching the order it should think in.
+	//   2. <sub-agent-contract>      — who I am + what shape I always produce
+	//   3. <expected-outputs>        — what THIS task additionally requires
+	//   4. <task> ... </task>        — the actual instruction
+	// Identity / contract come before task-specific overlay, matching the
+	// "general before specific" prompt-cache stability principle.
 	composeUserMessage := func(body string) string {
 		var parts []string
 		if artPreamble != "" {
 			parts = append(parts, artPreamble)
+		}
+		if subAgentPreamble != "" {
+			parts = append(parts, subAgentPreamble)
 		}
 		if contractPreamble != "" {
 			parts = append(parts, contractPreamble)
@@ -242,24 +275,48 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	//     tools that are blanket-blocked for sync sub-agents (e.g. Agent).
 	//   - Otherwise apply the default AgentType-based blacklist.
 	//
-	// Look up agent definition first so we know which path to take.
-	var agentDef *agent.AgentDefinition
-	if qe.defRegistry != nil && cfg.SubagentType != "" {
-		agentDef = qe.defRegistry.Get(cfg.SubagentType)
-	}
+	// agentDef was looked up above (step 5 — we hoisted it so the preamble
+	// composer could render the per-definition sub-agent contract).
 
 	pool := tool.NewToolPool(qe.registry, nil, nil)
-	if agentDef != nil && len(agentDef.AllowedTools) > 0 {
+
+	// L3 sub-agents get their AllowedTools (when set) augmented with the
+	// always-required terminal tools — SubmitTaskResult and EscalateToPlanner.
+	// Without this, a worker definition that whitelists ["WebSearch"]
+	// would have no way to submit OR escalate, and the driver would loop
+	// to nudge cap and fail. The augment happens BEFORE FilterByNames so
+	// the final pool definitively includes both.
+	allowedTools := agentDef.MaybeAugmentForSubAgent()
+
+	if len(allowedTools) > 0 {
 		// Explicit whitelist — bypass AgentType blacklist entirely.
-		pool = pool.FilterByNames(agentDef.AllowedTools)
+		pool = pool.FilterByNames(allowedTools)
 		logger.Debug("tool pool restricted by agent definition whitelist",
 			zap.String("agent", cfg.SubagentType),
 			zap.Int("tools", pool.Size()),
-			zap.Strings("allowed", agentDef.AllowedTools),
+			zap.Strings("allowed", allowedTools),
 		)
 	} else {
 		// No whitelist — apply default AgentType blacklist.
 		pool = pool.FilteredFor(cfg.AgentType)
+	}
+
+	// L3 invariant: dispatch tools are always stripped, even when not in
+	// AllowedTools. Defense in depth — Validate now rejects them at
+	// registration, but stale stored definitions might predate that check.
+	isSubAgent := agentDef != nil && agentDef.EffectiveTier() == agent.TierSubAgent
+	if isSubAgent {
+		pool = pool.WithoutNames(dispatchToolNames)
+		// P1-5: dangerous tools (Bash etc.) must be opt-in for sub-agents.
+		// `keepList` is the agent's declared whitelist — any dangerous
+		// tool NOT explicitly named there gets stripped. Effect: a worker
+		// with empty AllowedTools (legacy default) has zero dangerous
+		// tools regardless of what the AgentType blacklist let through.
+		var keepList []string
+		if agentDef != nil {
+			keepList = agentDef.AllowedTools
+		}
+		pool = pool.WithoutDangerousUnless(keepList)
 	}
 
 	// Step 7: Resolve prompt profile.
@@ -308,6 +365,16 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		}
 	}
 
+	// Per-agent temperature / OutputSchema flow from registry to loop.
+	// Both stay nil for definitions that don't set them, in which case
+	// the loop and the SubmitTaskResult validator behave as before.
+	var temperature *float64
+	var outputSchema map[string]any
+	if agentDef != nil {
+		temperature = agentDef.Temperature
+		outputSchema = agentDef.OutputSchema
+	}
+
 	lc := &loopConfig{
 		pool:                 pool,
 		profile:              profile,
@@ -321,6 +388,8 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		taskID:               cfg.TaskID,
 		taskStartedAt:        cfg.TaskStartedAt,
 		expectedOutputs:      cfg.ExpectedOutputs,
+		temperature:          temperature,
+		outputSchema:         outputSchema,
 	}
 
 	// Step 10: Emit subagent.start event.
@@ -376,7 +445,15 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	go func() {
 		defer close(done)
 		defer close(out)
-		loopResult = qe.runSubAgentLoop(ctx, sess, lc, out)
+		// Tier-based driver routing. TierSubAgent runs the strict L3
+		// driver (no further dispatch, mandatory submit-or-escalate);
+		// every other tier — including the implicit default — runs the
+		// existing coordinator loop unchanged.
+		if isSubAgent {
+			loopResult = qe.runSubAgentDriver(ctx, sess, lc, out)
+		} else {
+			loopResult = qe.runSubAgentLoop(ctx, sess, lc, out)
+		}
 	}()
 
 	for evt := range out {
@@ -555,13 +632,32 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		})
 	}
 
-	logger.Info("sub-agent completed",
+	// On non-success terminal, log at Warn with the actual reason /
+	// message / first few failure strings — the Info-level summary alone
+	// only carries counts, which forces every triage to dig through
+	// dispatch.out / WebSocket to find what actually went wrong.
+	completionFields := []zap.Field{
 		zap.String("terminal_reason", string(terminal.Reason)),
+		zap.String("terminal_message", truncateForLog(terminal.Message, 200)),
 		zap.Int("turns", terminal.Turn),
 		zap.Duration("elapsed", elapsed),
 		zap.Int("submitted_artifacts", len(loopResult.SubmittedArtifacts)),
 		zap.Int("contract_failures", len(loopResult.ContractFailures)),
-	)
+	}
+	if len(loopResult.ContractFailures) > 0 {
+		completionFields = append(completionFields,
+			zap.Strings("failure_sample", contractFailureSample(loopResult.ContractFailures, 3)))
+	}
+	if loopResult.NeedsPlanning {
+		completionFields = append(completionFields,
+			zap.Bool("needs_planning", true),
+			zap.String("escalation_reason", truncateForLog(loopResult.EscalationReason, 200)))
+	}
+	if terminal.Reason == types.TerminalCompleted {
+		logger.Info("sub-agent completed", completionFields...)
+	} else {
+		logger.Warn("sub-agent ended with non-success terminal", completionFields...)
+	}
 
 	// Step 14: Return SpawnResult with structured fields.
 	// - Output: full text (stored in TaskRegistry for reference)
@@ -617,6 +713,14 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		}
 	}
 
+	// L3-only signal: when the driver flipped NeedsPlanning, override
+	// status so the parent's tool_result content reflects it. The parent
+	// LLM reads "needs_planning" and re-plans rather than treating an
+	// escalation like a normal completion.
+	if loopResult.NeedsPlanning {
+		status = "needs_planning"
+	}
+
 	spawnResult := &agent.SpawnResult{
 		Output:       parentVisibleOutput.String(),
 		Summary:      summary,
@@ -632,6 +736,13 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		// reads these to decide between "integrate" / "retry" / "abort".
 		SubmittedArtifacts: loopResult.SubmittedArtifacts,
 		ContractFailures:   loopResult.ContractFailures,
+		// L3 escalation surface (TierSubAgent driver only). Zero-valued
+		// for L2 coordinator runs, populated when the L3 called
+		// EscalateToPlanner instead of SubmitTaskResult.
+		NeedsPlanning:      loopResult.NeedsPlanning,
+		EscalationReason:   loopResult.EscalationReason,
+		SuggestedNextSteps: loopResult.SuggestedNextSteps,
+		SelfCheckFailures:  loopResult.SelfCheckFailures,
 	}
 
 	// Record full result in TaskRegistry for future reference (context passing, debugging).
@@ -705,6 +816,15 @@ type loopConfig struct {
 	// Length > 0 = SubmitTaskResult required; loop refuses to terminate
 	// without a passing submit (M3 + M4 from doc §3).
 	expectedOutputs []types.ExpectedOutput
+	// temperature overrides the LLM sampling temperature for this loop.
+	// Nil leaves the request's Temperature at its zero value (provider
+	// uses its own default). Sourced from AgentDefinition.Temperature
+	// for sub-agents, nil for the legacy main-agent loop.
+	temperature *float64
+	// outputSchema is the per-agent declared structured output shape
+	// (AgentDefinition.OutputSchema). When set the SubmitTaskResult
+	// server-side validation matches submitted `result` against it.
+	outputSchema map[string]any
 }
 
 // runSubAgentLoop is a variant of runQueryLoop parameterized by loopConfig.
@@ -757,6 +877,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 		TaskID:          lc.taskID,
 		TaskStartedAt:   lc.taskStartedAt,
 		ExpectedOutputs: lc.expectedOutputs,
+		OutputSchema:    lc.outputSchema,
 	})
 
 	// Submission state. Tracked as the loop runs so we know whether
@@ -811,6 +932,9 @@ func (qe *QueryEngine) runSubAgentLoop(
 			System:    systemPrompt,
 			Tools:     lc.pool.Schemas(),
 			MaxTokens: lc.config.MaxTokens,
+		}
+		if lc.temperature != nil {
+			req.Temperature = *lc.temperature
 		}
 
 		logger.Debug("sub-agent LLM request",
@@ -1090,20 +1214,40 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 		profileHasRoleOverride := profile != nil &&
 			profile.SectionOverrides != nil &&
 			profile.SectionOverrides["role"] != ""
+
+		// Leaf isolation (your L3 design point #1):
+		//   "L3 sub-agent 不知道 Emma 是谁"
+		// For TierSubAgent we deliberately drop the leader name — the
+		// identity reads "你叫小林，是团队的搭档" instead of "你叫小林，是
+		// emma 团队的搭档". For coordinators (specialists / Plan / etc.)
+		// we still surface the leader because they DO need to coordinate
+		// with the user-facing agent.
+		leaderName := qe.config.MainAgentDisplayName
+		if def.EffectiveTier() == agent.TierSubAgent {
+			leaderName = ""
+		}
 		switch {
 		case def.SystemPrompt != "":
 			workerIdentity = def.SystemPrompt
+		case def.EffectiveTier() == agent.TierSubAgent:
+			// L3 sub-agents are pure functional — no team affiliation, no
+			// personality injection. BuildFunctionalIdentity generates a
+			// task-focused identity that doesn't reference emma or the team.
+			workerIdentity = texts.BuildFunctionalIdentity(
+				def.DisplayName,
+				def.Description,
+			)
 		case def.IsTeamMember:
 			workerIdentity = texts.BuildWorkerIdentity(
 				def.DisplayName,
-				qe.config.MainAgentDisplayName,
+				leaderName,
 				def.Description,
 				def.Personality,
 			)
 		case !profileHasRoleOverride:
 			workerIdentity = texts.BuildWorkerIdentity(
 				def.DisplayName,
-				qe.config.MainAgentDisplayName,
+				leaderName,
 				def.Description,
 				def.Personality,
 			)
@@ -1162,10 +1306,21 @@ func resolveSubAgentProfile(subagentType string) *prompt.AgentProfile {
 // it to populate SpawnResult.SubmittedArtifacts / ContractFailures so the
 // parent agent gets a structured view of "what landed" without parsing
 // streamed events.
+//
+// The L3 driver (runSubAgentDriver) reuses this type and additionally
+// populates NeedsPlanning / EscalationReason / SuggestedNextSteps when an
+// EscalateToPlanner call fired. The L2 path (runSubAgentLoop) leaves
+// those fields zero-valued.
 type subAgentLoopResult struct {
 	Terminal           types.Terminal
 	SubmittedArtifacts []types.ArtifactRef
 	ContractFailures   []string
+
+	// L3-only fields. Empty when the loop ran an L2 coordinator.
+	NeedsPlanning      bool
+	EscalationReason   string
+	SuggestedNextSteps string
+	SelfCheckFailures  []string
 }
 
 // maxSubmitNudges caps how many times the loop will re-prompt an L3 that

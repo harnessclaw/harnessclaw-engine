@@ -9,11 +9,11 @@ import (
 
 func newTestRegistry() *agent.AgentDefinitionRegistry {
 	reg := agent.NewAgentDefinitionRegistry()
-	reg.Register(&agent.AgentDefinition{
+	_ = reg.Register(&agent.AgentDefinition{
 		Name:      "explorer",
 		AgentType: tool.AgentTypeSync,
 	})
-	reg.Register(&agent.AgentDefinition{
+	_ = reg.Register(&agent.AgentDefinition{
 		Name:      "Plan",
 		AgentType: tool.AgentTypeSync,
 	})

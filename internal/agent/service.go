@@ -124,7 +124,10 @@ func (s *AgentService) ImportFromYAML(ctx context.Context, dir string) (int, []e
 			errs = append(errs, fmt.Errorf("import %q: %w", def.Name, err))
 			continue
 		}
-		s.registry.Register(def)
+		if err := s.registry.Register(def); err != nil {
+			errs = append(errs, fmt.Errorf("register %q: %w", def.Name, err))
+			continue
+		}
 		imported++
 	}
 
@@ -186,9 +189,20 @@ func (s *AgentService) LoadAllToRegistry(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load agent definitions: %w", err)
 	}
+	loaded := 0
 	for _, def := range defs {
-		s.registry.Register(def)
+		if err := s.registry.Register(def); err != nil {
+			s.logger.Warn("skipping invalid agent definition",
+				zap.String("name", def.Name),
+				zap.Error(err),
+			)
+			continue
+		}
+		loaded++
 	}
-	s.logger.Info("loaded agent definitions to registry", zap.Int("count", len(defs)))
+	s.logger.Info("loaded agent definitions to registry",
+		zap.Int("loaded", loaded),
+		zap.Int("total", len(defs)),
+	)
 	return nil
 }

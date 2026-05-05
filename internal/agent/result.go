@@ -55,4 +55,29 @@ type SpawnResult struct {
 	// success. Used by the parent to decide whether to retry, downgrade,
 	// or escalate.
 	ContractFailures []string
+
+	// NeedsPlanning is set true when the L3 sub-agent called
+	// EscalateToPlanner instead of SubmitTaskResult — i.e., it judged the
+	// task undoable as scoped and asked the parent to re-plan. The L2
+	// caller should NOT treat this as a hard failure; it's a structured
+	// hand-back. Only sub-agent runs (TierSubAgent) can produce this.
+	NeedsPlanning bool
+
+	// EscalationReason is the L3's explanation of why escalation was
+	// necessary. Populated only when NeedsPlanning is true. Surfaced to
+	// the planner so it can decide what to do (retry with wider scope,
+	// pick a different agent, ask the user, abort).
+	EscalationReason string
+
+	// SuggestedNextSteps is the L3's hint about how to recover. Optional;
+	// the planner is free to ignore it. Populated only when NeedsPlanning
+	// is true.
+	SuggestedNextSteps string
+
+	// SelfCheckFailures records per-failure reasons when the sub-agent's
+	// post-submission self-check rejected the output even after
+	// SubmitTaskResult passed schema validation. The parent loop reads
+	// this to decide whether the L3 needs another iteration. Empty when
+	// self-check passed or no self-check was configured.
+	SelfCheckFailures []string
 }

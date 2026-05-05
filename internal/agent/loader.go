@@ -37,7 +37,9 @@ func (r *AgentDefinitionRegistry) LoadFromDirectory(dir string) error {
 			return fmt.Errorf("load agent definition %s: %w", path, err)
 		}
 		def.Source = path
-		r.Register(def)
+		if err := r.Register(def); err != nil {
+			return fmt.Errorf("register agent definition %s: %w", path, err)
+		}
 	}
 	return nil
 }

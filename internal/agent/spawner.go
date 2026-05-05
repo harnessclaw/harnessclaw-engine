@@ -116,6 +116,19 @@ type SpawnConfig struct {
 	// artifact as my output" form of failure #8.
 	// Zero means "no temporal check" (legacy path).
 	TaskStartedAt time.Time
+
+	// Inputs carries structured key-value data for the sub-agent's task.
+	// When the target AgentDefinition has an InputSchema, SpawnSync
+	// validates Inputs against it before spawning — a validation failure
+	// returns an error immediately, before any LLM call is made. When
+	// InputSchema is absent or Inputs is nil, no validation is performed.
+	//
+	// Values here are NOT automatically injected into the Prompt string;
+	// the caller is responsible for building a Prompt that references the
+	// structured inputs if the agent should see them as natural language.
+	// Inputs is primarily a machine-readable contract check at the
+	// dispatcher boundary.
+	Inputs map[string]any
 }
 
 // Message is a minimal message type for fork-mode context passing.

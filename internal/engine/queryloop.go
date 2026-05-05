@@ -473,10 +473,18 @@ func (qe *QueryEngine) processWithAgent(
 		}
 
 		// Single agent mode: SpawnSync directly.
+		//
+		// SubagentType MUST be def.Name (the registry key), not def.Profile
+		// (a prompt-profile selector). SpawnSync uses cfg.SubagentType to
+		// look the AgentDefinition back up in the registry — passing the
+		// profile name silently misses the lookup, which then makes
+		// EffectiveTier() return the default TierCoordinator and bypass the
+		// L3 driver routing. Specialists / Agent tools already pass def.Name;
+		// this @-mention path was the odd one out.
 		cfg := &agent.SpawnConfig{
 			Prompt:          prompt,
 			AgentType:       def.AgentType,
-			SubagentType:    def.Profile,
+			SubagentType:    def.Name,
 			Name:            def.Name,
 			Description:     def.Description,
 			Model:           def.Model,

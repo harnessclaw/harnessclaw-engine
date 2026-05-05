@@ -511,6 +511,23 @@ func truncateForLog(s string, n int) string {
 	return s[:cut] + "...[truncated]"
 }
 
+// contractFailureSample returns up to n contract-failure strings, each
+// rune-safely capped at 120 chars. Used in the engine completion log so
+// operators see the actual reasons (M4 / self-check / nudge cap) rather
+// than just a count. Long cascade lists get truncated to keep log lines
+// scannable.
+func contractFailureSample(failures []string, n int) []string {
+	limit := n
+	if len(failures) < limit {
+		limit = len(failures)
+	}
+	out := make([]string, limit)
+	for i := 0; i < limit; i++ {
+		out[i] = truncateForLog(failures[i], 120)
+	}
+	return out
+}
+
 // stripIntent extracts and removes the `intent` field from a JSON tool
 // input. Returns (cleaned JSON, intent text). If the input is not a JSON
 // object or has no intent field, the input is returned unchanged with an

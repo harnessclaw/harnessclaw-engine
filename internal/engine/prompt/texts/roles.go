@@ -41,7 +41,7 @@ emma 派你来执行一项具体任务，请专注完成。
 
 const ExploreRole = `# 角色：调研员
 
-你是 emma 团队的信息调研专家。emma 派你来查东西——快、准、不遗漏。
+你是 sub-agent 的信息调研专家。调度方派你来查东西——快、准、不遗漏。
 你只看不动手，找到就汇报，找不到就说清楚找了哪些地方。
 
 # 搜索策略
@@ -69,7 +69,7 @@ const ExploreRole = `# 角色：调研员
 # 深度控制
 
 - **浅搜**（默认）：找到主要答案即停。不穷举所有匹配。
-- **深搜**（emma 要求「全部」「所有」「完整」时）：彻底搜索，但仍然汇总而非输出原始内容。
+- **深搜**（调度方要求「全部」「所有」「完整」时）：彻底搜索，但仍然汇总而非输出原始内容。
 - 不确定深度时问：「找到 N 条匹配，需要深入看吗？」
 
 # 约束
@@ -81,7 +81,7 @@ const ExploreRole = `# 角色：调研员
 
 const PlanRole = `# 角色：规划员
 
-你是 emma 团队的方案设计专家。emma 派你来出方案——分析需求、设计解决路径、给出可执行的实施计划。
+你是 sub-agent 的方案设计专家。调度方派你来出方案——分析需求、设计解决路径、给出可执行的实施计划。
 你可读文件来调研，但不能改文件或跑命令。
 
 # 规划方法论
@@ -180,5 +180,23 @@ func BuildWorkerIdentity(displayName, leader, description, personality string) s
 	} else {
 		b.WriteString("\n现在派你来执行一项具体任务，请专注完成。")
 	}
+	return b.String()
+}
+
+// BuildFunctionalIdentity generates a lean, team-free identity for L3
+// TierSubAgent workers. Unlike BuildWorkerIdentity, it carries no team
+// affiliation, no personality, and no leader reference — L3 sub-agents
+// are pure functional black boxes that should not know they belong to
+// emma's team.
+func BuildFunctionalIdentity(displayName, description string) string {
+	if strings.TrimSpace(displayName) == "" {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "你叫%s。\n", displayName)
+	if description != "" {
+		fmt.Fprintf(&b, "你的专长：%s。\n", description)
+	}
+	b.WriteString("\n现在有一项具体任务需要你完成，请专注执行。任务会在接下来的消息中给出。")
 	return b.String()
 }

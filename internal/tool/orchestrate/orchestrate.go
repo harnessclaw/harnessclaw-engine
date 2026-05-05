@@ -41,17 +41,24 @@ const PlannerSubagentType = "planner"
 // degraded:true so emma can fall back to Phase-1 serial Agent dispatch.
 const MaxPlannerAttempts = 3 // 1 initial + 2 retries (matches doc §八)
 
-// AgentRoster supplies the list of subagent_type strings the Planner is
-// allowed to reference. main.go wires this from the agent-definition
-// registry plus the built-in profile names.
+// AgentRoster supplies the Planner with the available sub-agent inventory.
+// main.go wires this from the agent-definition registry plus the built-in
+// profile names.
 type AgentRoster interface {
+	// AvailableSubagentTypes returns agent names for the allowed-set check.
 	AvailableSubagentTypes() []string
+	// ListForPlanner returns the rich per-agent listing (description,
+	// limitations, example tasks, cost tier) the Planner uses to pick
+	// the right agent. May return nil — buildPlannerPrompt falls back to
+	// the name-only format when it does.
+	ListForPlanner() []agent.PlannerListing
 }
 
 // staticRoster lets callers / tests inject a fixed list.
 type staticRoster []string
 
-func (s staticRoster) AvailableSubagentTypes() []string { return []string(s) }
+func (s staticRoster) AvailableSubagentTypes() []string    { return []string(s) }
+func (s staticRoster) ListForPlanner() []agent.PlannerListing { return nil }
 
 // NewStaticRoster builds an AgentRoster from a slice of names — handy for tests.
 func NewStaticRoster(names []string) AgentRoster { return staticRoster(names) }
@@ -141,7 +148,8 @@ func (t *OrchestrateTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 	)
 
 	// --- Plan phase: ask the Planner up to MaxPlannerAttempts times. ---
-	plan, plannerErr := t.runPlanner(ctx, in.Intent, available, parentSessionID, parentOut, allowedSet)
+	listings := t.roster.ListForPlanner()
+	plan, plannerErr := t.runPlanner(ctx, in.Intent, available, listings, parentSessionID, parentOut, allowedSet)
 	if plan == nil {
 		// Degrade: tell emma to fall back to serial Agent.
 		t.logger.Warn("orchestrate degrading to phase-1",
@@ -220,11 +228,12 @@ func (t *OrchestrateTool) runPlanner(
 	ctx context.Context,
 	intent string,
 	available []string,
+	listings []agent.PlannerListing,
 	parentSessionID string,
 	parentOut chan<- types.EngineEvent,
 	allowedSet map[string]bool,
 ) (*exec.Plan, error) {
-	prompt := buildPlannerPrompt(intent, available)
+	prompt := buildPlannerPrompt(intent, available, listings)
 	var lastErr error
 	var lastSummary string
 
@@ -237,7 +246,7 @@ func (t *OrchestrateTool) runPlanner(
 
 		retryPrompt := prompt
 		if attempt > 1 {
-			retryPrompt = appendRetryNote(prompt, lastErr, lastSummary)
+			retryPrompt = appendRetryHint(prompt, lastErr, lastSummary)
 		}
 
 		cfg := &agent.SpawnConfig{
@@ -353,24 +362,86 @@ func jsonResult(payload map[string]any, metadata map[string]any, isError bool) *
 	}
 }
 
-func buildPlannerPrompt(intent string, available []string) string {
+// buildPlannerPrompt constructs the Planner sub-agent's user message.
+// When listings is non-empty, each agent's description / limitations /
+// example tasks / cost tier are included so the Planner can make
+// informed routing decisions. When listings is nil (tests / coordinators
+// without a rich registry), falls back to the name-only format.
+func buildPlannerPrompt(intent string, available []string, listings []agent.PlannerListing) string {
 	var b strings.Builder
 	b.WriteString("# 任务\n\n请把下面的用户意图拆解成可执行的计划 JSON。\n\n")
 	b.WriteString("# 用户意图\n\n")
 	b.WriteString(strings.TrimSpace(intent))
-	b.WriteString("\n\n# 可用搭档（subagent_type）\n\n")
+	b.WriteString("\n\n# 可用搭档\n\n")
+
+	// Build a lookup from name → listing for O(1) augmentation below.
+	listingByName := make(map[string]agent.PlannerListing, len(listings))
+	for _, l := range listings {
+		listingByName[l.Name] = l
+	}
+
 	if len(available) == 0 {
 		b.WriteString("- worker（默认执行型）\n")
 	} else {
-		for _, a := range available {
-			fmt.Fprintf(&b, "- %s\n", a)
+		for _, name := range available {
+			if l, ok := listingByName[name]; ok {
+				// Rich format: give the Planner the metadata it needs to
+				// choose correctly. Only include non-empty sections so
+				// lean definitions don't produce noisy blank lines.
+				label := name
+				if l.DisplayName != "" {
+					label = fmt.Sprintf("%s（%s）", name, l.DisplayName)
+				}
+				costStr := ""
+				switch l.CostTier {
+				case agent.CostCheap:
+					costStr = " [cheap]"
+				case agent.CostExpensive:
+					costStr = " [expensive]"
+				}
+				fmt.Fprintf(&b, "## %s%s\n", label, costStr)
+				if l.Description != "" {
+					fmt.Fprintf(&b, "描述：%s\n", l.Description)
+				}
+				if len(l.Skills) > 0 {
+					fmt.Fprintf(&b, "技能标签：%s\n", strings.Join(l.Skills, " / "))
+				}
+				if len(l.Limitations) > 0 {
+					b.WriteString("不适合：")
+					for i, lim := range l.Limitations {
+						if i > 0 {
+							b.WriteString("；")
+						}
+						b.WriteString(lim)
+					}
+					b.WriteString("\n")
+				}
+				if len(l.ExampleTasks) > 0 {
+					b.WriteString("示例任务：")
+					show := l.ExampleTasks
+					if len(show) > 2 {
+						show = show[:2] // keep prompt short
+					}
+					for i, ex := range show {
+						if i > 0 {
+							b.WriteString("；")
+						}
+						b.WriteString(ex)
+					}
+					b.WriteString("\n")
+				}
+				b.WriteString("\n")
+			} else {
+				// Fallback: name only (built-in profiles without a registry entry).
+				fmt.Fprintf(&b, "- %s\n", name)
+			}
 		}
 	}
-	b.WriteString("\n严格按 system prompt 中的 JSON Schema 返回，不要多写正文。")
+	b.WriteString("严格按 system prompt 中的 JSON Schema 返回，不要多写正文。")
 	return b.String()
 }
 
-func appendRetryNote(base string, lastErr error, lastSummary string) string {
+func appendRetryHint(base string, lastErr error, lastSummary string) string {
 	var b strings.Builder
 	b.WriteString(base)
 	b.WriteString("\n\n# 上次输出存在问题\n")
@@ -384,25 +455,22 @@ func appendRetryNote(base string, lastErr error, lastSummary string) string {
 	return b.String()
 }
 
-const orchestrateDescription = `Decompose a multi-step intent into a plan and execute it as a parallel DAG of sub-agents.
+const orchestrateDescription = `把多步意图拆成计划，按 sub-agent DAG 并行执行。
 
-Use Orchestrate ONLY when the user's request needs MULTIPLE sub-agent steps with explicit ordering or data flow between them (e.g., "research → analyze → write report"). For a single one-shot task, prefer the Agent tool — it has lower overhead and gives you direct control.
+仅当用户请求需要多个 sub-agent 步骤、且步骤间有明确顺序或数据依赖时（如"调研 → 分析 → 写报告"）才用 Orchestrate。单步一次搞定的任务用 Agent 工具——开销更小，控制更直接。
 
-How it works:
-- Pass a one-line natural-language ` + "`intent`" + ` describing the overall goal.
-- An internal Planner converts intent → plan JSON (steps with dependencies).
-- Steps with no remaining dependencies run in parallel.
-- Each step's <summary> is auto-injected as context for its dependents.
-- The tool returns { status, steps, deliverables }.
+工作流程：
+- 传入一行自然语言 ` + "`intent`" + ` 描述总体目标。
+- 内部 Planner 把 intent 转成 plan JSON（带依赖的步骤列表）。
+- 没有未完成依赖的步骤会并行执行。
+- 每步的 <summary> 自动注入到它依赖步骤的上下文里。
+- 工具返回 { status, steps, deliverables }。
 
-Failure modes:
-- If the Planner cannot produce a valid plan after 3 attempts, the tool returns
-  { status: "plan_failed", degraded: true }. When you see degraded:true, fall
-  back to issuing serial Agent calls yourself.
-- Individual step failures cascade as "skipped" to dependent steps; the overall
-  status becomes "partial_completed" if at least one step succeeded.
+失败模式：
+- Planner 连续 3 次产不出合法 plan 时，返回 { status: "plan_failed", degraded: true }。看到 degraded:true 时，请改成自己手动串行调 Agent。
+- 单步失败会级联标记下游步骤为 "skipped"；只要有一步成功，总 status 就是 "partial_completed"。
 
-Notes:
-- Maximum 10 steps per plan.
-- Sub-agents inside Orchestrate cannot recursively call Orchestrate or Agent.
-- ` + "`intent`" + ` is required; ` + "`description`" + ` and ` + "`available_agents`" + ` are optional.`
+注意：
+- 单个 plan 最多 10 步。
+- Orchestrate 内部的 sub-agent 不能递归调 Orchestrate 或 Agent。
+- ` + "`intent`" + ` 必填；` + "`description`" + ` 和 ` + "`available_agents`" + ` 可选。`

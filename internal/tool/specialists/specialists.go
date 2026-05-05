@@ -96,9 +96,21 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 
 	in, err := parseInput(raw)
 	if err != nil {
+		// Without this Warn log, a malformed Specialists call only shows
+		// up in emma's tool_result — the operator has no way to see WHY
+		// emma's dispatch was rejected without inspecting the WebSocket.
+		t.logger.Warn("Specialists: parse input failed",
+			zap.Error(err),
+			zap.Int("raw_len", len(raw)),
+			zap.String("raw_preview", truncate(string(raw), 200)),
+		)
 		return errResult("invalid input: " + err.Error()), nil
 	}
 	if err := in.validate(); err != nil {
+		t.logger.Warn("Specialists: validate input failed",
+			zap.Error(err),
+			zap.Int("task_len", len(in.Task)),
+		)
 		return errResult(err.Error()), nil
 	}
 
@@ -207,10 +219,22 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	content := result.Output
 	if isError {
 		content = agent.BuildFailureContent(result, "Specialists")
-		t.logger.Warn("specialists failed; surfacing structured error to parent",
+		// Same "log content not just count" policy as Task tool.
+		// terminal_message is the highest-signal field — it carries the
+		// actual reason string from the engine ("L3 declined to submit
+		// after 3 reminders" / "SubmitTaskResult rejected 3 times" / etc).
+		var reason, msg string
+		if result.Terminal != nil {
+			reason = string(result.Terminal.Reason)
+			msg = result.Terminal.Message
+		}
+		t.logger.Warn("Specialists: sub-agent failed",
 			zap.String("agent_id", result.AgentID),
 			zap.String("status", result.Status),
+			zap.String("terminal_reason", reason),
+			zap.String("terminal_message", truncate(msg, 200)),
 			zap.Int("contract_failures", len(result.ContractFailures)),
+			zap.Strings("failure_sample", failureSample(result.ContractFailures, 3)),
 		)
 	}
 
@@ -254,25 +278,44 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-const specialistsDescription = `Delegate a professional task to Specialists — the L2 coordinator.
+// failureSample returns up to n failure strings, each capped for log
+// readability. Used by the failure-side Warn log so operators see the
+// first few actual reasons (M4 / self-check / nudge cap, etc.) without
+// the line length blowing up on a 50-failure cascade.
+func failureSample(failures []string, n int) []string {
+	if len(failures) <= n {
+		out := make([]string, len(failures))
+		for i, f := range failures {
+			out[i] = truncate(f, 120)
+		}
+		return out
+	}
+	out := make([]string, n)
+	for i := 0; i < n; i++ {
+		out[i] = truncate(failures[i], 120)
+	}
+	return out
+}
 
-Use Specialists for any "professional output" — writing, reports, code, data analysis, deep research, multi-step coordination. emma never executes these directly; she hands them to Specialists, who decomposes the task, dispatches L3 sub-agents (writer / researcher / analyst / developer / lifestyle / scheduler / general-purpose), integrates results, performs quality checks, and returns a polished output.
+const specialistsDescription = `把"专业产出"任务派给 Specialists（L2 调度统筹者）。
 
-emma's responsibility BEFORE calling this tool:
-- Clarify ambiguity via AskUserQuestion (Specialists cannot ask the user)
-- Optionally do 1-2 light WebSearch / TavilySearch lookups for context
-- Forward the user's intent in their own words plus whatever clarification answers they gave — DO NOT restructure into "requirements: 1. 2. 3.", DO NOT invent specifications the user never asked for (length, format, section headings, deadlines). Decomposition and structuring are Specialists' job, not emma's.
+任何"专业产出"——写作、报告、代码、数据分析、深度调研、多步协调——都用 Specialists。emma 不直接做这些，而是交给 Specialists：拆任务、派 L3 sub-agent（writer / researcher / analyst / developer / lifestyle / scheduler / general-purpose）、整合结果、做质量检查、返回打磨好的产出。
 
-Input:
-- task (required): the user's clarified intent — verbatim or lightly normalized prose, not a packaged brief. Keeping the user's wording lets Specialists make its own structural choices.
-- description (optional): a 3-5 word label for observability
+调用前 emma 的职责：
+- 通过 AskUserQuestion 把歧义澄清干净（Specialists 不能向用户追问）。
+- 可选地做 1-2 次轻量 WebSearch / TavilySearch 补背景。
+- 把用户的原话 + 澄清后的答案原样转发——**不要**重组成"需求：1. 2. 3."，**不要**自己编出用户没要求的规范（字数、格式、章节、截止时间）。拆解和结构化是 Specialists 的事，不是 emma 的。
 
-Behaviour:
-- Synchronous — blocks until Specialists finishes
-- Returns the integrated output starting with a <summary> tag, plus any deliverables
-- Handles single-step and multi-step tasks transparently — emma does not pick
+输入：
+- task（必填）：澄清后的用户意图——原话或轻度规整后的散文，不是打包好的简报。保留用户语气，让 Specialists 自己做结构决策。
+- description（可选）：3-5 词的标签，便于观测。
 
-Notes:
-- Specialists has its own LLM loop and uses the Task tool internally to spawn L3.
-- Sub-agents inside Specialists cannot recursively call Specialists or Orchestrate.
-- Specialists cannot prompt the user (no AskUserQuestion access).`
+行为：
+- 同步——会阻塞到 Specialists 跑完。
+- 返回的产出以 <summary> 开头，附带产出文件 / artifact。
+- 单步 / 多步任务都由 Specialists 自己判断处理，emma 不挑。
+
+注意：
+- Specialists 有自己的 LLM loop，内部用 Task 工具派 L3。
+- Specialists 内的 sub-agent 不能递归调 Specialists 或 Orchestrate。
+- Specialists 不能向用户追问（没有 AskUserQuestion 访问权）。`

@@ -40,11 +40,11 @@ var inputSchema = map[string]any{
 	"properties": map[string]any{
 		"task": map[string]any{
 			"type":        "string",
-			"description": "The pre-clarified task to delegate to the L2 Specialists coordinator. Specialists will decompose it into sub-agent steps, dispatch them, integrate results, and return a polished output. emma should call AskUserQuestion BEFORE this tool if the task is ambiguous — Specialists cannot ask the user.",
+			"description": "已澄清完毕的任务，派给 L2 Specialists 协调者。Specialists 会拆步、派 sub-agent、整合结果、返回打磨好的产出。任务有歧义时 emma 必须先 AskUserQuestion 澄清——Specialists 不能向用户追问。",
 		},
 		"description": map[string]any{
 			"type":        "string",
-			"description": "Optional 3-5 word label for observability/logging.",
+			"description": "可选的 3-5 词标签，便于观测 / 日志。",
 		},
 	},
 	"required": []string{"task"},
