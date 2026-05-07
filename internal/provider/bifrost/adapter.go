@@ -362,6 +362,15 @@ func (a *Adapter) buildChatRequest(model string, req *provider.ChatRequest) *sch
 }
 
 // consumeStream reads from the Bifrost stream channel and emits types.StreamEvent values.
+//
+// We return as soon as the upstream emits a chunk with FinishReason set —
+// the Bifrost SDK's chunk channel does NOT close promptly after the final
+// chunk; it stays open until the underlying HTTP socket hits its idle
+// timeout (~400s for OpenAI). Without this early return, every call
+// "hangs" for 6m40s after the model finishes, even though MessageEnd was
+// already emitted upstream and the client got the answer in seconds.
+// See logs around 2026-05-06 for the smoking gun (tail_after_last_chunk
+// ~6m40s consistently across runs).
 func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out chan<- types.StreamEvent) error {
 	var toolCalls []toolCallAccumulator
 
@@ -440,6 +449,12 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 				StopReason: stopReason,
 				Usage:      usage,
 			}
+
+			// Early return — see function-level comment. The upstream
+			// channel will be drained by GC; we don't need to wait for
+			// it to close on its own (which the SDK doesn't do until
+			// socket idle timeout fires, ~400s later).
+			return nil
 		}
 	}
 	return nil
