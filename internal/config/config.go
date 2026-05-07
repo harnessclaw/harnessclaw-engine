@@ -231,7 +231,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("channels.websocket.enabled", true)
 	v.SetDefault("channels.websocket.host", "0.0.0.0")
 	v.SetDefault("channels.websocket.port", 8081)
-	v.SetDefault("channels.websocket.path", "/ws")
+	v.SetDefault("channels.websocket.path", "/v1/ws")
 	v.SetDefault("channels.websocket.write_buffer", 256)
 	v.SetDefault("channels.websocket.ping_interval", "30s")
 	v.SetDefault("channels.websocket.write_timeout", "10s")

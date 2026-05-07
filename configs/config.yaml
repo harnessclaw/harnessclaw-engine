@@ -51,7 +51,7 @@ channels:
     enabled: true
     host: "0.0.0.0"
     port: 8081
-    path: "/ws"
+    path: "/v1/ws"
     write_buffer: 256
     ping_interval: "30s"
     write_timeout: "10s"

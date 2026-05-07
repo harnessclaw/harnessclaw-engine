@@ -38,6 +38,8 @@ import (
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/compact"
+	"harnessclaw-go/internal/engine/prompter"
+	"harnessclaw-go/internal/engine/resume"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
@@ -450,19 +452,46 @@ func main() {
 	middlewares := buildMiddlewareChain(cfg, logger)
 	channels := make(map[string]channel.Channel)
 
+	// The router talks to L1 — that is the only user-facing engine.
+	// L2 sub-agents are reached only indirectly via Agent/Orchestrate tools.
+	rtr := router.New(l1, channels, middlewares, logger)
+
 	// Register WebSocket channel if enabled.
+	//
+	// Recovery wiring: a WaitStore mounted on the same SQLite DB as the
+	// session store; a Prompter that persists outstanding prompts; and
+	// a TextResumer that re-enters the engine via rtr.Handle when a
+	// reply arrives post-restart. The channel is told about all three
+	// before Start so the upgrade path can advertise the recovery
+	// capability and replay unanswered prompts to reconnecting clients.
 	if cfg.Channel.WebSocket.Enabled {
+		waitStore, err := sqlitesess.NewWaitStore(store.DB())
+		if err != nil {
+			logger.Fatal("failed to initialise wait store", zap.Error(err))
+		}
+		waitPrompter := prompter.New(prompter.Config{Store: waitStore})
+
 		wsCh := wsch.New(cfg.Channel.WebSocket, nil, logger)
+		wsCh.SetPrompter(waitPrompter)
+		wsCh.SetResumer(resume.New(rtr.Handle, logger))
+		wsCh.GetTranslator().SetIssuer(waitPrompter)
+
+		// Periodic janitor: every hour, sweep waits that have passed
+		// their TTL (15d default) so abandoned conversations don't
+		// accumulate forever. Hourly cadence is fine — a wait may
+		// linger up to 60 min past nominal expiry, which matters for
+		// nothing in practice given a 15-day TTL.
+		janitorCtx, janitorCancel := context.WithCancel(context.Background())
+		defer janitorCancel()
+		go runWaitJanitor(janitorCtx, waitPrompter, logger)
+
 		channels["websocket"] = wsCh
 		logger.Info("websocket channel registered",
 			zap.String("addr", fmt.Sprintf("%s:%d", cfg.Channel.WebSocket.Host, cfg.Channel.WebSocket.Port)),
 			zap.String("path", cfg.Channel.WebSocket.Path),
+			zap.Bool("recovery_enabled", true),
 		)
 	}
-
-	// The router talks to L1 — that is the only user-facing engine.
-	// L2 sub-agents are reached only indirectly via Agent/Orchestrate tools.
-	rtr := router.New(l1, channels, middlewares, logger)
 	logger.Info("router initialized",
 		zap.Int("middleware_count", len(middlewares)),
 		zap.Int("channel_count", len(channels)),
@@ -685,6 +714,37 @@ func runIdleCleanup(ctx context.Context, mgr *session.Manager, logger *zap.Logge
 			archived := mgr.CleanupIdle(ctx)
 			if archived > 0 {
 				logger.Info("idle session cleanup", zap.Int("archived", archived))
+			}
+		}
+	}
+}
+
+// runWaitJanitor periodically deletes pending_waits rows whose
+// ExpiresAt has passed. Without this the table accumulates one row
+// per abandoned conversation forever — a user who closes their browser
+// mid-prompt never returns to delete the wait, so the TTL sweep is the
+// only ground truth.
+//
+// Frequency is intentionally modest (1 hour): with a 15-day TTL a
+// hour of slack past nominal expiry is irrelevant, and hourly DELETE
+// is cheap on the single-writer SQLite (one indexed range delete).
+func runWaitJanitor(ctx context.Context, p *prompter.Prompter, logger *zap.Logger) {
+	const interval = time.Hour
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n, err := p.SweepExpired(ctx)
+			if err != nil {
+				logger.Warn("wait janitor sweep failed", zap.Error(err))
+				continue
+			}
+			if n > 0 {
+				logger.Info("wait janitor reclaimed expired prompts", zap.Int("count", n))
 			}
 		}
 	}
