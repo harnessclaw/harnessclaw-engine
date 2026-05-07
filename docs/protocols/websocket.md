@@ -2,6 +2,9 @@
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 1.16 | 2026-05-07 | **Plan/Skill 命名清理 + 执行者运行时决策 + PlanCoordinator emit 接入（Breaking 仅限 v1.15 早期客户端）**：(I) 命名清理：v1.15 引入的 plan-step 字段从 `skill` 重命名为 `subagent_type`，列表字段从 `available_skills` 重命名为 `available_subagents`，避免与 `AgentDefinition.Skills`（L3 能力标签）混淆；(II) 执行者运行时决策：plan-step 的执行者决策从"Planner 拆步骤时绑定"挪到"Scheduler 派活前由 SubagentResolver 决策"；`subagent_type` 字段改为可选（`omitempty`），标准前端不渲染；(III) **PlanCoordinator 全量 emit**：Plan 模式的 PlanCoordinator + Scheduler 现在按 v1.11 §6.13 协议 emit `plan.created` / `plan.updated` / `plan.completed` / `plan.failed` 与 `step.dispatched` / `step.completed` / `step.failed` / `step.skipped`。事件类型与 v1.11 完全一致；payload 字段（`plan_id`/`goal`/`strategy`/`tasks[]` / `step_id`/`subagent_type`/`output_summary`/...）也对齐。**但 v1.16 的 PlanCoordinator 路径 envelope/display/metrics 字段为空（保留扩展点）**，客户端按 `type` 字段路由仍可工作；带 envelope 的完整版仍由 Orchestrate 编排器产出。要点：(1) **重命名**：`plan.proposed.steps[].skill` → `subagent_type`，`plan.proposed.available_skills` → `available_subagents`；同步影响 `plan.response.plan_steps[].skill` → `subagent_type`；(2) **可选**：`subagent_type` 字段改为可选（`omitempty`）；(3) **执行者锁定（高级路径）**：客户端可在 `plan.response.plan_steps[].subagent_type` 显式指定 L3，服务端校验在 `available_subagents` 内；(4) **HeuristicPlanner 行为变化**：不再产出含 `subagent_type` 的步骤，全部交由 SubagentResolver 决策；(5) **新 emit 路径**：之前 PlanCoordinator 只 emit `plan.proposed`/`plan.approved`；现在 plan_created → step_dispatched → step_completed → plan_completed 全量贯通（详见 §6.13.6 / §6.13.7 — 事件类型不变，payload 字段一致）。详见 §5.8、§6.15、§6.13.6、§6.13.7、§6.16 |
+| 1.15 | 2026-05-07 | **Plan 模式用户确认（向前兼容）**：plan 模式下，框架可在执行前把 Planner 拆出的 step DAG 推给前端供用户审阅、增删改顺序后再继续。要点：(1) **新字段** `user.message.plan_confirmation: "auto" \| "required"`（可选，默认 `auto` 不暂停）；(2) **新事件 `plan.proposed`**（服务→客户端）：携带 `plan_id` / `goal` / `rationale` / `steps[]`（每条含 `id`/`skill`/`description`/`prompt`/`depends_on`） / `available_skills[]`（v1.15 命名，v1.16 重命名为 `subagent_type` / `available_subagents`），客户端渲染编辑界面后通过 `plan.response` 回执；(3) **新消息 `plan.response`**（客户端→服务端）：`plan_id` / `plan_approved: bool` / 可选 `plan_steps[]`（编辑后的 step 列表，留空表示按原 plan 跑） / 可选 `plan_reason`；(4) **新事件 `plan.approved`**：服务端确认后回执，trace 可见；(5) 服务端校验编辑后的 plan：循环检测 / 前向依赖 / `skill` 必须在 `available_skills` 内，校验失败按"用户拒绝"处理走 fallback；(6) 仅首次 plan 触发确认，框架内部 re-plan 不重复打扰用户；(7) `plan_confirmation` 缺失 / `auto` 时行为不变（plan 模式直接跑）。详见 §5.1（plan_confirmation 字段）、§5.8、§6.15 |
+| 1.14 | 2026-05-06 | **L2 Coordinator Mode（向前兼容）**：`user.message` 新增可选字段 `coordinator_mode`，操作员可在 turn 粒度显式指定 L2 Specialists 的协调模式（`react` 默认 / `plan` 计划式）。空值时由服务端 ModeSelector 基于任务复杂度启发式自动选择，并在 ReAct 失败时自动升级到 Plan（仅 Specialists 启用）。要点：(1) **新字段**：`user.message.coordinator_mode: string`（可选），未识别值降级到 `react` + 服务端 warn 日志；(2) **`tool.end` metadata 加 3 个键**：`coordinator_mode`（最终运行模式 `react`/`plan`）、`escalated_from_mode`（自动升级时为 `react`，否则空）、`budget_spent`（含 `tokens_used`/`llm_calls`/`failures`/`elapsed_ms`/`exceeded`/`exceeded_why`），便于前端渲染"本任务跑了 plan 模式"标签 + 预算耗尽时降级原因；(3) **服务端事件**：ReAct→Plan 升级时 emit `coordinator.escalation`（render_hint），客户端可显示"专业团从快路径升级到完整规划"；(4) 旧客户端不带字段保持现有 ReAct 行为不变。详见 §5.1、§6.4 |
 | 1.13 | 2026-05-02 | **Artifact 协议 + 契约式产出（向前兼容）**：把 L3 的产出从"LLM 自述"升级为"框架强校验"，覆盖设计文档八类失败模式中的前 5 种。改动只增不删，旧客户端忽略新字段即可。要点：(1) **新增工具 `ArtifactWrite` / `ArtifactRead` / `SubmitTaskResult`**：前两个是跨 Agent 共享数据的载体（按引用而非按值传递）；第三个是 L3 的"任务完成宣告"，强 schema (`artifacts.minItems≥1`、`summary.maxLength=200`) + 服务端校验（ID 存在、producer.task_id 匹配、created_at ≥ task_started_at、size>0、type/role 与 expected_outputs 匹配）；(2) **新增 `ArtifactRef` wire shape**（`artifact_id`/`name`/`type`/`mime_type`/`size_bytes`/`description`/`preview_text`/`uri`/`role`），见 §10.6；(3) **`tool.end` / `subagent.end` / `subagent.event(tool_end)` 新增 `artifacts: []ArtifactRef` 字段**：前者每条 ArtifactWrite 后填一条 Ref；后者按 SubmitTaskResult 通过的列表（有契约时）或全部 ArtifactWrite（兜底）聚合；(4) **`render_hint` 枚举扩 3 个值**：`artifact`（产出新 artifact）、`artifact_view`（读取已有 artifact）、`task_submission`（任务完成宣告）；(5) **`Task` 工具入参新增 `expected_outputs []ExpectedOutput`**：派发方声明产出契约（role/type/schema/min_size_bytes/required），见 §10.7；(6) **L3 loop 终止逻辑**：派发带契约时，end_turn 必须 SubmitTaskResult 通过验证；未通过 → 框架注入 SYSTEM 提醒（最多 3 次），仍不交则 status=`max_turns` + 错误说明；(7) **新增 render_hint 不破坏旧客户端**：未识别值 fallback 到 plain。详见 §6.4.4、§6.6、§7.15 |
 | 1.12 | 2026-05-01 | **任务级可视化（向前兼容）**：把"sub-agent 在做什么"从黑盒变透明，三处增量改动，无 Breaking。要点：(1) **`subagent.start` 新增 `task` 字段**：携带父 Agent 派发给子 Agent 的完整 prompt（截断到 800 字），用户从启动那一刻就能看到 L3 接到的实际任务，而不只是 3-5 字的 `description` 短标签；(2) **新增 `agent.intent` 顶层事件**：主 Agent（emma）调用工具前的进度句（"正在搜索 vLLM 论文"）。框架在每个工具的 InputSchema 中**强制注入 `intent` 必填字段**——provider schema 验证保证模型必须填，不依赖 prompt 配合；ToolExecutor 在 `tool.start` 之前抽出 `intent` 发本事件，再剥掉字段交给真实工具；(3) **`subagent.event` 新增 `event_type: "intent"`**：sub-agent 内的 `agent_intent` 由 SpawnSync 转发循环包装为 `subagent.event{event_type: "intent", intent: "..."}`，与 `tool_start/tool_end` 同构，附 `agent_id` 标识属于哪一层。客户端可在每次工具调用前显示"researcher 正在 X"实时进度。空 intent / 缺字段时框架优雅降级（不发事件、不阻塞工具），保证向前兼容。详见 §6.6 |
 | 1.11 | 2026-04-29 | **结构化 Emit 协议（向前兼容）**：新增 14 种生命周期事件，统一带 `envelope` / `display` / `metrics` 字段。所有事件由框架（确定性代码）触发，LLM 仅生成 display 素材。详见 §6.13。要点：(1) **命名空间**：plan-step 生命周期使用 `step.*`（不与 v1.7 用户级 TodoList 的 `task.*` 冲突），新增 `step.dispatched/started/progress/completed/failed/skipped`；(2) **Trace/Plan**：`trace.started/finished/failed` + `plan.created/updated/completed/failed`；(3) **Envelope**：`trace_id/seq/parent_event_id/task_id/parent_task_id/agent_role/agent_id/agent_run_id/severity`，`agent_role` 用职责命名（`persona/orchestrator/worker/system`）而非 L1/L2/L3 抽象层级；(4) **Envelope 加性**：emit 事件保留顶层 `event_id`/`session_id`，envelope 不重复，agent_id 仅在 envelope 内；(5) **Display 字段**：`title`/`summary`/`icon`/`visibility`，icon 受控枚举（`plan/dispatch/search/analysis/tool/success/error/warning/info/agent/task/step/default`），未识别值客户端 fallback 到 `default`；(6) **错误对齐**：emit 失败事件的 `error` 与 §6.12 同形（`type`/`code`/`message`/`user_message`/`retryable`），`type` 为受控枚举且加入 `tool_timeout/llm_timeout/agent_max_turns_exceeded/dependency_failed/orphan_timeout/aborted`；(7) **断线重连**：新增 `session.resume`（客户端）/ `session.resumed` / `session.resume_failed`（服务端），见 §3.6；(8) **版本号统一**：移除独立的 `schema_version`，emit 跟随 `protocol_version` 演进；(9) `session.created.capabilities` 新增 `emit: true` |
@@ -19,7 +22,7 @@
 
 ---
 
-# WebSocket Channel Protocol v1.13
+# WebSocket Channel Protocol v1.16
 
 ## 1. Overview
 
@@ -379,10 +382,69 @@ WebSocket 断线在生产环境是常态。Emit 协议带了 `trace_id` 和 `seq
 |------|------|------|------|
 | `content` | object \| array | 否 | 单个内容块对象或内容块数组。与 `text` 二选一 |
 | `text` | string | 否 | 纯文本快捷方式，等价于 `[{"type":"text","text":"..."}]` |
+| `coordinator_mode` | string | 否 | (v1.14+) L2 Specialists 协调模式: `"react"` / `"plan"` / 省略=自动。详见下文 |
+| `plan_confirmation` | string | 否 | (v1.15+) plan 模式下是否暂停等用户审阅: `"required"` 暂停；`""` / `"auto"`（默认）直跑。仅在 `coordinator_mode=plan` 或自动选 plan 时有效 |
 
 > **优先级**: `content` 优先于 `text`。两者都存在时，忽略 `text`。
 
 `event_id` 将作为 `request_id` 出现在该请求触发的所有服务端事件中。
+
+#### `coordinator_mode` 字段（v1.14+）
+
+可选，仅作用于本轮。控制 emma 派给 Specialists 的协调器以何种模式工作：
+
+| 值 | 行为 |
+|----|------|
+| `"react"` | 自由 ReAct 循环：think → 派 L3 → 整合，单步或短多步任务的快路径 |
+| `"plan"` | 显式拆步：Planner → Judge → Scheduler，多步骤、多产出的复杂任务 |
+| 省略 / 空字符串 | 服务端启发式选择（多产出、长描述、显式 step 信号 → Plan，其余 → ReAct） |
+| 其他值 | 静默降级到 `react`，服务端打 warn 日志（不报错） |
+
+**自动升级（D-mode escalation）**：默认行为下，ReAct 模式遇到合同失败、最大轮次耗尽或模型错误时，框架自动升级到 Plan 模式并复用已产出的 artifact，无需客户端重试。仅 Specialists（emma 调度路径）参与升级；Plan/Explore/general-purpose 等定制 coordinator 不会被升级。
+
+**响应可观测**：升级发生时会 emit `coordinator.escalation` 事件；最终 `tool.end` 的 metadata 会带上 `coordinator_mode`、`escalated_from_mode`、`budget_spent`，详见 §6.4。
+
+**示例（显式选 plan）**：
+
+```json
+{
+  "type": "user.message",
+  "event_id": "evt_client_011",
+  "text": "调研大模型推理优化进展并写一份对比报告",
+  "coordinator_mode": "plan"
+}
+```
+
+#### `plan_confirmation` 字段（v1.15+）
+
+可选，仅作用于本轮，且仅在 `coordinator_mode=plan` 或服务端自动选 plan 时生效：
+
+| 值 | 行为 |
+|----|------|
+| 省略 / `""` / `"auto"` | plan 不暂停，直接执行（保持 v1.14 行为） |
+| `"required"` | Planner 拆出 step DAG 后，框架 emit `plan.proposed` 推给前端，**阻塞**等用户编辑/批准；客户端通过 `plan.response`（§5.8）回执 |
+
+**适用场景**：
+- 复杂任务，用户希望先看一眼计划再花成本执行
+- 用户想在计划阶段微调步骤、改派 sub-agent 类型、调整顺序
+
+**约束**：
+- 服务端只在 **首次** plan 触发确认；执行中失败触发的 re-plan 不重复打扰用户
+- 拒绝 / 编辑后的 plan 校验失败 → 走 fallback 路径，最终 `tool.end` 仍正常返回（含降级 summary）
+
+**示例（开启确认）**：
+
+```json
+{
+  "type": "user.message",
+  "event_id": "evt_client_012",
+  "text": "调研 Harness 工程并写一份 5 章节的报告",
+  "coordinator_mode": "plan",
+  "plan_confirmation": "required"
+}
+```
+
+发送后服务端会先推送 `plan.proposed`（§6.15），客户端在用户审阅 / 编辑后回 `plan.response`（§5.8）。
 
 ### 5.2 `tool.result` — 上报工具执行结果
 
@@ -560,6 +622,72 @@ WebSocket 重连后，对每个仍在跟踪的 trace 发送一条续传请求。
 | `last_seq` | int64 | 是 | 客户端实际收到的最后一条该 trace 事件的 `envelope.seq`；服务端补发 `seq > last_seq` 的事件 |
 
 服务端响应：`session.resumed`（§6.14，成功）或 `session.resume_failed`（§6.14，失败）。
+
+### 5.8 `plan.response` — 回复 plan 审阅请求（v1.15+）
+
+当 `user.message.plan_confirmation="required"` 触发了 `plan.proposed` 事件后，客户端在用户完成审阅 / 编辑 / 拒绝后通过此消息回执。服务端 PlanCoordinator 收到后解除阻塞继续执行。
+
+```json
+{
+  "type": "plan.response",
+  "event_id": "evt_client_021",
+  "session_id": "sess_abc123",
+  "plan_id": "pln_07e73cbb8a903bb6db4f93",
+  "plan_approved": true,
+  "plan_steps": [
+    {
+      "id": "s1",
+      "subagent_type": "researcher",
+      "description": "搜集 AI Harness 工程的主要框架",
+      "prompt": "调研 LangGraph / DSPy / TextGrad 三个框架的现状",
+      "depends_on": []
+    },
+    {
+      "id": "s2",
+      "subagent_type": "writer",
+      "description": "撰写对比报告",
+      "prompt": "基于 s1 的产出写 5 章节对比报告",
+      "depends_on": ["s1"]
+    }
+  ]
+}
+```
+
+#### 字段总表
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `plan_id` | string | 是 | 必须与最近收到的 `plan.proposed.plan_id` 完全一致；不匹配将被服务端忽略并 warn 日志 |
+| `plan_approved` | bool | 是 | `true` 继续执行（按 `plan_steps` 或原 plan）；`false` 取消任务，走 fallback |
+| `plan_steps` | array | 否 | 用户编辑后的步骤列表；省略 / 空数组 = 按原 plan 执行 |
+| `plan_reason` | string | 否 | 可选的拒绝 / 编辑说明；仅出现在服务端日志，不影响执行 |
+
+#### `plan_steps[]` 元素结构
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `id` | string | 是 | 步骤 ID，集合内唯一；可保留原值或重新分配（推荐 `s1`/`s2`/...） |
+| `subagent_type` | string | 否 | (v1.16+) L3 sub-agent 类型；省略时由服务端 SubagentResolver 决策。客户端通常不渲染此字段；高级路径可显式指定，服务端校验须在 `plan.proposed.available_subagents` 内 |
+| `description` | string | 否 | 用户可见的简短描述 |
+| `prompt` | string | 否 | 派给 sub-agent 的 prompt seed；不填则使用任务 goal |
+| `depends_on` | array[string] | 否 | 依赖的前置步骤 `id` 列表；必须只引用更靠前的步骤 |
+
+#### 服务端校验规则
+
+服务端在接受 `plan_approved=true` 后会对 `plan_steps`（如有）做静态校验：
+
+1. **不能有循环 / 前向依赖**：`depends_on` 只能引用 steps 数组中更靠前的元素
+2. **唯一 ID**：每个步骤的 `id` 在数组内必须唯一
+3. **合法 subagent_type**：当客户端显式设置 `subagent_type` 时必须出现在 `available_subagents` 中；省略时跳过该校验，由服务端 SubagentResolver 决策
+4. **非空 plan**：`plan_steps` 至少包含一个步骤
+
+任一校验失败 → 服务端按"用户拒绝"处理：本轮直接走 fallback，最终 `tool.end` 返回降级 summary。客户端可在下一轮重新发起 `user.message`。
+
+#### 行为约束
+
+- 同一 `plan_id` 只能回执一次；重复发送被丢弃 + warn 日志
+- 服务端 PlanCoordinator 在 ctx 取消（`session.interrupt`）时也会解除阻塞，并清理 pending plan 注册表，无内存泄漏
+- 仅 **首次** plan 触发本流程；执行中的 re-plan 不重复推送 `plan.proposed`
 
 ---
 
@@ -1017,6 +1145,58 @@ WebSocket 重连后，对每个仍在跟踪的 trace 发送一条续传请求。
 - 未识别的 `render_hint` 值应 fallback 到纯文本渲染
 - `render_hint` 缺失（空字符串）时使用纯文本渲染
 - `language` 和 `file_path` 仅在 `render_hint` 为 `code`/`diff`/`file_info` 时有意义
+
+#### 6.4.5 Coordinator Mode 元数据（v1.14+）
+
+当 `tool.end` 的 `tool_name` 为 `Specialists`（或派生工具，render_hint = `agent`）时，`metadata` 额外携带本次 L2 协调器运行的标签和预算消耗。客户端无需 fallback 处理——这些字段都是可选信息，仅用于 UI 展示。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `coordinator_mode` | string | 实际运行的最终模式：`"react"` 或 `"plan"`。空表示该工具非协调器（不会出现在 Specialists 之外的 tool.end） |
+| `escalated_from_mode` | string | 仅当本轮发生过 D-mode 升级时非空，值为 `"react"`。用于渲染"由 react 升级而来" |
+| `budget_spent` | object | 本轮 L2 任务的预算消耗快照（见下表） |
+
+`budget_spent` 子字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `tokens_used` | int | 累计输入+输出 token |
+| `llm_calls` | int | LLM 调用次数 |
+| `failures` | int | sub-agent 合同失败次数 |
+| `elapsed_ms` | int | 协调器入口起算的 wall-clock |
+| `exceeded` | bool | 是否触发预算上限 |
+| `exceeded_why` | string | 预算耗尽时的简短原因（如 `"token budget exhausted: used 250000 > 200000"`） |
+
+**升级事件（render_hint=coordinator.escalation）**：当 ReAct→Plan 升级触发时，框架会在 plan 模式开始执行之前 emit 一个特殊事件，`tool_name` 为 `coordinator.escalation`，`tool_input` 为 JSON 字符串 `{"from":"react","to":"plan","reason":"..."}`。客户端可用它在 UI 上提前显示"专业团切换到完整规划"的提示，而不是等到最终 `tool.end` 才知道发生了升级。
+
+**示例（Specialists tool.end，plan 模式自动升级）**:
+
+```json
+{
+  "type": "tool.end",
+  "event_id": "evt_080",
+  "session_id": "sess_abc123",
+  "tool_use_id": "toolu_010",
+  "tool_name": "Specialists",
+  "status": "success",
+  "is_error": false,
+  "duration_ms": 12340,
+  "render_hint": "agent",
+  "metadata": {
+    "agent_id": "agent_xxx",
+    "coordinator_mode": "plan",
+    "escalated_from_mode": "react",
+    "budget_spent": {
+      "tokens_used": 18432,
+      "llm_calls": 7,
+      "failures": 1,
+      "elapsed_ms": 12200,
+      "exceeded": false,
+      "exceeded_why": ""
+    }
+  }
+}
+```
 
 **tool.end 示例（Read 工具）**:
 
@@ -2397,6 +2577,146 @@ Emit **必须由框架层（确定性代码）触发**，而不是由 LLM 自行
 | `session_not_found` | session 已被回收 | 重建 session |
 | `not_implemented` | 服务端尚未启用留存（v1.11 当前状态） | 全量刷新 |
 
+### 6.15 Plan Confirmation Events (v1.15+)
+
+`plan` 模式下，当 `user.message.plan_confirmation="required"` 时，服务端会先把 Planner 输出的 step DAG 推给客户端审阅。客户端通过 `plan.response`（§5.8）回执。
+
+#### `plan.proposed` — 服务端请求审阅 plan
+
+PlanCoordinator 在执行任何 sub-agent 派发**之前**发出，阻塞等待 `plan.response`。
+
+```json
+{
+  "type": "plan.proposed",
+  "event_id": "evt_088",
+  "session_id": "sess_abc123",
+  "plan_id": "pln_07e73cbb8a903bb6db4f93",
+  "agent_id": "agent_38b1a1d9",
+  "goal": "调研 Harness 工程并写一份 5 章节报告（已澄清 AI 方向）",
+  "rationale": "research+write pattern detected",
+  "steps": [
+    {
+      "id": "s1",
+      "subagent_type": "researcher",
+      "description": "research the topic",
+      "prompt": "调研 Harness 工程并写一份 5 章节报告（已澄清 AI 方向）",
+      "depends_on": []
+    },
+    {
+      "id": "s2",
+      "subagent_type": "writer",
+      "description": "draft the deliverable",
+      "prompt": "调研 Harness 工程并写一份 5 章节报告（已澄清 AI 方向）",
+      "depends_on": ["s1"]
+    }
+  ],
+  "available_subagents": [
+    "writer", "researcher", "analyst", "developer",
+    "travel_planner", "recommender", "scheduler"
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `plan_id` | string | 服务端生成的唯一 ID（`pln_<24hex>`），客户端必须在 `plan.response` 中原样回传 |
+| `agent_id` | string | L2 协调器实例 ID，便于客户端把 plan 关联到对应 agent 的 timeline |
+| `goal` | string | 任务原始目标，方便用户审阅前回顾 |
+| `rationale` | string | Planner 给出的简短理由（如 `"research+write pattern detected"`） |
+| `steps` | array | 拆出的步骤序列（topo 顺序）；每个元素结构同 §5.8 `plan_steps[]` |
+| `available_subagents` | array[string] | (v1.16+) 服务端注册的可用 L3 sub-agent 列表；高级客户端覆盖 `subagent_type` 时校验须在此列表内。标准前端通常不展示此字段 |
+| `timeout_ms` | int64 | 可选，超时毫秒数；`0` / 缺省表示无超时（服务端会一直等到客户端回执或 session 关闭） |
+
+**客户端处理建议**：
+- 渲染可编辑的步骤卡片，支持增删改顺序
+- 标准前端**不显示** `subagent_type` / `available_subagents`，由服务端在派活时决策；高级 / 调试 UI 可暴露 `subagent_type` 下拉选择（值取自 `available_subagents`）
+- 提供"按当前 plan 跑"快捷按钮（直接发 `plan_approved=true`，不带 `plan_steps`）
+- 用户拒绝时发 `plan_approved=false`，可附 `plan_reason`
+
+#### `plan.approved` — 服务端确认收到批准
+
+服务端收到合法的 `plan.response` 并准备执行后，emit 此事件作为回执。trace 消费者用它确认 round-trip 闭合。
+
+```json
+{
+  "type": "plan.approved",
+  "event_id": "evt_089",
+  "session_id": "sess_abc123",
+  "plan_id": "pln_07e73cbb8a903bb6db4f93",
+  "agent_id": "agent_38b1a1d9"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `plan_id` | string | 与 `plan.proposed.plan_id` 一致 |
+| `agent_id` | string | 与 `plan.proposed.agent_id` 一致 |
+
+收到后客户端可关闭审阅 UI，进入"执行中"视图。后续 sub-agent 进度会通过常规 `subagent.start` / `subagent.end` / `tool.start` / `tool.end` 事件流推送。
+
+**注意**：用户拒绝（`plan_approved=false`）或编辑校验失败时**不会** emit `plan.approved`；最终通过常规 `tool.end`（render_hint=`agent`）的降级 summary 反馈结果。
+
+### 6.16 PlanCoordinator Lifecycle Events (v1.16+)
+
+v1.16 起 Plan 模式（`coordinator_mode=plan` 或 ModeSelector 自动选 plan）的 PlanCoordinator + Scheduler 也 emit §6.13 中定义的 plan/step 生命周期事件。事件 `type` 字段与 §6.13.6 / §6.13.7 完全一致，客户端按 `type` 路由即可同时处理两条路径（v1.11 Orchestrate / v1.16 PlanCoordinator）。
+
+**两条路径的区别**：
+
+| 维度 | Orchestrate 路径（v1.11，§6.13）| PlanCoordinator 路径（v1.16，§6.16）|
+|------|------|------|
+| 触发条件 | 客户端主动调用 Orchestrate 工具 | emma → Specialists 派活，coordinator_mode=plan |
+| `envelope.trace_id` / `seq` / `agent_role` | 完整填充 | **暂为空**（保留位置） |
+| `display.title` / `summary` / `icon` | LLM 生成 | **暂为空** |
+| `metrics.duration_ms` 等 | 完整 | **暂为空** |
+| `payload` 主字段 | 完全相同 | 完全相同 |
+
+**PlanCoordinator emit 顺序**（典型 2-step 流程）：
+
+```
+→ user.message {coordinator_mode:"plan", plan_confirmation:"required"}
+← message.start
+← plan.created            {plan_id, goal, strategy:"sequential", status:"created", tasks:[...]}
+← plan.proposed           (仅当 plan_confirmation=required, §6.15)
+→ plan.response           (用户审阅 / 编辑后回执)
+← plan.approved
+← step.dispatched         {step_id:"s1", subagent_type:"researcher", input_summary:"..."}
+← subagent.start (researcher) ... subagent.end
+← step.completed          {step_id:"s1", subagent_type:"researcher", output_summary:"..."}
+← step.dispatched         {step_id:"s2", subagent_type:"writer", ...}
+← subagent.start (writer) ... subagent.end
+← step.completed          {step_id:"s2", ...}
+← plan.completed          {plan_id, goal, status:"completed"}
+← tool.end (Specialists)
+← message.stop
+← task.end
+```
+
+**失败 / re-plan 场景**：
+
+| 场景 | 事件 |
+|------|------|
+| 用户 reject 或 invalid edit | `plan.failed { reason:"user rejected"/"invalid edit" }` |
+| Re-plan 触发（最多 2 次）| `plan.updated`（同 plan.created 但 status="updated"），后跟新一轮 step.* |
+| 某 step 失败 | `step.failed { step_id, subagent_type, error_type, error, reason }` |
+| 上游失败 / 预算耗尽 | `step.skipped { step_id, reason }` |
+| 全部步骤跑完但 ReviewGoal 不通过且预算耗尽 | `plan.failed { reason }` 后接 `tool.end` 携带 fallback summary |
+
+**`subagent_type` 字段语义**：
+
+- step.dispatched / step.completed / step.failed / step.skipped 的 `subagent_type` 始终带具体值（`writer` / `researcher` / ...），由 SubagentResolver 在 dispatch 前确定 — 即使 `plan.proposed.steps[].subagent_type` 为空，到 `step.dispatched` 时一定填充
+- 客户端可用 `step.dispatched.subagent_type` 渲染"step s1 → researcher 正在执行"
+- 这也是前端获知具体 L3 sub-agent 选择的唯一通道（plan.proposed 不带）
+
+**前端实现建议**：
+
+1. 收到 `plan.created` → 渲染 plan 树；从 `tasks[]` 读出 step ID + DependsOn 关系
+2. 收到 `plan.proposed`（仅 plan_confirmation=required 时）→ 弹出审阅界面
+3. 用户审阅完 → 发 `plan.response` → 等 `plan.approved`
+4. 收到 `step.dispatched` → 在对应 step 卡片显示 "subagent_type 正在执行"
+5. 收到 `step.completed` / `step.failed` → 更新 step 状态 + output_summary
+6. 收到 `plan.completed` / `plan.failed` → 整体 plan 状态结算
+7. 后续 `tool.end`（Specialists）携带 metadata.coordinator_mode/budget_spent，可显示"plan 模式跑了 N 步、用 M tokens"
+
 ---
 
 ## 7. Event Sequences
@@ -3047,7 +3367,69 @@ Client                                         Server
 ← task.end               {request_id:"c5", status:"success", num_turns:1}
 ```
 
-### 7.15 契约式 sub-agent 产出（v1.13+）
+### 7.15 Plan 模式带用户确认（v1.15+）
+
+```
+Client                                                     Server
+  |                                                          |
+  |  ─── user.message ─────────────────────────────────→     |
+  |       {text:"调研 X 写 Y", coordinator_mode:"plan",      |
+  |        plan_confirmation:"required"}                     |
+  |                                                          |
+  |  ←─── message.start ──────────────────────────────────   |
+  |       (emma 的 LLM 流开始)                               |
+  |  ←─── content.delta (text)                               |
+  |       "我来安排专业团帮你..."                             |
+  |                                                          |
+  |  ←─── tool.call (Specialists) ─────────────────────────  |
+  |       (emma 派活给 L2)                                    |
+  |  ←─── subagent.start (specialists)                       |
+  |                                                          |
+  |  ←─── plan.proposed ───────────────────────────────────  |
+  |       {plan_id:"pln_xxx", goal:"...",                    |
+  |        steps:[                                            |
+  |          {id:"s1",description:"调研 / 收集",...},        |
+  |          {id:"s2",description:"撰写",depends_on:["s1"]}  |
+  |        ],                                                 |
+  |        available_subagents:[...]}                        |
+  |                                                          |
+  |       (用户在 UI 上审阅 / 编辑步骤)                       |
+  |                                                          |
+  |  ─── plan.response ───────────────────────────────→      |
+  |       {plan_id:"pln_xxx", plan_approved:true,            |
+  |        plan_steps:[                                      |
+  |          {id:"s1",description:"deeper research",prompt:"<edited>"},|
+  |          {id:"s2",description:"analyze findings",depends_on:["s1"]}|
+  |        ]}                                                 |
+  |                                                          |
+  |  ←─── plan.approved ──────────────────────────────────   |
+  |       {plan_id:"pln_xxx"}                                |
+  |                                                          |
+  |  ←─── subagent.start (researcher) ───────────────────    |
+  |  ←─── subagent.event (tool_start/end ArtifactWrite)      |
+  |  ←─── subagent.end (researcher, +artifacts)              |
+  |  ←─── subagent.start (analyst)                           |
+  |  ←─── subagent.event ...                                 |
+  |  ←─── subagent.end (analyst, +artifacts)                 |
+  |                                                          |
+  |  ←─── tool.end (Specialists, render_hint=agent)          |
+  |       metadata:{coordinator_mode:"plan",                 |
+  |                 budget_spent:{...},                      |
+  |                 artifacts:[{art_xxx,role:"report"}, ...]} |
+  |                                                          |
+  |  ←─── content.delta (emma 转述 summary)                  |
+  |  ←─── message.stop                                        |
+  |  ←─── task.end                                            |
+  |                                                          |
+```
+
+要点：
+- `plan.proposed` 事件之后服务端**阻塞**等待 `plan.response`；客户端可一直停留在审阅界面，无超时
+- 用户编辑 `plan_steps` 后，服务端按编辑后的版本执行；step 的 `subagent_type` 由服务端在派活前决策（高级路径可由客户端覆盖）
+- 用户 `plan_approved=false` 或编辑校验失败：跳过 `plan.approved`，直接走 `tool.end`（render_hint=agent）携带降级 summary
+- Re-plan 不再触发 `plan.proposed`：执行中失败的自动恢复对用户透明
+
+### 7.16 契约式 sub-agent 产出（v1.13+）
 
 完整链路：用户问 → emma 派 Specialists → L2 用 `expected_outputs` 派 writer → L3 写 ArtifactWrite + SubmitTaskResult → 最后 emma 用文件名告诉用户。
 
