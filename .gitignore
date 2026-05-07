@@ -49,6 +49,7 @@ docs/refactor
 docs/prompt
 docs/design/
 docs/api/
+docs/emit*
 docs/multi-agent-design.md
 docs/agent-yaml-reference.md
 
