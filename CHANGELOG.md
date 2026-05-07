@@ -3,6 +3,23 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
+## [0.0.9] - 2026-05-07
+
+### Added
+- L2 multi-mode coordinator framework: routes Specialists / Orchestrate work through one of pluggable modes (ReAct, Plan), with `Planner`, `Scheduler`, `Judge`, `Escalation`, `Fallback`, `Budget`, `ModeSelect`, and `SubagentResolver` as independently testable components
+- Plan-mode user-confirmation flow: when `user.message.plan_confirmation: "required"`, the framework emits `plan.proposed` (carrying the editable step DAG) and blocks until the client returns `plan.response` with approval / edits / rejection; mirrored by `plan.approved` echo (protocol v1.15+)
+- Plan / Step lifecycle emit events from the PlanCoordinator path: `plan.created` / `plan.updated` / `plan.completed` / `plan.failed` and `step.dispatched` / `step.completed` / `step.failed` / `step.skipped` (protocol v1.16; envelope/display/metrics are placeholder, payload is fully populated)
+- Coordinator-mode threading: `user.message.coordinator_mode` selects ReAct vs Plan per turn; `tool.WithCoordinatorMode` ctx value flows from router → Specialists → SpawnConfig
+- LLM call timing breakdown on `llmCallResult` (`firstByteAt` / `lastChunkAt` / `endAt`) for diagnosing gateway hangs, extended thinking, and network buffering separately
+
+### Changed
+- Plan-step `skill` field renamed to `subagent_type` and `available_skills` to `available_subagents` to disambiguate from `AgentDefinition.Skills` (capability tags); `subagent_type` is now optional, with `SubagentResolver` picking the executor at dispatch time
+- emma's task-dispatch principles now require an explicit clarification-merge self-check before any Specialists spawn — original-request plus user-clarification answer must be combined into the task string
+
+### Fixed
+- Bifrost adapter no longer hangs ~6m40s after the model finishes streaming: `consumeStream` returns as soon as a chunk carries `FinishReason`, instead of waiting for the upstream chunk channel to close on its own (which only happens at the underlying HTTP idle timeout)
+- AskUserQuestion tool description gained an explicit reminder that the user's clarification answer must be folded into the next task / prompt — previous wording let the LLM forward the original (un-clarified) request
+
 ## [0.0.8] - 2026-05-07
 
 ### Added
