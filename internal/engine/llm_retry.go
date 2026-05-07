@@ -25,6 +25,16 @@ type llmCallResult struct {
 	stopReason string
 	lastUsage  *types.Usage
 	streamErr  error // non-nil if the call or stream failed
+
+	// Timing breakdown captured by doSingleLLMCall. All durations are
+	// from the moment Chat() was invoked. Zero means "never observed".
+	// Used to diagnose "elapsed is huge but frontend got the answer
+	// quickly" — distinguishes gateway hangs (large endDelta), extended
+	// thinking (large firstByte), and network buffering (anything in
+	// between).
+	firstByteAt time.Duration // first text/tool chunk arrived
+	lastChunkAt time.Duration // last text/tool chunk arrived
+	endAt       time.Duration // MessageEnd arrived
 }
 
 // isRetryableError determines if an LLM error warrants a retry.
@@ -106,9 +116,23 @@ func retryLLMCall(
 		result := doSingleLLMCall(ctx, prov, req, attemptOut)
 		elapsed := time.Since(startedAt)
 		if result.streamErr == nil {
+			// Timing breakdown: distinguish three "elapsed is huge but
+			// frontend already saw the answer" patterns:
+			//   - tail_after_last_chunk large + first_byte small: gateway
+			//     held MessageEnd open after the last visible chunk
+			//   - first_byte large: extended thinking / slow start
+			//   - stream_span large: text trickled the whole time
+			tailAfterLastChunk := elapsed - result.lastChunkAt
+			if result.lastChunkAt == 0 {
+				tailAfterLastChunk = 0
+			}
 			logger.Info("llm.call ok",
 				zap.Int("attempt", attempt+1),
 				zap.Duration("elapsed", elapsed),
+				zap.Duration("first_byte", result.firstByteAt),
+				zap.Duration("last_chunk", result.lastChunkAt),
+				zap.Duration("end_at", result.endAt),
+				zap.Duration("tail_after_last_chunk", tailAfterLastChunk),
 				zap.Int("text_chars", len(result.textBuf)),
 				zap.Int("tool_calls", len(result.toolCalls)),
 				zap.String("stop_reason", result.stopReason),
@@ -165,6 +189,7 @@ func doSingleLLMCall(
 	req *provider.ChatRequest,
 	out chan<- types.EngineEvent,
 ) *llmCallResult {
+	callStart := time.Now()
 	stream, err := prov.Chat(ctx, req)
 	if err != nil {
 		return &llmCallResult{streamErr: err}
@@ -175,12 +200,20 @@ func doSingleLLMCall(
 	for evt := range stream.Events {
 		switch evt.Type {
 		case types.StreamEventText:
+			if result.firstByteAt == 0 {
+				result.firstByteAt = time.Since(callStart)
+			}
+			result.lastChunkAt = time.Since(callStart)
 			result.textBuf += evt.Text
 			if out != nil {
 				out <- types.EngineEvent{Type: types.EngineEventText, Text: evt.Text}
 			}
 		case types.StreamEventToolUse:
 			if evt.ToolCall != nil {
+				if result.firstByteAt == 0 {
+					result.firstByteAt = time.Since(callStart)
+				}
+				result.lastChunkAt = time.Since(callStart)
 				result.toolCalls = append(result.toolCalls, *evt.ToolCall)
 				if out != nil {
 					out <- types.EngineEvent{
@@ -192,6 +225,7 @@ func doSingleLLMCall(
 				}
 			}
 		case types.StreamEventMessageEnd:
+			result.endAt = time.Since(callStart)
 			result.stopReason = evt.StopReason
 			result.lastUsage = evt.Usage
 		case types.StreamEventError:
