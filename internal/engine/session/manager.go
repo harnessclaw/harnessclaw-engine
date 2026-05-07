@@ -22,17 +22,19 @@ type Store interface {
 
 // Manager handles session lifecycle: creation, retrieval, persistence, and cleanup.
 type Manager struct {
-	mu      sync.RWMutex
-	active  map[string]*Session // in-memory active sessions
-	store   Store
-	logger  *zap.Logger
-	maxIdle time.Duration
+	mu       sync.RWMutex
+	active   map[string]*Session       // in-memory active sessions
+	workers  map[string]*persistWorker // sessionID → debounced persist worker
+	store    Store
+	logger   *zap.Logger
+	maxIdle  time.Duration
 }
 
 // NewManager creates a session manager.
 func NewManager(store Store, logger *zap.Logger, maxIdle time.Duration) *Manager {
 	return &Manager{
 		active:  make(map[string]*Session),
+		workers: make(map[string]*persistWorker),
 		store:   store,
 		logger:  logger,
 		maxIdle: maxIdle,
@@ -92,43 +94,88 @@ func (m *Manager) Get(sessionID string) *Session {
 	return m.active[sessionID]
 }
 
-// PersistSession saves a single session to persistent storage.
+// PersistSession synchronously flushes a single session through its
+// debounced worker (if one exists) or falls back to a direct store
+// write. Synchronous — caller blocks until the write completes.
+//
+// Hot-path note: routine session mutations (AddMessage, SetMessages)
+// SHOULD NOT call PersistSession directly. They go through the
+// session's onChange callback, which fires a non-blocking notify on
+// the persist worker. Only explicit "I need this on disk now" callers
+// (shutdown, snapshot APIs) should call PersistSession.
 func (m *Manager) PersistSession(ctx context.Context, s *Session) {
+	m.mu.RLock()
+	w := m.workers[s.ID]
+	m.mu.RUnlock()
+	if w != nil {
+		if err := w.Flush(ctx); err != nil {
+			m.logger.Error("failed to flush session via worker",
+				zap.String("session_id", s.ID), zap.Error(err))
+		}
+		return
+	}
+	// No worker (e.g. session not registered). Direct write fallback.
 	if err := m.store.SaveSession(ctx, s); err != nil {
 		m.logger.Error("failed to persist session",
 			zap.String("session_id", s.ID), zap.Error(err))
 	}
 }
 
-// bindOnChange sets the auto-persist callback on a session if not already set.
+// bindOnChange wires the session's onChange callback to a per-session
+// debounced persist worker. The worker is started on first call; the
+// callback is set once and is a non-blocking notify (no goroutine per
+// mutation, no race for the SQLite write lock).
+//
+// Caller MUST hold m.mu (write lock) — accesses m.workers.
 func (m *Manager) bindOnChange(s *Session) {
-	s.SetOnChange(func() {
-		go m.PersistSession(context.Background(), s)
-	})
+	if _, ok := m.workers[s.ID]; ok {
+		return // already bound
+	}
+	w := newPersistWorker(s, m.store, m.logger)
+	m.workers[s.ID] = w
+	s.SetOnChange(w.notify)
 }
 
-// PersistAll saves all active sessions to storage.
+// PersistAll synchronously flushes all active sessions to storage.
+// Used at shutdown and on explicit snapshot calls. Each session is
+// flushed through its worker (debounced flush honours flushNow path).
 func (m *Manager) PersistAll(ctx context.Context) error {
 	m.mu.RLock()
-	sessions := make([]*Session, 0, len(m.active))
-	for _, s := range m.active {
-		sessions = append(sessions, s)
+	workers := make([]*persistWorker, 0, len(m.workers))
+	sessIDs := make([]string, 0, len(m.workers))
+	for id, w := range m.workers {
+		workers = append(workers, w)
+		sessIDs = append(sessIDs, id)
 	}
 	m.mu.RUnlock()
 
 	var firstErr error
-	for _, s := range sessions {
-		if err := m.store.SaveSession(ctx, s); err != nil {
-			m.logger.Error("failed to persist session", zap.String("session_id", s.ID), zap.Error(err))
+	for i, w := range workers {
+		if err := w.Flush(ctx); err != nil {
+			m.logger.Error("failed to persist session", zap.String("session_id", sessIDs[i]), zap.Error(err))
 			if firstErr == nil {
-				firstErr = fmt.Errorf("persist session %s: %w", s.ID, err)
+				firstErr = fmt.Errorf("persist session %s: %w", sessIDs[i], err)
 			}
 		}
 	}
 	return firstErr
 }
 
+// Shutdown stops all persist workers, performing a final flush per
+// session. Call once on server shutdown. Safe to call multiple times.
+func (m *Manager) Shutdown() {
+	m.mu.Lock()
+	workers := m.workers
+	m.workers = make(map[string]*persistWorker)
+	m.mu.Unlock()
+	for _, w := range workers {
+		w.Stop()
+	}
+}
+
 // CleanupIdle archives sessions that have been idle longer than maxIdle.
+// Archived sessions get a final flush through their worker, then the
+// worker is stopped and removed.
 func (m *Manager) CleanupIdle(ctx context.Context) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -146,7 +193,14 @@ func (m *Manager) CleanupIdle(ctx context.Context) int {
 			s.State = StateArchived
 			s.mu.Unlock()
 
-			if err := m.store.SaveSession(ctx, s); err != nil {
+			if w, ok := m.workers[id]; ok {
+				if err := w.Flush(ctx); err != nil {
+					m.logger.Error("failed to flush before archive", zap.String("session_id", id), zap.Error(err))
+					continue
+				}
+				w.Stop()
+				delete(m.workers, id)
+			} else if err := m.store.SaveSession(ctx, s); err != nil {
 				m.logger.Error("failed to archive session", zap.String("session_id", id), zap.Error(err))
 				continue
 			}
