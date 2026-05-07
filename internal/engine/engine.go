@@ -22,6 +22,13 @@ type Engine interface {
 	// from the client to the waiting tool executor.
 	SubmitPermissionResult(ctx context.Context, sessionID string, resp *types.PermissionResponse) error
 
+	// SubmitPlanResponse delivers the user's response to a PlanProposal.
+	// The waiting PlanCoordinator unblocks with the (possibly edited)
+	// plan or a rejection. Returns ErrNotFound when plan_id doesn't
+	// match any in-flight proposal — channel adapters log the warn but
+	// don't crash the connection.
+	SubmitPlanResponse(ctx context.Context, sessionID string, resp *types.PlanResponse) error
+
 	// AbortSession cancels any in-flight processing for a session.
 	AbortSession(ctx context.Context, sessionID string) error
 }

@@ -183,7 +183,23 @@ func (s *AgentService) SyncBuiltins(ctx context.Context) error {
 	return nil
 }
 
-// LoadAllToRegistry loads all agent definitions from the store into the in-memory registry.
+// LoadAllToRegistry loads all agent definitions from the store into the
+// in-memory registry.
+//
+// Built-in definitions: the SQLite schema doesn't persist every code-side
+// field (Tier, OutputSchema, InputSchema, Limitations, ExampleTasks,
+// CostTier, Temperature, etc.). Hydrating from SQLite would silently
+// strip those, leaving e.g. ListForPlanner with no TierSubAgent matches —
+// Plan-mode coordinator would have no skills to dispatch.
+//
+// Resolution: when a definition is already present in the registry from
+// RegisterBuiltins (always called first via SyncBuiltins), we MERGE the
+// SQLite-side mutable fields onto it rather than replacing wholesale.
+// This keeps DB-driven user edits (DisplayName, Description, etc.)
+// effective while preserving the code constants on built-ins.
+//
+// Non-builtin defs (Source != "builtin", e.g. user-imported YAML) load
+// as-is — they have no in-code counterpart to preserve.
 func (s *AgentService) LoadAllToRegistry(ctx context.Context) error {
 	defs, err := s.store.List(ctx, nil)
 	if err != nil {
@@ -191,6 +207,15 @@ func (s *AgentService) LoadAllToRegistry(ctx context.Context) error {
 	}
 	loaded := 0
 	for _, def := range defs {
+		existing := s.registry.Get(def.Name)
+		if existing != nil && existing.IsBuiltin {
+			// Merge mutable user-editable fields from store onto the
+			// in-memory builtin, leaving Tier / OutputSchema / etc.
+			// untouched.
+			mergeMutableFields(existing, def)
+			loaded++
+			continue
+		}
 		if err := s.registry.Register(def); err != nil {
 			s.logger.Warn("skipping invalid agent definition",
 				zap.String("name", def.Name),
@@ -205,4 +230,53 @@ func (s *AgentService) LoadAllToRegistry(ctx context.Context) error {
 		zap.Int("total", len(defs)),
 	)
 	return nil
+}
+
+// mergeMutableFields copies SQLite-persisted mutable fields from src to
+// dst in place. Used to preserve code-only fields (Tier, OutputSchema,
+// etc.) on built-in definitions when re-hydrating from the store.
+//
+// Field set mirrors what AgentService.Update accepts on the wire — these
+// are the "operator can change at runtime" fields. Any field not listed
+// here is owned by code (RegisterBuiltins).
+func mergeMutableFields(dst, src *AgentDefinition) {
+	if src.DisplayName != "" {
+		dst.DisplayName = src.DisplayName
+	}
+	if src.Description != "" {
+		dst.Description = src.Description
+	}
+	if src.SystemPrompt != "" {
+		dst.SystemPrompt = src.SystemPrompt
+	}
+	if src.Model != "" {
+		dst.Model = src.Model
+	}
+	if src.Profile != "" {
+		dst.Profile = src.Profile
+	}
+	if src.MaxTurns != 0 {
+		dst.MaxTurns = src.MaxTurns
+	}
+	if len(src.Tools) > 0 {
+		dst.Tools = src.Tools
+	}
+	if len(src.AllowedTools) > 0 {
+		dst.AllowedTools = src.AllowedTools
+	}
+	if len(src.DisallowedTools) > 0 {
+		dst.DisallowedTools = src.DisallowedTools
+	}
+	if len(src.Skills) > 0 {
+		dst.Skills = src.Skills
+	}
+	if src.Personality != "" {
+		dst.Personality = src.Personality
+	}
+	if src.Triggers != "" {
+		dst.Triggers = src.Triggers
+	}
+	// IsTeamMember is a bool — always reflect the store value so
+	// "remove from team" updates take effect. Tier remains code-owned.
+	dst.IsTeamMember = src.IsTeamMember
 }

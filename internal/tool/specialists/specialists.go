@@ -125,6 +125,12 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		parentOut = out
 	}
 
+	// Read operator-supplied coordinator mode from ctx. Empty means the
+	// registry resolves to ReAct (current behaviour). Plan-mode opt-in
+	// flows through here once the WebSocket / API layer attaches the
+	// mode via tool.WithCoordinatorMode.
+	coordMode := tool.GetCoordinatorMode(ctx)
+
 	cfg := &agent.SpawnConfig{
 		Prompt:          in.Task,
 		AgentType:       tool.AgentTypeSync,
@@ -134,6 +140,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		ParentSessionID: parentSessionID,
 		ParentOut:       parentOut,
 		Timeout:         15 * time.Minute, // L2 may run multiple L3 dispatches
+		CoordinatorMode: coordMode,
 	}
 
 	// DEBUG: dispatch.in — what emma's LLM just handed to the Specialists
@@ -188,6 +195,27 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	}
 	if result.Terminal != nil {
 		metadata["terminal_reason"] = string(result.Terminal.Reason)
+	}
+	// L2 mode telemetry: surface running mode + escalation source +
+	// budget snapshot so the WebSocket client can render "this task
+	// ran in plan mode (auto-escalated from react)" labels and so
+	// emma can quote budget consumption when explaining a degraded
+	// response.
+	if result.CoordinatorMode != "" {
+		metadata["coordinator_mode"] = result.CoordinatorMode
+	}
+	if result.EscalatedFromMode != "" {
+		metadata["escalated_from_mode"] = result.EscalatedFromMode
+	}
+	if result.BudgetSpent.TokensUsed > 0 || result.BudgetSpent.LLMCalls > 0 || result.BudgetSpent.Exceeded {
+		metadata["budget_spent"] = map[string]any{
+			"tokens_used":  result.BudgetSpent.TokensUsed,
+			"llm_calls":    result.BudgetSpent.LLMCalls,
+			"failures":     result.BudgetSpent.Failures,
+			"elapsed_ms":   result.BudgetSpent.ElapsedMs,
+			"exceeded":     result.BudgetSpent.Exceeded,
+			"exceeded_why": result.BudgetSpent.ExceededWhy,
+		}
 	}
 	// Surface produced artifacts so the executor can lift them onto the
 	// L1 tool.end event. Without this, the WebSocket sees a final

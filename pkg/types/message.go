@@ -56,8 +56,24 @@ type IncomingMessage struct {
 	ToolResult *ToolResultPayload `json:"tool_result,omitempty"`
 	// PermissionResponse is set when the client approves/denies a permission request.
 	PermissionResponse *PermissionResponse `json:"permission_response,omitempty"`
+	// PlanResponse is set when the client approves/edits/rejects a plan
+	// proposal (see PlanProposal). Routed to the engine's
+	// SubmitPlanResponse method; the awaiting PlanCoordinator unblocks
+	// and continues execution with the (possibly edited) plan.
+	PlanResponse *PlanResponse `json:"plan_response,omitempty"`
 	// RawPayload holds channel-specific original data.
 	RawPayload map[string]any `json:"raw_payload,omitempty"`
+	// CoordinatorMode pins the L2 coordinator mode for this turn (see
+	// engine.CoordinatorMode). Allowed: "react" / "plan" / "" (auto).
+	// Channel adapters copy from their wire-level field; the router
+	// turns it into a tool.WithCoordinatorMode ctx value before
+	// dispatching to the engine.
+	CoordinatorMode string `json:"coordinator_mode,omitempty"`
+	// PlanConfirmation controls whether plan-mode runs pause for user
+	// review. Allowed: "" / "auto" (no pause, default), "required"
+	// (every plan goes through plan.proposed → plan.response). Only
+	// has effect when the resolved coordinator mode is plan.
+	PlanConfirmation string `json:"plan_confirmation,omitempty"`
 }
 
 // IncomingContentBlock is a typed content block from a user message.

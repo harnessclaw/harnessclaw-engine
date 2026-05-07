@@ -152,3 +152,55 @@ func GetTaskContract(ctx context.Context) (TaskContract, bool) {
 func WithTaskContract(ctx context.Context, c TaskContract) context.Context {
 	return context.WithValue(ctx, taskContractContextKey, c)
 }
+
+// coordinatorModeKey carries the operator-supplied L2 coordinator mode
+// preference (e.g. from a WebSocket session parameter) down to the
+// Specialists tool, which threads it onto SpawnConfig.CoordinatorMode.
+//
+// Mode is intentionally NOT exposed in emma's tool input — emma should
+// not have to choose between react and plan; that's an operator / API
+// surface decision. emma always calls Specialists with the task; the
+// runtime decides which coordinator backs the call based on this ctx
+// value (defaults to "" → react via registry fallback).
+type coordinatorModeKey struct{}
+
+var coordinatorModeContextKey = coordinatorModeKey{}
+
+// GetCoordinatorMode returns the L2 coordinator mode preference attached
+// to ctx, or "" when absent (which the engine resolves to ReAct).
+func GetCoordinatorMode(ctx context.Context) string {
+	if v, ok := ctx.Value(coordinatorModeContextKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// WithCoordinatorMode attaches a coordinator mode preference to ctx. The
+// API / WebSocket layer calls this when forwarding a session-level mode
+// parameter, e.g. when an operator opts in to plan mode for a debug run.
+func WithCoordinatorMode(ctx context.Context, mode string) context.Context {
+	return context.WithValue(ctx, coordinatorModeContextKey, mode)
+}
+
+// planConfirmationKey carries the per-turn opt-in for plan-mode user
+// confirmation. Allowed values: "" / "auto" (no pause), "required"
+// (PlanCoordinator emits plan.proposed and waits). Threading via ctx
+// avoids dragging the field through every coordinator interface.
+type planConfirmationKey struct{}
+
+var planConfirmationContextKey = planConfirmationKey{}
+
+// GetPlanConfirmation returns the plan confirmation mode attached to ctx,
+// or "" when absent (treated as "auto"). The PlanCoordinator reads it at
+// the start of Run.
+func GetPlanConfirmation(ctx context.Context) string {
+	if v, ok := ctx.Value(planConfirmationContextKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// WithPlanConfirmation attaches a plan confirmation mode to ctx.
+func WithPlanConfirmation(ctx context.Context, mode string) context.Context {
+	return context.WithValue(ctx, planConfirmationContextKey, mode)
+}

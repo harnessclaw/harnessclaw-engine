@@ -144,6 +144,31 @@ type QueryEngine struct {
 	// Backed by sync.Map internally so concurrent traces don't contend on a
 	// global mutex.
 	emitSeq *emit.Sequencer
+
+	// coordinators routes coordinator-tier (L2) spawns through a
+	// Coordinator implementation chosen by CoordinatorMode. Built-in
+	// modes (react / plan) are registered in NewQueryEngine; tests can
+	// register additional modes post-construction.
+	coordinators *coordinatorRegistry
+
+	// pendingPlans tracks in-flight PlanCoordinator approval requests.
+	// Indexed by plan_id (server-generated). Each entry holds a result
+	// channel the coordinator is blocking on; SubmitPlanResponse looks
+	// up by plan_id and pushes the response. Same pattern as
+	// pendingPerms / pendingTools.
+	planMu       sync.Mutex
+	pendingPlans map[string]*pendingPlanReq
+}
+
+// pendingPlanReq tracks one in-flight plan approval request. The
+// PlanCoordinator pushes a request and blocks on response; the channel
+// adapter routes the user's plan.response message into SubmitPlanResponse,
+// which fills response and closes the channel.
+type pendingPlanReq struct {
+	planID    string
+	sessionID string
+	response  chan *types.PlanResponse
+	createdAt time.Time
 }
 
 // promptCacheEntry stores a cached system prompt and the conditions under which it was built.
@@ -193,6 +218,9 @@ func NewQueryEngine(
 		promptProfile = prompt.WorkerProfile
 	}
 
+	coordReg := newCoordinatorRegistry()
+	registerBuiltinCoordinators(coordReg)
+
 	return &QueryEngine{
 		provider:          prov,
 		registry:          reg,
@@ -212,7 +240,169 @@ func NewQueryEngine(
 		promptCache:       make(map[string]*promptCacheEntry),
 		taskRegistry:      make(map[string]*agent.SpawnResult),
 		emitSeq:           emit.NewSequencer(),
+		coordinators:      coordReg,
+		pendingPlans:      make(map[string]*pendingPlanReq),
 	}
+}
+
+// requestPlanApproval registers a pending plan request, emits the
+// proposal event so the channel can forward it, and blocks until the
+// client sends back a plan.response (or ctx is cancelled).
+//
+// Returns:
+//   - resp: client's response (Approved + optional UpdatedSteps)
+//   - err:  ctx cancellation, or "client never responded" timeout
+//
+// Used by PlanCoordinator. The function is non-method-style
+// (`func (qe *QueryEngine)`) so future implementations of the
+// approval mechanism (HTTP callback, kafka, etc.) can swap in via
+// dependency injection without changing the call site.
+func (qe *QueryEngine) requestPlanApproval(
+	ctx context.Context,
+	sessionID string,
+	out chan<- types.EngineEvent,
+	proposal *types.PlanProposal,
+) (*types.PlanResponse, error) {
+	if proposal == nil {
+		return nil, fmt.Errorf("plan approval: nil proposal")
+	}
+	if proposal.PlanID == "" {
+		return nil, fmt.Errorf("plan approval: empty plan_id")
+	}
+
+	req := &pendingPlanReq{
+		planID:    proposal.PlanID,
+		sessionID: sessionID,
+		response:  make(chan *types.PlanResponse, 1),
+		createdAt: time.Now(),
+	}
+
+	qe.planMu.Lock()
+	qe.pendingPlans[proposal.PlanID] = req
+	qe.planMu.Unlock()
+
+	// Best-effort cleanup on exit. SubmitPlanResponse also deletes
+	// after delivery; double-delete is safe (map is keyed and
+	// idempotent on missing keys).
+	defer func() {
+		qe.planMu.Lock()
+		delete(qe.pendingPlans, proposal.PlanID)
+		qe.planMu.Unlock()
+	}()
+
+	// Emit the proposal event. The router/channel forwards to the
+	// client. If the channel doesn't exist (tests), we still register
+	// the pending request and let the caller drive SubmitPlanResponse
+	// directly.
+	if out != nil {
+		select {
+		case out <- types.EngineEvent{
+			Type:         types.EngineEventPlanProposed,
+			AgentID:      proposal.AgentID,
+			PlanProposal: proposal,
+		}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	// Block on response or context cancellation.
+	select {
+	case resp := <-req.response:
+		// Echo "approved" event so the client can match its own
+		// confirmation cycle and the trace shows the round-trip.
+		if out != nil && resp != nil {
+			out <- types.EngineEvent{
+				Type:         types.EngineEventPlanApproved,
+				AgentID:      proposal.AgentID,
+				PlanProposal: proposal,
+			}
+		}
+		return resp, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// SubmitPlanResponse implements engine.Engine. Routes the user's
+// plan.response back to the awaiting requestPlanApproval call. Returns
+// nil on success; logs at warn level when the plan_id has no pending
+// request (stale / duplicate response).
+func (qe *QueryEngine) SubmitPlanResponse(_ context.Context, _ string, resp *types.PlanResponse) error {
+	if resp == nil || resp.PlanID == "" {
+		return fmt.Errorf("plan response: missing plan_id")
+	}
+	qe.planMu.Lock()
+	req, ok := qe.pendingPlans[resp.PlanID]
+	if ok {
+		delete(qe.pendingPlans, resp.PlanID)
+	}
+	qe.planMu.Unlock()
+	if !ok {
+		qe.logger.Warn("plan response for unknown plan_id (stale or duplicate)",
+			zap.String("plan_id", resp.PlanID),
+		)
+		return nil // not a hard error; client may retry
+	}
+	// Non-blocking send — the channel is buffered (cap=1) and we
+	// already own the slot.
+	req.response <- resp
+	return nil
+}
+
+// resolveCoordinator picks the L2 Coordinator for this spawn. preference is
+// the raw mode string from SpawnConfig; empty values trigger the B-mode
+// ModeSelector which decides between ReAct (default) and Plan based on
+// the task's shape.
+//
+// Resolution order:
+//  1. preference is a known mode → use it directly (operator override)
+//  2. ModeSelector picks based on goal heuristics (B-mode of B+D scheme)
+//  3. Selected mode resolved through registry; unknown modes fall back
+//     to ReAct via registry policy
+//
+// Builds a fresh SharedDeps with task-scoped singletons:
+//   - BudgetTracker, Judge, Planner, Fallback: as before
+//   - ModeSelector: HeuristicModeSelector default
+//
+// Exposed as a method (not a free function) so tests can override the
+// mode selector by reaching into the dependency, and so the deps
+// construction stays close to where coordinators are actually used.
+func (qe *QueryEngine) resolveCoordinator(preference, goal string, logger *zap.Logger) Coordinator {
+	deps := &SharedDeps{
+		QE:               qe,
+		Logger:           logger,
+		Budget:           NewBudgetTracker(DefaultPlanBudget()).Start(),
+		Judge:            NewJudge(logger),
+		Planner:          NewHeuristicPlanner(),
+		Fallback:         NewFallbackChain(logger),
+		ModeSelector:     NewHeuristicModeSelector(),
+		SubagentResolver: NewHeuristicSubagentResolver(),
+	}
+
+	// B-mode: when no explicit preference, consult the selector. The
+	// selector itself respects operator overrides via ExplicitMode if
+	// the caller chose to thread one through; otherwise it heuristics.
+	chosen := CoordinatorMode(preference)
+	if !chosen.IsKnown() {
+		var skills []string
+		if qe.defRegistry != nil {
+			for _, l := range qe.defRegistry.ListForPlanner() {
+				skills = append(skills, l.Name)
+			}
+		}
+		out := deps.ModeSelector.Select(nil, ModeSelectorInput{
+			Goal:            goal,
+			AvailableSkills: skills,
+		})
+		chosen = out.Mode
+		logger.Info("mode selected by selector",
+			zap.String("mode", chosen.String()),
+			zap.String("reason", out.Reason),
+		)
+	}
+
+	return qe.coordinators.Resolve(chosen, deps)
 }
 
 // newEnvelope builds an emit envelope with the next seq number for the

@@ -8,6 +8,7 @@ import (
 	"harnessclaw-go/internal/channel"
 	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/router/middleware"
+	"harnessclaw-go/internal/tool"
 	pkgerr "harnessclaw-go/pkg/errors"
 	"harnessclaw-go/pkg/types"
 )
@@ -59,11 +60,43 @@ func (r *Router) coreHandler(ctx context.Context, msg *types.IncomingMessage) er
 		return r.engine.SubmitPermissionResult(ctx, msg.SessionID, msg.PermissionResponse)
 	}
 
+	// If this is a plan.response from the client, forward to the engine
+	// so the awaiting PlanCoordinator unblocks. Doesn't go through the
+	// query loop — it resolves an in-flight async request, not start
+	// a new one.
+	if msg.PlanResponse != nil {
+		return r.engine.SubmitPlanResponse(ctx, msg.SessionID, msg.PlanResponse)
+	}
+
 	userMsg := &types.Message{
 		Role: types.RoleUser,
 		Content: []types.ContentBlock{
 			{Type: types.ContentTypeText, Text: msg.Text},
 		},
+	}
+
+	// L2 coordinator mode override (per-turn). Empty string means
+	// "auto-decide via ModeSelector"; any other value flows through to
+	// SpawnConfig.CoordinatorMode → resolveCoordinator → registry.
+	// Validation lives downstream — unknown modes degrade to ReAct
+	// with a warn log rather than crashing the request.
+	if msg.CoordinatorMode != "" {
+		ctx = tool.WithCoordinatorMode(ctx, msg.CoordinatorMode)
+		r.logger.Info("router: coordinator_mode override applied",
+			zap.String("session_id", msg.SessionID),
+			zap.String("coordinator_mode", msg.CoordinatorMode),
+		)
+	}
+
+	// Plan confirmation opt-in (only meaningful in plan mode). When
+	// "required", PlanCoordinator pauses for user review via the
+	// plan.proposed / plan.response round-trip.
+	if msg.PlanConfirmation != "" {
+		ctx = tool.WithPlanConfirmation(ctx, msg.PlanConfirmation)
+		r.logger.Info("router: plan_confirmation applied",
+			zap.String("session_id", msg.SessionID),
+			zap.String("plan_confirmation", msg.PlanConfirmation),
+		)
 	}
 
 	events, err := r.engine.ProcessMessage(ctx, msg.SessionID, userMsg)

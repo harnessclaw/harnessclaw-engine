@@ -66,6 +66,8 @@ const (
 
 	// Deliverable: file produced by sub-agent
 	EngineEventDeliverable     EngineEventType = "deliverable"       // sub-agent wrote a deliverable file
+	EngineEventPlanProposed    EngineEventType = "plan_proposed"     // plan coordinator → user: please review/edit before exec
+	EngineEventPlanApproved    EngineEventType = "plan_approved"     // user → plan coordinator: ok continue (with optional edits)
 
 	// Phase 5: Teams
 	EngineEventTeamCreated     EngineEventType = "team_created"      // team created
@@ -178,6 +180,99 @@ type EngineEvent struct {
 	// for the orchestrate (L2) layer. Identifies which step ran which
 	// sub-agent and exposes the summary for UI rendering.
 	TaskDispatch *TaskDispatch `json:"task_dispatch,omitempty"`
+
+	// PlanProposal carries a plan that needs user review/edit before
+	// the coordinator continues. Set on plan_proposed events; nil on
+	// every other event type. Pairs with PlanResponse on the
+	// client→server return path (see types.IncomingMessage).
+	PlanProposal *PlanProposal `json:"plan_proposal,omitempty"`
+}
+
+// PlanProposal is the structured plan a coordinator presents to the user
+// for review. The user may approve as-is, edit the steps, or reject.
+//
+// Why this is a separate struct rather than reusing PlanEvent: PlanEvent
+// is observability-shaped (status / strategy / tasks for UI rendering)
+// — it doesn't carry the editable per-step prompts. PlanProposal is the
+// interactive contract.
+type PlanProposal struct {
+	// PlanID is server-generated, used by the client to correlate
+	// plan.response back to the right pending request. Format:
+	// "pln_<hex>".
+	PlanID string `json:"plan_id"`
+
+	// AgentID is the L2 coordinator instance asking for approval. The
+	// client uses it to attribute the proposal to a specific agent
+	// timeline entry.
+	AgentID string `json:"agent_id,omitempty"`
+
+	// Goal echoes the natural-language task description so the user
+	// can sanity-check before approving step decomposition.
+	Goal string `json:"goal,omitempty"`
+
+	// Rationale is a one-line explanation from the Planner (e.g.
+	// "research+write pattern detected"). Helpful for UI but not
+	// load-bearing.
+	Rationale string `json:"rationale,omitempty"`
+
+	// Steps is the editable plan body. Order matters (topological).
+	Steps []ProposedStep `json:"steps"`
+
+	// AvailableSubagents is the whitelist of valid SubagentType values
+	// for advanced clients that want to override the executor decision.
+	// Server-side validation rejects any step whose SubagentType is set
+	// AND outside this list. Default-shaped clients ignore it — the
+	// server resolves the executor at dispatch time via SubagentResolver.
+	//
+	// Renamed from AvailableSkills (v1.16) to disambiguate from
+	// AgentDefinition.Skills (capability tags, different concept).
+	AvailableSubagents []string `json:"available_subagents,omitempty"`
+
+	// TimeoutMs caps how long the server will wait for a response. 0
+	// means "no timeout" (wait until either user responds or session
+	// closes). Clients should render an explicit timer when non-zero.
+	TimeoutMs int64 `json:"timeout_ms,omitempty"`
+}
+
+// ProposedStep is one editable step in a PlanProposal. Fields mirror
+// engine.PlanStep but with JSON tags so the wire shape is stable
+// independent of the engine's internal type.
+//
+// SubagentType is OPTIONAL on the wire (v1.16+): standard front-ends
+// don't render it; the server's SubagentResolver picks the executor at
+// dispatch time. Advanced clients may still set it to lock a specific
+// L3, in which case the value must appear in PlanProposal.AvailableSubagents.
+type ProposedStep struct {
+	ID           string   `json:"id"`
+	SubagentType string   `json:"subagent_type,omitempty"`
+	Description  string   `json:"description,omitempty"`
+	Prompt       string   `json:"prompt,omitempty"`
+	DependsOn    []string `json:"depends_on,omitempty"`
+}
+
+// PlanResponse is what the client sends back via plan.response after the
+// user reviews a PlanProposal. Carried on types.IncomingMessage.
+type PlanResponse struct {
+	// PlanID identifies which pending proposal this responds to. Must
+	// match the PlanID the server emitted; mismatches are dropped with
+	// a warn log.
+	PlanID string `json:"plan_id"`
+
+	// Approved=true continues execution with UpdatedSteps (or original
+	// if UpdatedSteps is nil). Approved=false cancels the run; the
+	// coordinator falls back to a graceful degraded result.
+	Approved bool `json:"approved"`
+
+	// UpdatedSteps optionally replaces the proposed step list. nil /
+	// empty means "use the proposal as-is". Server validates the
+	// updated plan structure (no cycles, valid skills) before
+	// continuing — invalid edits return Approved=false with an error
+	// message in the next plan.proposed (re-plan trip).
+	UpdatedSteps []ProposedStep `json:"updated_steps,omitempty"`
+
+	// Reason is an optional human-readable rejection / edit comment.
+	// Surfaced in coordinator logs only.
+	Reason string `json:"reason,omitempty"`
 }
 
 // PlanEvent carries an L2 plan and its lifecycle status for plan_*

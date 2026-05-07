@@ -129,6 +129,25 @@ type SpawnConfig struct {
 	// Inputs is primarily a machine-readable contract check at the
 	// dispatcher boundary.
 	Inputs map[string]any
+
+	// CoordinatorMode optionally pins the L2 coordinator mode for this
+	// spawn. Only meaningful for coordinator-tier agents (Specialists,
+	// Plan, Explore, etc.); ignored for TierSubAgent which always runs
+	// the strict L3 driver.
+	//
+	// Allowed values mirror engine.CoordinatorMode: "react" (default),
+	// "plan" (requires explicit opt-in until Plan implementation lands),
+	// "" (registry resolves to default).
+	//
+	// Wiring path: WebSocket clients pass coordinator_mode at session /
+	// turn level; the API layer threads it through ProcessMessage onto
+	// SpawnConfig when emma dispatches Specialists. Unknown values
+	// degrade gracefully to ReAct with a warn log — bad client input
+	// must never crash the spawn.
+	//
+	// String type (not engine.CoordinatorMode) keeps the agent package
+	// dependency-light: agent shouldn't import engine.
+	CoordinatorMode string
 }
 
 // Message is a minimal message type for fork-mode context passing.

@@ -80,4 +80,34 @@ type SpawnResult struct {
 	// this to decide whether the L3 needs another iteration. Empty when
 	// self-check passed or no self-check was configured.
 	SelfCheckFailures []string
+
+	// CoordinatorMode is the L2 mode that ran this spawn ("react" /
+	// "plan" / future). Empty for L3 / non-coordinator spawns. Surfaced
+	// to telemetry + ToolResult metadata so operators can correlate
+	// "this task ran in plan mode" with budget / latency data.
+	CoordinatorMode string
+
+	// EscalatedFromMode, when non-empty, means a coordinator promoted
+	// this run mid-flight (e.g. ReAct → Plan via D-mode escalation).
+	// CoordinatorMode reports the FINAL mode that produced the output;
+	// EscalatedFromMode tells you where it started.
+	EscalatedFromMode string
+
+	// BudgetSpent reports the cumulative consumption tracked by the L2
+	// BudgetTracker. Empty on L3 spawns or coordinator-tier spawns that
+	// never started a tracker. Surfaced so emma can explain "降级原因：
+	// token 预算耗尽 (used 250k of 200k)" without inferring from logs.
+	BudgetSpent BudgetSpent
+}
+
+// BudgetSpent is the wire-shape mirror of engine.BudgetSnapshot. Lives
+// here (not in engine) to avoid a cycle: agent.SpawnResult is consumed
+// by tools that can't import engine.
+type BudgetSpent struct {
+	TokensUsed  int    `json:"tokens_used,omitempty"`
+	LLMCalls    int    `json:"llm_calls,omitempty"`
+	Failures    int    `json:"failures,omitempty"`
+	ElapsedMs   int64  `json:"elapsed_ms,omitempty"`
+	Exceeded    bool   `json:"exceeded,omitempty"`
+	ExceededWhy string `json:"exceeded_why,omitempty"`
 }

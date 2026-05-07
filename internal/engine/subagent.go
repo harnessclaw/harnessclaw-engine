@@ -390,6 +390,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		expectedOutputs:      cfg.ExpectedOutputs,
 		temperature:          temperature,
 		outputSchema:         outputSchema,
+		originalPrompt:       cfg.Prompt,
 	}
 
 	// Step 10: Emit subagent.start event.
@@ -445,14 +446,37 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	go func() {
 		defer close(done)
 		defer close(out)
-		// Tier-based driver routing. TierSubAgent runs the strict L3
-		// driver (no further dispatch, mandatory submit-or-escalate);
-		// every other tier — including the implicit default — runs the
-		// existing coordinator loop unchanged.
+		// Tier-based driver routing.
+		//
+		// TierSubAgent → strict L3 driver (no further dispatch, mandatory
+		// submit-or-escalate). The L3 path doesn't go through the
+		// Coordinator abstraction because L3 has no "mode" — it's always
+		// the same strict ReAct.
+		//
+		// Coordinator tier → resolve via coordinator registry using the
+		// mode preference on SpawnConfig (string for cross-package
+		// hygiene; the registry maps unknown / empty values back to
+		// ReAct, the cheapest baseline). The chosen coordinator decides
+		// whether to delegate to runSubAgentLoop (ReAct), build a plan
+		// (Plan, when implemented), or run any future mode.
 		if isSubAgent {
 			loopResult = qe.runSubAgentDriver(ctx, sess, lc, out)
 		} else {
-			loopResult = qe.runSubAgentLoop(ctx, sess, lc, out)
+			coord := qe.resolveCoordinator(cfg.CoordinatorMode, cfg.Prompt, logger)
+			logger.Info("coordinator resolved",
+				zap.String("requested_mode", cfg.CoordinatorMode),
+				zap.String("running_mode", coord.Mode().String()),
+			)
+			// Tag the loopResult with the running mode so the
+			// SpawnResult downstream can surface it. ReActCoordinator
+			// auto-escalates to Plan internally; we capture both modes
+			// (final + initial) by inspecting the result's
+			// EscalatedFromMode after Run returns.
+			runStart := coord.Mode()
+			loopResult = coord.Run(ctx, sess, lc, out)
+			if loopResult.CoordinatorMode == "" {
+				loopResult.CoordinatorMode = string(runStart)
+			}
 		}
 	}()
 
@@ -567,11 +591,28 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			case types.EngineEventSubAgentStart,
 				types.EngineEventSubAgentEnd,
 				types.EngineEventSubAgentEvent,
-				types.EngineEventDeliverable:
+				types.EngineEventDeliverable,
+				types.EngineEventPlanProposed,
+				types.EngineEventPlanApproved,
+				types.EngineEventPlanCreated,
+				types.EngineEventPlanUpdated,
+				types.EngineEventPlanCompleted,
+				types.EngineEventPlanFailed,
+				types.EngineEventStepDispatched,
+				types.EngineEventStepStarted,
+				types.EngineEventStepProgress,
+				types.EngineEventStepCompleted,
+				types.EngineEventStepFailed,
+				types.EngineEventStepSkipped:
 				// Pass through unchanged — the deeper layer already stamped
 				// the correct AgentID/AgentName, and re-wrapping would lose
 				// that attribution. ParentAgentID stitches the chain back
 				// together for the WebSocket client.
+				//
+				// Plan / step lifecycle events (added v1.16) carry the
+				// per-plan task graph + per-step dispatch/result info the
+				// client needs to render the plan tree before any sub-agent
+				// events arrive; without this case they're silently dropped.
 				cfg.ParentOut <- evt
 			}
 		}
@@ -665,6 +706,13 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// - Status: derived from terminal reason
 	fullOutput := textBuf.String()
 	summary := parseSummaryTag(fullOutput)
+	// Plan-mode coordinators populate loopResult.Summary directly (their
+	// LLM-less ReviewGoal path doesn't go through the assistant text
+	// channel). When set, prefer it over what parseSummaryTag found —
+	// the explicitly-built summary is canonical.
+	if loopResult.Summary != "" {
+		summary = loopResult.Summary
+	}
 
 	// Derive status from terminal reason.
 	status := "completed"
@@ -743,6 +791,11 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		EscalationReason:   loopResult.EscalationReason,
 		SuggestedNextSteps: loopResult.SuggestedNextSteps,
 		SelfCheckFailures:  loopResult.SelfCheckFailures,
+
+		// L2 coordinator surface (Phase B+). Empty for L3 spawns.
+		CoordinatorMode:   loopResult.CoordinatorMode,
+		EscalatedFromMode: loopResult.EscalatedFromMode,
+		BudgetSpent:       budgetSnapshotToSpent(loopResult.BudgetSpent),
 	}
 
 	// Record full result in TaskRegistry for future reference (context passing, debugging).
@@ -825,6 +878,11 @@ type loopConfig struct {
 	// (AgentDefinition.OutputSchema). When set the SubmitTaskResult
 	// server-side validation matches submitted `result` against it.
 	outputSchema map[string]any
+	// originalPrompt is the natural-language task seed the dispatcher
+	// supplied (cfg.Prompt). The query loop already injects this as the
+	// first user message; PlanCoordinator reads it back here to feed
+	// the Planner without re-deriving from session state.
+	originalPrompt string
 }
 
 // runSubAgentLoop is a variant of runQueryLoop parameterized by loopConfig.
@@ -1321,6 +1379,24 @@ type subAgentLoopResult struct {
 	EscalationReason   string
 	SuggestedNextSteps string
 	SelfCheckFailures  []string
+
+	// L2-coordinator fields. Populated when the loop ran a Coordinator
+	// (ReAct / Plan / future). Empty for L3 / legacy direct-loop spawns.
+	//
+	// CoordinatorMode is the FINAL mode that produced the result. If
+	// ReAct auto-escalated to Plan, this is "plan".
+	// EscalatedFromMode is non-empty only when an internal mode promotion
+	// happened — e.g., D-mode escalation logs "react" → "plan" so emma
+	// can explain "我们一开始用的快路径，发现没把握就升级了 plan 模式".
+	CoordinatorMode   string
+	EscalatedFromMode string
+	BudgetSpent       BudgetSnapshot
+
+	// Summary is the coordinator-level <summary> the parent agent (emma)
+	// quotes when speaking to the user. Plan mode populates this; ReAct
+	// leaves it empty because the L2 LLM already produces its own
+	// <summary> via the assistant text path.
+	Summary string
 }
 
 // maxSubmitNudges caps how many times the loop will re-prompt an L3 that

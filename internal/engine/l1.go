@@ -194,6 +194,15 @@ func (l *L1Engine) SubmitPermissionResult(
 	return l.inner.SubmitPermissionResult(ctx, sessionID, resp)
 }
 
+// SubmitPlanResponse forwards a plan approval decision to the inner engine.
+func (l *L1Engine) SubmitPlanResponse(
+	ctx context.Context,
+	sessionID string,
+	resp *types.PlanResponse,
+) error {
+	return l.inner.SubmitPlanResponse(ctx, sessionID, resp)
+}
+
 // AbortSession cancels in-flight processing for the given session.
 func (l *L1Engine) AbortSession(ctx context.Context, sessionID string) error {
 	return l.inner.AbortSession(ctx, sessionID)
