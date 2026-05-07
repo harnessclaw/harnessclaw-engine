@@ -3,6 +3,27 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
+## [0.0.8] - 2026-05-07
+
+### Added
+- v2.2 WebSocket protocol: UI-first card model with 8 actions (card.add/set/append/tick/close + prompt.user/reply + session.event) over 12 card_kinds, unified `ErrorInfo`, registry-driven `Hint` defaults, orphan watchdog, and `artifact://` URI as a protocol-level hard constraint
+- New `internal/emit/v2` package — Builder API, lifecycle tracker, per-trace sequencer, sink abstraction, artifact rewrite
+- Fault recovery: unanswered `permission` / `question` / `plan_review` prompts persist to a SQLite `pending_waits` table and replay (same `request_id`) when the client reconnects to the same session after a server restart
+- `Prompter` + `WaitStore` + `TextResumer`: server writes the wait before any wire frame leaves, restart-survivor reply path falls back to SQLite, hourly TTL janitor (15-day retention) reclaims abandoned waits
+- Per-session debounced persist worker: mutations within 500 ms collapse into a single disk write
+- WebSocket protocol specification: `docs/protocols/websocketV2.md` with reconnect semantics, recovery flow, and a 6-item client implementation checklist
+
+### Changed
+- Default WebSocket endpoint path is now `/v1/ws` (was `/ws`)
+- WebSocket channel completely rewritten on top of v2.2; engine `EngineEvent` flow runs through a new translator that maps to emit v2 calls
+- Session manager owns one persist worker per session; `Manager.Shutdown` flushes all workers
+
+### Fixed
+- `database is locked (SQLITE_BUSY)` under streaming load: SQLite DSN now sets `busy_timeout(5000)` / `journal_mode(WAL)` / `synchronous(NORMAL)`, and the pool is pinned to a single connection so writes serialise on the `database/sql` mutex instead of contending at the file lock
+
+### Removed
+- Legacy v1 WebSocket implementation: `connection.go`, `mapper.go`, `protocol.go`, `registry.go`, and their tests
+
 ## [0.0.7] - 2026-05-05
 
 ### Added
