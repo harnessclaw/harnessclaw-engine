@@ -25,6 +25,27 @@ type Store struct {
 
 // New opens (or creates) a SQLite database at the given path and
 // initialises the sessions table.
+//
+// Concurrency settings (rationale):
+//
+//   - PRAGMA journal_mode=WAL — readers don't block writers, writers don't
+//     block readers. Without this every read is serialised against any
+//     in-flight write.
+//   - PRAGMA busy_timeout=5000 — when a write needs the lock and can't
+//     acquire it (another connection is writing), SQLite blocks up to 5s
+//     internally and retries instead of returning SQLITE_BUSY immediately.
+//     This is the single most common SQLite-with-Go misconfiguration:
+//     without it, any contention surfaces as a hard error.
+//   - PRAGMA synchronous=NORMAL — fsync only at WAL checkpoint, not on
+//     every commit. Safe under WAL (durability of the most recent
+//     committed transaction may be lost on power failure but the DB
+//     remains consistent). Roughly 5-10× write throughput improvement.
+//   - SetMaxOpenConns(1) — SQLite serialises writes at the file level
+//     anyway. Letting the database/sql pool open multiple connections
+//     just creates contention without parallelism. Using a single
+//     connection makes the serialisation explicit and predictable.
+//   - SetMaxIdleConns(1) / SetConnMaxLifetime(0) — keep the one
+//     connection warm; never recycle it.
 func New(dbPath string) (*Store, error) {
 	// Ensure parent directory exists.
 	if dir := filepath.Dir(dbPath); dir != "" {
@@ -32,12 +53,33 @@ func New(dbPath string) (*Store, error) {
 			return nil, fmt.Errorf("create db directory: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", dbPath)
+
+	// modernc.org/sqlite parses _pragma=key=value DSN parameters and
+	// applies them as PRAGMAs on each new connection. busy_timeout MUST
+	// be set this way (not via Exec) so it applies to the very first
+	// statement on every connection — otherwise a slow Exec on conn-A
+	// can race with the PRAGMA on conn-B. We pin to one connection
+	// below, but the DSN form is still the safer pattern.
+	dsn := dbPath +
+		"?_pragma=busy_timeout(5000)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=synchronous(NORMAL)"
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
-	// Enable WAL mode for better concurrent read performance.
+	// SQLite is single-writer at the file level. Multiple Go connections
+	// writing concurrently produce SQLITE_BUSY; one connection serialises
+	// them through the database/sql mutex instead, which always succeeds.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+
+	// Best-effort: re-apply WAL mode via Exec so the change survives an
+	// existing journal_mode=DELETE database file (DSN PRAGMA only sets
+	// the connection state; WAL mode is a database-wide property).
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("set WAL mode: %w", err)
@@ -240,3 +282,9 @@ func (s *Store) ListSessions(_ context.Context, filter *session.SessionFilter) (
 func (s *Store) Close() error {
 	return s.db.Close()
 }
+
+// DB exposes the underlying *sql.DB so callers can mount additional
+// schemas (notably WaitStore for the recovery layer) over the same
+// connection pool — single-writer SQLite requires this to avoid lock
+// contention between session writes and wait writes.
+func (s *Store) DB() *sql.DB { return s.db }

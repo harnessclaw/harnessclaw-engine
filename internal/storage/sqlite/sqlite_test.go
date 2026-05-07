@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -257,4 +258,75 @@ func TestClose(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
+}
+
+// TestConcurrentWrites_NoBusyError reproduces the production scenario
+// that surfaced as `database is locked (5) (SQLITE_BUSY)`: many
+// goroutines persisting the same session in rapid succession. With the
+// pragma + connection-pool fix in New() this should complete without
+// any error; without it, expect SQLITE_BUSY on most workers.
+
+func TestConcurrentWrites_NoBusyError(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().Truncate(time.Millisecond)
+	const sessions = 8
+	const writesPerSession = 50
+	const totalWrites = sessions * writesPerSession
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, totalWrites)
+
+	for s := 0; s < sessions; s++ {
+		sid := fmt.Sprintf("sess-%d", s)
+		for i := 0; i < writesPerSession; i++ {
+			wg.Add(1)
+			go func(id string, n int) {
+				defer wg.Done()
+				sess := &session.Session{
+					ID:               id,
+					State:            session.StateActive,
+					Messages:         []types.Message{{ID: fmt.Sprintf("m%d", n), Role: types.RoleUser}},
+					CreatedAt:        now,
+					UpdatedAt:        time.Now(),
+					ChannelName:      "websocket",
+					Metadata:         map[string]any{"iter": n},
+					TotalInputTokens: n,
+				}
+				if err := store.SaveSession(ctx, sess); err != nil {
+					errCh <- err
+				}
+			}(sid, i)
+		}
+	}
+	wg.Wait()
+	close(errCh)
+
+	var busy, other int
+	for err := range errCh {
+		if err == nil {
+			continue
+		}
+		if e := err.Error(); contains(e, "SQLITE_BUSY") || contains(e, "database is locked") {
+			busy++
+		} else {
+			other++
+		}
+	}
+	if busy > 0 {
+		t.Fatalf("got %d SQLITE_BUSY errors out of %d concurrent writes — pragma/pool fix not effective", busy, totalWrites)
+	}
+	if other > 0 {
+		t.Fatalf("got %d non-busy errors", other)
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
