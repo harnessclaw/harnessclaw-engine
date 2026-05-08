@@ -9,9 +9,24 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
 )
+
+// stepMaxAttempts caps how many times the Scheduler retries one step
+// after a transient failure (network jitter, LLM timeout, rate limit).
+// Two attempts strikes the right balance:
+//   - one retry catches the bulk of transient flakes (provider blips,
+//     5xx, brief overload signals) without compounding cost
+//   - the second retry is what users implicitly expect when they see
+//     an error toast — "did the system try again?"
+//   - going further punishes legitimate hard failures (contract_fail,
+//     invalid_input) by paying for retries that will never succeed
+//
+// Non-transient failures (contract violations, dependency failures,
+// resolution errors) skip retry entirely — see isTransientFailure.
+const stepMaxAttempts = 2
 
 // SchedulerOutcome bundles what one Scheduler.Run produced. Mirrors the
 // shape Plan / Fallback consumers want: per-step results so Judge can
@@ -118,11 +133,30 @@ func (s *Scheduler) Run(
 			continue
 		}
 
-		// Dispatch.
-		result := s.dispatchStep(ctx, plan, step, results, parentCfg)
+		// Dispatch with step-level retry on transient failures. This
+		// keeps a single timeout / 5xx / rate_limit from forcing the
+		// whole plan to re-plan from scratch.
+		result := s.dispatchStepWithRetry(ctx, plan, step, results, parentCfg)
 		results[step.ID] = result
 		outcome.StepResults = append(outcome.StepResults, result)
 		emitStepResult(pickOut(parentCfg), step, result)
+
+		// Consolidated step-failure log. The sub-paths inside dispatchStep
+		// already log component-specific Warns (resolution / dispatch error
+		// / terminal failure / missing artifacts), but only this line ties
+		// the final outcome together with attempt count and ErrorType so an
+		// operator scanning scheduler logs sees one unambiguous "step X
+		// failed after N attempts" entry per failed step.
+		if result != nil && result.Status == "failed" {
+			s.logger.Warn("scheduler: step failed",
+				zap.String("step_id", step.ID),
+				zap.String("subagent_type", step.SubagentType),
+				zap.Int("attempts", result.Attempts),
+				zap.Bool("retryable", isTransientFailure(result)),
+				zap.String("error_type", string(classifyStepErrorType(result.Failures))),
+				zap.Strings("failure_sample", failureSample(result.Failures, 3)),
+			)
+		}
 
 		// Per-step Judge.
 		if s.deps != nil && s.deps.Judge != nil {
@@ -151,13 +185,111 @@ func (s *Scheduler) Run(
 	return outcome
 }
 
+// dispatchStepWithRetry runs dispatchStep up to stepMaxAttempts times
+// when the failure is transient. Per-step retry is the right granularity
+// for flakes: cheaper than re-planning the whole graph and avoids the
+// "successful steps re-run because one peer flaked" anti-pattern that
+// the plan-level replan loop alone produces.
+//
+// Retry policy:
+//   - attempt 1: always
+//   - attempt 2: only if isTransientFailure(result) — see classification rules
+//   - non-transient failures (contract / dependency / resolution / invalid input)
+//     return immediately so the plan-level loop can decide to re-plan
+//
+// emit step.started fires on each attempt so the client UI can render
+// "retrying step X (attempt 2/2)". The final emit step.completed/failed
+// carries the cumulative Attempts count.
+func (s *Scheduler) dispatchStepWithRetry(
+	ctx context.Context,
+	plan *Plan,
+	step *PlanStep,
+	prior map[string]*StepResult,
+	parentCfg *agent.SpawnConfig,
+) *StepResult {
+	out := pickOut(parentCfg)
+	var result *StepResult
+	for attempt := 1; attempt <= stepMaxAttempts; attempt++ {
+		emitStepStarted(out, step, attempt)
+		result = s.dispatchStep(ctx, plan, step, prior, parentCfg)
+		result.Attempts = attempt
+		if result.Status == "success" {
+			return result
+		}
+		if !isTransientFailure(result) {
+			s.logger.Debug("scheduler: step failure is non-transient, not retrying",
+				zap.String("step_id", step.ID),
+				zap.Strings("failures", result.Failures),
+			)
+			return result
+		}
+		if attempt < stepMaxAttempts {
+			s.logger.Info("scheduler: retrying step after transient failure",
+				zap.String("step_id", step.ID),
+				zap.Int("next_attempt", attempt+1),
+				zap.Strings("failures", result.Failures),
+			)
+		}
+	}
+	return result
+}
+
+// isTransientFailure inspects a StepResult's failure messages and decides
+// whether retrying could plausibly succeed. Errors fall into one of three
+// buckets:
+//
+//   transient (retry helps):
+//     - timeout / deadline exceeded
+//     - rate_limit / overloaded / 503 / 504
+//     - connection refused / reset / network unreachable
+//
+//   non-transient (retry wastes resources):
+//     - contract violations (sub-agent failed SubmitTaskResult schema)
+//     - dependency failures (upstream step skipped)
+//     - resolution failures (no L3 matches the step)
+//     - invalid input (4xx-class)
+//
+// The match is keyword-based on combined Failures text — sub-agent error
+// strings are unstructured today, so a deeper classifier would be over-
+// engineering. As we move to structured emit.ErrorInfo end-to-end the
+// classifier can switch to pattern-matching on ErrorType.
+func isTransientFailure(r *StepResult) bool {
+	if r == nil || r.Status != "failed" || len(r.Failures) == 0 {
+		return false
+	}
+	combined := strings.ToLower(strings.Join(r.Failures, " "))
+	transientMarkers := []string{
+		"timeout", "deadline exceeded",
+		"rate limit", "rate_limit", "ratelimit",
+		"overloaded", "overload",
+		"503", "504", "502",
+		"connection refused", "connection reset", "broken pipe",
+		"network unreachable", "tls handshake",
+		"context deadline",
+		// Terminal-class transient signals surfaced by appendTerminalFailure.
+		// blocking_limit = provider rate-limit / credit exhaustion (often
+		// recovers within seconds); model_error covers transient 5xx + stream
+		// truncation; image_error covers Bedrock-style transient image
+		// reprocessing failures.
+		"terminal_blocking_limit",
+		"terminal_model_error",
+		"terminal_image_error",
+	}
+	for _, m := range transientMarkers {
+		if strings.Contains(combined, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // dispatchStep builds the SpawnConfig for one step and calls the
 // dispatcher. Step-level metadata (ID, SubagentType, Prompt,
 // ExpectedOutputs) maps to fields the L3 driver already understands.
 //
 // Resolves SubagentType at dispatch time when the step left it empty
-// (the v1.16 default for HeuristicPlanner-produced plans). Resolution
-// uses SharedDeps.SubagentResolver; the chosen executor is stamped onto
+// (the v1.16 default for LLMPlanner-produced plans). Resolution uses
+// SharedDeps.SubagentResolver; the chosen executor is stamped onto
 // step.SubagentType so re-runs / observability see a consistent value.
 func (s *Scheduler) dispatchStep(
 	ctx context.Context,
@@ -226,15 +358,103 @@ func (s *Scheduler) dispatchStep(
 		Failures:  res.ContractFailures,
 		Usage:     res.Usage,
 	}
-	if agent.IsTerminalError(res) {
+	switch {
+	case agent.IsTerminalError(res):
 		out.Status = "failed"
-	} else if len(res.SubmittedArtifacts) == 0 && len(step.ExpectedOutputs) > 0 {
+		// Without this, terminal-class failures (model_error / blocking_limit /
+		// prompt_too_long / max_turns + contract violations) leave Failures
+		// empty when ContractFailures is empty — emit_step_failed then ships
+		// no Reason / Error and the retry classifier can't see the transient
+		// signal. Synthesize a "<reason>: <message>" failure line so the wire
+		// event is informative and isTransientFailure can match.
+		out.Failures = appendTerminalFailure(out.Failures, res)
+		s.logger.Warn("scheduler: step ended with terminal failure",
+			zap.String("step_id", step.ID),
+			zap.String("subagent_type", step.SubagentType),
+			zap.String("terminal_reason", terminalReasonOf(res)),
+			zap.String("terminal_message", truncForLog(terminalMessageOf(res), 200)),
+			zap.Int("contract_failures", len(res.ContractFailures)),
+			zap.Strings("failure_sample", failureSample(res.ContractFailures, 3)),
+		)
+	case len(res.SubmittedArtifacts) == 0 && len(step.ExpectedOutputs) > 0:
 		// Sub-agent returned without producing required artifacts — count
 		// as failure even if Terminal looks "completed".
 		out.Status = "failed"
 		out.Failures = append(out.Failures, "step produced no artifacts despite expected outputs")
-	} else {
+		s.logger.Warn("scheduler: step missing required artifacts",
+			zap.String("step_id", step.ID),
+			zap.String("subagent_type", step.SubagentType),
+			zap.Int("expected_outputs", len(step.ExpectedOutputs)),
+			zap.Strings("expected_roles", expectedRolesOf(step.ExpectedOutputs)),
+		)
+	default:
 		out.Status = "success"
+	}
+	return out
+}
+
+// appendTerminalFailure synthesizes a failure line from the SpawnResult's
+// Terminal block so callers see *something* in StepResult.Failures even
+// when the sub-agent didn't produce ContractFailures. Format mirrors the
+// agent.BuildFailureContent header so the same string survives both wire
+// event and dispatch.out log.
+func appendTerminalFailure(existing []string, res *agent.SpawnResult) []string {
+	if res == nil || res.Terminal == nil {
+		return existing
+	}
+	reason := string(res.Terminal.Reason)
+	if reason == "" {
+		return existing
+	}
+	line := "terminal_" + reason
+	if msg := strings.TrimSpace(res.Terminal.Message); msg != "" {
+		line = line + ": " + msg
+	}
+	return append(existing, line)
+}
+
+func terminalReasonOf(res *agent.SpawnResult) string {
+	if res == nil || res.Terminal == nil {
+		return ""
+	}
+	return string(res.Terminal.Reason)
+}
+
+func terminalMessageOf(res *agent.SpawnResult) string {
+	if res == nil || res.Terminal == nil {
+		return ""
+	}
+	return res.Terminal.Message
+}
+
+func expectedRolesOf(outs []types.ExpectedOutput) []string {
+	if len(outs) == 0 {
+		return nil
+	}
+	roles := make([]string, 0, len(outs))
+	for _, o := range outs {
+		roles = append(roles, o.Role)
+	}
+	return roles
+}
+
+// failureSample is the same shape as the helper in tools/specialists,
+// duplicated locally so the scheduler doesn't import a tool package
+// (would create a cycle). Keeps the Warn line readable.
+func failureSample(failures []string, n int) []string {
+	if len(failures) == 0 {
+		return nil
+	}
+	if len(failures) <= n {
+		out := make([]string, len(failures))
+		for i, f := range failures {
+			out[i] = truncForLog(f, 120)
+		}
+		return out
+	}
+	out := make([]string, n)
+	for i := 0; i < n; i++ {
+		out[i] = truncForLog(failures[i], 120)
 	}
 	return out
 }
@@ -425,6 +645,26 @@ func emitStepDispatched(out chan<- types.EngineEvent, step *PlanStep) {
 	}
 }
 
+// emitStepStarted fires step_started immediately before the L3 sub-
+// agent is invoked, after dispatch routing has settled. Lets the client
+// distinguish "queued / waiting on a wave" (only step.dispatched seen)
+// from "actually executing" (step.started observed). Attempt > 1
+// signals a transient-failure retry — clients should update the
+// step card to "retrying" rather than treating it as a fresh step.
+func emitStepStarted(out chan<- types.EngineEvent, step *PlanStep, attempt int) {
+	if out == nil || step == nil {
+		return
+	}
+	out <- types.EngineEvent{
+		Type: types.EngineEventStepStarted,
+		TaskDispatch: &types.TaskDispatch{
+			TaskID:       step.ID,
+			SubagentType: step.SubagentType,
+			Attempts:     attempt,
+		},
+	}
+}
+
 // emitStepResult fires step_completed / step_failed based on the step's
 // final result. Two events shaped the same way (TaskDispatch payload),
 // distinguished by EngineEventType — keeps the wire shape predictable.
@@ -440,6 +680,7 @@ func emitStepResult(out chan<- types.EngineEvent, step *PlanStep, res *StepResul
 				TaskID:        step.ID,
 				SubagentType:  step.SubagentType,
 				OutputSummary: truncForLog(res.Summary, 200),
+				Attempts:      res.Attempts,
 			},
 		}
 	case "failed":
@@ -449,14 +690,17 @@ func emitStepResult(out chan<- types.EngineEvent, step *PlanStep, res *StepResul
 		if len(res.Failures) > 0 {
 			errMsg = res.Failures[0]
 		}
+		errType := classifyStepErrorType(res.Failures)
 		out <- types.EngineEvent{
 			Type: types.EngineEventStepFailed,
 			TaskDispatch: &types.TaskDispatch{
 				TaskID:       step.ID,
 				SubagentType: step.SubagentType,
-				ErrorType:    "step_failed",
+				ErrorType:    string(errType),
 				Error:        errMsg,
 				Reason:       strings.Join(res.Failures, "; "),
+				Retryable:    isTransientFailure(res),
+				Attempts:     res.Attempts,
 			},
 		}
 	case "skipped":
@@ -465,6 +709,51 @@ func emitStepResult(out chan<- types.EngineEvent, step *PlanStep, res *StepResul
 		// defensive double-firing.
 		emitStepSkipped(out, step, strings.Join(res.Failures, "; "))
 	}
+}
+
+// classifyStepErrorType maps free-form step failure strings to the
+// controlled emit.ErrorType enum so wire consumers (monitoring, UI
+// tooltips) can route on a stable value instead of substring-matching
+// English. The classifier inherits the same keyword vocabulary as
+// isTransientFailure to keep the two views consistent: anything we
+// would retry maps to a transient enum value, anything we would not
+// maps to a permanent one.
+func classifyStepErrorType(failures []string) emit.ErrorType {
+	if len(failures) == 0 {
+		return emit.ErrorTypeInternal
+	}
+	combined := strings.ToLower(strings.Join(failures, " "))
+	switch {
+	case strings.Contains(combined, "rate limit"),
+		strings.Contains(combined, "rate_limit"),
+		strings.Contains(combined, "ratelimit"),
+		strings.Contains(combined, "terminal_blocking_limit"):
+		return emit.ErrorTypeToolRateLimited
+	case strings.Contains(combined, "overload"),
+		strings.Contains(combined, "503"),
+		strings.Contains(combined, "502"),
+		strings.Contains(combined, "terminal_model_error"):
+		return emit.ErrorTypeOverloaded
+	case strings.Contains(combined, "timeout"),
+		strings.Contains(combined, "deadline"),
+		strings.Contains(combined, "504"):
+		return emit.ErrorTypeToolTimeout
+	case strings.Contains(combined, "subagent resolution"),
+		strings.Contains(combined, "no l3"),
+		strings.Contains(combined, "no available"):
+		return emit.ErrorTypeDependencyFail
+	case strings.Contains(combined, "upstream dep"),
+		strings.Contains(combined, "did not succeed"):
+		return emit.ErrorTypeDependencyFail
+	case strings.Contains(combined, "contract"),
+		strings.Contains(combined, "expected outputs"),
+		strings.Contains(combined, "submittask"):
+		return emit.ErrorTypeInternal // contract_fail not in v1 enum; reuse Internal
+	case strings.Contains(combined, "invalid"),
+		strings.Contains(combined, "schema"):
+		return emit.ErrorTypeToolInvalidInput
+	}
+	return emit.ErrorTypeInternal
 }
 
 // emitStepSkipped fires step_skipped when an upstream dep failure or a

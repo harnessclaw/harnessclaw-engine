@@ -143,10 +143,16 @@ func (p *Plan) Sorted() []*PlanStep {
 // produced artifact IDs in its prompt) and aggregated into the final
 // ResultEnvelope-equivalent.
 type StepResult struct {
-	StepID   string
-	Status   string // "success" | "failed" | "skipped"
-	Summary  string
+	StepID    string
+	Status    string // "success" | "failed" | "skipped"
+	Summary   string
 	Artifacts []types.ArtifactRef
-	Failures []string
-	Usage    *types.Usage
+	Failures  []string
+	Usage     *types.Usage
+	// Attempts counts how many times the Scheduler tried this step
+	// before recording a final result. 1 means "succeeded on first try"
+	// (or failed once). > 1 means a transient failure was retried.
+	// Surfaced on emit step.dispatched / step.completed / step.failed
+	// so observers can see the retry happened.
+	Attempts int
 }
