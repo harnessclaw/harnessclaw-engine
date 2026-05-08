@@ -24,6 +24,13 @@ type MessagePayload struct {
 }
 
 // ToolPayload describes one tool invocation.
+//
+// Metadata carries any tool-specific extras the renderer may want
+// (e.g. WebSearch puts `urls`/`query`/`result_count` here, Bash puts
+// `exit_code`/`duration_ms`). The well-known keys `render_hint` /
+// `language` / `file_path` are promoted to typed fields above and
+// stripped from Metadata to avoid duplication; everything else flows
+// through verbatim.
 type ToolPayload struct {
 	Name        string         `json:"name"`
 	Target      string         `json:"target,omitempty"` // server | client
@@ -34,6 +41,7 @@ type ToolPayload struct {
 	Language    string         `json:"language,omitempty"`
 	FilePath    string         `json:"file_path,omitempty"`
 	Artifacts   []ArtifactRef  `json:"artifacts,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 // AgentPayload describes a sub-agent session.

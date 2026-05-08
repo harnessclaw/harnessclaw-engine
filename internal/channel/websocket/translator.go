@@ -223,15 +223,13 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 				status = emitv2.StatusFailed
 				errInfo = emitv2.NewError(emitv2.ErrorTypeInternal, ev.ToolResult.Content)
 			}
-			if rh, ok := ev.ToolResult.Metadata["render_hint"].(string); ok {
-				inner.RenderHint = rh
-			}
-			if lang, ok := ev.ToolResult.Metadata["language"].(string); ok {
-				inner.Language = lang
-			}
-			if fp, ok := ev.ToolResult.Metadata["file_path"].(string); ok {
-				inner.FilePath = fp
-			}
+			// Promote known metadata keys to typed fields; everything
+			// else flows through to ToolPayload.Metadata verbatim. This
+			// is what gives WebSearch / TavilySearch their {urls,
+			// query, result_count, has_raw} on the wire — without it
+			// the client only sees the formatted text Output.
+			inner.RenderHint, inner.Language, inner.FilePath, inner.Metadata =
+				promoteToolMetadata(ev.ToolResult.Metadata)
 		}
 		opts := []emitv2.EmitOpt{emitv2.WithInner(inner)}
 		if errInfo != nil {
@@ -768,6 +766,48 @@ func safeTurnCount(ev *types.EngineEvent) int {
 		return ev.Terminal.Turn
 	}
 	return 0
+}
+
+// promoteToolMetadata extracts well-known keys (render_hint / language /
+// file_path) into their typed fields and returns the remainder as
+// the passthrough Metadata map. Returned map is nil when nothing
+// remains, so the wire frame omits the field rather than carrying an
+// empty object.
+//
+// Why this matters: WebSearch and TavilySearch hang structured data
+// (urls / query / result_count / has_raw) off Metadata for the client
+// to render as URL chips. Without passthrough the wire would carry
+// only the formatted text Output and the client would fall back to
+// rendering plain text.
+func promoteToolMetadata(meta map[string]any) (renderHint, language, filePath string, rest map[string]any) {
+	if len(meta) == 0 {
+		return
+	}
+	rest = make(map[string]any, len(meta))
+	for k, v := range meta {
+		switch k {
+		case "render_hint":
+			if s, ok := v.(string); ok {
+				renderHint = s
+				continue
+			}
+		case "language":
+			if s, ok := v.(string); ok {
+				language = s
+				continue
+			}
+		case "file_path":
+			if s, ok := v.(string); ok {
+				filePath = s
+				continue
+			}
+		}
+		rest[k] = v
+	}
+	if len(rest) == 0 {
+		rest = nil
+	}
+	return
 }
 
 // parseJSONObject best-effort parses a JSON object string into map[string]any.
