@@ -3,6 +3,19 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
+## [0.0.10] - 2026-05-08
+
+### Added
+- Roster-agnostic LLM planner: replaces the keyword-rule HeuristicPlanner; the LLM produces a step DAG via the `emit_plan` tool with retry-on-validation, capped at `maxSteps`, and intentionally does not see the available sub-agent list — `SubagentResolver` picks the executor at dispatch time
+- Step-level retry on transient failures: scheduler retries up to two attempts on timeout / rate-limit / overloaded / 5xx / `terminal_blocking_limit` / `terminal_model_error` signals before falling back to plan-level replan; `step_started` fires per attempt and `step_completed` / `step_failed` carry cumulative `attempts`
+
+### Changed
+- `plan_review` confirmation now matches `prompt.user(question)` semantics: no `card.add(plan)` while waiting, no orphan watchdog, ctx deadline stripped — the user can take as long as they need to review (protocol v0.4.0)
+
+### Fixed
+- Tool-result metadata (e.g. WebSearch `urls` / `query` / `result_count`) now flows through the v2.2 translator to `ToolPayload.Metadata` instead of being dropped after promoting `render_hint` / `language` / `file_path`
+- Scheduler step failures triggered by terminal sub-agent reasons (`model_error` / `blocking_limit` / `prompt_too_long`) now populate `StepResult.Failures` with `terminal_<reason>: <message>`, log a structured Warn at the scheduler boundary, and feed the retry classifier — previously these failed silently with empty `step_failed` payloads and no server log
+
 ## [0.0.9] - 2026-05-07
 
 ### Added
