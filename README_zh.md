@@ -179,7 +179,7 @@ make clean              # 清理构建产物
 
 ## 文档
 
-- [WebSocket 协议规范 v1.4](docs/protocols/websocket.md)
+- [WebSocket 协议规范 v2.2](docs/protocols/websocket.md)
 
 ## 📞 Support
 

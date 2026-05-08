@@ -28,7 +28,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 - Fault recovery: unanswered `permission` / `question` / `plan_review` prompts persist to a SQLite `pending_waits` table and replay (same `request_id`) when the client reconnects to the same session after a server restart
 - `Prompter` + `WaitStore` + `TextResumer`: server writes the wait before any wire frame leaves, restart-survivor reply path falls back to SQLite, hourly TTL janitor (15-day retention) reclaims abandoned waits
 - Per-session debounced persist worker: mutations within 500 ms collapse into a single disk write
-- WebSocket protocol specification: `docs/protocols/websocketV2.md` with reconnect semantics, recovery flow, and a 6-item client implementation checklist
+- WebSocket protocol specification: `docs/protocols/websocket.md` with reconnect semantics, recovery flow, and a 6-item client implementation checklist
 
 ### Changed
 - Default WebSocket endpoint path is now `/v1/ws` (was `/ws`)

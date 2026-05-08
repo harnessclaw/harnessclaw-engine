@@ -179,7 +179,7 @@ For detailed protocol specifications, see [docs/protocols/websocket.md](docs/pro
 
 ## Documentation
 
-- [WebSocket Protocol Specification v1.4](docs/protocols/websocket.md)
+- [WebSocket Protocol Specification v2.2](docs/protocols/websocket.md)
 
 ## 📞 Support
 
