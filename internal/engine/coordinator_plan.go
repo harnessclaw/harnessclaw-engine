@@ -137,13 +137,6 @@ func (c *PlanCoordinator) Run(
 			zap.Int("replan", replan),
 		)
 
-		// Emit plan_created (first iteration) or plan_updated (re-plans)
-		// so the client gets the full step DAG before any sub-agent
-		// dispatches. Carries dependency info so UI can render the
-		// hierarchy. SubagentType is intentionally empty here — the
-		// resolver picks at dispatch time, surfaced via step_dispatched.
-		emitPlanLifecycle(out, plan, lc.agentID, replan)
-
 		if v := c.deps.Judge.ReviewPlan(plan); !v.Pass {
 			logger.Warn("plan coordinator: judge rejected plan",
 				zap.Strings("reasons", v.Reasons),
@@ -154,9 +147,11 @@ func (c *PlanCoordinator) Run(
 		}
 
 		// Plan confirmation gate. When enabled (PlanConfirmation =
-		// "required"), pause and emit plan.proposed → block on
-		// plan.response. Always-on cases (auto / empty) skip the
-		// round-trip and run the plan as-is.
+		// "required"), pause and emit prompt.user(plan_review) → block
+		// on prompt.user_response. Treated identically to AskUserQuestion:
+		// no card.add, no orphan watchdog, ctx deadline stripped — the
+		// user gets all the time they need. Always-on cases (auto / empty)
+		// skip the round-trip and run the plan as-is.
 		//
 		// Only the FIRST plan is gated; re-plans (replan > 0) are
 		// programmatic recovery and don't bother the user again.
@@ -178,6 +173,16 @@ func (c *PlanCoordinator) Run(
 			}
 			plan = confirmed // may be edited by user
 		}
+
+		// Emit plan_created (first iteration) or plan_updated (re-plans)
+		// so the client opens the plan card and renders the step DAG.
+		// Deliberately fired AFTER confirmation: during the confirm wait
+		// no card exists, mirroring AskUserQuestion's prompt.user(question)
+		// path which never opens a card while waiting on the user. This
+		// is what keeps the lifecycle watchdog (CardPlan OrphanTimeoutMs
+		// = 10min) from killing a plan that's just sitting in the user's
+		// review queue.
+		emitPlanLifecycle(out, plan, lc.agentID, replan)
 
 		// Execute.
 		outcome = scheduler.Run(ctx, plan, parentCfg)
@@ -357,7 +362,17 @@ func (c *PlanCoordinator) requestPlanConfirmation(
 		zap.Int("steps", len(proposal.Steps)),
 	)
 
-	resp, err := c.deps.QE.requestPlanApproval(ctx, sess.ID, out, proposal)
+	// Strip the deadline inherited from the Specialists tool ctx
+	// (15min) so the user gets all the time they need to review —
+	// same wait policy as AskUserQuestion, see
+	// queryloop.executeClientTools' humanInteractive branch.
+	// Cancel signals (session abort, user interrupt) propagate via
+	// the engine's separate cancel plumbing — those paths still call
+	// SubmitPlanResponse(cancelled) or close the session, both of
+	// which unblock requestPlanApproval through req.response or the
+	// engine-level shutdown.
+	waitCtx := context.WithoutCancel(ctx)
+	resp, err := c.deps.QE.requestPlanApproval(waitCtx, sess.ID, out, proposal)
 	if err != nil {
 		return nil, false, err
 	}
