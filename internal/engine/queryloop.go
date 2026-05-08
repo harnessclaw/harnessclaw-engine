@@ -75,6 +75,20 @@ func DefaultQueryEngineConfig() QueryEngineConfig {
 	}
 }
 
+// plannerModel returns the LLM model the LLMPlanner should call.
+// Provider may expose a default model via Name() or — until we wire a
+// dedicated config field — we let the provider pick (empty string).
+// Most providers (Bifrost / Anthropic / OpenAI adapters) interpret an
+// empty Model as "use the configured default", which matches what we
+// want here: the planner inherits whatever main model the operator set.
+func (qe *QueryEngine) plannerModel() string {
+	// Operators wanting a separate (cheaper) planning model should plug
+	// in a custom Planner via SharedDeps. Default = same model as the
+	// main turn, which keeps behaviour consistent with the previous
+	// HeuristicPlanner (which had no LLM cost at all).
+	return ""
+}
+
 // pendingToolCall tracks a tool call awaiting client result.
 type pendingToolCall struct {
 	resultCh chan *types.ToolResultPayload
@@ -374,7 +388,7 @@ func (qe *QueryEngine) resolveCoordinator(preference, goal string, logger *zap.L
 		Logger:           logger,
 		Budget:           NewBudgetTracker(DefaultPlanBudget()).Start(),
 		Judge:            NewJudge(logger),
-		Planner:          NewHeuristicPlanner(),
+		Planner:          NewLLMPlanner(qe.provider, qe.plannerModel()),
 		Fallback:         NewFallbackChain(logger),
 		ModeSelector:     NewHeuristicModeSelector(),
 		SubagentResolver: NewHeuristicSubagentResolver(),
