@@ -290,7 +290,12 @@ func main() {
 		// etc.) is the WebSocket. Forgetting this defaults Go's zero value
 		// (false), which silently drops AskUserQuestion calls into the
 		// server-side fallback — the warning users see in production.
-		ClientTools: cfg.Channel.WebSocket.ClientTools,
+		ClientTools:         cfg.Channel.WebSocket.ClientTools,
+		MaxPlanReplans:      cfg.Engine.MaxPlanReplans,
+		MaxStepAttempts:     cfg.Engine.MaxStepAttempts,
+		LLMMaxRetries:       cfg.LLM.MaxRetries,
+		LLMAPITimeout:       cfg.LLM.APITimeout,
+		LLMFirstByteTimeout: cfg.LLM.FirstByteTimeout,
 		// MainAgentProfile / DisplayName / AllowedTools / MaxTurns are filled
 		// in by NewL1Engine; setting non-default values here would be
 		// overwritten anyway.
@@ -599,7 +604,11 @@ func main() {
 	_ = logger.Sync()
 }
 
-// initLogger creates a Zap logger from config.
+// initLogger creates a Zap logger from config. When output=file, the
+// parent directory is created on demand (mkdir -p) and the path may
+// start with "~/" to refer to the user's home directory — saves
+// operators from getting a useless "no such file or directory" before
+// the logger even exists.
 func initLogger(cfg config.LogConfig) (*zap.Logger, error) {
 	level, err := zapcore.ParseLevel(cfg.Level)
 	if err != nil {
@@ -617,10 +626,38 @@ func initLogger(cfg config.LogConfig) (*zap.Logger, error) {
 	zapCfg.Level = zap.NewAtomicLevelAt(level)
 
 	if cfg.Output == "file" && cfg.FilePath != "" {
-		zapCfg.OutputPaths = []string{cfg.FilePath}
+		resolved, err := resolveLogPath(cfg.FilePath)
+		if err != nil {
+			return nil, fmt.Errorf("log file_path %q: %w", cfg.FilePath, err)
+		}
+		// mkdir -p the parent so zap.Build() doesn't fail with
+		// "no such file or directory". Permission failures here usually
+		// mean the user picked a path under /var/log or similar
+		// system-owned dirs without sudo — surface a clear hint.
+		if dir := filepath.Dir(resolved); dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, fmt.Errorf("create log dir %q (try a path under your home, e.g. ~/.harnessclaw/log/server.log): %w", dir, err)
+			}
+		}
+		zapCfg.OutputPaths = []string{resolved}
 	}
 
 	return zapCfg.Build()
+}
+
+// resolveLogPath expands a leading "~/" to the user's home directory.
+// Bare "~" (no slash) is left alone — that path is probably intentional.
+// On the rare case where os.UserHomeDir fails (some sandbox envs), the
+// original path is returned and the caller handles the open error.
+func resolveLogPath(p string) (string, error) {
+	if strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return p, err
+		}
+		return filepath.Join(home, p[2:]), nil
+	}
+	return p, nil
 }
 
 // subscribeEventLogging registers event bus handlers that log key events.

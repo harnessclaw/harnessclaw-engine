@@ -61,6 +61,10 @@ type IncomingMessage struct {
 	// SubmitPlanResponse method; the awaiting PlanCoordinator unblocks
 	// and continues execution with the (possibly edited) plan.
 	PlanResponse *PlanResponse `json:"plan_response,omitempty"`
+	// StepDecisionResponse is the user's reply to a
+	// step_decision_requested prompt (continue / retry / cancel after a
+	// step or plan-level failure). Routed to QueryEngine.SubmitStepDecision.
+	StepDecisionResponse *StepDecisionResponse `json:"step_decision_response,omitempty"`
 	// RawPayload holds channel-specific original data.
 	RawPayload map[string]any `json:"raw_payload,omitempty"`
 	// CoordinatorMode pins the L2 coordinator mode for this turn (see

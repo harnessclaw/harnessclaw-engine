@@ -37,6 +37,28 @@ const (
 	EngineEventMessageStart      EngineEventType = "message_start"      // LLM call begins streaming
 	EngineEventMessageDelta      EngineEventType = "message_delta"      // LLM call metadata (stop_reason, usage)
 	EngineEventMessageStop       EngineEventType = "message_stop"       // LLM call streaming ended
+
+	// EngineEventLLMHeartbeat fires periodically while an LLM call is
+	// in flight but no chunks have arrived (or are arriving slowly).
+	// Keeps the lifecycle watchdog from synthesising a failed close on
+	// the surrounding step / agent / message cards just because the
+	// upstream model is slow. Translator maps it to a
+	// card.tick(kind=heartbeat) on the current agent or message card,
+	// whose Tracker.Touch walks the parent chain and resets every
+	// ancestor's orphan deadline. AgentID may be empty for the L1
+	// main-loop call; the translator falls back to the active message
+	// card in that case.
+	EngineEventLLMHeartbeat      EngineEventType = "llm_heartbeat"
+
+	// EngineEventLLMRetry fires from inside retry.Retryer just before it
+	// sleeps for the backoff delay between two attempts. Carries the
+	// attempt index, remaining budget, planned delay, and the classified
+	// error that triggered the retry. Without this the front-end has no
+	// way to distinguish "model is thinking slowly" (heartbeats only)
+	// from "we hit a 5xx and are about to retry" — both look like the
+	// same silent wait. Translator renders it as a card.tick(kind=note)
+	// on the active agent/message card with a human-readable status.
+	EngineEventLLMRetry          EngineEventType = "llm_retry"
 	EngineEventSubAgentStart     EngineEventType = "subagent_start"     // sub-agent session begins
 	EngineEventSubAgentEnd       EngineEventType = "subagent_end"       // sub-agent session completes
 	EngineEventSubAgentEvent     EngineEventType = "subagent_event"     // real-time sub-agent streaming event
@@ -68,6 +90,15 @@ const (
 	EngineEventDeliverable     EngineEventType = "deliverable"       // sub-agent wrote a deliverable file
 	EngineEventPlanProposed    EngineEventType = "plan_proposed"     // plan coordinator → user: please review/edit before exec
 	EngineEventPlanApproved    EngineEventType = "plan_approved"     // user → plan coordinator: ok continue (with optional edits)
+
+	// EngineEventStepDecisionRequested fires when the Scheduler /
+	// PlanCoordinator hits a failure that previously would have been
+	// silently fallback'd (transient retries exhausted, re-plans
+	// exhausted, max-turns hit). Instead of dropping work the user
+	// already paid for, the coordinator pauses, emits this event so the
+	// channel can ask the user, and blocks on the response. User picks
+	// continue (skip) / retry / cancel — see StepDecisionResponse.
+	EngineEventStepDecisionRequested EngineEventType = "step_decision_requested"
 
 	// Phase 5: Teams
 	EngineEventTeamCreated     EngineEventType = "team_created"      // team created
@@ -139,6 +170,12 @@ type EngineEvent struct {
 	AgentTask     string   `json:"agent_task,omitempty"`     // full task prompt the parent dispatched (set on subagent_start so the user can see what each L3 was actually asked to do)
 	AgentType     string   `json:"agent_type,omitempty"`
 	ParentAgentID string   `json:"parent_agent_id,omitempty"`
+	// ParentStepID, on subagent_start, names the plan / orchestrate step
+	// that dispatched this sub-agent. Channel translators use it to root
+	// the agent card under the step card so the step's orphan watchdog
+	// receives heartbeats from inner agent activity. Empty for non-plan
+	// dispatches (legacy parent resolution applies).
+	ParentStepID  string   `json:"parent_step_id,omitempty"`
 	Duration      int64    `json:"duration_ms,omitempty"`
 	AgentStatus   string   `json:"agent_status,omitempty"` // for subagent_end: "completed", "error", "max_turns"
 	DeniedTools   []string `json:"denied_tools,omitempty"` // tools denied during sub-agent execution
@@ -186,6 +223,48 @@ type EngineEvent struct {
 	// every other event type. Pairs with PlanResponse on the
 	// client→server return path (see types.IncomingMessage).
 	PlanProposal *PlanProposal `json:"plan_proposal,omitempty"`
+
+	// StepDecision carries a failure-decision request from the
+	// coordinator. Set on step_decision_requested events. Pairs with
+	// StepDecisionResponse on the client→server return path.
+	StepDecision *StepDecisionRequest `json:"step_decision,omitempty"`
+
+	// LLMRetry carries the retry status emitted from inside the LLM
+	// retry loop just before backoff sleep. Set on EngineEventLLMRetry;
+	// nil on every other event type.
+	LLMRetry *LLMRetryInfo `json:"llm_retry,omitempty"`
+}
+
+// LLMRetryInfo describes one retry decision inside the LLM Retryer. The
+// numbers follow human-friendly 1-indexed semantics ("attempt 2 of 10")
+// rather than the Retryer's internal 0-indexed loop counter so the wire
+// frame can be rendered directly.
+type LLMRetryInfo struct {
+	// Attempt is the 1-indexed attempt number that just failed. Next
+	// retry will be Attempt+1.
+	Attempt int `json:"attempt"`
+
+	// MaxRetries is the configured retry ceiling — i.e., the maximum
+	// number of additional attempts after the initial call. Front-end
+	// can compute "x / max+1" total attempts.
+	MaxRetries int `json:"max_retries"`
+
+	// DelayMs is how long the Retryer will sleep before the next
+	// attempt. UI can show a countdown if it wants.
+	DelayMs int64 `json:"delay_ms"`
+
+	// ErrorType is the classified error kind from retry.APIErrorType
+	// ("rate_limit", "overloaded", "server_error", "network_error", ...).
+	// Empty if the classifier couldn't tag it.
+	ErrorType string `json:"error_type,omitempty"`
+
+	// StatusCode is the upstream HTTP status when available (0 for
+	// non-HTTP errors like ECONNRESET).
+	StatusCode int `json:"status_code,omitempty"`
+
+	// Message is a short human-readable summary, suitable to render in
+	// a note card on the wire.
+	Message string `json:"message,omitempty"`
 }
 
 // PlanProposal is the structured plan a coordinator presents to the user
@@ -274,6 +353,76 @@ type PlanResponse struct {
 	// Surfaced in coordinator logs only.
 	Reason string `json:"reason,omitempty"`
 }
+
+// StepDecisionRequest is what the coordinator presents to the user when
+// a step / plan path has hit a hard failure that previously fell back
+// silently (transient retries exhausted, re-plans exhausted, sub-agent
+// max turns, planner JSON validation cap). Lets the user decide whether
+// the run should keep going, retry the failing piece, or stop.
+type StepDecisionRequest struct {
+	// RequestID is server-generated; the client echoes it back in
+	// StepDecisionResponse so we can route the answer.
+	RequestID string `json:"request_id"`
+
+	// AgentID identifies the L2 coordinator instance asking. Lets the
+	// UI attribute the prompt to the right agent timeline entry.
+	AgentID string `json:"agent_id,omitempty"`
+
+	// Scope describes WHAT failed: "step" (one step in a plan), "plan"
+	// (re-plans exhausted / planner couldn't produce). Drives the
+	// vocabulary of the rendered prompt.
+	Scope string `json:"scope"`
+
+	// StepID / StepDescription are populated when Scope=="step". Empty
+	// for plan-scope failures.
+	StepID          string `json:"step_id,omitempty"`
+	StepDescription string `json:"step_description,omitempty"`
+
+	// Reason is the one-line failure summary the coordinator built from
+	// the StepResult / Planner error. Shown verbatim in the UI.
+	Reason string `json:"reason,omitempty"`
+
+	// Attempts is how many times the coordinator already tried this
+	// piece before asking. Helps the user judge whether retry is likely
+	// to help.
+	Attempts int `json:"attempts,omitempty"`
+
+	// AllowRetry tells the client whether the "retry" decision is
+	// available. False for failures that can't be retried at this
+	// level (e.g. planner JSON repeatedly invalid).
+	AllowRetry bool `json:"allow_retry,omitempty"`
+}
+
+// StepDecisionResponse carries the user's decision after a
+// step_decision_requested prompt. Carried on types.IncomingMessage.
+type StepDecisionResponse struct {
+	// RequestID identifies which pending decision this responds to.
+	RequestID string `json:"request_id"`
+
+	// Decision is one of:
+	//   "continue" — accept the failure, mark the affected step skipped
+	//                (or move past the failed plan stage), keep running.
+	//   "retry"    — try the failing piece one more time. Coordinator
+	//                runs the same step / re-plan again.
+	//   "cancel"   — stop the whole run, route to fallback aggregation.
+	Decision string `json:"decision"`
+
+	// Note is an optional free-form comment. Surfaced in coordinator
+	// logs / fallback summary so the user's reasoning makes it into the
+	// audit trail.
+	Note string `json:"note,omitempty"`
+}
+
+// Step decision values, exported so engine and channel code share the
+// same vocabulary. Anything outside this set is treated as "cancel".
+const (
+	StepDecisionContinue = "continue"
+	StepDecisionRetry    = "retry"
+	StepDecisionCancel   = "cancel"
+
+	StepDecisionScopeStep = "step"
+	StepDecisionScopePlan = "plan"
+)
 
 // PlanEvent carries an L2 plan and its lifecycle status for plan_*
 // events. Status values: "created", "updated", "completed", "failed".

@@ -31,6 +31,14 @@ type Config struct {
 	FallbackAfter529 int
 }
 
+// OnRetryFunc is the per-call observer fired by Retryer.DoWith just
+// before each backoff sleep. attempt is the 1-indexed attempt that just
+// failed (matches the internal warn log). delay is the sleep duration
+// before the next attempt. err is the classified APIError that triggered
+// the retry. The callback must be non-blocking; the Retryer holds the
+// caller's goroutine while it runs.
+type OnRetryFunc func(attempt int, delay time.Duration, err *APIError)
+
 // DefaultConfig returns the default retry configuration matching the original
 // TypeScript implementation's normal mode.
 func DefaultConfig() *Config {
@@ -100,13 +108,36 @@ func New(cfg *Config, logger *zap.Logger) *Retryer {
 	return &Retryer{config: cfg, logger: logger}
 }
 
-// Do executes fn with retry logic. fn should return an *APIError (or a type
-// that wraps one) for retryable API failures. Non-API errors are returned
-// immediately without retry.
-//
-// Returns nil on success, *FallbackTriggeredError when consecutive 529s exceed
-// the threshold, or the last error on exhaustion / non-retryable failure.
+// Do executes fn with retry logic. Equivalent to DoWith(ctx, fn, nil).
+// See DoWith for full semantics.
 func (r *Retryer) Do(ctx context.Context, fn func(ctx context.Context) error) error {
+	return r.DoWith(ctx, fn, nil)
+}
+
+// DoWith is the retry entry point with a per-call observer. fn should
+// return an *APIError (or a type that wraps one) for retryable API
+// failures; non-API errors are returned immediately without retry.
+//
+// onRetry, when non-nil, fires once per scheduled retry just before the
+// Retryer sleeps for the backoff. It receives the 1-indexed attempt
+// number that just failed, the planned delay, and the classified
+// APIError. The callback runs synchronously on the calling goroutine;
+// it must be non-blocking. Callers that surface retry status to the wire
+// should send on a buffered channel using a non-blocking select.
+//
+// Returns nil on success, *FallbackTriggeredError when consecutive 529s
+// exceed the threshold, or the last error on exhaustion / non-retryable
+// failure.
+//
+// Why per-call: the Retryer is shared across concurrent sub-agents.
+// Putting an observer on Config would mix retry events between unrelated
+// LLM calls; the per-call argument keeps the observer scoped to one
+// caller's `out` channel.
+func (r *Retryer) DoWith(
+	ctx context.Context,
+	fn func(ctx context.Context) error,
+	onRetry OnRetryFunc,
+) error {
 	var lastErr error
 
 	for attempt := 0; attempt <= r.config.MaxRetries; attempt++ {
@@ -155,6 +186,12 @@ func (r *Retryer) Do(ctx context.Context, fn func(ctx context.Context) error) er
 			zap.String("error_type", string(apiErr.Type)),
 			zap.Int("status_code", apiErr.StatusCode),
 		)
+		// Notify the per-call observer before sleeping. attempt+1 is
+		// the 1-indexed attempt that just failed (matches the WARN log
+		// above). Callback must be non-blocking — see OnRetryFunc.
+		if onRetry != nil {
+			onRetry(attempt+1, delay, apiErr)
+		}
 
 		select {
 		case <-ctx.Done():
@@ -169,6 +206,16 @@ func (r *Retryer) Do(ctx context.Context, fn func(ctx context.Context) error) er
 // is activated and the retryer should start fresh.
 func (r *Retryer) Reset() {
 	r.consecutive529 = 0
+}
+
+// MaxRetries returns the configured retry ceiling. Callers surface this
+// to the UI / wire so the user can see "attempt N of M" without reaching
+// into the Config struct.
+func (r *Retryer) MaxRetries() int {
+	if r == nil || r.config == nil {
+		return 0
+	}
+	return r.config.MaxRetries
 }
 
 // calculateDelay computes the backoff duration for the given attempt index

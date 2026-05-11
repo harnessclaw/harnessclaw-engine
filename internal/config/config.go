@@ -34,6 +34,9 @@ func (c *Config) Validate() error {
 	if c.LLM.MaxRetries < 0 {
 		return fmt.Errorf("llm.max_retries must be non-negative, got %d", c.LLM.MaxRetries)
 	}
+	if c.LLM.FirstByteTimeout < 0 {
+		return fmt.Errorf("llm.first_byte_timeout must be non-negative, got %s", c.LLM.FirstByteTimeout)
+	}
 	return nil
 }
 
@@ -87,8 +90,16 @@ type LLMConfig struct {
 	Bifrost         BifrostConfig             `mapstructure:"bifrost"`
 	MaxRetries      int                       `mapstructure:"max_retries"`
 	APITimeout      time.Duration             `mapstructure:"api_timeout"`
-	ProxyURL        string                    `mapstructure:"proxy_url"`
-	CustomHeaders   map[string]string         `mapstructure:"custom_headers"`
+	// FirstByteTimeout caps how long the engine waits between Chat()
+	// returning and the FIRST stream chunk landing. Disarms once the
+	// first chunk arrives, so legitimate slow streams aren't penalised
+	// — only catches the "gateway accepted the request but never sends
+	// a byte" pathology that otherwise stays silent until the 10-min
+	// orphan watchdog fires. Sized for upstream gateways that take
+	// 10-20s for first byte under normal load.
+	FirstByteTimeout time.Duration `mapstructure:"first_byte_timeout"`
+	ProxyURL         string        `mapstructure:"proxy_url"`
+	CustomHeaders    map[string]string `mapstructure:"custom_headers"`
 }
 
 // ProviderConfig holds a single provider's settings.
@@ -117,6 +128,20 @@ type EngineConfig struct {
 	MaxTurns             int           `mapstructure:"max_turns"`
 	AutoCompactThreshold float64       `mapstructure:"auto_compact_threshold"`
 	ToolTimeout          time.Duration `mapstructure:"tool_timeout"`
+
+	// MaxPlanReplans bounds how many times PlanCoordinator may re-plan
+	// after Judge.ReviewGoal fails. Each re-plan is one Planner LLM call
+	// plus a fresh execution of all steps it produces — set conservatively
+	// to keep an unrecoverable goal from looping the planner indefinitely.
+	// Reaching this cap no longer silently falls back: the coordinator
+	// pauses and asks the user (via prompt.user) whether to keep trying.
+	MaxPlanReplans int `mapstructure:"max_plan_replans"`
+
+	// MaxStepAttempts bounds Scheduler retries on a transient step
+	// failure (rate limit, network blip, provider 5xx). Two attempts
+	// catches the bulk of flakes, three covers stickier transient
+	// patterns. Reaching this cap pauses the plan and asks the user.
+	MaxStepAttempts int `mapstructure:"max_step_attempts"`
 }
 
 // SessionConfig holds session management settings.
@@ -153,6 +178,12 @@ type WSChannelConfig struct {
 	WriteTimeout   time.Duration `mapstructure:"write_timeout"`    // single write deadline (default 10s)
 	MaxMessageSize int64         `mapstructure:"max_message_size"` // max inbound frame size (default 512KB)
 	ClientTools    bool          `mapstructure:"client_tools"`     // true = client executes tools; false = server executes tools
+	// TraceFrames toggles per-outgoing-frame Debug log lines from
+	// writePump: type / card_kind / card_id / parent / seq / status /
+	// error. Default false (production). Useful when chasing
+	// "client sees X step adds but only Y closes" lifecycle bugs —
+	// flip to true, reproduce, grep "ws send" on the resulting log.
+	TraceFrames bool `mapstructure:"trace_frames"`
 }
 
 // HTTPChannelConfig holds HTTP API settings.
@@ -222,9 +253,12 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("llm.default_provider", "anthropic")
 	v.SetDefault("llm.max_retries", 10)
 	v.SetDefault("llm.api_timeout", "600s")
+	v.SetDefault("llm.first_byte_timeout", "120s")
 	v.SetDefault("engine.max_turns", 50)
 	v.SetDefault("engine.auto_compact_threshold", 0.8)
 	v.SetDefault("engine.tool_timeout", "120s")
+	v.SetDefault("engine.max_plan_replans", 3)
+	v.SetDefault("engine.max_step_attempts", 3)
 	v.SetDefault("session.max_messages", 200)
 	v.SetDefault("session.idle_timeout", "30m")
 	v.SetDefault("session.db_path", "~/.harnessclaw/db/sessions.db")
@@ -236,6 +270,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("channels.websocket.ping_interval", "30s")
 	v.SetDefault("channels.websocket.write_timeout", "10s")
 	v.SetDefault("channels.websocket.max_message_size", 524288)
+	v.SetDefault("channels.websocket.trace_frames", false)
 	v.SetDefault("channels.http.enabled", true)
 	v.SetDefault("channels.http.host", "0.0.0.0")
 	v.SetDefault("channels.http.port", 8080)

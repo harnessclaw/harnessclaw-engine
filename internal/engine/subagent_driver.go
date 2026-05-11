@@ -163,7 +163,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 			Model:     qe.provider.Name(),
 		}
 
-		llmResult := retryLLMCall(ctx, qe.provider, req, logger, out)
+		llmResult := retryLLMCall(ctx, qe.provider, req, logger, qe.retryer, qe.llmTimeouts(), lc.agentID, out)
 
 		if llmResult.streamErr != nil {
 			llmErr := llmResult.streamErr

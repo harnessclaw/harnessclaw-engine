@@ -18,7 +18,14 @@ log:
 llm:
   default_provider: "anthropic"              # Switch to "openai" to use OpenAI
   max_retries: 3
-  api_timeout: "120s"
+  api_timeout: "900s"
+  # First-byte watchdog: max wait between Chat() returning and the first
+  # stream chunk. Disarms once any chunk arrives, so legitimate slow
+  # streams aren't penalised — only catches "gateway accepted the
+  # request but never sent a byte" (the 10-min orphan-timeout
+  # pathology). Tune up to 180s+ if upstream models commonly take
+  # 60-90s to start streaming.
+  first_byte_timeout: "120s"
   # proxy_url: "http://proxy:8888"
   # custom_headers:
   #   X-Custom: "value"
@@ -70,6 +77,12 @@ channels:
     #           (AskUserQuestion). This is the right setting for emma's
     #           web UI.
     client_tools: false
+    # trace_frames toggles a per-outgoing-frame INFO log line capturing
+    # type / card_kind / card_id / parent / seq / status / error. Off in
+    # production (this flag generates one line per wire frame — 80-200
+    # per plan run); flip on while debugging "step never closes" /
+    # "card lineage wrong" UI issues, then grep "ws send" service.log.
+    trace_frames: false
   http:
     enabled: true
     host: "0.0.0.0"

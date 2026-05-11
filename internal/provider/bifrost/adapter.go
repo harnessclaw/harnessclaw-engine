@@ -15,6 +15,7 @@ package bifrost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -23,6 +24,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/provider"
+	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -226,10 +228,10 @@ func (a *Adapter) Chat(ctx context.Context, req *provider.ChatRequest) (*provide
 			bifReq.Model = a.fallbackModel
 			stream, bfErr = a.client.ChatCompletionStreamRequest(bfCtx, bifReq)
 			if bfErr != nil {
-				return nil, fmt.Errorf("bifrost: fallback also failed: %s", formatBifrostError(bfErr))
+				return nil, classifyBifrostError(bfErr, "bifrost: fallback also failed")
 			}
 		} else {
-			return nil, fmt.Errorf("bifrost: stream request failed: %s", formatBifrostError(bfErr))
+			return nil, classifyBifrostError(bfErr, "bifrost: stream request failed")
 		}
 	}
 
@@ -288,6 +290,30 @@ func (a *Adapter) IsUsingFallback() bool {
 }
 
 // ---------- Internal helpers ----------
+
+// classifyBifrostError converts a Bifrost SDK error into a typed
+// *retry.APIError so the engine-level Retryer can branch on Type /
+// Retryable / StatusCode without scraping the formatted message text.
+//
+// Behaviour:
+//   - bfErr.StatusCode set → retry.ClassifyHTTPError(code, ...)
+//     (HTTP-level errors: 4xx → non-retryable, 5xx/429/529 → retryable)
+//   - bfErr.StatusCode nil → retry.ClassifyNetworkError(...)
+//     (network-level errors: connection reset / TLS / DNS — all retryable)
+//
+// prefix is prepended to the error message so call sites can distinguish
+// "stream request failed" from "fallback also failed" without dropping
+// the underlying Bifrost diagnostic.
+func classifyBifrostError(bfErr *schemas.BifrostError, prefix string) *retry.APIError {
+	msg := formatBifrostError(bfErr)
+	if prefix != "" {
+		msg = prefix + ": " + msg
+	}
+	if bfErr.StatusCode != nil {
+		return retry.ClassifyHTTPError(*bfErr.StatusCode, msg, errors.New(msg))
+	}
+	return retry.ClassifyNetworkError(errors.New(msg))
+}
 
 // formatBifrostError builds a descriptive error string including HTTP status
 // code, error type/code, and the underlying error when available.
@@ -381,12 +407,12 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 		chunk := *chunkPtr
 
 		if chunk.BifrostError != nil {
-			errMsg := fmt.Sprintf("bifrost stream error: %s", formatBifrostError(chunk.BifrostError))
+			apiErr := classifyBifrostError(chunk.BifrostError, "bifrost stream error")
 			out <- types.StreamEvent{
 				Type:  types.StreamEventError,
-				Error: fmt.Errorf("%s", errMsg),
+				Error: apiErr,
 			}
-			return fmt.Errorf("%s", errMsg)
+			return apiErr
 		}
 
 		if chunk.BifrostChatResponse == nil || len(chunk.BifrostChatResponse.Choices) == 0 {
