@@ -264,10 +264,30 @@ func (b *CardBuilder) Add(payload any, opts ...EmitOpt) {
 
 	// Push onto parent stack; track lifecycle.
 	b.em.pushParent(b.cardID)
-	if !s.disableLifecyc && b.em.lifecycle != nil {
-		if to := OrphanTimeout(b.kind); to > 0 {
-			b.em.lifecycle.Open(b.cardID, b.kind, to, b)
+	if b.em.lifecycle != nil {
+		registryTimeout := OrphanTimeout(b.kind)
+		switch {
+		case s.disableLifecyc && registryTimeout > 0:
+			// Explicitly opted out of the orphan watchdog while still
+			// being a lifecycle-tracked kind (e.g. Specialists / Task
+			// tool cards that wrap a multi-minute sub-agent run). We
+			// register a "chain-only" entry — timeout=0 tells the
+			// sweep loop to skip it, but Touch can still walk through
+			// to refresh ancestors above. Without this, any heartbeat
+			// emitted by descendants of this card would dead-end here,
+			// and the turn card above could orphan-timeout mid-run.
+			b.em.lifecycle.Open(b.cardID, b.kind, 0, parent, b)
+		case !s.disableLifecyc && registryTimeout > 0:
+			// Normal tracked card. Pass the explicit parent we just put
+			// on the wire so the tracker's heartbeat chain matches what
+			// the renderer sees, even when WithParent was used to
+			// override the stack top.
+			b.em.lifecycle.Open(b.cardID, b.kind, registryTimeout, parent, b)
 		}
+		// Opening a child counts as activity on the parent chain —
+		// reset their deadlines so a long-running parent isn't killed
+		// just because it spent most of its time waiting on children.
+		b.em.lifecycle.Touch(parent)
 	}
 }
 
@@ -283,6 +303,9 @@ func (b *CardBuilder) Set(patch any, opts ...EmitOpt) {
 		Payload:  patch,
 	}
 	b.em.sink.Send(ev)
+	if b.em.lifecycle != nil {
+		b.em.lifecycle.Touch(b.cardID)
+	}
 }
 
 // Append emits a card.append for streaming content. channel selects which
@@ -315,6 +338,9 @@ func (b *CardBuilder) Append(channel Channel, chunk string, opts ...EmitOpt) {
 		Payload:  pl,
 	}
 	b.em.sink.Send(ev)
+	if b.em.lifecycle != nil {
+		b.em.lifecycle.Touch(b.cardID)
+	}
 }
 
 // AppendIndexed is Append with an explicit content-block index, for
@@ -336,6 +362,9 @@ func (b *CardBuilder) AppendIndexed(channel Channel, index int, chunk string, op
 		Payload:  pl,
 	}
 	b.em.sink.Send(ev)
+	if b.em.lifecycle != nil {
+		b.em.lifecycle.Touch(b.cardID)
+	}
 }
 
 // Tick emits a card.tick (throttled / dropable). inner is the kind-specific
@@ -351,6 +380,9 @@ func (b *CardBuilder) Tick(kind TickKind, inner any, opts ...EmitOpt) {
 		Payload:  TickPayload{Kind: kind, Inner: inner},
 	}
 	b.em.sink.Send(ev)
+	if b.em.lifecycle != nil {
+		b.em.lifecycle.Touch(b.cardID)
+	}
 }
 
 // recordArtifactsFromPayload extracts ArtifactRef slices from typed
@@ -427,10 +459,18 @@ func (b *CardBuilder) Close(status Status, opts ...EmitOpt) {
 	}
 	b.em.sink.Send(ev)
 
-	b.em.popParent(b.cardID)
+	// Close removes this card from the tracker and pushes the heartbeat
+	// up: the parent just witnessed a child finish, which is also an
+	// activity signal that should reset its deadline.
+	parent := ""
 	if b.em.lifecycle != nil {
+		parent = b.em.lifecycle.ParentOf(b.cardID)
 		b.em.lifecycle.Close(b.cardID)
+		if parent != "" {
+			b.em.lifecycle.Touch(parent)
+		}
 	}
+	b.em.popParent(b.cardID)
 }
 
 // ----------------- Non-card emits -----------------
@@ -645,4 +685,29 @@ func (e *Emitter) lookupParent(cardID string) string {
 		return ""
 	}
 	return e.lifecycle.ParentOf(cardID)
+}
+
+// SuspendChainFromCard pauses the orphan watchdog for cardID and every
+// still-open ancestor up the parent chain. Returns the list of card IDs
+// that were actually paused (so the caller can hand it to ResumeChain
+// once the wait ends). No-op if the emitter has no lifecycle tracker.
+//
+// Used by the channel translator on prompt.user emission: the user is
+// reviewing, so the surrounding agent / message / turn cards are
+// intentionally idle and must not orphan-timeout.
+func (e *Emitter) SuspendChainFromCard(cardID string) []string {
+	if e.lifecycle == nil {
+		return nil
+	}
+	return e.lifecycle.SuspendChain(cardID)
+}
+
+// ResumeChain reverses SuspendChainFromCard. Pass the slice that
+// SuspendChainFromCard returned. No-op when the emitter has no lifecycle
+// tracker or the slice is empty.
+func (e *Emitter) ResumeChain(cardIDs []string) {
+	if e.lifecycle == nil {
+		return
+	}
+	e.lifecycle.ResumeChain(cardIDs)
 }

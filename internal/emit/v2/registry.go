@@ -82,11 +82,19 @@ var cardMeta = map[CardKind]CardMeta{
 		OrphanTimeoutMs: 600_000,
 	},
 	CardStep: {
-		DefaultIcon:     "dispatch",
-		DefaultRole:     RoleOrchestrator,
-		TitleTpl:        "派出 {subagent_type}",
-		Lifecycle:       LifecycleTracked,
-		OrphanTimeoutMs: 60_000,
+		DefaultIcon: "dispatch",
+		DefaultRole: RoleOrchestrator,
+		TitleTpl:    "派出 {subagent_type}",
+		Lifecycle:   LifecycleTracked,
+		// Step cards receive heartbeats from their dispatched sub-agent:
+		// SubAgentStart carries ParentStepID, the translator parents the
+		// CardAgent under the step card, and any inner activity
+		// (tool_start / append / close) propagates Tracker.Touch up the
+		// chain. 5 min is the upper bound for "step opened but no
+		// activity ever happened" — covers a wedged dispatch / very slow
+		// sub-agent startup without killing legitimate long-running
+		// work.
+		OrphanTimeoutMs: 300_000, // 5 min
 	},
 	CardTeam: {
 		DefaultIcon: "team",

@@ -28,7 +28,9 @@ type openCard struct {
 	parent   string // for envelope on the synthetic close
 	openedAt time.Time
 	deadline time.Time
-	builder  *CardBuilder // who to emit the synthetic close through
+	timeout  time.Duration // original timeout, used to recompute deadline on Resume
+	paused   bool          // true while a prompt.user awaiting user response keeps this card alive
+	builder  *CardBuilder  // who to emit the synthetic close through
 }
 
 // TrackerConfig configures the watchdog.
@@ -75,26 +77,24 @@ func (t *Tracker) Stop() {
 	close(t.stop)
 }
 
-// Open records a new tracked card. Called by Builder.Add.
-func (t *Tracker) Open(cardID string, kind CardKind, timeout time.Duration, b *CardBuilder) {
+// Open records a new tracked card. Called by Builder.Add. parent is the
+// explicit parent_card_id the card was opened under (typically the
+// envelope.parent_card_id the wire envelope just carried). Empty parent
+// means "root card". The Tracker uses this for the heartbeat chain
+// (Touch / SuspendChain / ResumeChain) — getting it right is what
+// keeps the watchdog matching the on-wire parent topology when callers
+// override with WithParent (e.g. plan-mode sub-agent rooting under a
+// step card emitted from the main emitter).
+func (t *Tracker) Open(cardID string, kind CardKind, timeout time.Duration, parent string, b *CardBuilder) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
-	parent := ""
-	// Stack-top before this card was pushed = its parent.
-	if b != nil {
-		// builder's emitter has just pushed cardID — second-from-top is parent.
-		b.em.mu.Lock()
-		if n := len(b.em.parents); n >= 2 {
-			parent = b.em.parents[n-2]
-		}
-		b.em.mu.Unlock()
-	}
 	t.open[cardID] = &openCard{
 		kind:     kind,
 		parent:   parent,
 		openedAt: now,
 		deadline: now.Add(timeout),
+		timeout:  timeout,
 		builder:  b,
 	}
 }
@@ -116,6 +116,124 @@ func (t *Tracker) ParentOf(cardID string) string {
 		return c.parent
 	}
 	return ""
+}
+
+// Suspend pauses the orphan watchdog for cardID. While paused, the card
+// is kept alive — sweep skips it and no synthetic close fires no matter
+// how long it stays open. Used by the prompt.user flow: while we're
+// waiting on the user (plan_review, permission, AskUserQuestion), the
+// surrounding agent / turn / message cards are intentionally idle and
+// must not be killed by their own watchdog. Returns true if cardID was
+// tracked and not already paused (so the caller can pair it with a
+// matching Resume).
+func (t *Tracker) Suspend(cardID string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	c, ok := t.open[cardID]
+	if !ok || c.paused {
+		return false
+	}
+	c.paused = true
+	return true
+}
+
+// Resume reverses Suspend: clears the paused flag and grants the card
+// a fresh full timeout window starting now. Granting a fresh window
+// (rather than restoring the original deadline minus paused time)
+// matches the user-facing semantic — once the user has acted, the
+// engine should make progress within the standard timeout, not race a
+// stale deadline.
+func (t *Tracker) Resume(cardID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	c, ok := t.open[cardID]
+	if !ok || !c.paused {
+		return
+	}
+	c.paused = false
+	c.deadline = t.now().Add(c.timeout)
+}
+
+// Touch resets the deadline of cardID and every still-tracked ancestor
+// to "now + their original timeout". It's the heartbeat half of the
+// watchdog: any activity on a card (and therefore implicitly on its
+// containing scope) is evidence the engine is alive, so the orphan
+// timeout should restart from zero.
+//
+// Without this, a step / agent / tool card that legitimately runs
+// longer than its registered OrphanTimeoutMs gets killed mid-flight —
+// which is what caused the user-visible "执行超时了，我得放弃这步"
+// orphan_timeout closes during long plan steps.
+//
+// Paused cards (see Suspend) are left alone — they already opted out of
+// the watchdog and shouldn't have their deadline shortened by an
+// unrelated heartbeat.
+func (t *Tracker) Touch(cardID string) {
+	if cardID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	for cur := cardID; cur != ""; {
+		c, ok := t.open[cur]
+		if !ok {
+			break
+		}
+		if !c.paused {
+			c.deadline = now.Add(c.timeout)
+		}
+		cur = c.parent
+	}
+}
+
+// SuspendChain suspends cardID and walks up its parent chain, suspending
+// every still-tracked ancestor it encounters. Returns the list of cards
+// that were actually paused (so the caller can hand the same list to
+// ResumeChain when the wait ends). Already-closed or untracked ancestors
+// are skipped silently — orphaned chains shouldn't propagate errors.
+//
+// Used by the websocket translator on prompt.user emission: any card
+// up the lineage from the agent that triggered the prompt is dormant
+// while the human reviews, so its watchdog should not fire.
+func (t *Tracker) SuspendChain(cardID string) []string {
+	if cardID == "" {
+		return nil
+	}
+	var paused []string
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for cur := cardID; cur != ""; {
+		c, ok := t.open[cur]
+		if !ok {
+			break
+		}
+		if !c.paused {
+			c.paused = true
+			paused = append(paused, cur)
+		}
+		cur = c.parent
+	}
+	return paused
+}
+
+// ResumeChain is the inverse of SuspendChain. The slice is the set of
+// card IDs returned by the matching SuspendChain call.
+func (t *Tracker) ResumeChain(cardIDs []string) {
+	if len(cardIDs) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	for _, id := range cardIDs {
+		c, ok := t.open[id]
+		if !ok || !c.paused {
+			continue
+		}
+		c.paused = false
+		c.deadline = now.Add(c.timeout)
+	}
 }
 
 // OpenCount returns the current number of tracked cards. Useful for
@@ -143,6 +261,12 @@ func (t *Tracker) loop() {
 
 // sweep finds expired cards and emits synthetic closes. We do the emit
 // outside the mutex so a misbehaving Sink can't deadlock the watchdog.
+//
+// Cards with timeout==0 are "chain-only" entries: registered solely so
+// Touch can walk their parent link. They never expire — the watchdog
+// skips them. Used for long-lived orchestration tool cards (Specialists,
+// Task) whose lifetime is bounded by the inner agent run, not by any
+// wall-clock budget.
 func (t *Tracker) sweep() {
 	now := t.now()
 	type expired struct {
@@ -152,6 +276,13 @@ func (t *Tracker) sweep() {
 	var todo []expired
 	t.mu.Lock()
 	for id, oc := range t.open {
+		if oc.paused {
+			continue
+		}
+		if oc.timeout == 0 {
+			// chain-only entry — opt out of orphan watchdog
+			continue
+		}
 		if now.After(oc.deadline) {
 			todo = append(todo, expired{cardID: id, oc: oc})
 		}

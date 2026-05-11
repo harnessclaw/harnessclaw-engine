@@ -13,7 +13,7 @@ func TestLookupCardMeta_KnownKinds(t *testing.T) {
 		wantRoleNotEmpty bool
 	}{
 		{CardTurn, true, 600_000 * time.Millisecond, true},
-		{CardStep, true, 60_000 * time.Millisecond, true},
+		{CardStep, true, 300_000 * time.Millisecond, true},
 		{CardTool, true, 120_000 * time.Millisecond, true},
 		{CardArtifact, false, 0, true},
 		{CardTodo, false, 0, true},

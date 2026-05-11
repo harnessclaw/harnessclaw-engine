@@ -274,6 +274,21 @@ type PlanReviewStep struct {
 	DependsOn    []string `json:"depends_on,omitempty"`
 }
 
+// StepDecisionPromptPayload is the inner payload for kind=step_decision —
+// the coordinator pauses on a hard step / plan failure and asks the user
+// to pick continue / retry / cancel. Mirrors types.StepDecisionRequest
+// on the wire side; engine→wire conversion lives in the channel
+// translator.
+type StepDecisionPromptPayload struct {
+	// Scope: "step" or "plan".
+	Scope           string `json:"scope"`
+	StepID          string `json:"step_id,omitempty"`
+	StepDescription string `json:"step_description,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+	Attempts        int    `json:"attempts,omitempty"`
+	AllowRetry      bool   `json:"allow_retry,omitempty"`
+}
+
 // ----- prompt.reply payload -----
 
 // PromptReplyPayload is the server's echo after a prompt is resolved.
