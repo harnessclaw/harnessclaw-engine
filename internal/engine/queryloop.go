@@ -22,6 +22,7 @@ import (
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
+	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/skilltool"
 	"harnessclaw-go/pkg/types"
@@ -61,6 +62,65 @@ type QueryEngineConfig struct {
 	// sub-agents continue to derive their cap from MaxTurns. L1Engine
 	// typically sets this to 10 to enforce a "small" L1 loop.
 	MainAgentMaxTurns int
+
+	// MaxPlanReplans bounds PlanCoordinator re-plan attempts. Zero means
+	// "use defaultMaxPlanReplans" (3). Sourced from
+	// config.EngineConfig.MaxPlanReplans at engine construction.
+	MaxPlanReplans int
+
+	// MaxStepAttempts bounds Scheduler retries per transient step
+	// failure. Zero means "use defaultStepMaxAttempts" (3). Sourced from
+	// config.EngineConfig.MaxStepAttempts at engine construction.
+	MaxStepAttempts int
+
+	// LLMMaxRetries overrides retry.DefaultConfig().MaxRetries when > 0.
+	// Sourced from config.LLM.MaxRetries. Zero falls through to the
+	// retry package default (10). Each retry adds exponential backoff
+	// (500ms, 1s, 2s, ... capped at 32s) with ±25% jitter.
+	LLMMaxRetries int
+
+	// LLMAPITimeout caps total wall-clock for ONE LLM call (Chat() +
+	// stream consumption). When the upstream gateway holds the HTTP
+	// connection open without bytes, this is what eventually times out
+	// the call so retry can kick in. Zero = no total deadline (the
+	// stream can run forever — used in tests; never recommended in
+	// prod). Sourced from config.LLM.APITimeout.
+	LLMAPITimeout time.Duration
+
+	// LLMFirstByteTimeout caps how long we wait between Chat() returning
+	// and the FIRST stream chunk arriving. Catches the "TCP black hole"
+	// scenario where the model gateway accepts the request but never
+	// sends a single byte — without this, the call sits silent until
+	// the orphan watchdog fires (10 min later, surfacing as a useless
+	// "execute timeout" error). Once the first chunk arrives this
+	// timer disarms, so legitimate slow streams are unaffected.
+	// Recommended: 60–120s. Zero = disabled (rely on LLMAPITimeout
+	// alone).
+	LLMFirstByteTimeout time.Duration
+
+	// DisableStepDecisionGate, when true, suppresses the user-decision
+	// prompt that the Scheduler / PlanCoordinator would otherwise emit
+	// after a step / plan-level failure. Failure handling falls back to
+	// the legacy "skip + aggregate partial result" behaviour.
+	//
+	// Production keeps this false: any failure pauses the run and asks
+	// the user to choose continue / retry / cancel, so the user is in
+	// control of the sunk-cost trade-off. Tests that don't have a
+	// client to answer the prompt set this to true to avoid hanging on
+	// the unanswered request.
+	DisableStepDecisionGate bool
+}
+
+// retryConfigFromEngineCfg builds a *retry.Config from the engine
+// config, applying the package-level defaults for any field the engine
+// doesn't explicitly override. Centralised so NewQueryEngine and tests
+// stay in sync on what "default retry policy" means.
+func retryConfigFromEngineCfg(cfg QueryEngineConfig) *retry.Config {
+	c := retry.DefaultConfig()
+	if cfg.LLMMaxRetries > 0 {
+		c.MaxRetries = cfg.LLMMaxRetries
+	}
+	return c
 }
 
 // DefaultQueryEngineConfig returns production defaults.
@@ -69,9 +129,13 @@ func DefaultQueryEngineConfig() QueryEngineConfig {
 		MaxTurns:             50,
 		AutoCompactThreshold: 0.8,
 		ToolTimeout:          120 * time.Second,
-		MaxTokens:            16384,
-		SystemPrompt:         "You are a helpful assistant.",
-		ClientTools:          true,
+		MaxTokens:             16384,
+		SystemPrompt:          "You are a helpful assistant.",
+		ClientTools:           true,
+		MaxPlanReplans:        3,
+		MaxStepAttempts:       3,
+		LLMAPITimeout:         600 * time.Second, // 10 min total per call
+		LLMFirstByteTimeout:   120 * time.Second, // upstream-stall guard
 	}
 }
 
@@ -111,6 +175,13 @@ type QueryEngine struct {
 	logger       *zap.Logger
 	config       QueryEngineConfig
 	artifactStore any // *artifact.Store; kept untyped here to avoid the import cycle
+
+	// retryer drives the per-LLM-call retry loop with exponential
+	// backoff + jitter + 529-fallback signalling. Shared across every
+	// LLM call (main loop + sub-agents) so the consecutive-529
+	// counter accumulates session-wide; that's intentional —
+	// connections to the same gateway share the same upstream health.
+	retryer *retry.Retryer
 
 	// Prompt builder for structured system prompt assembly.
 	promptBuilder *prompt.Builder
@@ -172,6 +243,12 @@ type QueryEngine struct {
 	// pendingPerms / pendingTools.
 	planMu       sync.Mutex
 	pendingPlans map[string]*pendingPlanReq
+
+	// pendingStepDecisions tracks in-flight step-decision requests
+	// (continue / retry / cancel after a step or plan-level failure).
+	// Indexed by request_id (server-generated). Mirrors pendingPlans.
+	stepDecisionMu       sync.Mutex
+	pendingStepDecisions map[string]*pendingStepDecisionReq
 }
 
 // pendingPlanReq tracks one in-flight plan approval request. The
@@ -182,6 +259,15 @@ type pendingPlanReq struct {
 	planID    string
 	sessionID string
 	response  chan *types.PlanResponse
+	createdAt time.Time
+}
+
+// pendingStepDecisionReq is the step-decision counterpart of
+// pendingPlanReq.
+type pendingStepDecisionReq struct {
+	requestID string
+	sessionID string
+	response  chan *types.StepDecisionResponse
 	createdAt time.Time
 }
 
@@ -255,7 +341,9 @@ func NewQueryEngine(
 		taskRegistry:      make(map[string]*agent.SpawnResult),
 		emitSeq:           emit.NewSequencer(),
 		coordinators:      coordReg,
-		pendingPlans:      make(map[string]*pendingPlanReq),
+		pendingPlans:         make(map[string]*pendingPlanReq),
+		pendingStepDecisions: make(map[string]*pendingStepDecisionReq),
+		retryer:              retry.New(retryConfigFromEngineCfg(cfg), logger),
 	}
 }
 
@@ -364,6 +452,85 @@ func (qe *QueryEngine) SubmitPlanResponse(_ context.Context, _ string, resp *typ
 	return nil
 }
 
+// requestStepDecision pauses the coordinator on a hard step / plan
+// failure and asks the user how to proceed. Mirrors requestPlanApproval:
+// emits a step_decision_requested event, registers the in-flight req
+// keyed by request_id, blocks on either user response or ctx
+// cancellation. Caller is expected to strip the inherited tool-ctx
+// deadline (context.WithoutCancel) so the user gets unbounded time —
+// same policy as plan_review and AskUserQuestion.
+func (qe *QueryEngine) requestStepDecision(
+	ctx context.Context,
+	sessionID string,
+	out chan<- types.EngineEvent,
+	req *types.StepDecisionRequest,
+) (*types.StepDecisionResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("step decision: nil request")
+	}
+	if req.RequestID == "" {
+		return nil, fmt.Errorf("step decision: empty request_id")
+	}
+
+	pending := &pendingStepDecisionReq{
+		requestID: req.RequestID,
+		sessionID: sessionID,
+		response:  make(chan *types.StepDecisionResponse, 1),
+		createdAt: time.Now(),
+	}
+	qe.stepDecisionMu.Lock()
+	qe.pendingStepDecisions[req.RequestID] = pending
+	qe.stepDecisionMu.Unlock()
+	defer func() {
+		qe.stepDecisionMu.Lock()
+		delete(qe.pendingStepDecisions, req.RequestID)
+		qe.stepDecisionMu.Unlock()
+	}()
+
+	if out != nil {
+		select {
+		case out <- types.EngineEvent{
+			Type:         types.EngineEventStepDecisionRequested,
+			AgentID:      req.AgentID,
+			StepDecision: req,
+		}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	select {
+	case resp := <-pending.response:
+		return resp, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// SubmitStepDecision routes a user's step-decision reply back to the
+// coordinator that's blocked in requestStepDecision. Mirrors
+// SubmitPlanResponse: stale / unknown request_id is a warn, not an
+// error (client may retry; engine no longer cares about that decision).
+func (qe *QueryEngine) SubmitStepDecision(_ context.Context, _ string, resp *types.StepDecisionResponse) error {
+	if resp == nil || resp.RequestID == "" {
+		return fmt.Errorf("step decision response: missing request_id")
+	}
+	qe.stepDecisionMu.Lock()
+	pending, ok := qe.pendingStepDecisions[resp.RequestID]
+	if ok {
+		delete(qe.pendingStepDecisions, resp.RequestID)
+	}
+	qe.stepDecisionMu.Unlock()
+	if !ok {
+		qe.logger.Warn("step decision response for unknown request_id (stale or duplicate)",
+			zap.String("request_id", resp.RequestID),
+		)
+		return nil
+	}
+	pending.response <- resp
+	return nil
+}
+
 // resolveCoordinator picks the L2 Coordinator for this spawn. preference is
 // the raw mode string from SpawnConfig; empty values trigger the B-mode
 // ModeSelector which decides between ReAct (default) and Plan based on
@@ -384,14 +551,29 @@ func (qe *QueryEngine) SubmitPlanResponse(_ context.Context, _ string, resp *typ
 // construction stays close to where coordinators are actually used.
 func (qe *QueryEngine) resolveCoordinator(preference, goal string, logger *zap.Logger) Coordinator {
 	deps := &SharedDeps{
-		QE:               qe,
-		Logger:           logger,
-		Budget:           NewBudgetTracker(DefaultPlanBudget()).Start(),
-		Judge:            NewJudge(logger),
-		Planner:          NewLLMPlanner(qe.provider, qe.plannerModel()),
-		Fallback:         NewFallbackChain(logger),
-		ModeSelector:     NewHeuristicModeSelector(),
-		SubagentResolver: NewHeuristicSubagentResolver(),
+		QE:           qe,
+		Logger:       logger,
+		Budget:       NewBudgetTracker(DefaultPlanBudget()).Start(),
+		Judge:        NewJudge(logger),
+		Planner: NewLLMPlanner(qe.provider, qe.plannerModel()).
+			WithRetry(qe.retryer, qe.llmTimeouts(), logger),
+		Fallback:     NewFallbackChain(logger),
+		ModeSelector: NewHeuristicModeSelector(),
+		// LLM-driven dispatch: each plan step gets one structured-output
+		// LLM call to pick the best sub-agent from available, with the
+		// keyword-based heuristic as fallback for nil-provider /
+		// network-error / out-of-set-pick paths. The extra per-step LLM
+		// cost is small (256 max tokens, single tool call) and the
+		// alternative — keyword-table guessing — silently mis-routes
+		// research tasks to developer when text contains "代码" / "脚本" /
+		// "code" substrings.
+		SubagentResolver: NewLLMSubagentResolver(
+			qe.provider,
+			qe.plannerModel(),
+			qe.defRegistry,
+			NewHeuristicSubagentResolver(),
+			logger,
+		).WithRetry(qe.retryer, qe.llmTimeouts()),
 	}
 
 	// B-mode: when no explicit preference, consult the selector. The
@@ -1141,7 +1323,11 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		}
 
 		// ---- Phase 2: LLM Call with retry ----
-		llmResult := retryLLMCall(ctx, qe.provider, req, qe.logger, out)
+		// L1 main loop's agent identity is "main" — matches the
+		// envelope.agent_id stamp on every emitter the main session
+		// produces, so heartbeats route to the active turn / message
+		// card.
+		llmResult := retryLLMCall(ctx, qe.provider, req, qe.logger, qe.retryer, qe.llmTimeouts(), "main", out)
 
 		if llmResult.streamErr != nil {
 			// ---- Phase 3: Error Recovery (all retries exhausted) ----

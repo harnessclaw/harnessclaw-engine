@@ -29,6 +29,11 @@ type Engine interface {
 	// don't crash the connection.
 	SubmitPlanResponse(ctx context.Context, sessionID string, resp *types.PlanResponse) error
 
+	// SubmitStepDecision delivers the user's continue/retry/cancel reply
+	// to a step_decision_requested prompt. Unknown request_id is logged
+	// as warn and returned as nil (stale reply, not an error).
+	SubmitStepDecision(ctx context.Context, sessionID string, resp *types.StepDecisionResponse) error
+
 	// AbortSession cancels any in-flight processing for a session.
 	AbortSession(ctx context.Context, sessionID string) error
 }

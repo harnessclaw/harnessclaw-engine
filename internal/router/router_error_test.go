@@ -74,6 +74,9 @@ func (m *mockEngine) SubmitPermissionResult(_ context.Context, _ string, _ *type
 func (m *mockEngine) SubmitPlanResponse(_ context.Context, _ string, _ *types.PlanResponse) error {
 	return nil
 }
+func (m *mockEngine) SubmitStepDecision(_ context.Context, _ string, _ *types.StepDecisionResponse) error {
+	return nil
+}
 func (m *mockEngine) AbortSession(_ context.Context, _ string) error {
 	return nil
 }

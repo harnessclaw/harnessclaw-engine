@@ -97,9 +97,25 @@ func TestBudgetTracker_ConcurrentAddUsage(t *testing.T) {
 	}
 }
 
-func TestDefaultPlanBudget_SaneValues(t *testing.T) {
+// DefaultPlanBudget intentionally returns all zeros: enforcement is off
+// by default so plans run to completion instead of getting silently cut
+// off with sunk LLM cost. Metering still works (BudgetTracker.Snapshot
+// keeps accumulating); enforcement is opt-in via a custom BudgetLimit.
+func TestDefaultPlanBudget_DisablesEnforcement(t *testing.T) {
 	b := DefaultPlanBudget()
-	if b.MaxTokens <= 0 || b.MaxDuration <= 0 || b.MaxFailures <= 0 || b.MaxLLMCalls <= 0 {
-		t.Errorf("DefaultPlanBudget should have non-zero limits, got %+v", b)
+	if b.MaxTokens != 0 || b.MaxDuration != 0 || b.MaxFailures != 0 || b.MaxLLMCalls != 0 {
+		t.Errorf("DefaultPlanBudget should leave every dimension uncapped, got %+v", b)
+	}
+
+	// And the tracker built from it must never report Exceeded, even
+	// with absurdly high counters — proves the enforcement gate is
+	// actually wired off, not just that the constants are zero.
+	tr := NewBudgetTracker(b).Start()
+	for i := 0; i < 1000; i++ {
+		tr.AddUsage(&types.Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000})
+		tr.NoteFailure()
+	}
+	if exceeded, why := tr.Exceeded(); exceeded {
+		t.Errorf("default tracker reported Exceeded=%v why=%q despite zero caps", exceeded, why)
 	}
 }

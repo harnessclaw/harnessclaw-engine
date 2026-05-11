@@ -145,17 +145,25 @@ func (t *BudgetTracker) checkLocked(snap BudgetSnapshot) (bool, string) {
 	return false, ""
 }
 
-// DefaultPlanBudget returns the limit applied to Plan-mode tasks when the
-// caller doesn't supply their own. Picked conservatively — generous enough
-// for genuine multi-step work, stingy enough that an unbounded re-plan
-// loop trips early.
+// DefaultPlanBudget returns an empty BudgetLimit — meaning the runtime
+// does NOT cut off plans by default on token / duration / failure / LLM
+// call count. BudgetTracker still meters all four dimensions; callers
+// that want to surface "you've used X tokens / Y minutes" to the user
+// read Snapshot() and render it in the UI.
+//
+// Why disabled by default: hard mid-task cutoffs created a pure sunk-cost
+// failure mode. The plan would run for 11 min, the LLM bill was already
+// paid, then the 10-min wall-clock cap fired and the user got a partial
+// result with no warning that the cutoff was approaching. Per-task
+// guardrails are a product / UX concern (visible meter, soft warnings,
+// user-confirmed extensions) rather than a silent backend kill switch.
+//
+// Operators or tests that DO want enforcement can construct a custom
+// BudgetLimit and wire it via SharedDeps.Budget — the enforcement
+// mechanism (Exceeded() checks in the Scheduler / PlanCoordinator) still
+// honours non-zero limits.
 func DefaultPlanBudget() BudgetLimit {
-	return BudgetLimit{
-		MaxTokens:   200_000,
-		MaxDuration: 10 * time.Minute,
-		MaxFailures: 5,
-		MaxLLMCalls: 30,
-	}
+	return BudgetLimit{}
 }
 
 // budgetSnapshotToSpent converts the engine-internal BudgetSnapshot into

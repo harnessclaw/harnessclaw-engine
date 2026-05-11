@@ -203,6 +203,15 @@ func (l *L1Engine) SubmitPlanResponse(
 	return l.inner.SubmitPlanResponse(ctx, sessionID, resp)
 }
 
+// SubmitStepDecision forwards a continue/retry/cancel reply to the inner engine.
+func (l *L1Engine) SubmitStepDecision(
+	ctx context.Context,
+	sessionID string,
+	resp *types.StepDecisionResponse,
+) error {
+	return l.inner.SubmitStepDecision(ctx, sessionID, resp)
+}
+
 // AbortSession cancels in-flight processing for the given session.
 func (l *L1Engine) AbortSession(ctx context.Context, sessionID string) error {
 	return l.inner.AbortSession(ctx, sessionID)

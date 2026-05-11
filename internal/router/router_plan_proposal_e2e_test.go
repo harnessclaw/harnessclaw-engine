@@ -70,6 +70,9 @@ func (m *planProposingEngine) SubmitPlanResponse(_ context.Context, _ string, re
 	m.gotPlanResponse = resp
 	return nil
 }
+func (m *planProposingEngine) SubmitStepDecision(_ context.Context, _ string, _ *types.StepDecisionResponse) error {
+	return nil
+}
 func (m *planProposingEngine) AbortSession(_ context.Context, _ string) error { return nil }
 
 // TestE2E_PlanProposedReachesClient is the integration test that proves

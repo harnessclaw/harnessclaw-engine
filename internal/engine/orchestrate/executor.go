@@ -400,6 +400,7 @@ func (e *PlanExecutor) runStep(
 			ParentSessionID: opts.ParentSessionID,
 			ParentOut:       opts.ParentOut,
 			Timeout:         opts.StepTimeout,
+			ParentStepID:    step.StepID,
 		}
 
 		spawnRes, err := e.spawner.SpawnSync(ctx, cfg)

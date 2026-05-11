@@ -122,11 +122,11 @@ func TestScheduler_ExhaustsMaxAttemptsOnPersistentTransient(t *testing.T) {
 	if res.Status != "failed" {
 		t.Fatalf("expected failed; got %q", res.Status)
 	}
-	if disp.calls != stepMaxAttempts {
-		t.Errorf("expected exactly %d attempts; got %d", stepMaxAttempts, disp.calls)
+	if disp.calls != defaultStepMaxAttempts {
+		t.Errorf("expected exactly %d attempts; got %d", defaultStepMaxAttempts, disp.calls)
 	}
-	if got := res.StepResults[0].Attempts; got != stepMaxAttempts {
-		t.Errorf("expected Attempts=%d on exhaustion; got %d", stepMaxAttempts, got)
+	if got := res.StepResults[0].Attempts; got != defaultStepMaxAttempts {
+		t.Errorf("expected Attempts=%d on exhaustion; got %d", defaultStepMaxAttempts, got)
 	}
 }
 
@@ -191,6 +191,7 @@ func TestScheduler_EmitStepFailedCarriesErrorTypeAndRetryable(t *testing.T) {
 		errs: []error{
 			errors.New("rate limit exceeded"),
 			errors.New("rate limit exceeded"),
+			errors.New("rate limit exceeded"),
 		},
 	}
 
@@ -221,9 +222,9 @@ func TestScheduler_EmitStepFailedCarriesErrorTypeAndRetryable(t *testing.T) {
 	if !failed.Retryable {
 		t.Errorf("rate-limit failure should be marked retryable on the wire")
 	}
-	if failed.Attempts != stepMaxAttempts {
+	if failed.Attempts != defaultStepMaxAttempts {
 		t.Errorf("step_failed should report cumulative Attempts=%d; got %d",
-			stepMaxAttempts, failed.Attempts)
+			defaultStepMaxAttempts, failed.Attempts)
 	}
 }
 

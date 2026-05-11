@@ -45,7 +45,6 @@ func TestValidateInput_RejectsMalformed(t *testing.T) {
 		{"empty artifacts", `{"artifacts":[],"summary":"x"}`},
 		{"missing summary", `{"artifacts":[{"artifact_id":"art_000000000000000000000000","role":"r"}]}`},
 		{"empty summary", `{"artifacts":[{"artifact_id":"art_000000000000000000000000","role":"r"}],"summary":"  "}`},
-		{"summary too long", `{"artifacts":[{"artifact_id":"art_000000000000000000000000","role":"r"}],"summary":"` + strings.Repeat("x", 201) + `"}`},
 		{"malformed id", `{"artifacts":[{"artifact_id":"art_short","role":"r"}],"summary":"ok"}`},
 		{"missing role", `{"artifacts":[{"artifact_id":"art_000000000000000000000000","role":""}],"summary":"ok"}`},
 	}
@@ -56,6 +55,40 @@ func TestValidateInput_RejectsMalformed(t *testing.T) {
 				t.Errorf("expected validation failure for %s; got nil", c.name)
 			}
 		})
+	}
+}
+
+// TestExecute_TruncatesOverlongSummary pins the silent-truncation
+// contract: an over-long summary must NOT reject the call (LLM doesn't
+// burn a retry round-trip), but the persisted summary in the wire
+// result must be ≤ MaxSummaryChars and end in the truncation marker.
+func TestExecute_TruncatesOverlongSummary(t *testing.T) {
+	store := artifact.NewMemoryStore(artifact.DefaultConfig())
+	contract := tool.TaskContract{TaskID: "task_trunc"}
+	ctx := newTestCtx(store, contract)
+	a := seedTaskArtifact(t, store, "task_trunc", "report", 100)
+
+	// Build summary that exceeds MaxSummaryChars by a margin typical of
+	// the real-world failure (~200 over → 200+200 = 400 runes).
+	long := strings.Repeat("汉", MaxSummaryChars+200)
+	raw := json.RawMessage(`{
+		"artifacts":[{"artifact_id":"` + a.ID + `","role":"report"}],
+		"summary":"` + long + `"
+	}`)
+
+	res, _ := New().Execute(ctx, raw)
+	if res.IsError {
+		t.Fatalf("over-long summary should NOT reject; got error: %s", res.Content)
+	}
+	if utf8Len(res.Content) > MaxSummaryChars*4 {
+		// Loose envelope upper bound — Content carries the assembled
+		// final-text including the summary; no point asserting the
+		// exact field, but it shouldn't carry the full 400-rune blob.
+		t.Errorf("Content surprisingly long after truncation: %d chars", utf8Len(res.Content))
+	}
+	if !strings.Contains(res.Content, summaryEllipsis) {
+		t.Errorf("truncated summary should carry the %q marker; got %q",
+			summaryEllipsis, res.Content)
 	}
 }
 

@@ -72,6 +72,9 @@ func (planLifecycleEngine) SubmitPermissionResult(_ context.Context, _ string, _
 func (planLifecycleEngine) SubmitPlanResponse(_ context.Context, _ string, _ *types.PlanResponse) error {
 	return nil
 }
+func (planLifecycleEngine) SubmitStepDecision(_ context.Context, _ string, _ *types.StepDecisionResponse) error {
+	return nil
+}
 func (planLifecycleEngine) AbortSession(_ context.Context, _ string) error { return nil }
 
 // TestE2E_PlanLifecycleReachesClient confirms that plan_created /

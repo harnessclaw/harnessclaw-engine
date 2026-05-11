@@ -25,8 +25,12 @@ import (
 )
 
 // maxSubAgentTurns is the hard upper limit for any sub-agent's MaxTurns,
-// regardless of what SpawnConfig requests.
-const maxSubAgentTurns = 25
+// regardless of what SpawnConfig requests. 30 leaves room for genuine
+// multi-tool research-and-write workloads (which often need 15-25 turns)
+// without removing the runaway-loop safety net entirely. Hitting this
+// cap surfaces as TerminalMaxTurns and routes through the same failure
+// gate as other step failures.
+const maxSubAgentTurns = 30
 
 // SpawnSync implements agent.AgentSpawner. It creates an ephemeral sub-agent
 // session and runs a full query loop synchronously, blocking until completion.
@@ -345,9 +349,14 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		MaxTurns:             maxTurns,
 		AutoCompactThreshold: qe.config.AutoCompactThreshold,
 		ToolTimeout:          qe.config.ToolTimeout,
-		MaxTokens:            qe.config.MaxTokens,
-		SystemPrompt:         qe.config.SystemPrompt,
-		ClientTools:          false, // sub-agents always server-side
+		MaxTokens:             qe.config.MaxTokens,
+		SystemPrompt:          qe.config.SystemPrompt,
+		ClientTools:           false, // sub-agents always server-side
+		MaxPlanReplans:        qe.config.MaxPlanReplans,
+		MaxStepAttempts:       qe.config.MaxStepAttempts,
+		LLMMaxRetries:         qe.config.LLMMaxRetries,
+		LLMAPITimeout:         qe.config.LLMAPITimeout,
+		LLMFirstByteTimeout:   qe.config.LLMFirstByteTimeout,
 	}
 
 	// Build allowed skills map.
@@ -411,6 +420,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			AgentTask:     truncateRunes(cfg.Prompt, 800),
 			AgentType:     string(cfg.AgentType),
 			ParentAgentID: cfg.ParentSessionID,
+			ParentStepID:  cfg.ParentStepID,
 		}
 	}
 	if qe.eventBus != nil {
@@ -603,7 +613,10 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 				types.EngineEventStepProgress,
 				types.EngineEventStepCompleted,
 				types.EngineEventStepFailed,
-				types.EngineEventStepSkipped:
+				types.EngineEventStepSkipped,
+				types.EngineEventStepDecisionRequested,
+				types.EngineEventLLMHeartbeat,
+				types.EngineEventLLMRetry:
 				// Pass through unchanged — the deeper layer already stamped
 				// the correct AgentID/AgentName, and re-wrapping would lose
 				// that attribution. ParentAgentID stitches the chain back
@@ -613,6 +626,12 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 				// per-plan task graph + per-step dispatch/result info the
 				// client needs to render the plan tree before any sub-agent
 				// events arrive; without this case they're silently dropped.
+				//
+				// step_decision_requested is the user-facing failure-gate
+				// prompt emitted by Scheduler / PlanCoordinator inside an
+				// L2 worker (PlanCoordinator runs there). Without this
+				// pass-through the prompt never reaches the WebSocket and
+				// the engine's requestStepDecision blocks forever.
 				cfg.ParentOut <- evt
 			}
 		}
@@ -673,10 +692,14 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		})
 	}
 
-	// On non-success terminal, log at Warn with the actual reason /
-	// message / first few failure strings — the Info-level summary alone
-	// only carries counts, which forces every triage to dig through
-	// dispatch.out / WebSocket to find what actually went wrong.
+	// Per-terminal log level so monitoring's Error / Warn streams aren't
+	// drowned by user-initiated cancellations:
+	//   - Completed                              → Info  (happy path)
+	//   - AbortedStreaming / AbortedTools        → Info  (external cancel,
+	//                                                     not a failure)
+	//   - MaxTurns                               → Warn  (soft cap hit;
+	//                                                     surface for tuning)
+	//   - ModelError / ContextExceeded / other   → Error (genuine failure)
 	completionFields := []zap.Field{
 		zap.String("terminal_reason", string(terminal.Reason)),
 		zap.String("terminal_message", truncateForLog(terminal.Message, 200)),
@@ -694,10 +717,15 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			zap.Bool("needs_planning", true),
 			zap.String("escalation_reason", truncateForLog(loopResult.EscalationReason, 200)))
 	}
-	if terminal.Reason == types.TerminalCompleted {
+	switch terminal.Reason {
+	case types.TerminalCompleted:
 		logger.Info("sub-agent completed", completionFields...)
-	} else {
-		logger.Warn("sub-agent ended with non-success terminal", completionFields...)
+	case types.TerminalAbortedStreaming, types.TerminalAbortedTools:
+		logger.Info("sub-agent cancelled by external signal", completionFields...)
+	case types.TerminalMaxTurns:
+		logger.Warn("sub-agent hit max turns", completionFields...)
+	default:
+		logger.Error("sub-agent ended with failure terminal", completionFields...)
 	}
 
 	// Step 14: Return SpawnResult with structured fields.
@@ -1009,7 +1037,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 			Model:     qe.provider.Name(),
 		}
 
-		llmResult := retryLLMCall(ctx, qe.provider, req, logger, out)
+		llmResult := retryLLMCall(ctx, qe.provider, req, logger, qe.retryer, qe.llmTimeouts(), lc.agentID, out)
 
 		if llmResult.streamErr != nil {
 			llmErr := llmResult.streamErr

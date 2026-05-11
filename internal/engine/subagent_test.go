@@ -174,6 +174,11 @@ func newSubagentTestEngine(prov provider.Provider, tools ...tool.Tool) *QueryEng
 		MaxTokens:            4096,
 		SystemPrompt:         "You are a test assistant.",
 		ClientTools:          false,
+		// Tests don't have a client to answer the failure-decision
+		// prompt; without this flag, any failure path would block
+		// SpawnSync forever waiting for a SubmitStepDecision that never
+		// comes. Production keeps the gate enabled (the default).
+		DisableStepDecisionGate: true,
 	}
 
 	return NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, cmdReg)

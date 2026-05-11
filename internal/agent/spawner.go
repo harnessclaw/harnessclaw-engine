@@ -117,6 +117,17 @@ type SpawnConfig struct {
 	// Zero means "no temporal check" (legacy path).
 	TaskStartedAt time.Time
 
+	// ParentStepID, when non-empty, names the plan / orchestrate step
+	// this sub-agent is fulfilling. Carried through to the
+	// EngineEventSubAgentStart wire event so the channel translator can
+	// root the agent card under the step card. Without this routing, the
+	// step card's orphan watchdog sits without heartbeats for the entire
+	// duration of the dispatched sub-agent and gets killed mid-flight.
+	// Empty for non-plan dispatches (direct AskUserQuestion-style spawns,
+	// L1-emitted spawns) — the translator falls back to the legacy
+	// parent (tool / message / turn).
+	ParentStepID string
+
 	// Inputs carries structured key-value data for the sub-agent's task.
 	// When the target AgentDefinition has an InputSchema, SpawnSync
 	// validates Inputs against it before spawning — a validation failure

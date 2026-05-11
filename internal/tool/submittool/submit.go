@@ -51,10 +51,24 @@ const MetadataKeyAccepted = "submission_accepted"
 // without re-querying the store.
 const MetadataKeyArtifacts = "submitted_artifacts"
 
-// MaxSummaryChars caps the LLM's summary text. Doc §1 failure #4
-// (double-write leak) is addressed by keeping summary short — there's
-// just no room for the LLM to paste back the full report.
+// MaxSummaryChars caps the LLM's summary text (rune count, not bytes).
+// Doc §1 failure #4 (double-write leak) is addressed by keeping summary
+// short — there's no room for the LLM to paste back the full report.
+//
+// 200 chars is intentionally tight: it pushes the LLM to write a
+// pointer-style summary ("3 个发现，详见 art_xxx") rather than
+// re-paste artifact content. Slight overshoots (LLM produces 210-300
+// chars in Chinese) are silently truncated server-side with a "…"
+// suffix instead of rejected — rejection burned a retry round-trip
+// for what is effectively a writing-discipline issue, not a contract
+// violation.
 const MaxSummaryChars = 200
+
+// summaryEllipsis is appended after server-side truncation so the
+// downstream consumer (parent agent's prompt, fallback summary, UI)
+// can tell the summary was cut. Uses the Chinese horizontal ellipsis
+// to match the surrounding output language; one rune wide.
+const summaryEllipsis = "…"
 
 // submission is the parsed input.
 type submission struct {
@@ -135,7 +149,11 @@ func (*Tool) InputSchema() map[string]any {
 
 // ValidateInput catches malformed JSON and obviously-broken IDs before
 // the call reaches the validation pipeline, giving the LLM a faster
-// feedback loop on shape problems.
+// feedback loop on shape problems. Length-overflow on summary is NOT a
+// rejection — Execute truncates it server-side. Rejecting on length
+// burned a retry round-trip every time the LLM overshot the cap by a
+// handful of chars; truncation preserves the contract intent (no
+// double-write leak) without punishing borderline writes.
 func (*Tool) ValidateInput(raw json.RawMessage) error {
 	var s submission
 	if err := json.Unmarshal(raw, &s); err != nil {
@@ -146,9 +164,6 @@ func (*Tool) ValidateInput(raw json.RawMessage) error {
 	}
 	if strings.TrimSpace(s.Summary) == "" {
 		return fmt.Errorf("summary is required")
-	}
-	if utf8Len(s.Summary) > MaxSummaryChars {
-		return fmt.Errorf("summary too long: %d chars (max %d)", utf8Len(s.Summary), MaxSummaryChars)
 	}
 	for i, a := range s.Artifacts {
 		if !artifact.IsValidID(a.ArtifactID) {
@@ -169,6 +184,13 @@ func (*Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResul
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return rejected("invalid input: " + err.Error())
 	}
+
+	// Server-side truncate over-long summary instead of rejecting. Saves
+	// a retry round-trip when the LLM overshoots ≤200-字 by a handful of
+	// chars (very common in Chinese tail-of-summary). The "…" suffix
+	// keeps downstream consumers from mistaking the truncated tail for
+	// the LLM's intended ending.
+	s.Summary = truncateSummary(s.Summary, MaxSummaryChars)
 
 	storeAny, ok := tool.GetArtifactStoreValue(ctx)
 	if !ok {
@@ -399,6 +421,26 @@ func utf8Len(s string) int {
 	return n
 }
 
+// truncateSummary cuts s to at most maxRunes total when the LLM overshot
+// the contract length, appending "…" so consumers can tell. Returns s
+// unchanged when within budget. The "…" itself counts toward maxRunes,
+// so the visible content is bounded by maxRunes-1 runes — matching the
+// LLM's expectation that summary text never goes beyond the cap.
+func truncateSummary(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	if utf8Len(s) <= maxRunes {
+		return s
+	}
+	runes := []rune(s)
+	cut := maxRunes - utf8Len(summaryEllipsis)
+	if cut < 0 {
+		cut = 0
+	}
+	return string(runes[:cut]) + summaryEllipsis
+}
+
 const description = `通过提交已产出的 artifact 声明任务完成。
 
 何时调用本工具：
@@ -410,7 +452,7 @@ const description = `通过提交已产出的 artifact 声明任务完成。
 
 输入字段：
 - artifacts：{artifact_id, role} 列表，每个产出对应一项。artifact_id 必须是本任务内由 ArtifactWrite 调用返回的（框架会做服务端校验）。role 在有 <expected-outputs> 时必须匹配其中条目；没有时则用一个描述性名称（如 "draft_email"、"summary_report"）。
-- summary：≤200 字。过程要点 + ID 引用。绝不能在这里粘贴 artifact 正文——数据已在 artifact 里。
+- summary：≤200 字。过程要点 + ID 引用。绝不能在这里粘贴 artifact 正文——数据已在 artifact 里。超出会被服务端截断到 200 字加 "…"，不会拒绝调用，但会浪费 token。
 - result：当 <sub-agent-contract> 中声明了 output_schema 时必填。结构化字段必须满足该 schema（必填字段、enum 取值、最小值都会服务端校验）。
 
 服务端校验：

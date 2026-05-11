@@ -41,9 +41,10 @@ import (
 type Kind string
 
 const (
-	KindQuestion   Kind = "question"     // AskUserQuestion tool
-	KindPermission Kind = "permission"   // tool permission gate
-	KindPlanReview Kind = "plan_review"  // PlanCoordinator user-confirmation
+	KindQuestion      Kind = "question"       // AskUserQuestion tool
+	KindPermission    Kind = "permission"     // tool permission gate
+	KindPlanReview    Kind = "plan_review"    // PlanCoordinator user-confirmation
+	KindStepDecision  Kind = "step_decision"  // Scheduler / PlanCoordinator failure-decision gate
 )
 
 // PendingWait is one outstanding user prompt persisted to durable

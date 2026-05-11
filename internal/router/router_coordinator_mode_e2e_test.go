@@ -62,6 +62,9 @@ func (m *modeCapturingEngine) SubmitPermissionResult(_ context.Context, _ string
 func (m *modeCapturingEngine) SubmitPlanResponse(_ context.Context, _ string, _ *types.PlanResponse) error {
 	return nil
 }
+func (m *modeCapturingEngine) SubmitStepDecision(_ context.Context, _ string, _ *types.StepDecisionResponse) error {
+	return nil
+}
 func (m *modeCapturingEngine) AbortSession(_ context.Context, _ string) error { return nil }
 
 // TestE2E_WebSocketCoordinatorModeWiring proves the full wire path:

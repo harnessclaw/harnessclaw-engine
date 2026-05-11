@@ -68,6 +68,13 @@ func (r *Router) coreHandler(ctx context.Context, msg *types.IncomingMessage) er
 		return r.engine.SubmitPlanResponse(ctx, msg.SessionID, msg.PlanResponse)
 	}
 
+	// step.decision.response from the client — same async-resolve path
+	// as plan.response. Unblocks the Scheduler / PlanCoordinator that's
+	// pausing on a hard step or plan-level failure.
+	if msg.StepDecisionResponse != nil {
+		return r.engine.SubmitStepDecision(ctx, msg.SessionID, msg.StepDecisionResponse)
+	}
+
 	userMsg := &types.Message{
 		Role: types.RoleUser,
 		Content: []types.ContentBlock{

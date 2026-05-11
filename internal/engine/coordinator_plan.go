@@ -37,14 +37,22 @@ type PlanCoordinator struct {
 	escalation *EscalationContext
 }
 
-// maxPlanReplans bounds the re-plan loop. Picked conservatively — two
-// re-plans cover almost every "the first plan didn't quite hit the goal"
-// case, and a third just burns Planner budget. Tuneable via configuration
-// if production data argues for more.
-const maxPlanReplans = 2
+// defaultMaxPlanReplans is the fallback when EngineConfig.MaxPlanReplans
+// is zero (tests / legacy callers). Production reads the config-driven
+// value through PlanCoordinator.maxReplans().
+const defaultMaxPlanReplans = 3
 
 // Mode reports CoordinatorModePlan.
 func (c *PlanCoordinator) Mode() CoordinatorMode { return CoordinatorModePlan }
+
+// maxReplans honours an EngineConfig override when wired and falls back
+// to defaultMaxPlanReplans for tests / legacy callers.
+func (c *PlanCoordinator) maxReplans() int {
+	if c != nil && c.deps != nil && c.deps.QE != nil && c.deps.QE.config.MaxPlanReplans > 0 {
+		return c.deps.QE.config.MaxPlanReplans
+	}
+	return defaultMaxPlanReplans
+}
 
 // WithEscalation returns a copy of c carrying ec as the seed escalation
 // context. Used by the ReAct → Plan promotion path so a Plan run that
@@ -72,6 +80,15 @@ func (c *PlanCoordinator) Run(
 	logger := c.deps.Logger.Named("plan-coord")
 	goal := extractGoal(lc)
 	available := availableSubagentsForPlanner(c.deps)
+
+	// Plumb wire-routing once for the whole plan lifecycle. Both the
+	// planner (called below) and the LLMSubagentResolver (called inside
+	// scheduler.Run when a step needs subagent picking) live outside
+	// the standard sub-agent driver loop that normally supplies these
+	// fields directly. Without this, their heartbeats / retry-status
+	// events would have nowhere to land — the L2 specialists card
+	// would sit silent during planning and per-step resolver calls.
+	ctx = WithRetryRouting(ctx, lc.agentID, out)
 	logger.Info("plan coordinator started",
 		zap.String("goal_preview", truncForLog(goal, 120)),
 		zap.Int("available_skills", len(available)),
@@ -108,7 +125,8 @@ func (c *PlanCoordinator) Run(
 		lastError string
 	)
 
-	for replan := 0; replan <= maxPlanReplans; replan++ {
+	maxReplans := c.maxReplans()
+	for replan := 0; replan <= maxReplans; replan++ {
 		if exceeded, why := c.budgetExceeded(); exceeded {
 			lastError = why
 			break
@@ -206,6 +224,13 @@ func (c *PlanCoordinator) Run(
 				continue
 			}
 		}
+		// Scheduler returned status="cancelled" — user already decided
+		// at a step gate; honour that decision and stop without asking
+		// again at the plan level.
+		if outcome != nil && outcome.Status == "cancelled" {
+			lastError = outcome.Reason
+			break
+		}
 		// status partial / failed — same path: re-plan if budget remains.
 		lastError = outcome.Reason
 		if outcome.Reason == "" {
@@ -213,8 +238,25 @@ func (c *PlanCoordinator) Run(
 		}
 	}
 
-	// Exhausted re-plans or hit budget — fall back.
-	logger.Warn("plan coordinator: falling back",
+	// Exhausted re-plans, hit budget, or planner errored. Before
+	// silently degrading to the fallback chain, ask the user. The user
+	// has already paid for the work that ran; they should pick whether
+	// to accept whatever partial result exists or cancel the run.
+	// Skipped when the user already cancelled at a step gate.
+	if !(outcome != nil && outcome.Status == "cancelled") {
+		decision := c.askPlanDecisionOnFailure(ctx, sess, out, lc, lastError)
+		if decision == types.StepDecisionCancel {
+			logger.Info("plan coordinator: user cancelled after plan failure")
+			emitPlanFailed(out, plan, lc.agentID, "user cancelled: "+lastError)
+			res := c.fallbackResult(plan, outcome, "user cancelled: "+lastError, lc.agentID)
+			emitPlanSummaryText(out, res.Summary)
+			return res
+		}
+		// types.StepDecisionContinue (or unsupported retry) falls through
+		// to the existing fallback aggregation.
+	}
+
+	logger.Error("plan coordinator: falling back",
 		zap.String("last_error", lastError),
 	)
 	emitPlanFailed(out, plan, lc.agentID, lastError)
@@ -424,6 +466,60 @@ func (c *PlanCoordinator) requestPlanConfirmation(
 	return editedPlan, false, nil
 }
 
+// askPlanDecisionOnFailure surfaces a plan-level failure (re-plans
+// exhausted / planner errored / budget hit) to the user and waits for
+// continue / cancel. retry is intentionally NOT offered here: the
+// replan loop is itself the retry mechanism; if it exhausted the user's
+// remaining option is to either accept whatever was produced
+// (continue → fallback aggregation) or stop the run (cancel).
+//
+// Returns types.StepDecisionContinue when the gate is unavailable so a
+// misconfigured deployment degrades to the legacy "silent fallback"
+// behaviour rather than blocking forever.
+func (c *PlanCoordinator) askPlanDecisionOnFailure(
+	ctx context.Context,
+	sess *session.Session,
+	out chan<- types.EngineEvent,
+	lc *loopConfig,
+	reason string,
+) string {
+	if c == nil || c.deps == nil || c.deps.QE == nil || out == nil {
+		return types.StepDecisionContinue
+	}
+	if c.deps.QE.config.DisableStepDecisionGate {
+		return types.StepDecisionContinue
+	}
+	req := &types.StepDecisionRequest{
+		RequestID:  newDecisionRequestID(),
+		AgentID:    lc.agentID,
+		Scope:      types.StepDecisionScopePlan,
+		Reason:     reason,
+		AllowRetry: false,
+	}
+
+	c.deps.Logger.Warn("plan coordinator: pausing on plan failure for user decision",
+		zap.String("reason", reason),
+	)
+
+	// Same wait policy as plan_review: ctx-deadline-stripped so the user
+	// gets unbounded time. Session abort still propagates via the engine
+	// shutdown path, which closes the response channel.
+	waitCtx := context.WithoutCancel(ctx)
+	resp, err := c.deps.QE.requestStepDecision(waitCtx, sess.ID, out, req)
+	if err != nil || resp == nil {
+		c.deps.Logger.Warn("plan coordinator: decision returned no answer; defaulting to continue (fallback)",
+			zap.Error(err),
+		)
+		return types.StepDecisionContinue
+	}
+	switch resp.Decision {
+	case types.StepDecisionCancel:
+		return types.StepDecisionCancel
+	default:
+		return types.StepDecisionContinue
+	}
+}
+
 // newPlanID generates a server-side plan identifier. Format mirrors
 // art_<24hex> for visual consistency.
 func newPlanID() string {
@@ -433,6 +529,17 @@ func newPlanID() string {
 		panic(fmt.Errorf("plan: crypto/rand failed: %w", err))
 	}
 	return "pln_" + hex.EncodeToString(b[:])
+}
+
+// newDecisionRequestID generates the engine-side identifier for an
+// in-flight StepDecisionRequest. Distinct prefix so logs / persisted
+// waits stay distinguishable from plan ids.
+func newDecisionRequestID() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(fmt.Errorf("step decision: crypto/rand failed: %w", err))
+	}
+	return "sdc_" + hex.EncodeToString(b[:])
 }
 
 // toProposedSteps converts engine PlanStep → wire-shape ProposedStep.

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	"go.uber.org/zap"
+
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/pkg/types"
 )
@@ -183,6 +185,160 @@ func TestScheduler_EmptyPlan(t *testing.T) {
 	if out.Status != "failed" {
 		t.Errorf("empty plan should fail; got %q", out.Status)
 	}
+}
+
+// TestScheduler_FailureGate_CancelStopsRun pins the contract: when a
+// step fails and the user picks "cancel", the Scheduler returns
+// status="cancelled" without dispatching any further steps. Replaces
+// the old silent fallback that abandoned remaining work without giving
+// the user the choice.
+func TestScheduler_FailureGate_CancelStopsRun(t *testing.T) {
+	disp := newFakeDispatcher()
+	disp.err["researcher"] = errors.New("503 service overloaded")
+
+	deps := newTestSchedulerDeps()
+	deps.QE = newGateTestEngine(types.StepDecisionCancel)
+	sched := NewScheduler(deps, disp, nil)
+	plan := &Plan{
+		Goal: "stop on first failure",
+		Steps: []*PlanStep{
+			{ID: "s1", SubagentType: "researcher"},
+			{ID: "s2", SubagentType: "writer", DependsOn: []string{"s1"}},
+		},
+	}
+	parentOut := make(chan types.EngineEvent, 64)
+	stop := make(chan struct{})
+	go drainEvents(parentOut, stop)
+	res := sched.Run(context.Background(), plan,
+		&agent.SpawnConfig{ParentOut: parentOut, ParentSessionID: "sess_test"})
+	close(stop)
+
+	if res.Status != "cancelled" {
+		t.Errorf("Scheduler should report cancelled; got %q", res.Status)
+	}
+	// s2 must NOT have been dispatched after cancellation.
+	for _, c := range disp.calls {
+		if c.SubagentType == "writer" {
+			t.Error("s2 (writer) should never dispatch after user cancel")
+		}
+	}
+}
+
+// TestScheduler_CancelEmitsStepSkippedForRemaining pins: when the
+// scheduler bails out (user cancel / budget exceeded), every
+// not-yet-dispatched step must receive a step_skipped wire event.
+//
+// Without this, the front-end's plan card knows about steps from the
+// plan_created payload but never sees their close events — UI shows
+// "queued" forever for cancelled-mid-flight plans, even though the
+// plan itself closes cleanly.
+func TestScheduler_CancelEmitsStepSkippedForRemaining(t *testing.T) {
+	disp := newFakeDispatcher()
+	disp.err["researcher"] = errors.New("503 service overloaded") // s1 fails → gate fires → user cancels
+
+	deps := newTestSchedulerDeps()
+	deps.QE = newGateTestEngine(types.StepDecisionCancel)
+	sched := NewScheduler(deps, disp, nil)
+	plan := &Plan{
+		Goal: "ensure remaining steps surface as skipped on cancel",
+		Steps: []*PlanStep{
+			{ID: "s1", SubagentType: "researcher"},
+			{ID: "s2", SubagentType: "writer", DependsOn: []string{"s1"}},
+			{ID: "s3", SubagentType: "analyst", DependsOn: []string{"s1"}},
+		},
+	}
+
+	parentOut := make(chan types.EngineEvent, 128)
+	res := sched.Run(context.Background(), plan,
+		&agent.SpawnConfig{ParentOut: parentOut, ParentSessionID: "sess_test"})
+	close(parentOut)
+
+	skipped := map[string]bool{}
+	for ev := range parentOut {
+		if ev.Type == types.EngineEventStepSkipped && ev.TaskDispatch != nil {
+			skipped[ev.TaskDispatch.TaskID] = true
+		}
+	}
+
+	if res.Status != "cancelled" {
+		t.Fatalf("expected cancelled outcome; got %q", res.Status)
+	}
+	for _, want := range []string{"s2", "s3"} {
+		if !skipped[want] {
+			t.Errorf("step %q should have emitted step_skipped on cancel; only saw %v", want, skipped)
+		}
+	}
+	if skipped["s1"] {
+		t.Error("s1 already finished (failed) — should NOT also emit step_skipped")
+	}
+}
+
+// TestScheduler_FailureGate_ContinueSkipsAndKeepsRunning pins: user
+// picks "continue" → step stays failed, dependents skip naturally, but
+// independent siblings still get a chance.
+func TestScheduler_FailureGate_ContinueSkipsAndKeepsRunning(t *testing.T) {
+	disp := newFakeDispatcher()
+	disp.err["analyst"] = errors.New("503 service overloaded")
+	disp.results["writer"] = &agent.SpawnResult{Status: "success", Output: "ok"}
+
+	deps := newTestSchedulerDeps()
+	deps.QE = newGateTestEngine(types.StepDecisionContinue)
+	sched := NewScheduler(deps, disp, nil)
+	plan := &Plan{
+		Goal: "two independent steps",
+		Steps: []*PlanStep{
+			{ID: "s1", SubagentType: "analyst"},
+			{ID: "s2", SubagentType: "writer"}, // independent
+		},
+	}
+	parentOut := make(chan types.EngineEvent, 64)
+	stop := make(chan struct{})
+	go drainEvents(parentOut, stop)
+	res := sched.Run(context.Background(), plan,
+		&agent.SpawnConfig{ParentOut: parentOut, ParentSessionID: "sess_test"})
+	close(stop)
+
+	if res.Status == "cancelled" {
+		t.Errorf("status should not be cancelled when user continues; got %q", res.Status)
+	}
+	sawWriter := false
+	for _, c := range disp.calls {
+		if c.SubagentType == "writer" {
+			sawWriter = true
+		}
+	}
+	if !sawWriter {
+		t.Error("user-continue must let independent step s2 run")
+	}
+}
+
+// newGateTestEngine builds a minimal QueryEngine that auto-replies the
+// supplied decision string to every requestStepDecision call. Lets the
+// scheduler tests exercise the gate without spinning up a full
+// session manager / channel stack.
+func newGateTestEngine(decision string) *QueryEngine {
+	qe := &QueryEngine{
+		logger:               zap.NewNop(),
+		pendingStepDecisions: make(map[string]*pendingStepDecisionReq),
+	}
+	go func() {
+		for {
+			qe.stepDecisionMu.Lock()
+			var pick *pendingStepDecisionReq
+			for _, p := range qe.pendingStepDecisions {
+				pick = p
+				break
+			}
+			qe.stepDecisionMu.Unlock()
+			if pick != nil {
+				pick.response <- &types.StepDecisionResponse{
+					RequestID: pick.requestID,
+					Decision:  decision,
+				}
+			}
+		}
+	}()
+	return qe
 }
 
 func TestScheduler_PartialMixedOutcome(t *testing.T) {

@@ -34,6 +34,9 @@ func (m *modeRecordingEngine) SubmitPermissionResult(_ context.Context, _ string
 func (m *modeRecordingEngine) SubmitPlanResponse(_ context.Context, _ string, _ *types.PlanResponse) error {
 	return nil
 }
+func (m *modeRecordingEngine) SubmitStepDecision(_ context.Context, _ string, _ *types.StepDecisionResponse) error {
+	return nil
+}
 func (m *modeRecordingEngine) AbortSession(_ context.Context, _ string) error { return nil }
 
 // noopChannel implements channel.Channel; SendEvent never gets called in

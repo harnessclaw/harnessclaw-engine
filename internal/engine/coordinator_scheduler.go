@@ -14,19 +14,12 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// stepMaxAttempts caps how many times the Scheduler retries one step
-// after a transient failure (network jitter, LLM timeout, rate limit).
-// Two attempts strikes the right balance:
-//   - one retry catches the bulk of transient flakes (provider blips,
-//     5xx, brief overload signals) without compounding cost
-//   - the second retry is what users implicitly expect when they see
-//     an error toast — "did the system try again?"
-//   - going further punishes legitimate hard failures (contract_fail,
-//     invalid_input) by paying for retries that will never succeed
-//
-// Non-transient failures (contract violations, dependency failures,
-// resolution errors) skip retry entirely — see isTransientFailure.
-const stepMaxAttempts = 2
+// defaultStepMaxAttempts is the fallback when EngineConfig.MaxStepAttempts
+// is zero (tests / legacy callers that never set it). Production reads
+// the config-driven value from QueryEngine; non-transient failures
+// (contract violations, dependency failures, resolution errors) skip
+// retry entirely regardless — see isTransientFailure.
+const defaultStepMaxAttempts = 3
 
 // SchedulerOutcome bundles what one Scheduler.Run produced. Mirrors the
 // shape Plan / Fallback consumers want: per-step results so Judge can
@@ -112,7 +105,7 @@ func (s *Scheduler) Run(
 					zap.String("step_id", step.ID),
 					zap.String("reason", why),
 				)
-				return finalize(outcome, results, plan, "budget exceeded — skipped")
+				return finalize(outcome, results, plan, "budget exceeded — skipped", pickOut(parentCfg))
 			}
 		}
 
@@ -148,7 +141,7 @@ func (s *Scheduler) Run(
 		// operator scanning scheduler logs sees one unambiguous "step X
 		// failed after N attempts" entry per failed step.
 		if result != nil && result.Status == "failed" {
-			s.logger.Warn("scheduler: step failed",
+			s.logger.Error("scheduler: step failed",
 				zap.String("step_id", step.ID),
 				zap.String("subagent_type", step.SubagentType),
 				zap.Int("attempts", result.Attempts),
@@ -175,6 +168,38 @@ func (s *Scheduler) Run(
 					s.deps.Budget.NoteFailure()
 				}
 			}
+		}
+
+		// User-decision gate. When a step exits with status=failed, do
+		// NOT silently move on to the next step — pause and ask the
+		// user to decide. This replaces the old "skip and aggregate
+		// partial result" behaviour that left users with sunk-cost
+		// surprise (LLM tokens already paid, but the run abandoned its
+		// remaining work). User picks:
+		//   continue → accept the failure, keep running (this is the
+		//              old behaviour, now opt-in)
+		//   retry    → run dispatchStepWithRetry again on this step
+		//   cancel   → stop the whole plan, route to fallback
+		if result != nil && result.Status == "failed" {
+			decision := s.askStepDecisionOnFailure(ctx, step, result, parentCfg)
+			switch decision {
+			case types.StepDecisionRetry:
+				retried := s.dispatchStepWithRetry(ctx, plan, step, results, parentCfg)
+				results[step.ID] = retried
+				outcome.StepResults[len(outcome.StepResults)-1] = retried
+				emitStepResult(pickOut(parentCfg), step, retried)
+				result = retried
+			case types.StepDecisionCancel:
+				outcome.Status = "cancelled"
+				outcome.Reason = "user cancelled after step " + step.ID + " failed"
+				if s.deps != nil && s.deps.Budget != nil {
+					outcome.Budget = s.deps.Budget.Snapshot()
+				}
+				return finalize(outcome, results, plan, "cancelled by user", pickOut(parentCfg))
+			}
+			// types.StepDecisionContinue (or unknown) falls through —
+			// dependents are skipped naturally on the next iteration via
+			// unsatisfiedDep.
 		}
 	}
 
@@ -208,8 +233,9 @@ func (s *Scheduler) dispatchStepWithRetry(
 	parentCfg *agent.SpawnConfig,
 ) *StepResult {
 	out := pickOut(parentCfg)
+	maxAttempts := s.maxStepAttempts()
 	var result *StepResult
-	for attempt := 1; attempt <= stepMaxAttempts; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		emitStepStarted(out, step, attempt)
 		result = s.dispatchStep(ctx, plan, step, prior, parentCfg)
 		result.Attempts = attempt
@@ -223,7 +249,7 @@ func (s *Scheduler) dispatchStepWithRetry(
 			)
 			return result
 		}
-		if attempt < stepMaxAttempts {
+		if attempt < maxAttempts {
 			s.logger.Info("scheduler: retrying step after transient failure",
 				zap.String("step_id", step.ID),
 				zap.Int("next_attempt", attempt+1),
@@ -232,6 +258,106 @@ func (s *Scheduler) dispatchStepWithRetry(
 		}
 	}
 	return result
+}
+
+// maxStepAttempts returns the per-step retry cap, honouring an
+// EngineConfig override when wired through the engine and falling back
+// to defaultStepMaxAttempts otherwise (tests / legacy callers).
+func (s *Scheduler) maxStepAttempts() int {
+	if s != nil && s.deps != nil && s.deps.QE != nil && s.deps.QE.config.MaxStepAttempts > 0 {
+		return s.deps.QE.config.MaxStepAttempts
+	}
+	return defaultStepMaxAttempts
+}
+
+// askStepDecisionOnFailure surfaces a step failure to the user via the
+// QueryEngine's prompt.user pipeline and waits for the response. Returns
+// types.StepDecisionContinue when the gate is unavailable (no QE, no
+// ParentOut, ctx already done) so a misconfigured deployment degrades to
+// the legacy "skip and continue" behaviour rather than blocking forever.
+func (s *Scheduler) askStepDecisionOnFailure(
+	ctx context.Context,
+	step *PlanStep,
+	result *StepResult,
+	parentCfg *agent.SpawnConfig,
+) string {
+	if s == nil || s.deps == nil || s.deps.QE == nil {
+		return types.StepDecisionContinue
+	}
+	if s.deps.QE.config.DisableStepDecisionGate {
+		return types.StepDecisionContinue
+	}
+	out := pickOut(parentCfg)
+	if out == nil {
+		return types.StepDecisionContinue
+	}
+	sessionID := pickStr(parentCfg, func(c *agent.SpawnConfig) string { return c.ParentSessionID })
+	reqID := newDecisionRequestID()
+
+	reason := summariseFailures(result)
+	req := &types.StepDecisionRequest{
+		RequestID:       reqID,
+		AgentID:         pickStr(parentCfg, func(c *agent.SpawnConfig) string { return c.Name }),
+		Scope:           types.StepDecisionScopeStep,
+		StepID:          step.ID,
+		StepDescription: step.Description,
+		Reason:          reason,
+		Attempts:        result.Attempts,
+		AllowRetry:      true,
+	}
+
+	// Strip inherited ctx deadlines so the user gets unbounded time —
+	// same wait policy as plan_review / AskUserQuestion. Cancellation
+	// via session abort still propagates through SubmitStepDecision /
+	// engine shutdown, which closes the response channel.
+	waitCtx := context.WithoutCancel(ctx)
+
+	s.logger.Warn("scheduler: pausing on step failure for user decision",
+		zap.String("step_id", step.ID),
+		zap.Int("attempts", result.Attempts),
+		zap.String("reason", reason),
+	)
+
+	resp, err := s.deps.QE.requestStepDecision(waitCtx, sessionID, out, req)
+	if err != nil || resp == nil {
+		s.logger.Warn("scheduler: step decision request returned no answer; defaulting to continue",
+			zap.String("step_id", step.ID),
+			zap.Error(err),
+		)
+		return types.StepDecisionContinue
+	}
+	switch resp.Decision {
+	case types.StepDecisionContinue, types.StepDecisionRetry, types.StepDecisionCancel:
+		s.logger.Info("scheduler: step decision answered",
+			zap.String("step_id", step.ID),
+			zap.String("decision", resp.Decision),
+			zap.String("note", resp.Note),
+		)
+		return resp.Decision
+	default:
+		s.logger.Warn("scheduler: unrecognised step decision; treating as cancel",
+			zap.String("step_id", step.ID),
+			zap.String("decision", resp.Decision),
+		)
+		return types.StepDecisionCancel
+	}
+}
+
+// summariseFailures collapses a StepResult.Failures slice into a single
+// short line for surfacing in the user prompt. Truncates at 200 chars
+// so a verbose stack-trace failure doesn't blow out the wire payload.
+func summariseFailures(r *StepResult) string {
+	if r == nil || len(r.Failures) == 0 {
+		return ""
+	}
+	first := strings.TrimSpace(r.Failures[0])
+	if len(first) > 200 {
+		first = first[:200] + "…"
+	}
+	if len(r.Failures) == 1 {
+		return first
+	}
+	return fmt.Sprintf("%s (+%d more)", first, len(r.Failures)-1)
 }
 
 // isTransientFailure inspects a StepResult's failure messages and decides
@@ -300,7 +426,7 @@ func (s *Scheduler) dispatchStep(
 ) *StepResult {
 	if step.SubagentType == "" {
 		if err := s.resolveSubagentForStep(ctx, step); err != nil {
-			s.logger.Warn("scheduler: subagent resolution failed",
+			s.logger.Error("scheduler: subagent resolution failed",
 				zap.String("step_id", step.ID),
 				zap.Error(err),
 			)
@@ -327,15 +453,21 @@ func (s *Scheduler) dispatchStep(
 		Name:             fmt.Sprintf("plan-step-%s", step.ID),
 		ParentSessionID:  pickStr(parentCfg, func(c *agent.SpawnConfig) string { return c.ParentSessionID }),
 		ParentOut:        pickOut(parentCfg),
-		Timeout:          15 * time.Minute,
-		ExpectedOutputs:  step.ExpectedOutputs,
-		TaskID:           fmt.Sprintf("plan-%s-%s", plan.Goal, step.ID),
-		TaskStartedAt:    time.Now(),
+		// Timeout is intentionally omitted: the per-step 15-min wall clock
+		// killed legitimate long sub-agent runs mid-flight (token already
+		// paid). Cancellation now flows only via the parent ctx (user
+		// abort / session shutdown). Genuinely-stuck steps are caught by
+		// the lifecycle watchdog (5-min idle on the step card) and the
+		// failure-decision gate at the scheduler level.
+		ExpectedOutputs: step.ExpectedOutputs,
+		TaskID:          fmt.Sprintf("plan-%s-%s", plan.Goal, step.ID),
+		TaskStartedAt:   time.Now(),
+		ParentStepID:    step.ID,
 	}
 
 	res, err := s.dispatch.Dispatch(ctx, cfg)
 	if err != nil {
-		s.logger.Warn("scheduler: dispatch error",
+		s.logger.Error("scheduler: dispatch error",
 			zap.String("step_id", step.ID),
 			zap.Error(err),
 		)
@@ -368,7 +500,7 @@ func (s *Scheduler) dispatchStep(
 		// signal. Synthesize a "<reason>: <message>" failure line so the wire
 		// event is informative and isTransientFailure can match.
 		out.Failures = appendTerminalFailure(out.Failures, res)
-		s.logger.Warn("scheduler: step ended with terminal failure",
+		s.logger.Error("scheduler: step ended with terminal failure",
 			zap.String("step_id", step.ID),
 			zap.String("subagent_type", step.SubagentType),
 			zap.String("terminal_reason", terminalReasonOf(res)),
@@ -381,7 +513,7 @@ func (s *Scheduler) dispatchStep(
 		// as failure even if Terminal looks "completed".
 		out.Status = "failed"
 		out.Failures = append(out.Failures, "step produced no artifacts despite expected outputs")
-		s.logger.Warn("scheduler: step missing required artifacts",
+		s.logger.Error("scheduler: step missing required artifacts",
 			zap.String("step_id", step.ID),
 			zap.String("subagent_type", step.SubagentType),
 			zap.Int("expected_outputs", len(step.ExpectedOutputs)),
@@ -547,16 +679,33 @@ func classifyOutcome(o *SchedulerOutcome) {
 	}
 }
 
-// finalize marks any remaining un-dispatched step as skipped — used when
-// the scheduler bails out early (budget exceeded). Returns the same
-// outcome for chaining.
-func finalize(o *SchedulerOutcome, results map[string]*StepResult, plan *Plan, reason string) *SchedulerOutcome {
+// finalize marks any remaining un-dispatched step as skipped and emits
+// the corresponding step_skipped wire event so the front-end can move
+// each step from "queued" to "skipped" — used when the scheduler bails
+// out early (budget exceeded / user cancelled at a step gate).
+//
+// Without the wire emission these steps stayed visually "queued"
+// forever in the UI: their card.add never fired (no dispatch happened)
+// AND no card.close fired either, so the front-end's per-step status
+// derivation from card.close events left them stuck. The
+// outcome.StepResults entry alone isn't visible on the wire.
+//
+// out may be nil (tests / spawns without a ParentOut) — emitStepSkipped
+// guards against that.
+func finalize(
+	o *SchedulerOutcome,
+	results map[string]*StepResult,
+	plan *Plan,
+	reason string,
+	out chan<- types.EngineEvent,
+) *SchedulerOutcome {
 	for _, step := range plan.Steps {
 		if _, done := results[step.ID]; done {
 			continue
 		}
 		results[step.ID] = &StepResult{StepID: step.ID, Status: "skipped", Failures: []string{reason}}
 		o.StepResults = append(o.StepResults, results[step.ID])
+		emitStepSkipped(out, step, reason)
 	}
 	classifyOutcome(o)
 	return o
