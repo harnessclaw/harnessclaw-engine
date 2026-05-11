@@ -131,6 +131,20 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	// mode via tool.WithCoordinatorMode.
 	coordMode := tool.GetCoordinatorMode(ctx)
 
+	// No wall-clock Timeout here: plan-mode L2 may run for tens of minutes
+	// (multi-step research+write plans, slow upstream gateways, retry
+	// backoffs). A coarse parent-ctx deadline propagates down the spawn
+	// tree and kills healthy work mid-flight (writer aborted on inherited
+	// deadline even though only its single LLM call was slow). Failure
+	// modes are already covered by finer-grained layers:
+	//   - LLMAPITimeout / LLMFirstByteTimeout cap a single Chat() round
+	//   - retry.Retryer handles transient errors with backoff + 529 fallback
+	//   - MaxSubAgentTurns bounds per-loop turns
+	//   - step_decision prompt asks the user when a step truly fails
+	//   - orphan watchdog (5 / 10 min) plus per-tick heartbeat catches
+	//     genuinely stuck cards
+	// User cancellation flows through the parent ctx via Cancel(), so
+	// "stop" still works without a deadline.
 	cfg := &agent.SpawnConfig{
 		Prompt:          in.Task,
 		AgentType:       tool.AgentTypeSync,
@@ -139,7 +153,6 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		Name:            "specialists",
 		ParentSessionID: parentSessionID,
 		ParentOut:       parentOut,
-		Timeout:         15 * time.Minute, // L2 may run multiple L3 dispatches
 		CoordinatorMode: coordMode,
 	}
 

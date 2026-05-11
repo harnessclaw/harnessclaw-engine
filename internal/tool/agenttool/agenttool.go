@@ -94,6 +94,14 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 	agentType := resolveAgentType(input.SubagentType)
 
 	// Build spawn config.
+	//
+	// No wall-clock Timeout: a 5-minute parent deadline propagates down to
+	// every LLM call the sub-agent makes; one slow Chat() (Xunfei "Engine
+	// Busy" can return at 2m12s) can starve the rest of the run. Per-call
+	// guards (LLMAPITimeout / LLMFirstByteTimeout), retry.Retryer, the
+	// orphan watchdog with parent-chain heartbeats, and the step_decision
+	// prompt already cover the failure modes the old timeout was guarding
+	// against. User cancellation still flows through the parent ctx.
 	cfg := &agent.SpawnConfig{
 		Prompt:       input.Prompt,
 		AgentType:    agentType,
@@ -102,7 +110,6 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		Name:         input.Name,
 		Model:        input.Model,
 		Fork:         input.Fork,
-		Timeout:      5 * time.Minute, // default 5min timeout per design doc
 		// Forward the deliverable contract (doc §3 mechanisms 3+4): when
 		// declared, the framework refuses to terminate the L3 loop until
 		// SubmitTaskResult validates against this list. Empty = no

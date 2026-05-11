@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"harnessclaw-go/internal/provider"
+	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -76,6 +79,17 @@ type LLMPlanner struct {
 	maxAttempts int
 	maxTokens   int
 	maxSteps    int
+
+	// retryer, timeouts, logger are the optional engine-level
+	// transport-retry layer. When set (via WithRetry), callOnce dispatches
+	// through retryLLMCall so the planner inherits the same network-retry
+	// + heartbeat + retry-visibility behaviour as L1 emma / L3 sub-agents.
+	// When nil, callOnce falls back to the legacy direct provider.Chat
+	// path — preserved so existing test fakes that don't wire a retryer
+	// still work.
+	retryer  *retry.Retryer
+	timeouts llmCallTimeouts
+	logger   *zap.Logger
 }
 
 // Sensible defaults; LLMPlanner-specific (kept private to avoid
@@ -118,6 +132,26 @@ func (p *LLMPlanner) WithMaxSteps(n int) *LLMPlanner {
 	return p
 }
 
+// WithRetry attaches the engine's shared Retryer + per-call timeouts +
+// logger. Once set, planner LLM calls go through retryLLMCall and pick
+// up: exponential backoff for transient errors (429, 5xx, network
+// blips), the FirstByte / API timeouts, the 30s heartbeat that keeps
+// the surrounding agent card alive during long planner thinks, and the
+// llm_retry wire events ("重试中 N/M") visible to the front-end.
+//
+// retryer nil = leave legacy direct-Chat path engaged. logger nil =
+// zap.NewNop. Returning *LLMPlanner so it composes with the other
+// With* setters in a fluent chain at construction time.
+func (p *LLMPlanner) WithRetry(retryer *retry.Retryer, timeouts llmCallTimeouts, logger *zap.Logger) *LLMPlanner {
+	p.retryer = retryer
+	p.timeouts = timeouts
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	p.logger = logger
+	return p
+}
+
 // Plan implements Planner. Drives the LLM call + validate + retry loop.
 // Returns the validated Plan or an error after exhausting maxAttempts.
 //
@@ -147,7 +181,7 @@ func (p *LLMPlanner) Plan(ctx context.Context, in PlannerInput) (*PlannerOutput,
 		plan, rationale, err := p.callOnce(ctx, in, feedback)
 		if err != nil {
 			lastErr = err
-			feedback = "Previous attempt failed: " + err.Error() + ". Fix and retry."
+			feedback = "上一次尝试失败：" + err.Error() + "。请修正后重试。"
 			continue
 		}
 		// Stamp Goal so callers (Scheduler, judge) get the original
@@ -155,13 +189,13 @@ func (p *LLMPlanner) Plan(ctx context.Context, in PlannerInput) (*PlannerOutput,
 		plan.Goal = strings.TrimSpace(in.Goal)
 		if err := plan.Validate(); err != nil {
 			lastErr = err
-			feedback = "Plan validation failed: " + err.Error() +
-				". Re-emit a valid DAG: unique step ids (s1, s2, ...), depends_on must reference earlier ids only."
+			feedback = "计划校验未通过（validation failed）：" + err.Error() +
+				"。请重新生成合法的 DAG：step id 必须唯一（s1、s2…），depends_on 只能引用更早的 step id。"
 			continue
 		}
 		if len(plan.Steps) > p.maxSteps {
 			lastErr = fmt.Errorf("plan has %d steps, exceeds max %d", len(plan.Steps), p.maxSteps)
-			feedback = fmt.Sprintf("Plan has too many steps (%d). Decompose more carefully into at most %d steps.",
+			feedback = fmt.Sprintf("步骤数过多（共 %d 步），请重新拆解为最多 %d 步。",
 				len(plan.Steps), p.maxSteps)
 			continue
 		}
@@ -174,6 +208,12 @@ func (p *LLMPlanner) Plan(ctx context.Context, in PlannerInput) (*PlannerOutput,
 // Stream-level errors (network, provider failures) bubble up unchanged;
 // "model didn't call the tool" / "input is not JSON" become validation-
 // retryable errors handled by Plan.
+//
+// When p.retryer is set (production path), the LLM call goes through
+// retryLLMCall — same code path L1 emma and L3 sub-agents use — so the
+// planner inherits transport-level retry + backoff, heartbeats keeping
+// the L2 specialists card alive, and "重试中" wire events. When nil
+// (tests / minimal setups), the legacy direct-stream path is used.
 func (p *LLMPlanner) callOnce(ctx context.Context, in PlannerInput, feedback string) (*Plan, string, error) {
 	req := &provider.ChatRequest{
 		Model:       p.model,
@@ -187,6 +227,49 @@ func (p *LLMPlanner) callOnce(ctx context.Context, in PlannerInput, feedback str
 		Temperature: 0,
 	}
 
+	if p.retryer != nil {
+		return p.callOnceWithRetry(ctx, req)
+	}
+	return p.callOnceLegacy(ctx, req)
+}
+
+// callOnceWithRetry routes through retryLLMCall to get the full
+// retry/heartbeat/visibility stack. AgentID and out are pulled from ctx
+// (set by PlanCoordinator before invoking the planner) so heartbeats
+// land on the L2 specialists agent card rather than nowhere.
+func (p *LLMPlanner) callOnceWithRetry(ctx context.Context, req *provider.ChatRequest) (*Plan, string, error) {
+	agentID, out := retryRoutingFromCtx(ctx)
+	logger := p.logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	result := retryLLMCall(ctx, p.provider, req, logger, p.retryer, p.timeouts, agentID, out)
+	if result == nil {
+		return nil, "", fmt.Errorf("planner: nil retry result")
+	}
+	if result.streamErr != nil {
+		return nil, "", fmt.Errorf("planner stream: %w", result.streamErr)
+	}
+
+	// Find the emit_plan tool call in the buffered results. Multiple
+	// calls are tolerated (last wins) for symmetry with the legacy
+	// path, even though the model is instructed to call exactly once.
+	var toolInput string
+	for _, tc := range result.toolCalls {
+		if tc.Name == plannerEmitToolName {
+			toolInput = tc.Input
+		}
+	}
+	if toolInput == "" {
+		return nil, "", fmt.Errorf("model did not call %q tool", plannerEmitToolName)
+	}
+	return parsePlanFromToolInput(toolInput)
+}
+
+// callOnceLegacy is the original direct-Chat path. Retained for tests
+// and any caller that constructs an LLMPlanner without WithRetry.
+func (p *LLMPlanner) callOnceLegacy(ctx context.Context, req *provider.ChatRequest) (*Plan, string, error) {
 	stream, err := p.provider.Chat(ctx, req)
 	if err != nil {
 		return nil, "", fmt.Errorf("provider chat: %w", err)
@@ -237,15 +320,14 @@ const plannerEmitToolName = "emit_plan"
 func plannerEmitTool(maxSteps int) provider.ToolSchema {
 	return provider.ToolSchema{
 		Name: plannerEmitToolName,
-		Description: "Submit the planned step DAG. " +
-			"This is the ONLY tool you may call. After calling it, stop.",
+		Description: "提交拆解后的步骤 DAG。这是你唯一可以调用的工具，调用后立即停止。",
 		InputSchema: map[string]any{
 			"type":     "object",
 			"required": []string{"steps", "rationale"},
 			"properties": map[string]any{
 				"rationale": map[string]any{
 					"type":        "string",
-					"description": "One-line explanation of how the goal was decomposed.",
+					"description": "用一句中文说明目标是如何被拆解的。",
 					"minLength":   1,
 					"maxLength":   400,
 				},
@@ -262,13 +344,15 @@ func plannerEmitTool(maxSteps int) provider.ToolSchema {
 								"pattern": `^s\d+$`,
 							},
 							"description": map[string]any{
-								"type":      "string",
-								"minLength": 1,
-								"maxLength": 200,
+								"type":        "string",
+								"description": "用中文写一句简短的步骤标签（用于日志/可观测）。",
+								"minLength":   1,
+								"maxLength":   200,
 							},
 							"prompt": map[string]any{
-								"type":      "string",
-								"minLength": 1,
+								"type":        "string",
+								"description": "用中文写出完整、自洽的执行指令，交给执行者就能直接开工。",
+								"minLength":   1,
 							},
 							"depends_on": map[string]any{
 								"type":  "array",
@@ -327,23 +411,24 @@ func parsePlanFromToolInput(raw string) (*Plan, string, error) {
 // dynamically-injected skill catalog.
 func buildPlannerSystemPrompt(maxSteps int) string {
 	var sb strings.Builder
-	sb.WriteString("You are a senior task-decomposition planner.\n\n")
-	sb.WriteString("Hard rules:\n")
-	sb.WriteString("- Respond ONLY by calling the emit_plan tool. Do not write any other text.\n")
-	sb.WriteString("- Match step count to actual decomposition: 1 step for trivial goals, more for genuinely multi-stage work. Do not pad.\n")
-	sb.WriteString(fmt.Sprintf("- Never exceed %d steps in one plan.\n", maxSteps))
-	sb.WriteString("- step.id is \"s1\", \"s2\", ... in topological order.\n")
-	sb.WriteString("- depends_on MUST reference earlier step ids only. No cycles, no forward references.\n")
-	sb.WriteString("- Use parallel branches (omit depends_on) for steps that can run independently. Do not invent fake dependencies just to make the plan look sequential.\n")
-	sb.WriteString("- Each step's `prompt` is a complete, self-contained task description for whoever executes it — write it as you would brief a teammate, not as a slogan.\n\n")
+	sb.WriteString("你是一名资深的任务拆解规划员。\n\n")
+	sb.WriteString("硬性规则：\n")
+	sb.WriteString("- 只能通过调用 emit_plan 工具来回复，不要输出任何其它正文。\n")
+	sb.WriteString("- 步骤数要匹配真实的拆解粒度：琐碎任务就 1 步，确实需要多阶段时才拆多步，不要凑数。\n")
+	sb.WriteString(fmt.Sprintf("- 单个计划的步骤数不得超过 %d。\n", maxSteps))
+	sb.WriteString("- step.id 按拓扑顺序命名为 \"s1\"、\"s2\"……\n")
+	sb.WriteString("- depends_on 只能引用比当前步骤更早出现的 id，不允许成环，也不允许引用后面的步骤。\n")
+	sb.WriteString("- 互相独立、可以并行执行的步骤要并列写出（depends_on 留空），不要为了让计划看起来串行而捏造假依赖。\n")
+	sb.WriteString("- 每个步骤的 `prompt` 必须是给执行者的完整、自洽的任务说明，按交接给同事的语气来写，不要写成口号。\n")
+	sb.WriteString("- 所有 description 与 prompt 一律使用中文，无论目标本身是什么语言。\n\n")
 
-	sb.WriteString("Step-count guide (calibrate against this):\n")
-	sb.WriteString("- \"Translate this paragraph\" / \"What's the capital of X\" → 1 step\n")
-	sb.WriteString("- \"Research X and write a report\" → 2-3 steps (research → optional analyze → draft)\n")
-	sb.WriteString("- \"Research X, compare with Y, draw a decision matrix, write the report\" → 4-5 steps\n")
-	sb.WriteString("- \"Refactor module X, add tests, write migration doc\" → 4-6 steps with parallel branches when possible\n\n")
+	sb.WriteString("步骤数参考标尺（按此校准粒度）：\n")
+	sb.WriteString("- 「翻译这段话」/「X 的首都是哪」→ 1 步\n")
+	sb.WriteString("- 「调研 X 并写一份报告」→ 2-3 步（调研 → 可选分析 → 撰写）\n")
+	sb.WriteString("- 「调研 X、与 Y 对比、画决策矩阵、写报告」→ 4-5 步\n")
+	sb.WriteString("- 「重构模块 X、补测试、写迁移文档」→ 4-6 步，可并行的部分要拆出并行分支\n\n")
 
-	sb.WriteString("Focus only on WHAT each step does, not WHO executes it. Picking the executor is a downstream concern handled at dispatch time.\n")
+	sb.WriteString("只关心每一步「做什么」，不要去决定「由谁来做」——执行者由下游在调度时再选。\n")
 	return sb.String()
 }
 
@@ -351,49 +436,65 @@ func buildPlannerSystemPrompt(maxSteps int) string {
 // into a single user message. feedback is non-empty on retry.
 func buildPlannerUserMessage(in PlannerInput, feedback string) string {
 	var sb strings.Builder
-	sb.WriteString("Goal:\n")
+	sb.WriteString("目标：\n")
 	sb.WriteString(strings.TrimSpace(in.Goal))
 
 	if d := strings.TrimSpace(in.Description); d != "" {
-		sb.WriteString("\n\nObservability label: ")
+		sb.WriteString("\n\n可观测标签：")
 		sb.WriteString(d)
 	}
 
 	if in.Escalation != nil && !in.Escalation.IsEmpty() {
-		sb.WriteString("\n\n--- Re-plan context ---")
-		sb.WriteString("\nA previous attempt produced partial results. Preserve already-produced artifacts; only schedule the missing pieces. Avoid redoing completed work.")
+		sb.WriteString("\n\n--- 重新规划上下文 ---")
+		sb.WriteString("\n上一次尝试已经产出了部分结果。请保留已有产物，只补充缺失的步骤，不要重复已完成的工作。")
 	}
 
 	if feedback != "" {
-		sb.WriteString("\n\n--- Previous attempt feedback ---\n")
+		sb.WriteString("\n\n--- 上一次尝试的反馈 ---\n")
 		sb.WriteString(feedback)
 	}
 
 	return sb.String()
 }
 
-// matchesSubagent maps a natural-language goal to a likely L3 sub-agent
-// type. Used by the SubagentResolver (and previously by HeuristicPlanner
-// rule 3 before the executor decision moved to dispatch time).
+// subagentKeywords lists the strings each sub-agent type accepts as a
+// signal that the goal is its kind of task. Substring match is intentional
+// for Chinese (where 调研 / 代码 etc. are unambiguous tokens) but tight
+// for English — see the `developer` block: 'code' / 'go ' / 'script' /
+// 'function' were dropped because they triggered on `codex` / `vscode` /
+// `encode` / `decode` / English connector words / `transcript` /
+// `functional analysis` etc., causing research and analysis tasks to be
+// misrouted to developer.
+var subagentKeywords = map[string][]string{
+	"writer":         {"write ", "draft", "polish", "translate", "邮件", "翻译", "润色", "撰写"},
+	"researcher":     {"research", "find out", "调研", "查一下", "搜集"},
+	"analyst":        {"analyze", "compare", "对比", "分析"},
+	"developer":      {"代码", "脚本", "中间件", "调试", "middleware", "debug", "python", "typescript", "javascript", "compile"},
+	"travel_planner": {"travel", "trip", "itinerary", "出行", "行程"},
+	"recommender":    {"recommend", "best", "pick", "推荐", "选购", "比价"},
+	"scheduler":      {"schedule", "calendar", "日程", "排期", "会议"},
+}
+
+// matchesSubagent reports whether goal matches any keyword for subagent.
+// Kept as a thin wrapper so callers that only need yes/no don't pay for
+// the score computation.
 func matchesSubagent(goal, subagent string) bool {
-	switch subagent {
-	case "writer":
-		return containsAny(goal, "write", "draft", "polish", "translate", "邮件", "翻译", "润色", "撰写")
-	case "researcher":
-		return containsAny(goal, "research", "find out", "调研", "查一下", "搜集")
-	case "analyst":
-		return containsAny(goal, "analyze", "compare", "对比", "分析")
-	case "developer":
-		return containsAny(goal, "code", "function", "script", "debug",
-			"middleware", "中间件", "代码", "脚本", "调试", "go ", "python", "typescript")
-	case "travel_planner":
-		return containsAny(goal, "travel", "trip", "itinerary", "出行", "行程")
-	case "recommender":
-		return containsAny(goal, "recommend", "best", "pick", "推荐", "选购", "比价")
-	case "scheduler":
-		return containsAny(goal, "schedule", "calendar", "日程", "排期", "会议")
+	return countSubagentMatches(goal, subagent) > 0
+}
+
+// countSubagentMatches returns how many of subagent's keywords appear in
+// goal. Used by the resolver to break ties between candidates whose
+// keyword lists overlap (e.g. "调研代码架构" matches both researcher and
+// developer; the higher-count one wins).
+func countSubagentMatches(goal, subagent string) int {
+	keywords := subagentKeywords[subagent]
+	n := 0
+	for _, k := range keywords {
+		if strings.Contains(goal, k) {
+			n++
+		}
 	}
-	return false
+	return n
 }
 
 // subagentSet is a tiny set helper used by the planner / resolver.
