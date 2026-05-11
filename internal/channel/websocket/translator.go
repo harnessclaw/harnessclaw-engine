@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -58,6 +59,12 @@ func (t *Translator) SetIssuer(p promptIssuer) {
 type sessionState struct {
 	mu sync.Mutex
 
+	// emitter is the root Emitter for this session. Captured on the first
+	// Translate call so Resolve* helpers (which don't carry an em
+	// argument) can still talk to the lifecycle tracker for
+	// suspend/resume.
+	emitter *emitv2.Emitter
+
 	turnCardID    string
 	turnNo        int
 	messageCardID string
@@ -80,11 +87,25 @@ type sessionState struct {
 	// pendingPlan maps a v2.2 prompt.user request_id to the engine's
 	// PlanCoordinator plan_id. Same pattern as askQuestion: the engine
 	// blocks on SubmitPlanResponse keyed by plan_id, but on the wire
-	// we use a v2.2 request_id. conn.go uses this map to bridge back
-	// — without it, the user's prompt.user_response carries a synthetic
-	// request_id the engine doesn't recognise and PlanCoordinator
+	// we use a v2.2 request_id. coordinator/conn uses this map to bridge
+	// back — without it, the user's prompt.user_response carries a
+	// synthetic request_id the engine doesn't recognise and PlanCoordinator
 	// hangs forever.
 	pendingPlan map[string]string // prompt request_id → engine plan_id
+
+	// pendingStepDecision: wire prompt request_id → engine
+	// StepDecisionRequest.RequestID. Same dual-id pattern as
+	// pendingPlan / pendingPerm: the engine blocks on its own id while
+	// the wire frame is the request_id.
+	pendingStepDecision map[string]string
+
+	// pausedCards holds the orphan-watchdog suspension list for each
+	// outstanding prompt.user request. While the user is reviewing
+	// (plan_review, permission, AskUserQuestion), the surrounding
+	// agent / message / turn cards are intentionally idle and must not
+	// fire orphan_timeout. We pause their watchdogs on emit and resume
+	// on response — design intent: prompt.user has no time limit.
+	pausedCards map[string][]string // prompt request_id → list of paused card_ids
 }
 
 func newSessionState() *sessionState {
@@ -96,13 +117,62 @@ func newSessionState() *sessionState {
 		steps:        make(map[string]string),
 		pendingPerm:  make(map[string]string),
 		askQuestion:  make(map[string]string),
-		pendingPlan:  make(map[string]string),
+		pendingPlan:         make(map[string]string),
+		pendingStepDecision: make(map[string]string),
+		pausedCards:         make(map[string][]string),
 	}
 }
 
 // askUserQuestionToolName mirrors internal/tool/askuserquestion.ToolName.
 // Hardcoded here to avoid an import cycle.
 const askUserQuestionToolName = "AskUserQuestion"
+
+// suspendForPrompt pauses the orphan watchdog up the chain rooted at the
+// most specific tracked card we know for the agent that triggered the
+// prompt, falling back to the active message / turn cards. Records the
+// paused set under reqID so resumeForPrompt can undo it when the user
+// responds. Caller must hold s.mu.
+func (t *Translator) suspendForPrompt(s *sessionState, em *emitv2.Emitter, agentID, reqID string) {
+	if em == nil || reqID == "" {
+		return
+	}
+	anchor := ""
+	if agentID != "" {
+		anchor = s.subAgentCard[agentID]
+	}
+	if anchor == "" {
+		anchor = s.messageCardID
+	}
+	if anchor == "" {
+		anchor = s.turnCardID
+	}
+	if anchor == "" {
+		return
+	}
+	paused := em.SuspendChainFromCard(anchor)
+	if len(paused) > 0 {
+		s.pausedCards[reqID] = paused
+	}
+}
+
+// resumeForPrompt reverses suspendForPrompt. Looks up the paused set,
+// resumes each card's watchdog, and clears the entry. Safe to call on
+// unknown reqIDs (no-op). Resume is intentionally driven by the
+// translator (not by the engine response handler) so that any prompt
+// flow that goes through emit-then-Resolve* is automatically covered.
+// Caller must hold s.mu.
+func (t *Translator) resumeForPrompt(s *sessionState, em *emitv2.Emitter, reqID string) {
+	if em == nil || reqID == "" {
+		return
+	}
+	paused, ok := s.pausedCards[reqID]
+	if !ok {
+		return
+	}
+	delete(s.pausedCards, reqID)
+	em.ResumeChain(paused)
+}
+
 
 func (t *Translator) get(sessionID string) *sessionState {
 	t.mu.RLock()
@@ -143,6 +213,9 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 	s := t.get(sessionID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.emitter == nil {
+		s.emitter = em
+	}
 
 	switch ev.Type {
 	// ----- Message lifecycle -----
@@ -201,12 +274,25 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
 		s.tools[ev.ToolUseID] = toolCardID
 		input := parseJSONObject(ev.ToolInput)
+		opts := []emitv2.EmitOpt{emitv2.WithParent(parentForTool(s))}
+		// Agent-spawning tools (Specialists / Task) wrap entire sub-agent
+		// runs that legitimately last tens of minutes. The 120s tool-card
+		// orphan_timeout was incorrect for them — once the inner agent
+		// stopped tick-ing its own card (e.g. after planner done, while
+		// scheduler is waiting on writer to finish), the watchdog would
+		// synthesise a failed close on the tool card even though the
+		// underlying work was healthy. Opt these out of the watchdog;
+		// they still get parent-chain tracking (chain-only mode) so
+		// descendant heartbeats refresh the turn above.
+		if isOrchestrationTool(ev.ToolName) {
+			opts = append(opts, emitv2.WithoutLifecycle())
+		}
 		em.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
 			Name:   ev.ToolName,
 			Target: "server",
 			Intent: ev.Intent,
 			Input:  input,
-		}, emitv2.WithParent(parentForTool(s)))
+		}, opts...)
 
 	case types.EngineEventToolEnd:
 		toolCardID, ok := s.tools[ev.ToolUseID]
@@ -267,6 +353,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			}
 			em.PromptUserWithID(reqID, "question", payload)
 			s.askQuestion[reqID] = ev.ToolUseID
+			t.suspendForPrompt(s, em, ev.AgentID, reqID)
 			return
 		}
 		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
@@ -303,7 +390,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		// Open the agent card on the child (envelope.agent_id auto-bound).
 		agentCardID := nonEmpty(ev.AgentID, emitv2.NewCardID(emitv2.CardAgent))
 		s.subAgentCard[ev.AgentID] = agentCardID
-		parent := parentForSubAgent(s, ev.ParentAgentID)
+		parent := parentForSubAgent(s, ev.ParentAgentID, ev.ParentStepID)
 		child.Card(emitv2.CardAgent, agentCardID).Add(emitv2.AgentPayload{
 			Name:          ev.AgentName,
 			AgentType:     ev.AgentType,
@@ -448,6 +535,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		// request_id is independent ("req_..."). Map them so conn.go
 		// can build a PermissionResponse with the engine ID.
 		s.pendingPerm[reqID] = ev.PermissionRequest.RequestID
+		t.suspendForPrompt(s, em, ev.AgentID, reqID)
 
 	case types.EngineEventPlanProposed:
 		if ev.PlanProposal == nil {
@@ -479,11 +567,105 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		// Remember the mapping so the user's prompt.user_response can
 		// be routed back to the engine's plan_id-keyed PlanCoordinator.
 		s.pendingPlan[reqID] = ev.PlanProposal.PlanID
+		t.suspendForPrompt(s, em, ev.AgentID, reqID)
 
 	case types.EngineEventPlanApproved:
 		if ev.PlanProposal != nil {
 			em.PromptReply("", "approved", "")
 		}
+
+	case types.EngineEventStepDecisionRequested:
+		sd := ev.StepDecision
+		if sd == nil {
+			return
+		}
+		payload := emitv2.StepDecisionPromptPayload{
+			Scope:           sd.Scope,
+			StepID:          sd.StepID,
+			StepDescription: sd.StepDescription,
+			Reason:          sd.Reason,
+			Attempts:        sd.Attempts,
+			AllowRetry:      sd.AllowRetry,
+		}
+		reqID := emitv2.NewRequestID()
+		if err := t.persistWait(em, reqID, wait.KindStepDecision,
+			sd.RequestID, "prompt.user", "step_decision", payload); err != nil {
+			return
+		}
+		em.PromptUserWithID(reqID, "step_decision", payload, emitv2.WithoutLifecycle())
+		// Map wire reqID → engine-side StepDecisionRequest.RequestID so
+		// conn.go's prompt.user_response can synthesise a typed
+		// StepDecisionResponse keyed on the engine identifier.
+		s.pendingStepDecision[reqID] = sd.RequestID
+		// Same suspend policy as plan_review / question / permission:
+		// the user is the gating actor, so the surrounding agent / step
+		// / message / turn cards must not orphan-timeout while waiting.
+		t.suspendForPrompt(s, em, ev.AgentID, reqID)
+
+	case types.EngineEventLLMHeartbeat:
+		// Pick the most-specific open card to tick: sub-agent's
+		// CardAgent (which sits under the step card in plan mode →
+		// heartbeat walks up step → plan → turn) when available,
+		// else the active message card (L1 main loop). Drop silently
+		// if neither exists — would only happen pre-turn-open, which
+		// is fine because there's no parent chain to keep alive.
+		var (
+			cardID string
+			kind   emitv2.CardKind
+			em2    = em
+		)
+		if ev.AgentID != "" {
+			if id := s.subAgentCard[ev.AgentID]; id != "" {
+				cardID, kind = id, emitv2.CardAgent
+				if child := s.subagents[ev.AgentID]; child != nil {
+					em2 = child
+				}
+			}
+		}
+		if cardID == "" && s.messageCardID != "" {
+			cardID, kind = s.messageCardID, emitv2.CardMessage
+		}
+		if cardID == "" {
+			return
+		}
+		em2.Card(kind, cardID).Tick(emitv2.TickHeartbeat, emitv2.HeartbeatPayload{
+			UptimeMs: ev.Duration,
+		})
+
+	case types.EngineEventLLMRetry:
+		// Surface retry status to the wire. Same card-routing logic as
+		// the heartbeat case (sub-agent CardAgent if known, else the
+		// active L1 message card); without this the front-end has no
+		// signal that the server is in a backoff loop — looks identical
+		// to a slow upstream. Renders as card.tick(kind=note) with a
+		// human-readable summary so the existing v2.2 note rendering
+		// path handles it without a wire-protocol bump.
+		if ev.LLMRetry == nil {
+			return
+		}
+		var (
+			cardID string
+			kind   emitv2.CardKind
+			em2    = em
+		)
+		if ev.AgentID != "" {
+			if id := s.subAgentCard[ev.AgentID]; id != "" {
+				cardID, kind = id, emitv2.CardAgent
+				if child := s.subagents[ev.AgentID]; child != nil {
+					em2 = child
+				}
+			}
+		}
+		if cardID == "" && s.messageCardID != "" {
+			cardID, kind = s.messageCardID, emitv2.CardMessage
+		}
+		if cardID == "" {
+			return
+		}
+		em2.Card(kind, cardID).Tick(emitv2.TickNote, emitv2.NotePayload{
+			Text:     formatRetryNote(ev.LLMRetry),
+			Severity: emitv2.SeverityWarn,
+		})
 
 	// ----- Done / Error -----
 	case types.EngineEventDone:
@@ -554,11 +736,20 @@ func parentForTool(s *sessionState) string {
 	return s.turnCardID
 }
 
-// parentForSubAgent decides what card a sub-agent attaches to. The
-// sub-agent typically spawns from a tool call (Agent / Specialists);
-// if the tool card is open, attach there. Otherwise attach to the
-// parent agent's card or the turn.
-func parentForSubAgent(s *sessionState, parentAgentID string) string {
+// parentForSubAgent decides what card a sub-agent attaches to. Plan /
+// orchestrate dispatches carry parentStepID so the agent card can be
+// rooted under the step card — without that routing the step card sits
+// silent for the entire sub-agent run and gets killed by the orphan
+// watchdog. Non-plan dispatches (parentStepID empty) fall back to the
+// legacy "parent agent → tool → message → turn" chain.
+func parentForSubAgent(s *sessionState, parentAgentID, parentStepID string) string {
+	// Plan / orchestrate: route under the step card so its watchdog
+	// receives heartbeats from inner agent activity.
+	if parentStepID != "" {
+		if id := s.steps[parentStepID]; id != "" {
+			return id
+		}
+	}
 	// If the parent agent has a card open, attach there.
 	if id := s.subAgentCard[parentAgentID]; id != "" {
 		return id
@@ -642,7 +833,58 @@ func (t *Translator) openPlan(s *sessionState, em *emitv2.Emitter, ev *types.Eng
 		Goal:     pe.Goal,
 		Strategy: pe.Strategy,
 		Steps:    steps,
-	}, emitv2.WithParent(s.turnCardID))
+	}, emitv2.WithParent(parentForPlan(s, ev)))
+}
+
+// isOrchestrationTool reports whether name belongs to a tool that
+// spawns a sub-agent and therefore wraps a multi-minute lifecycle.
+// These tools' cards must not be subject to the CardTool 120s
+// orphan_timeout: the inner agent legitimately runs longer than that,
+// and the watchdog killing the wrapping tool card surfaces as a
+// "工具失败" UI artifact while the underlying step still runs and
+// eventually succeeds (the exact mis-report users have been seeing).
+//
+// Tool names are stable LLM-facing identifiers (declared as ToolName
+// constants in internal/tool/specialists and internal/tool/agenttool).
+// New orchestration tools added in the future need a one-line update
+// here — the alternative (introspecting a tool registry from inside
+// the translator) doesn't fit the wire-translator's scope.
+func isOrchestrationTool(name string) bool {
+	switch name {
+	case "Specialists", "Task":
+		return true
+	default:
+		return false
+	}
+}
+
+// parentForPlan picks the right parent card_id for a plan card. The
+// plan is created by an L2 coordinator (typically the Specialists
+// agent), so it should sit UNDER that agent's card on the wire — not
+// beside it under the turn. Wrong parent topology was the root cause of
+// the orphan_timeout false-positives on the Specialists tool card:
+// the plan was a sibling of the tool card, so writer heartbeats walked
+// writer→step→plan→turn without ever touching tool, and the tool card
+// (120s timeout) died as soon as the planner stopped tick-ing it.
+//
+// Precedence:
+//  1. emitting agent's CardAgent (subAgentCard[ev.AgentID]) — the
+//     specialists agent under whose roof this plan was produced
+//  2. emitting agent's enclosing tool card — best-effort fallback when
+//     for some reason the agent card isn't tracked (transient state
+//     between agent_end / next agent_start)
+//  3. turn card — legacy behaviour, last resort
+//
+// With (1), the full chain becomes
+//   writer_agent → step → plan → specialists_agent → tool → turn
+// and any heartbeat anywhere in that subtree refreshes the tool card.
+func parentForPlan(s *sessionState, ev *types.EngineEvent) string {
+	if ev != nil && ev.AgentID != "" {
+		if cardID := s.subAgentCard[ev.AgentID]; cardID != "" {
+			return cardID
+		}
+	}
+	return s.turnCardID
 }
 
 func plansFromTasks(pe *types.PlanEvent) emitv2.PlanPayload {
@@ -900,6 +1142,7 @@ func (t *Translator) ResolveAskQuestion(sessionID, requestID string) string {
 	id := s.askQuestion[requestID]
 	if id != "" {
 		delete(s.askQuestion, requestID)
+		t.resumeForPrompt(s, s.emitter, requestID)
 	}
 	return id
 }
@@ -916,6 +1159,7 @@ func (t *Translator) ResolvePermission(sessionID, requestID string) string {
 	id := s.pendingPerm[requestID]
 	if id != "" {
 		delete(s.pendingPerm, requestID)
+		t.resumeForPrompt(s, s.emitter, requestID)
 	}
 	return id
 }
@@ -937,8 +1181,55 @@ func (t *Translator) ResolvePlanReview(sessionID, requestID string) string {
 	id := s.pendingPlan[requestID]
 	if id != "" {
 		delete(s.pendingPlan, requestID)
+		t.resumeForPrompt(s, s.emitter, requestID)
 	}
 	return id
+}
+
+// ResolveStepDecision is the step_decision counterpart of
+// ResolvePlanReview / ResolvePermission. Returns the engine-side
+// StepDecisionRequest.RequestID, or "" when this prompt request_id is
+// unknown (stale / mismatched).
+//
+// Side effect: a successful lookup removes the entry and resumes any
+// suspended cards.
+func (t *Translator) ResolveStepDecision(sessionID, requestID string) string {
+	s := t.get(sessionID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.pendingStepDecision[requestID]
+	if id != "" {
+		delete(s.pendingStepDecision, requestID)
+		t.resumeForPrompt(s, s.emitter, requestID)
+	}
+	return id
+}
+
+// formatRetryNote renders an LLMRetryInfo as a short human-readable
+// line suitable for a card.tick(kind=note) text body. Format mirrors
+// the WARN log in retry.Retryer so server-side and wire stay consistent:
+//   "重试中 (3/10, 1.2s 后再试) — overloaded HTTP 529"
+// Falls back to attempt-only when classifier didn't tag the error.
+func formatRetryNote(info *types.LLMRetryInfo) string {
+	if info == nil {
+		return ""
+	}
+	header := fmt.Sprintf(
+		"重试中 (%d/%d, %s 后再试)",
+		info.Attempt,
+		info.MaxRetries,
+		time.Duration(info.DelayMs)*time.Millisecond,
+	)
+	switch {
+	case info.ErrorType != "" && info.StatusCode != 0:
+		return fmt.Sprintf("%s — %s HTTP %d", header, info.ErrorType, info.StatusCode)
+	case info.ErrorType != "":
+		return fmt.Sprintf("%s — %s", header, info.ErrorType)
+	case info.StatusCode != 0:
+		return fmt.Sprintf("%s — HTTP %d", header, info.StatusCode)
+	default:
+		return header
+	}
 }
 
 // decodeAskQuestionInput pulls fields out of an AskUserQuestion tool

@@ -24,6 +24,23 @@ func makeRecorderEmitter(t *testing.T, sessionID string) (*emitv2.Emitter, *emit
 	return em, rec
 }
 
+// makeTrackedEmitter is the same as makeRecorderEmitter but with an
+// orphan-watchdog Tracker wired in. Returns the tracker so tests can
+// drive its clock and inspect OpenCount.
+func makeTrackedEmitter(t *testing.T, sessionID string) (*emitv2.Emitter, *emitv2.RecorderSink, *emitv2.Tracker) {
+	t.Helper()
+	rec := emitv2.NewRecorder()
+	tk := emitv2.NewTracker(emitv2.TrackerConfig{})
+	em := emitv2.New(emitv2.EmitterConfig{
+		Sink:      rec,
+		SessionID: sessionID,
+		AgentID:   "main",
+		AgentRole: emitv2.RolePersona,
+		Lifecycle: tk,
+	})
+	return em, rec, tk
+}
+
 // findClosePayload returns the ClosePayload of the first card.close
 // targeting cardID, or fails the test if none.
 func findClosePayload(t *testing.T, rec *emitv2.RecorderSink, cardID string) emitv2.ClosePayload {
@@ -181,6 +198,165 @@ func TestTranslator_ToolEnd_NoMetadataNoMap(t *testing.T) {
 	if tp.Metadata != nil {
 		t.Errorf("Metadata should be nil when tool has none, got %+v", tp.Metadata)
 	}
+}
+
+// TestTranslator_PlanReview_PausesAgentCardWatchdog locks in the
+// "prompt.user has no time limit" contract: while the user is reviewing
+// a plan, the worker's CardAgent must not orphan-timeout no matter how
+// long the user takes. ResolvePlanReview reverses the pause so the
+// watchdog kicks back in once the response has been routed.
+func TestTranslator_PlanReview_PausesAgentCardWatchdog(t *testing.T) {
+	em, rec, tk := makeTrackedEmitter(t, "sess_pr")
+	tr := NewTranslator()
+
+	// Stage the lineage the way a real plan-mode worker would: turn →
+	// message → SubAgentStart opens an agent card.
+	tr.Translate(em, "sess_pr", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_pr"})
+	tr.Translate(em, "sess_pr", &types.EngineEvent{
+		Type:        types.EngineEventSubAgentStart,
+		AgentID:     "agent_worker",
+		AgentName:   "specialists",
+		AgentTask:   "plan a thing",
+	})
+
+	// The worker is now tracked.
+	if tk.OpenCount() < 3 {
+		t.Fatalf("expected turn+msg+agent tracked, OpenCount=%d", tk.OpenCount())
+	}
+
+	// PlanCoordinator emits plan_proposed → translator pauses chain.
+	tr.Translate(em, "sess_pr", &types.EngineEvent{
+		Type:    types.EngineEventPlanProposed,
+		AgentID: "agent_worker",
+		PlanProposal: &types.PlanProposal{
+			PlanID:  "pln_test1",
+			AgentID: "agent_worker",
+			Goal:    "anything",
+			Steps: []types.ProposedStep{
+				{ID: "s1", Description: "x", Prompt: "x"},
+			},
+		},
+	})
+
+	// Pull out the wire request_id the translator just minted.
+	prompts := rec.FilterByType(emitv2.EventPromptUser)
+	if len(prompts) != 1 {
+		t.Fatalf("got %d prompt.user events, want 1", len(prompts))
+	}
+	pl := prompts[0].Payload.(emitv2.PromptUserPayload)
+	if pl.Kind != "plan_review" {
+		t.Fatalf("kind = %q, want plan_review", pl.Kind)
+	}
+	reqID := pl.RequestID
+
+	// Force the watchdog through a long sweep: even way past the agent
+	// card's 10-min orphan timeout there must be no synthetic close.
+	// We can't advance the tracker's clock here (it owns its own), so
+	// we directly assert the chain is paused via a follow-up Suspend
+	// returning false (already paused).
+	if tk.Suspend("agent_worker") {
+		t.Error("agent card should already be paused after plan_proposed; Suspend returned true")
+	}
+
+	// User responds → ResolvePlanReview reverses the pause.
+	if got := tr.ResolvePlanReview("sess_pr", reqID); got != "pln_test1" {
+		t.Fatalf("ResolvePlanReview returned %q, want pln_test1", got)
+	}
+
+	// After resume, the card must be tracked-and-running again
+	// (Suspend returns true because it's no longer paused).
+	if !tk.Suspend("agent_worker") {
+		t.Error("agent card should be unpaused after ResolvePlanReview; Suspend returned false")
+	}
+}
+
+// TestTranslator_StepDispatchAttachesAgentUnderStep locks in the
+// plan-mode topology: when SubAgentStart carries ParentStepID and the
+// matching step card is open, the agent card must be parented under
+// the step card. This is what gives the step's orphan watchdog a
+// heartbeat path through the dispatched sub-agent's inner activity.
+func TestTranslator_StepDispatchAttachesAgentUnderStep(t *testing.T) {
+	em, rec, tk := makeTrackedEmitter(t, "sess_step")
+	tr := NewTranslator()
+
+	// Open a plan card so step has somewhere natural to root, then
+	// dispatch the step itself.
+	tr.Translate(em, "sess_step", &types.EngineEvent{
+		Type:    types.EngineEventPlanCreated,
+		AgentID: "main",
+		PlanEvent: &types.PlanEvent{
+			PlanID:   "pln_a",
+			Goal:     "x",
+			Strategy: "sequential",
+			Tasks:    []types.PlanTaskInfo{{TaskID: "s1"}},
+		},
+	})
+	tr.Translate(em, "sess_step", &types.EngineEvent{
+		Type: types.EngineEventStepDispatched,
+		TaskDispatch: &types.TaskDispatch{
+			TaskID: "s1", SubagentType: "researcher",
+		},
+	})
+
+	// SubAgentStart carries ParentStepID — agent card must root under s1.
+	tr.Translate(em, "sess_step", &types.EngineEvent{
+		Type:         types.EngineEventSubAgentStart,
+		AgentID:      "agent_42",
+		AgentName:    "researcher",
+		AgentTask:    "do research",
+		ParentStepID: "s1",
+	})
+
+	// Find the agent card.add event and inspect its parent_card_id.
+	var found bool
+	for _, e := range rec.FilterByCard("agent_42") {
+		if e.Type != emitv2.EventCardAdd {
+			continue
+		}
+		if got := e.Envelope.ParentCardID; got != "s1" {
+			t.Errorf("agent card.add parent_card_id = %q, want s1 (step)", got)
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Fatal("no card.add for agent_42 emitted")
+	}
+
+	// And the heartbeat must propagate: child activity on the agent
+	// resets the step card's deadline. Verify via Tracker — the parent
+	// recorded for agent_42 should be the step card.
+	if got := tk.ParentOf("agent_42"); got != "s1" {
+		t.Errorf("Tracker parent of agent_42 = %q, want s1", got)
+	}
+}
+
+// Backwards-compat: a SubAgentStart without ParentStepID (non-plan
+// dispatch path) must still attach to the legacy parent (tool / message
+// / turn). Without this, every direct sub-agent spawn from emma would
+// orphan from its enclosing tool card.
+func TestTranslator_SubAgentStart_FallsBackWhenNoStepID(t *testing.T) {
+	em, rec, _ := makeTrackedEmitter(t, "sess_legacy")
+	tr := NewTranslator()
+
+	tr.Translate(em, "sess_legacy", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
+	tr.Translate(em, "sess_legacy", &types.EngineEvent{
+		Type:      types.EngineEventSubAgentStart,
+		AgentID:   "agent_x",
+		AgentName: "n",
+		AgentTask: "t",
+	})
+
+	for _, e := range rec.FilterByCard("agent_x") {
+		if e.Type != emitv2.EventCardAdd {
+			continue
+		}
+		if got := e.Envelope.ParentCardID; got == "" {
+			t.Errorf("agent card.add parent_card_id is empty; expected fallback to message/turn")
+		}
+		return
+	}
+	t.Fatal("no card.add for agent_x emitted")
 }
 
 // TestPromoteToolMetadata_OmitsKnownKeys exercises the helper directly.

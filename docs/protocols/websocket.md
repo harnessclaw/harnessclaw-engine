@@ -1,6 +1,6 @@
 # WebSocket Protocol v2 — UI-First Card Model
 
-- **Version**: 0.3.0 (绑定 emit v2.2 实现，参见 `docs/emit/2026-05-07-protocol-v2.2-card.md`)
+- **Version**: 0.5.0 (绑定 emit v2.2 实现，参见 `docs/emit/2026-05-07-protocol-v2.2-card.md`)
 - **状态**: 实施候选；内测阶段——**唯一对外协议**，单一 endpoint `/v1/ws`
 - **核心定位**: 这是驱动 AI 助手客户端 UI 渲染与状态展示的协议（不是分布式追踪/观测协议）
 
@@ -19,6 +19,7 @@
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| **0.5.0** | 2026-05-09 | **失败决定门 + 拓扑/Watchdog 调整（向前兼容增量）**：1) 新增 `prompt.user(kind=step_decision)` —— Scheduler / PlanCoordinator 在 step 重试用尽 / re-plans 用尽 / planner 错误时不再静默 fallback，而是弹给用户决定 `continue` / `retry` / `cancel`，详见 §7.1 kind=step_decision；2) `prompt.user_response.decision` 增加合法取值 `continue` / `retry` / `cancel`（仅对 `step_decision` 生效，其它 kind 仍用 `approved` / `denied`），详见 §7.3；3) plan / orchestrate 派出来的 `agent` 卡现在 `parent_card_id` 指向对应 `step` 卡（之前指 tool / message / turn）—— 按 `parent_card_id` 自动布局的客户端无需改动；硬编码 step 与 agent 同级的需要支持嵌套；4) `prompt.user` 期间所有祖先 tracked 卡片的 orphan watchdog 暂停，用户思考再久也不会出现 `orphan_timeout` 关闭——客户端无变化，纯改善。 |
 | **0.4.0** | 2026-05-08 | **plan 审阅与 question 行为对齐**：`prompt.user(kind=plan_review)` 阶段服务端**不**开 plan card、不启 watchdog、等待无上限——与 `kind=question` 完全同构。`card.add(plan)` 只在用户 approve 之后才发出。客户端必须基于 `prompt.user.payload.inner.steps` 直接渲染审阅视图，**不要**等 `card.add(plan)`。详见 §7.1 kind=plan_review 渲染规则。 |
 | **0.3.0** | 2026-05-07 | **故障恢复（新 capability）**：服务端重启后未答 prompt（permission/question/plan_review）会按同 `request_id` 自动重发到重连客户端；客户端必须按 `request_id` 去重 UI（同一 ID 不弹两次模态）。新增 `session.event(opened).capabilities.recovery` 能力位。详见 §2.4.2 / §2.4.4。 |
 | **0.2.0** | 2026-05-07 | **AskUserQuestion 升格为一等 prompt**：原走 `tool.call`/`tool.result` 的 client-routed 路径，现 wire 上以 `prompt.user(kind=question)` + `prompt.user_response` 表达。客户端 UI 不再用工具卡片渲染，改用问答模态。 |
@@ -47,7 +48,7 @@
 | `permission.request` | `prompt.user(kind=permission)` |
 | `agent.intent`（顶层 + subagent.event 包装） | `card.tick(kind=intent)` 或 `card.add(tool).payload.intent` |
 | 5 套错误结构（ErrorDetail/ErrorBody/FailurePayload/...） | 1 套 `ErrorInfo` |
-| `pong / session.created/updated/resumed/resume_failed` | `session.event(kind=...)` |
+| `session.created/updated/resumed/resume_failed` | `session.event(kind=...)`（`pong` 例外，详见 §2.3） |
 
 不保留向前兼容；v2 走独立 endpoint（`/v1/ws`）。
 
@@ -88,7 +89,15 @@ WS  scheme:  ws://host:port/v1/ws
 
 ### 2.3 Keep-Alive
 
-客户端每 30s 发 `ping`；服务端回 `session.event(kind=pong)`。30s 内无心跳则任何一端可断开。
+客户端每 30s 发 `{"type":"ping"}`；服务端回 `{"type":"pong"}`。两者都是**极简顶层帧**——不带 `envelope`、不占 `seq`、不携带 `severity` / `agent_id` 等业务字段，纯链路连通性信号；与所有 card / prompt / session.event 事件解耦。30s 内无心跳则任何一端可断开。
+
+```jsonc
+// client → server
+{"type": "ping"}
+
+// server → client
+{"type": "pong"}
+```
 
 ### 2.4 Reconnect & 故障恢复
 
@@ -238,7 +247,8 @@ UI 渲染建议，**不是协议契约**——客户端可覆盖。
 | `card.close`    | 卡片终态（status: ok/failed/skipped/cancelled） | State |
 | `prompt.user`   | 系统问用户（permission/question/plan_review）；阻塞 UI | Interaction |
 | `prompt.reply`  | 服务端 echo 用户响应（成功/拒绝/超时） | Interaction |
-| `session.event` | 会话级事件（payload.kind 区分 opened/updated/error/resumed/resume_failed/pong） | Lifecycle |
+| `session.event` | 会话级事件（payload.kind 区分 opened/updated/error/resumed/resume_failed） | Lifecycle |
+| `ping` / `pong` | 链路连通性帧（无 envelope；详见 §2.3） | Keep-Alive |
 
 ---
 
@@ -357,7 +367,7 @@ inner schema 详见 §11。
   "envelope": {...},
   "payload": {
     "request_id": "req_<16hex>",
-    "kind":       "permission|question|plan_review",
+    "kind":       "permission|question|plan_review|step_decision",
     "inner":      { ... },
     "timeout_ms": 60000                  // 0 = 无超时
   }
@@ -425,6 +435,40 @@ inner schema 详见 §11。
 - 服务端重启会重发同一 `request_id` 的 `prompt.user(plan_review)`，客户端按 `request_id` 去重模态（不要弹两次）
 - 用户 approve 之后才会看到 `card.add(plan)`；`card.add(plan)` 出现意味着已进入执行阶段，不要再展示审阅 UI
 
+#### kind=step_decision
+```json
+{
+  "scope":            "step",                          // "step" | "plan"
+  "step_id":          "s2",                            // scope=step 时填，scope=plan 时为空
+  "step_description": "调研 Agent OS 最近半年开源进展",
+  "reason":           "rate limit exceeded (+2 more)", // 服务端拼好的失败摘要，原样展示
+  "attempts":         3,                               // 已尝试次数（包含触发失败的那一次）
+  "allow_retry":      true                             // false 时客户端禁用"重试"按钮
+}
+```
+
+**何时触发**：
+
+服务端在以下情况会暂停 plan 并发出 `prompt.user(kind=step_decision)`，把"是否继续/重试/取消"的选择权交给用户——而不是默默 fallback 让用户对着已经花掉的 token 一头雾水：
+
+| 触发点 | scope | allow_retry | 触发条件 |
+|---|---|---|---|
+| Scheduler 单 step 失败 | `step` | `true` | step 经过 `MaxStepAttempts`（默认 3）次仍失败（非瞬时类失败也算） |
+| PlanCoordinator | `plan` | `false` | re-plans 用尽（`MaxPlanReplans` 默认 3）/ planner 报错 / budget 超线 |
+
+**渲染规则（与 `kind=plan_review` / `kind=question` 同构）**：
+
+`prompt.user(step_decision)` 同样不开任何 card、不启 watchdog、等待无上限。客户端：
+
+- 弹一个三按钮（或两按钮）的决定模态：**继续 / 重试 / 取消**；`allow_retry=false` 时不渲染"重试"
+- 模态正文用 `reason` + 上下文（`step_description` / `attempts`）说明出了什么问题，不要自己造文案
+- 用户思考再久也不会触发任何超时——服务端在 `prompt.user` 期间会暂停所有祖先卡片的 watchdog，看不到 `card.close{error.type:orphan_timeout}`
+- 服务端重启会同 `request_id` 重发；客户端按 `request_id` 去重模态
+
+文案建议（仅 UI 层，不是协议契约）：
+- `scope=step`：`步骤 s2「调研 Agent OS …」失败：rate limit exceeded（已重试 3 次）。继续 / 重试 / 取消？`
+- `scope=plan`：`计划反复未达成目标：duration budget exhausted。继续（接受当前结果）/ 取消？`
+
 ### 7.2 `prompt.reply` — 服务端 echo 决议
 
 ```json
@@ -445,10 +489,17 @@ inner schema 详见 §11。
 {
   "type": "prompt.user_response",
   "request_id": "req_xxx",
-  "decision":   "approved|denied",
+  "decision":   "approved|denied|continue|retry|cancel",
   "payload": { ... }                     // kind 决定 schema
 }
 ```
+
+`decision` 取值因 `kind` 而异：
+
+| 上行 kind | 合法 `decision` |
+|---|---|
+| `permission` / `question` / `plan_review` | `approved` / `denied`（保持向前兼容） |
+| `step_decision` | `continue` / `retry` / `cancel` |
 
 **kind=permission response**：
 ```json
@@ -469,6 +520,15 @@ inner schema 详见 §11。
 }
 ```
 
+**kind=step_decision response**：
+```json
+{
+  "note": "<可选；用户备注，会进 fallback summary>"
+}
+```
+
+`decision` 走 envelope 顶层（`continue` / `retry` / `cancel`），payload 只携可选 `note`。服务端见到 `decision` 不在合法集时按 `cancel` 处理，避免脏值悬挂等待。
+
 ---
 
 ## 8. Session Events
@@ -478,7 +538,7 @@ inner schema 详见 §11。
   "type": "session.event",
   "envelope": {...},
   "payload": {
-    "kind":  "opened|updated|error|resumed|resume_failed|pong",
+    "kind":  "opened|updated|error|resumed|resume_failed",
     "inner": { ... }
   }
 }
@@ -591,6 +651,17 @@ inner schema 详见 §11。
   "artifacts":        [ ArtifactRef ]
 }
 ```
+
+**父卡（envelope.parent_card_id）拓扑**：
+
+| 派出场景 | 父卡 |
+|---|---|
+| plan / orchestrate 派出（v0.5.0+） | 对应的 `step` 卡 |
+| Specialists / Agent 工具直接派出 | 调用方的 `tool` 卡 |
+| 嵌套子 agent | 父 agent 的 `agent` 卡 |
+| 兜底 | `message` / `turn` |
+
+plan 模式下渲染层级因此是 `turn → message → plan → step → agent → tool/...`。这条变化纯靠 `parent_card_id` 表达，schema 字段未变；按父子关系自动布局的客户端无需改动。
 
 ### 10.5 plan
 ```json

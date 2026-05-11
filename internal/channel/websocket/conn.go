@@ -51,6 +51,126 @@ func (c *Conn) trySend(frame []byte) error {
 	}
 }
 
+// logOutgoingFrame parses just enough of an outbound wire frame to
+// surface the fields that matter for lifecycle debugging — frame type,
+// card kind / id / parent, sequence number, close status, error type
+// (when applicable), prompt kind (when applicable).
+//
+// Gated by channels.websocket.trace_frames (yaml). Logged at INFO so
+// turning the flag on alone is enough — the operator doesn't also
+// have to drop global log.level to debug (which would flood with
+// prompt-builder / section-budget / per-turn internals unrelated to
+// the wire). Filter the output with `grep "ws send" service.log`.
+//
+// Specifically built to diagnose "client sees X steps but only Y
+// closes": each step lifecycle ought to show up as
+//   card.add  kind=step  card_id=sN
+//   card.set  kind=step  status=running
+//   card.close kind=step  status=ok|failed|skipped
+// Any step missing a card.close (status=skipped is the common gap
+// after a user-cancel / dep-failure / scheduler bail) jumps out of
+// this log immediately.
+func (c *Conn) logOutgoingFrame(frame []byte) {
+	// Wire format is FLAT: {type, envelope, hint, metrics, payload}.
+	// (The desktop client wraps frames in {sessionId, type, payload: <frame>}
+	// for its own storage — that's NOT the on-the-wire shape.)
+	var outer struct {
+		Type     string `json:"type"`
+		Envelope struct {
+			EventID      string `json:"event_id"`
+			CardID       string `json:"card_id"`
+			ParentCardID string `json:"parent_card_id"`
+			CardKind     string `json:"card_kind"`
+			Seq          int64  `json:"seq"`
+			AgentID      string `json:"agent_id"`
+			AgentRole    string `json:"agent_role"`
+			Severity     string `json:"severity"`
+		} `json:"envelope"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(frame, &outer); err != nil {
+		// Frame not in expected shape — log raw size only so we still
+		// know something went out.
+		c.logger.Info("ws send (unparsable)",
+			zap.Int("bytes", len(frame)),
+			zap.Error(err),
+		)
+		return
+	}
+
+	// Keep-alive frames are pure liveness — no business meaning, no
+	// lifecycle signal. Logging them adds two lines per 30s per
+	// connection and dilutes the trace_frames signal-to-noise when
+	// chasing real wire issues. Drop silently.
+	if outer.Type == "pong" || outer.Type == "ping" {
+		return
+	}
+
+	fields := []zap.Field{
+		zap.String("type", outer.Type),
+		zap.Int("bytes", len(frame)),
+		zap.Int64("seq", outer.Envelope.Seq),
+	}
+	if kind := outer.Envelope.CardKind; kind != "" {
+		fields = append(fields, zap.String("card_kind", kind))
+	}
+	if id := outer.Envelope.CardID; id != "" {
+		fields = append(fields, zap.String("card_id", id))
+	}
+	if p := outer.Envelope.ParentCardID; p != "" {
+		fields = append(fields, zap.String("parent_card_id", p))
+	}
+	if a := outer.Envelope.AgentID; a != "" {
+		fields = append(fields, zap.String("agent_id", a))
+	}
+	if s := outer.Envelope.Severity; s != "" {
+		fields = append(fields, zap.String("severity", s))
+	}
+
+	// Type-specific payload fields. Best-effort — unknown payload
+	// shapes just drop these without erroring.
+	if len(outer.Payload) > 0 {
+		var inner struct {
+			Status string `json:"status,omitempty"`
+			Kind   string `json:"kind,omitempty"`
+			Error  *struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error,omitempty"`
+		}
+		if err := json.Unmarshal(outer.Payload, &inner); err == nil {
+			if inner.Status != "" {
+				fields = append(fields, zap.String("status", inner.Status))
+			}
+			if inner.Kind != "" {
+				fields = append(fields, zap.String("prompt_kind", inner.Kind))
+			}
+			if inner.Error != nil && inner.Error.Type != "" {
+				fields = append(fields,
+					zap.String("error_type", inner.Error.Type),
+					zap.String("error_message", truncStr(inner.Error.Message, 200)),
+				)
+			}
+		}
+	}
+
+	c.logger.Info("ws send", fields...)
+}
+
+// truncStr clips a string to n runes, appending "…" when it bites.
+// Local helper to keep log payloads short — full error messages are
+// already in upstream WARN/ERROR lines, this is just a quick reference.
+func truncStr(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
 // close terminates the connection (idempotent).
 func (c *Conn) close() {
 	c.closeOnce.Do(func() {
@@ -70,6 +190,18 @@ func (c *Conn) writePump(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case data := <-c.send:
+			// Per-frame trace, gated on the explicit
+			// channels.websocket.trace_frames flag — lets operators
+			// flip lifecycle debugging on without raising the whole
+			// log level to DEBUG (which would flood with prompt
+			// builder / section budget / per-turn LLM internals).
+			//
+			// Each frame parses to one line capturing the envelope
+			// essentials: type / card_kind / card_id / parent / seq
+			// / status / error. The cost when off is one bool read.
+			if c.ch != nil && c.ch.cfg.TraceFrames {
+				c.logOutgoingFrame(data)
+			}
 			wctx, cancel := context.WithTimeout(ctx, writeTimeout)
 			err := c.ws.Write(wctx, websocket.MessageText, data)
 			cancel()
@@ -339,6 +471,33 @@ func (c *Conn) handlePromptResponse(ctx context.Context, raw []byte) {
 		return
 	}
 
+	// Path 1.5: step_decision. Same authoritative-routing rule as
+	// plan_review — the translator's pendingStepDecision map is the
+	// canonical signal. Sits before plan_review so a user reply that
+	// happens to carry a generic "approved" decision can't be mis-routed.
+	if engineReqID := c.ch.translator.ResolveStepDecision(c.sessionID, f.RequestID); engineReqID != "" {
+		var sd struct {
+			Decision string `json:"decision"`
+			Note     string `json:"note"`
+		}
+		_ = json.Unmarshal(f.Payload, &sd)
+		if sd.Decision == "" {
+			// Envelope-level Decision is the fallback when the payload
+			// doesn't restate it explicitly.
+			sd.Decision = f.Decision
+		}
+		in.StepDecisionResponse = &types.StepDecisionResponse{
+			RequestID: engineReqID,
+			Decision:  sd.Decision,
+			Note:      sd.Note,
+		}
+		if err := c.ch.handler(ctx, in); err != nil {
+			c.sendError("internal", err.Error())
+		}
+		c.forgetWait(ctx, f.RequestID)
+		return
+	}
+
 	// Path 2: plan_review. Authoritative routing is the translator's
 	// pendingPlan map (we know it's a plan_review iff we minted a
 	// request_id for one). Heuristics like "payload has updated_steps"
@@ -535,16 +694,17 @@ func (c *Conn) handleSessionResume(raw []byte) {
 	})
 }
 
-// respondPong sends a session.event(kind=pong).
+// respondPong replies to a client `ping` with a minimal `{"type":"pong"}`
+// frame. Bypasses the emitter entirely: pong is a pure liveness signal,
+// not a session/business event. Carrying it through SessionEvent would
+// allocate an envelope, increment seq, stamp severity / agent_id, and
+// land in the lifecycle log next to real work — none of which serves
+// the client's keep-alive check. The wire shape stays flat
+// ({"type":"pong"}) so reconnect / resume logic on the client doesn't
+// have to special-case "session.event with pong inside vs. real
+// session events".
 func (c *Conn) respondPong() {
-	if c.emitter != nil {
-		c.emitter.SessionEvent("pong", nil)
-		return
-	}
-	frame := jsonMust(map[string]any{
-		"type":    "session.event",
-		"payload": map[string]any{"kind": "pong"},
-	})
+	frame := jsonMust(map[string]any{"type": "pong"})
 	_ = c.trySend(append(frame, '\n'))
 }
 
