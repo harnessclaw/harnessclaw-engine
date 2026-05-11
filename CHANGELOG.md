@@ -3,7 +3,33 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
-## [0.0.10] - 2026-05-08
+## [0.0.11] - 2026-05-11
+
+### Added
+- LLM retry visibility on the wire: every retry the engine schedules emits `card.tick(kind=note)` carrying attempt number, planned backoff delay, classified error type, and HTTP status — front-ends can render "重试中 (N/M, Xms 后再试)" instead of staring at silent waits
+- LLM heartbeat events: 30 s keep-alive ticks during in-flight LLM calls propagate up the parent_card_id chain so long-thinking models no longer cause the surrounding step / agent / message cards to orphan-timeout
+- First-byte timeout on LLM calls: `llm.first_byte_timeout` (default 120 s) catches "TCP black hole" upstreams that accept the request but never send a chunk; disarms once the first chunk lands so legitimate long thinking preludes are not penalised
+- Configurable LLM timeouts via yaml: `llm.api_timeout`, `llm.first_byte_timeout`, `llm.max_retries` exposed as top-level config keys
+- Step-decision gate: when retries / replans exhaust, Scheduler and PlanCoordinator emit `prompt.user(kind=step_decision)` so the user picks `continue` / `retry` / `cancel` instead of silently falling back
+- Chain-only lifecycle for orchestration tool cards: Specialists and Task tool cards now opt out of the orphan watchdog but stay tracked in the parent chain — descendant heartbeats still refresh ancestors above
+- LLM-driven `LLMSubagentResolver` replaces keyword scoring: structured-output tool call picks the executor from `AvailableSubagents` with rationale, falls back to heuristic on nil-provider / LLM-error / out-of-set-pick
+- Planner and SubagentResolver route through `retryLLMCall`: both now inherit transport-level retry, heartbeats, retry-status events, and FirstByte/API timeouts that L1 emma and L3 sub-agents already have
+- Per-frame WebSocket trace logging behind `channels.websocket.trace_frames` toggle for lifecycle-level debugging without dropping the global log level to DEBUG
+
+### Changed
+- Plan card parent is now the emitting Specialists agent card (was the turn card); fixes the topology so writer heartbeats walk writer → step → plan → specialists agent → tool → turn and the Specialists tool card stays alive through the whole plan
+- `ping` / `pong` are now top-level wire frames (`{"type":"ping"}` / `{"type":"pong"}`) with no envelope / seq / severity — pure liveness signal, decoupled from `session.event`
+- Specialists L2 worker no longer carries a 15-min hard timeout; AgentTool dispatch no longer carries a 5-min hard timeout — long-running plans are bounded by per-call LLM timeouts and the step_decision gate instead of one wall-clock cap that killed legitimate work mid-flight
+- SubmitTaskResult `summary` over 200 chars is now truncated with `…` instead of rejected, so the sub-agent isn't forced to redraft when slightly over budget
+- LLM retry plumbing uses `retry.Retryer.DoWith(ctx, fn, onRetry)` — per-call observer keeps retry events scoped to one caller's `out` channel even when the Retryer is shared across concurrent sub-agents
+
+### Fixed
+- Specialists tool card no longer suffers spurious `orphan_timeout` closes mid-plan: 120 s `CardTool` watchdog used to kill the tool card once the planner stopped tick-ing it (e.g. while writer was running), surfacing "工具失败" while the underlying step succeeded
+- DNS / network errors at the L1 main loop now retry via `retry.Retryer` with the same exponential backoff path L3 sub-agents already used, instead of failing on the first attempt
+- LLM call ctx cancellation no longer counts as a retryable transient error: a dead ctx propagates through the Retryer as non-retryable so we stop wasting attempts when the parent has already given up
+- Wire-frame `card.close` for sub-agent abort no longer maps to `StatusOK`: `"aborted"` now produces `StatusCancelled` (was silently dropped to ok)
+
+
 
 ### Added
 - Roster-agnostic LLM planner: replaces the keyword-rule HeuristicPlanner; the LLM produces a step DAG via the `emit_plan` tool with retry-on-validation, capped at `maxSteps`, and intentionally does not see the available sub-agent list — `SubagentResolver` picks the executor at dispatch time
