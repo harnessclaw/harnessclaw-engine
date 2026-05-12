@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -686,5 +687,42 @@ func TestChannel_AskUserQuestionCancelled(t *testing.T) {
 	}
 	if got.Status != "cancelled" {
 		t.Errorf("cancelled status = %q, want cancelled", got.Status)
+	}
+}
+
+// TestChannel_MountsMetricsHandler verifies that a handler wired via
+// SetMetricsHandler is reachable at /api/v1/sessions/ on the same mux
+// that serves the WS upgrade path. We build the same mux Start() would
+// build (without spinning up the blocking ListenAndServe), then issue
+// a plain HTTP GET via httptest and confirm the handler ran.
+func TestChannel_MountsMetricsHandler(t *testing.T) {
+	cfg := config.WSChannelConfig{Host: "127.0.0.1", Port: 0, Path: "/v1/ws"}
+	ch := New(cfg, nil, zap.NewNop())
+
+	var called int32
+	ch.SetMetricsHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&called, 1)
+		w.WriteHeader(http.StatusTeapot)
+	}))
+
+	// Mirror Start()'s mux construction.
+	mux := http.NewServeMux()
+	mux.HandleFunc(cfg.Path, ch.upgrade)
+	if ch.metricsHandler != nil {
+		mux.Handle("/api/v1/sessions/", ch.metricsHandler)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/v1/sessions/whatever/metrics")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTeapot {
+		t.Errorf("status = %d, want 418 (handler not reached?)", resp.StatusCode)
+	}
+	if n := atomic.LoadInt32(&called); n != 1 {
+		t.Errorf("handler called %d times, want 1", n)
 	}
 }

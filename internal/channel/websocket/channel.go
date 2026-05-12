@@ -58,6 +58,11 @@ type Channel struct {
 
 	connCtx  context.Context
 	connCanc context.CancelFunc
+
+	// metricsHandler, if non-nil, is registered on the same HTTP mux
+	// as the websocket upgrade path. Set via SetMetricsHandler before
+	// Start.
+	metricsHandler http.Handler
 }
 
 // New constructs a v2.2 WebSocket channel. Signature mirrors the legacy
@@ -96,6 +101,13 @@ func (c *Channel) SetResumer(r wait.Resumer) { c.resumer = r }
 // the channel needing to plumb them through its own constructor.
 func (c *Channel) GetTranslator() *Translator { return c.translator }
 
+// SetMetricsHandler wires an HTTP handler that the Channel will mount
+// at /api/v1/sessions/ on its mux when Start is called. Must be set
+// before Start. Pass nil to disable.
+func (c *Channel) SetMetricsHandler(h http.Handler) {
+	c.metricsHandler = h
+}
+
 // Name implements channel.Channel.
 func (c *Channel) Name() string { return "websocket" }
 
@@ -116,6 +128,9 @@ func (c *Channel) Start(ctx context.Context, handler channel.MessageHandler) err
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(c.cfg.Path, c.upgrade)
+	if c.metricsHandler != nil {
+		mux.Handle("/api/v1/sessions/", c.metricsHandler)
+	}
 
 	addr := fmt.Sprintf("%s:%d", c.cfg.Host, c.cfg.Port)
 	c.server = &http.Server{Addr: addr, Handler: mux}
