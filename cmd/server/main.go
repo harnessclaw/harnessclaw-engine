@@ -31,6 +31,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/api"
+	"harnessclaw-go/internal/api/sessionmetrics"
 	"harnessclaw-go/internal/artifact"
 	"harnessclaw-go/internal/channel"
 	wsch "harnessclaw-go/internal/channel/websocket"
@@ -41,10 +42,12 @@ import (
 	"harnessclaw-go/internal/engine/prompter"
 	"harnessclaw-go/internal/engine/resume"
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/bifrost"
+	providerstats "harnessclaw-go/internal/provider/stats"
 	"harnessclaw-go/internal/router"
 	"harnessclaw-go/internal/router/middleware"
 	"harnessclaw-go/internal/skill"
@@ -228,10 +231,20 @@ func main() {
 
 	// --- Step 6: Initialize LLM provider ---
 	llmProvider := initProvider(cfg.LLM, logger)
+
+	// Session-metrics registry: a single in-process registry holds the
+	// per-session Tracker (cumulative LLM/tool/sub-agent counters). The
+	// StatsProvider decorator increments LLM call stats on every
+	// GenerateOnce return; the manager binds the registry so each new /
+	// reloaded session installs its Tracker; the engine + executor read
+	// from the same registry to attribute tool / sub-agent activity.
+	statsRegistry := sessionstats.NewRegistry()
+	llmProvider = providerstats.New(llmProvider, statsRegistry)
 	logger.Info("LLM provider initialized", zap.String("provider", llmProvider.Name()))
 
 	// --- Step 7: Create session manager ---
 	sessionMgr := session.NewManager(store, logger, cfg.Session.IdleTimeout)
+	sessionMgr.BindStatsRegistry(statsRegistry)
 	logger.Info("session manager initialized")
 
 	// Start periodic idle session cleanup.
@@ -424,6 +437,12 @@ func main() {
 	eng.SetMessageBroker(broker)
 	eng.SetDefRegistry(agentDefReg)
 	eng.SetArtifactStore(artifactStore)
+	// Session-metrics wiring. The engine reads from the same registry the
+	// StatsProvider writes into; the session manager hand-off lets the
+	// trace-end flush worker force-persist the snapshot on lifecycle
+	// transitions instead of waiting for the debounce.
+	eng.SetStatsRegistry(statsRegistry)
+	eng.SetSessionManager(sessionMgr)
 
 	// Register task tools (scoped to a default scope for now).
 	defaultScope := "default"
@@ -480,6 +499,11 @@ func main() {
 		wsCh.SetPrompter(waitPrompter)
 		wsCh.SetResumer(resume.New(rtr.Handle, logger))
 		wsCh.GetTranslator().SetIssuer(waitPrompter)
+		// Mount GET /api/v1/sessions/{id}/metrics on the same HTTP mux as
+		// the websocket upgrade. The handler prefers the live in-memory
+		// tracker and falls back to the persisted snapshot via `store`.
+		metricsHandler := sessionmetrics.New(statsRegistry, store, logger)
+		wsCh.SetMetricsHandler(metricsHandler)
 
 		// Periodic janitor: every hour, sweep waits that have passed
 		// their TTL (15d default) so abandoned conversations don't
