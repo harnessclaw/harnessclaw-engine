@@ -109,6 +109,15 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID string, channelName
 		s.ID = uuid.New().String()
 	}
 	m.active[s.ID] = s
+	// Eagerly persist the new session row so per-session workers (stats,
+	// future ones) that fire UPDATE-based writes don't trip on a missing
+	// row before the first message lands. Best-effort: a transient
+	// failure here will be retried by the persist worker on the next
+	// mutation.
+	if err := m.store.SaveSession(ctx, s); err != nil {
+		m.logger.Warn("eager save new session",
+			zap.String("session_id", s.ID), zap.Error(err))
+	}
 	m.bindOnChange(s)
 	m.bindStatsLocked(ctx, s)
 	m.logger.Info("session created", zap.String("session_id", s.ID))
