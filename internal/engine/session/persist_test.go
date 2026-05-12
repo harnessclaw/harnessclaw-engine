@@ -30,6 +30,12 @@ func (s *countingStore) LoadSession(_ context.Context, _ string) (*Session, erro
 	return nil, nil
 }
 func (s *countingStore) DeleteSession(_ context.Context, _ string) error { return nil }
+func (s *countingStore) SaveSessionStats(_ context.Context, _ string, _ types.SessionStats) error {
+	return nil
+}
+func (s *countingStore) LoadSessionStats(_ context.Context, _ string) (types.SessionStats, error) {
+	return types.SessionStats{}, nil
+}
 
 func (s *countingStore) Saves() int64 { return atomic.LoadInt64(&s.saves) }
 
@@ -107,6 +113,12 @@ func (s *slowSaveStore) LoadSession(_ context.Context, _ string) (*Session, erro
 	return nil, nil
 }
 func (s *slowSaveStore) DeleteSession(_ context.Context, _ string) error { return nil }
+func (s *slowSaveStore) SaveSessionStats(_ context.Context, _ string, _ types.SessionStats) error {
+	return nil
+}
+func (s *slowSaveStore) LoadSessionStats(_ context.Context, _ string) (types.SessionStats, error) {
+	return types.SessionStats{}, nil
+}
 
 // TestPersistWorker_FlushSync verifies that PersistSession blocks until
 // the in-flight write completes — required by shutdown / snapshot

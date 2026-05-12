@@ -5,21 +5,25 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/pkg/types"
 )
 
 // Store is an in-memory session store.
 type Store struct {
 	mu       sync.RWMutex
 	sessions map[string]*session.Session
+	stats    map[string]types.SessionStats
 }
 
 // New creates a memory store.
 func New() *Store {
 	return &Store{
 		sessions: make(map[string]*session.Session),
+		stats:    make(map[string]types.SessionStats),
 	}
 }
 
@@ -81,4 +85,27 @@ func (s *Store) DeleteSession(_ context.Context, id string) error {
 
 func (s *Store) Close() error {
 	return nil
+}
+
+// SaveSessionStats stores a copy of stats keyed by sessionID. Mirrors
+// the SQLite contract: the session must already exist or it errors.
+func (s *Store) SaveSessionStats(_ context.Context, sessionID string, stats types.SessionStats) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.sessions[sessionID]; !ok {
+		return fmt.Errorf("save stats: session %q not found", sessionID)
+	}
+	if s.stats == nil {
+		s.stats = make(map[string]types.SessionStats)
+	}
+	s.stats[sessionID] = stats
+	return nil
+}
+
+// LoadSessionStats returns the stored snapshot or a zero value when
+// none has been written.
+func (s *Store) LoadSessionStats(_ context.Context, sessionID string) (types.SessionStats, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stats[sessionID], nil
 }

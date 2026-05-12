@@ -95,11 +95,23 @@ func New(dbPath string) (*Store, error) {
 		user_id             TEXT NOT NULL DEFAULT '',
 		metadata            TEXT NOT NULL DEFAULT '{}',
 		total_input_tokens  INTEGER NOT NULL DEFAULT 0,
-		total_output_tokens INTEGER NOT NULL DEFAULT 0
+		total_output_tokens INTEGER NOT NULL DEFAULT 0,
+		metrics_json        TEXT NOT NULL DEFAULT ''
 	)`
 	if _, err := db.Exec(ddl); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create table: %w", err)
+	}
+
+	// Best-effort: add the column on databases created by an older binary
+	// that didn't include metrics_json. ALTER ... ADD COLUMN is idempotent
+	// only by skipping the error when the column already exists, hence the
+	// targeted error swallow.
+	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN metrics_json TEXT NOT NULL DEFAULT ''`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("add metrics_json column: %w", err)
+		}
 	}
 
 	return &Store{db: db}, nil
@@ -288,3 +300,53 @@ func (s *Store) Close() error {
 // connection pool — single-writer SQLite requires this to avoid lock
 // contention between session writes and wait writes.
 func (s *Store) DB() *sql.DB { return s.db }
+
+// SaveSessionStats serialises stats into the metrics_json column for
+// sessionID. Returns an error if the session row does not exist —
+// callers should ensure SaveSession has been called first.
+func (s *Store) SaveSessionStats(_ context.Context, sessionID string, stats types.SessionStats) error {
+	b, err := json.Marshal(stats)
+	if err != nil {
+		return fmt.Errorf("marshal stats: %w", err)
+	}
+	res, err := s.db.Exec(
+		`UPDATE sessions SET metrics_json = ? WHERE id = ?`,
+		string(b), sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("update metrics_json: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("save stats: session %q not found", sessionID)
+	}
+	return nil
+}
+
+// LoadSessionStats returns the persisted snapshot for sessionID. Empty
+// or missing data yields a zero SessionStats with a nil error so the
+// HTTP layer can render its own "no data yet" response.
+func (s *Store) LoadSessionStats(_ context.Context, sessionID string) (types.SessionStats, error) {
+	row := s.db.QueryRow(
+		`SELECT metrics_json FROM sessions WHERE id = ?`, sessionID,
+	)
+	var raw string
+	err := row.Scan(&raw)
+	if err == sql.ErrNoRows {
+		return types.SessionStats{}, nil
+	}
+	if err != nil {
+		return types.SessionStats{}, fmt.Errorf("scan metrics_json: %w", err)
+	}
+	if raw == "" {
+		return types.SessionStats{}, nil
+	}
+	var out types.SessionStats
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return types.SessionStats{}, fmt.Errorf("unmarshal metrics_json: %w", err)
+	}
+	return out, nil
+}

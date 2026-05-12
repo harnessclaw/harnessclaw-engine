@@ -18,6 +18,18 @@ type Store interface {
 	SaveSession(ctx context.Context, s *Session) error
 	LoadSession(ctx context.Context, id string) (*Session, error)
 	DeleteSession(ctx context.Context, id string) error
+
+	// SaveSessionStats persists the metrics snapshot to the session's
+	// backing storage. Implementations should treat missing-session-row
+	// as an error so the caller can re-issue SaveSession first.
+	SaveSessionStats(ctx context.Context, sessionID string, stats types.SessionStats) error
+
+	// LoadSessionStats returns the persisted snapshot. When the session
+	// row exists but no metrics have been written, returns a zero
+	// SessionStats and a nil error. When the session row does not exist
+	// returns a zero SessionStats and a nil error (handlers map this to
+	// 404).
+	LoadSessionStats(ctx context.Context, sessionID string) (types.SessionStats, error)
 }
 
 // Manager handles session lifecycle: creation, retrieval, persistence, and cleanup.
