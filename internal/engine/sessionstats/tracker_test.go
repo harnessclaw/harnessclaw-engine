@@ -215,3 +215,42 @@ func TestTracker_RecordLLMCall_CrossModelSubAgentMarksMixed(t *testing.T) {
 		t.Errorf("Model = %q, want mixed", s.SubAgents[0].Model)
 	}
 }
+
+func TestTracker_RestoreFrom_RehydratesEmptyTracker(t *testing.T) {
+	tr := NewTracker("sess_abc")
+	tr.RestoreFrom(types.SessionStats{
+		SessionID:    "sess_abc",
+		InputTokens:  100,
+		OutputTokens: 50,
+		LLMCalls:     2,
+		PerModel:     []types.ModelStats{{Model: "opus", InputTokens: 100, LLMCalls: 2}},
+		SubAgents: []types.SubAgentStats{
+			{AgentRunID: "r1", AgentID: "a1", AgentType: "researcher",
+				Model: "sonnet", InputTokens: 30, OutputTokens: 10, TotalTokens: 40,
+				Status: "completed", LLMCalls: 1, DurationMs: 500},
+		},
+	})
+
+	// Subsequent record should add on top, not overwrite.
+	tr.RecordLLMCall("opus", "r1", &types.Usage{InputTokens: 50}, 100)
+
+	s := tr.Snapshot()
+	if s.InputTokens != 150 {
+		t.Errorf("InputTokens = %d, want 150", s.InputTokens)
+	}
+	if len(s.PerModel) != 1 || s.PerModel[0].InputTokens != 150 {
+		t.Errorf("PerModel not merged: %+v", s.PerModel)
+	}
+	if len(s.SubAgents) != 1 || s.SubAgents[0].InputTokens != 80 {
+		t.Errorf("SubAgents not merged: %+v", s.SubAgents)
+	}
+}
+
+func TestTracker_RestoreFrom_IgnoredOnNonEmptyTracker(t *testing.T) {
+	tr := NewTracker("sess_abc")
+	tr.RecordLLMCall("opus", "", &types.Usage{InputTokens: 7}, 0)
+	tr.RestoreFrom(types.SessionStats{InputTokens: 9999}) // must NOT clobber
+	if got := tr.Snapshot().InputTokens; got != 7 {
+		t.Errorf("non-empty tracker was overwritten: got %d, want 7", got)
+	}
+}

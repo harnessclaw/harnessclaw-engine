@@ -221,6 +221,36 @@ func (t *Tracker) UpdateContextWindow(used, limit, history, toolResults, systemP
 	t.kickNotifyLocked()
 }
 
+// RestoreFrom rehydrates an empty Tracker from a persisted snapshot.
+// Used at session reload — the Manager loads SessionStats from SQLite
+// and calls this so subsequent LLM calls accumulate on top of the
+// pre-restart numbers instead of starting from zero.
+//
+// To avoid clobbering an in-flight session, RestoreFrom is a no-op if
+// any state has already been written to the Tracker.
+func (t *Tracker) RestoreFrom(snap types.SessionStats) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stats.LLMCalls > 0 || t.stats.ToolCalls > 0 ||
+		len(t.perModel) > 0 || len(t.subAgents) > 0 {
+		return
+	}
+	t.stats = snap
+	t.stats.SessionID = t.sessionID
+	t.stats.PerModel = nil // managed via map
+	t.stats.SubAgents = nil
+
+	for i := range snap.PerModel {
+		m := snap.PerModel[i]
+		t.perModel[m.Model] = &m
+	}
+	for i := range snap.SubAgents {
+		sa := snap.SubAgents[i]
+		t.subAgents[sa.AgentRunID] = &sa
+		t.subOrder = append(t.subOrder, sa.AgentRunID)
+	}
+}
+
 // kickNotifyLocked fires the persist worker without blocking. Caller
 // holds t.mu.
 func (t *Tracker) kickNotifyLocked() {
