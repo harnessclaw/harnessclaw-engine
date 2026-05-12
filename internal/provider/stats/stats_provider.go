@@ -47,7 +47,7 @@ func (p *StatsProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*p
 		return nil, err
 	}
 
-	return wrapStream(stream, func(usage *types.Usage) {
+	return wrapStream(ctx, stream, func(usage *types.Usage) {
 		latencyMs := time.Since(started).Milliseconds()
 		tracker.RecordLLMCall(req.Model, agentRunID, usage, latencyMs)
 

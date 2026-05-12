@@ -2,7 +2,9 @@ package stats
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/provider"
@@ -136,5 +138,79 @@ func TestClassifyContext_BucketsContentBlocks(t *testing.T) {
 	}
 	if used != hist+tr+sys {
 		t.Errorf("used (%d) != hist+tr+sys (%d)", used, hist+tr+sys)
+	}
+}
+
+func TestStatsProvider_RecordsAttemptOnDialFailure(t *testing.T) {
+	reg := sessionstats.NewRegistry()
+	inner := &fakeProvider{err: errors.New("network down")}
+	sp := New(inner, reg)
+
+	ctx := sessionstats.WithSessionID(context.Background(), "sess_abc")
+	stream, err := sp.Chat(ctx, &provider.ChatRequest{Model: "opus", MaxTokens: 256})
+	if err == nil {
+		t.Fatalf("expected error from dial failure, got nil")
+	}
+	if stream != nil {
+		t.Errorf("expected nil stream on error, got %v", stream)
+	}
+	tr := reg.Get("sess_abc")
+	if tr == nil {
+		t.Fatalf("tracker should still be created on dial failure")
+	}
+	s := tr.Snapshot()
+	if s.LLMCalls != 1 {
+		t.Errorf("LLMCalls = %d, want 1 (attempt should be recorded)", s.LLMCalls)
+	}
+	if s.ContextWindow.Limit != 256 {
+		t.Errorf("ContextWindow.Limit = %d, want 256", s.ContextWindow.Limit)
+	}
+}
+
+func TestStatsProvider_WrapperExitsOnContextCancel(t *testing.T) {
+	reg := sessionstats.NewRegistry()
+	// 100 events, far more than the 32-event output buffer, with no
+	// MessageEnd — forces wrapStream to keep producing until it blocks
+	// or ctx fires.
+	events := make([]types.StreamEvent, 100)
+	for i := range events {
+		events[i] = types.StreamEvent{Type: types.StreamEventText, Text: "x"}
+	}
+	inner := &fakeProvider{events: events}
+	sp := New(inner, reg)
+
+	ctx, cancel := context.WithCancel(sessionstats.WithSessionID(context.Background(), "sess_abc"))
+	stream, err := sp.Chat(ctx, &provider.ChatRequest{Model: "opus", MaxTokens: 256})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	// Read a few events then cancel — this simulates an early-exit
+	// consumer. The wrapper must not deadlock; cb() must still fire.
+	for i := 0; i < 5; i++ {
+		<-stream.Events
+	}
+	cancel()
+
+	// Give the goroutine a moment to react and close `out`. Drain
+	// remaining events (some may already be buffered) until the channel
+	// closes.
+	done := make(chan struct{})
+	go func() {
+		for range stream.Events {
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Channel closed → goroutine exited → no leak.
+	case <-time.After(2 * time.Second):
+		t.Fatal("wrapStream goroutine did not exit on ctx cancel")
+	}
+
+	// Tracker should reflect at least the LLM call attempt.
+	tr := reg.Get("sess_abc")
+	if tr == nil || tr.Snapshot().LLMCalls != 1 {
+		t.Errorf("expected 1 LLMCall recorded; got tr=%v", tr)
 	}
 }
