@@ -256,6 +256,11 @@ type QueryEngine struct {
 	// the right Tracker. Set via SetStatsRegistry from cmd/server/main.go;
 	// tests that don't enable metrics leave it nil.
 	statsRegistry *sessionstats.Registry
+
+	// sessionManager, when non-nil, lets the engine reach Manager.FlushStats
+	// at trace lifecycle boundaries. Set via SetSessionManager from
+	// cmd/server/main.go.
+	sessionManager *session.Manager
 }
 
 // pendingPlanReq tracks one in-flight plan approval request. The
@@ -669,6 +674,12 @@ func (qe *QueryEngine) SetStatsRegistry(r *sessionstats.Registry) {
 	qe.statsRegistry = r
 }
 
+// SetSessionManager wires the session manager so trace lifecycle
+// transitions can force-flush stats to disk.
+func (qe *QueryEngine) SetSessionManager(m *session.Manager) {
+	qe.sessionManager = m
+}
+
 // ProcessMessage implements Engine. It appends the user message to the session
 // and runs the query loop, emitting events on the returned channel.
 func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg *types.Message) (<-chan types.EngineEvent, error) {
@@ -765,6 +776,13 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 
 		cumUsage := qe.cumulativeUsageFor(sess.ID)
 		duration := time.Since(startedAt).Milliseconds()
+
+		// Force-flush the stats persist worker so HTTP fetches after this
+		// point see the trace's final numbers without waiting for the next
+		// debounce window. Best-effort — failure is logged inside the worker.
+		if qe.sessionManager != nil {
+			qe.sessionManager.FlushStats(qCtx, sess.ID)
+		}
 
 		// Choose between trace.finished (success) and trace.failed (any
 		// non-completed terminal reason). The body of *.failed carries a

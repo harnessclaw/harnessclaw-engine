@@ -186,6 +186,22 @@ func (m *Manager) bindStatsLocked(ctx context.Context, s *Session) {
 	tr.BindNotify(w.NotifyChan())
 }
 
+// FlushStats triggers an immediate, blocking flush of the stats
+// persist worker for sessionID. Safe to call from arbitrary
+// goroutines; no-op when stats are not wired or the session is
+// unknown.
+func (m *Manager) FlushStats(ctx context.Context, sessionID string) {
+	m.mu.RLock()
+	w := m.statsWorkers[sessionID]
+	m.mu.RUnlock()
+	if w == nil {
+		return
+	}
+	if err := w.Flush(ctx); err != nil {
+		m.logger.Warn("flush session stats", zap.String("session_id", sessionID), zap.Error(err))
+	}
+}
+
 // PersistAll synchronously flushes all active sessions to storage.
 // Used at shutdown and on explicit snapshot calls. Each session is
 // flushed through its worker (debounced flush honours flushNow path).
