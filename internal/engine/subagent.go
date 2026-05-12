@@ -971,6 +971,9 @@ func (qe *QueryEngine) runSubAgentLoop(
 	if qe.artifactStore != nil {
 		executor.SetArtifactStore(qe.artifactStore)
 	}
+	if qe.statsRegistry != nil {
+		executor.SetStatsRegistry(qe.statsRegistry)
+	}
 	subProducer := tool.ArtifactProducer{
 		AgentID:   lc.agentID,
 		SessionID: sess.ID,

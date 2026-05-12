@@ -1247,6 +1247,9 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 	if qe.artifactStore != nil {
 		executor.SetArtifactStore(qe.artifactStore)
 	}
+	if qe.statsRegistry != nil {
+		executor.SetStatsRegistry(qe.statsRegistry)
+	}
 	producer := tool.ArtifactProducer{
 		AgentID:   "main",
 		SessionID: sess.ID,
