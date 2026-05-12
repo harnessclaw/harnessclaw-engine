@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,5 +84,16 @@ func TestLoadSessionStats_SessionExistsButNoMetrics(t *testing.T) {
 	}
 	if out.SessionID != "" || out.InputTokens != 0 {
 		t.Errorf("expected zero value when metrics_json is NULL, got %+v", out)
+	}
+}
+
+func TestSaveSessionStats_MissingSessionReturnsError(t *testing.T) {
+	s := newStoreT(t)
+	err := s.SaveSessionStats(context.Background(), "nonexistent", types.SessionStats{})
+	if err == nil {
+		t.Fatal("SaveSessionStats on missing session should error")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error message should mention 'not found', got: %v", err)
 	}
 }
