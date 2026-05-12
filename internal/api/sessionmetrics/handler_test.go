@@ -3,6 +3,7 @@ package sessionmetrics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -122,5 +123,27 @@ func TestHandler_405OnPost(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", resp.StatusCode)
+	}
+}
+
+type errorStore struct{}
+
+func (s *errorStore) LoadSessionStats(_ context.Context, _ string) (types.SessionStats, error) {
+	return types.SessionStats{}, errors.New("db borked")
+}
+
+func TestHandler_500OnStoreError(t *testing.T) {
+	reg := sessionstats.NewRegistry()
+	h := New(reg, &errorStore{}, zap.NewNop())
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/v1/sessions/whatever/metrics")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
 	}
 }
