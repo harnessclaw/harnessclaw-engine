@@ -19,6 +19,7 @@ import (
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/sections"
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
@@ -249,6 +250,12 @@ type QueryEngine struct {
 	// Indexed by request_id (server-generated). Mirrors pendingPlans.
 	stepDecisionMu       sync.Mutex
 	pendingStepDecisions map[string]*pendingStepDecisionReq
+
+	// statsRegistry, when non-nil, lets the engine read cumulative stats
+	// (see cumulativeUsageFor) and lets sub-agent hooks/tool hooks ping
+	// the right Tracker. Set via SetStatsRegistry from cmd/server/main.go;
+	// tests that don't enable metrics leave it nil.
+	statsRegistry *sessionstats.Registry
 }
 
 // pendingPlanReq tracks one in-flight plan approval request. The
@@ -655,6 +662,13 @@ func (qe *QueryEngine) SetArtifactStore(store any) {
 	qe.artifactStore = store
 }
 
+// SetStatsRegistry wires the session-metrics registry so the engine
+// can attribute LLM/sub-agent/tool activity to the correct Tracker.
+// nil disables stats wiring.
+func (qe *QueryEngine) SetStatsRegistry(r *sessionstats.Registry) {
+	qe.statsRegistry = r
+}
+
 // ProcessMessage implements Engine. It appends the user message to the session
 // and runs the query loop, emitting events on the returned channel.
 func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg *types.Message) (<-chan types.EngineEvent, error) {
@@ -697,6 +711,13 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 
 	// Create a cancellable context for this query.
 	qCtx, cancel := context.WithCancel(ctx)
+
+	// Attach session id + main agent run id so the StatsProvider
+	// decorator (and any tracker hook reading from ctx) can attribute
+	// LLM usage / tool calls to the right session row. Done before
+	// runQueryLoop runs so every downstream call sees the keys.
+	qCtx = sessionstats.WithSessionID(qCtx, sess.ID)
+	qCtx = sessionstats.WithAgentRunID(qCtx, mainAgentRunID)
 
 	qe.mu.Lock()
 	qe.cancels[sessionID] = cancel
@@ -1649,10 +1670,25 @@ func toolResultFromPayload(p *types.ToolResultPayload) types.ToolResult {
 	}
 }
 
-// cumulativeUsageFor returns a placeholder cumulative usage.
-// The real implementation tracks per-session usage.
-func (qe *QueryEngine) cumulativeUsageFor(_ string) types.Usage {
-	return types.Usage{}
+// cumulativeUsageFor returns the running token totals for sessionID by
+// reading the sessionstats Tracker (the single in-memory truth source).
+// Falls back to a zero Usage when stats are not wired in (tests).
+func (qe *QueryEngine) cumulativeUsageFor(sessionID string) types.Usage {
+	if qe == nil || qe.statsRegistry == nil {
+		return types.Usage{}
+	}
+	tr := qe.statsRegistry.Get(sessionID)
+	if tr == nil {
+		return types.Usage{}
+	}
+	s := tr.Snapshot()
+	return types.Usage{
+		InputTokens:    int(s.InputTokens),
+		OutputTokens:   int(s.OutputTokens),
+		CacheRead:      int(s.CacheReadTokens),
+		CacheWrite:     int(s.CacheWriteTokens),
+		ThinkingTokens: int(s.ThinkingTokens),
+	}
 }
 
 // buildAssistantMessage creates a Message from the LLM's streamed output.

@@ -16,6 +16,7 @@ import (
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/texts"
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
@@ -111,6 +112,14 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		ctx, cancel = context.WithTimeout(ctx, cfg.Timeout)
 		defer cancel()
 	}
+
+	// Stats ctx keys: every LLM call this sub-agent makes routes its
+	// usage through StatsProvider, which reads session_id + agent_run_id
+	// from ctx. Override the parent's agent_run_id with THIS sub-agent's
+	// agentID so per-sub-agent token rows attribute correctly. session_id
+	// stays the parent's — the dashboard aggregates by parent session.
+	ctx = sessionstats.WithSessionID(ctx, cfg.ParentSessionID)
+	ctx = sessionstats.WithAgentRunID(ctx, agentID)
 
 	// Step 2: Cap MaxTurns.
 	maxTurns := cfg.MaxTurns
@@ -423,6 +432,15 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			ParentStepID:  cfg.ParentStepID,
 		}
 	}
+	// Tracker hook: register this sub-agent row on the parent session's
+	// tracker so the dashboard sees a "running" entry as soon as the
+	// start event hits the wire. Skipped silently when stats aren't
+	// wired in (tests) or when the parent session id is missing.
+	if qe.statsRegistry != nil && cfg.ParentSessionID != "" {
+		if tr := qe.statsRegistry.Get(cfg.ParentSessionID); tr != nil {
+			tr.StartSubAgent(agentID, agentID, string(cfg.AgentType), "")
+		}
+	}
 	if qe.eventBus != nil {
 		qe.eventBus.Publish(event.Event{
 			Topic: event.TopicSubAgentStarted,
@@ -677,6 +695,14 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			// single "outputs" card on the sub-agent panel without having
 			// to replay the per-tool stream.
 			Artifacts: endArtifacts,
+		}
+	}
+	// Tracker hook: mark this sub-agent row finished with the same
+	// status/duration the wire event carries. Symmetric with the
+	// StartSubAgent call above; same nil-guards apply.
+	if qe.statsRegistry != nil && cfg.ParentSessionID != "" {
+		if tr := qe.statsRegistry.Get(cfg.ParentSessionID); tr != nil {
+			tr.FinishSubAgent(agentID, agentStatus, elapsed.Milliseconds())
 		}
 	}
 	if qe.eventBus != nil {

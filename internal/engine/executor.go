@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
@@ -42,6 +43,11 @@ type ToolExecutor struct {
 	// Empty contract = no enforcement; the loop terminates on plain
 	// end_turn as before.
 	taskContract tool.TaskContract
+
+	// statsRegistry, if non-nil, gets a RecordToolCall ping on each
+	// tool_end. Set via SetStatsRegistry at construction. nil = no-op
+	// (tests, ad-hoc executors).
+	statsRegistry *sessionstats.Registry
 }
 
 // NewToolExecutor creates a tool executor.
@@ -66,6 +72,12 @@ func NewToolExecutor(
 // untyped to avoid the import cycle.
 func (te *ToolExecutor) SetArtifactStore(store any) {
 	te.artifactStore = store
+}
+
+// SetStatsRegistry wires the session metrics registry so tool_end
+// increments the per-session tool-call counter.
+func (te *ToolExecutor) SetStatsRegistry(r *sessionstats.Registry) {
+	te.statsRegistry = r
 }
 
 // SetArtifactProducer fixes the producer identity stamp the executor
@@ -201,6 +213,18 @@ func (te *ToolExecutor) executeSingle(
 			evt.Artifacts = list
 		} else if ref, ok := artifactRefFromMetadata(result.Metadata); ok {
 			evt.Artifacts = []types.ArtifactRef{ref}
+		}
+		// Tracker hook: bump the tool-call counter on the per-session
+		// tracker so the metrics dashboard reflects this invocation. We
+		// read sessionID from ctx (set by ProcessMessage / SpawnSync)
+		// rather than threading it through every executor call site.
+		// nil-guards keep tests that don't enable stats unaffected.
+		if te.statsRegistry != nil {
+			if sid, ok := sessionstats.SessionIDFromCtx(ctx); ok {
+				if tr := te.statsRegistry.Get(sid); tr != nil {
+					tr.RecordToolCall()
+				}
+			}
 		}
 		out <- evt
 
