@@ -835,3 +835,51 @@ func TestJsonBuilder(t *testing.T) {
 		t.Errorf("unexpected result: %q", b.String())
 	}
 }
+
+func TestConsumeStream_ExtractsReasoningTokensFromCompletionDetails(t *testing.T) {
+	a := &Adapter{}
+	in := make(chan *schemas.BifrostStreamChunk, 1)
+	out := make(chan types.StreamEvent, 4)
+
+	finishReason := "stop"
+	in <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{
+				FinishReason: &finishReason,
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{},
+				},
+			}},
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					CachedReadTokens:  20,
+					CachedWriteTokens: 5,
+				},
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					ReasoningTokens: 17,
+				},
+			},
+		},
+	}
+	close(in)
+
+	go func() { _ = a.consumeStream(in, out); close(out) }()
+
+	var got *types.Usage
+	for ev := range out {
+		if ev.Type == types.StreamEventMessageEnd && ev.Usage != nil {
+			got = ev.Usage
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected MessageEnd with Usage, got none")
+	}
+	if got.ThinkingTokens != 17 {
+		t.Errorf("ThinkingTokens = %d, want 17", got.ThinkingTokens)
+	}
+	if got.CacheRead != 20 || got.CacheWrite != 5 {
+		t.Errorf("cache fields wrong: read=%d write=%d", got.CacheRead, got.CacheWrite)
+	}
+}

@@ -105,8 +105,9 @@ type ToolResultPayload struct {
 
 // Usage tracks token consumption for a single LLM call.
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	CacheRead    int `json:"cache_read_tokens,omitempty"`
-	CacheWrite   int `json:"cache_write_tokens,omitempty"`
+	InputTokens    int `json:"input_tokens"`
+	OutputTokens   int `json:"output_tokens"`
+	CacheRead      int `json:"cache_read_tokens,omitempty"`
+	CacheWrite     int `json:"cache_write_tokens,omitempty"`
+	ThinkingTokens int `json:"thinking_tokens,omitempty"`
 }

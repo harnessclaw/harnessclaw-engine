@@ -466,6 +466,9 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 					usage.CacheRead = u.PromptTokensDetails.CachedReadTokens
 					usage.CacheWrite = u.PromptTokensDetails.CachedWriteTokens
 				}
+				if u.CompletionTokensDetails != nil {
+					usage.ThinkingTokens = u.CompletionTokensDetails.ReasoningTokens
+				}
 			}
 
 			stopReason := mapFinishReason(*choice.FinishReason)
