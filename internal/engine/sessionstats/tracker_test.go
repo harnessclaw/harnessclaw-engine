@@ -117,3 +117,101 @@ func TestTracker_SnapshotIsDeepCopy(t *testing.T) {
 		t.Errorf("Snapshot shared slice memory: got %d, want 5", s2.PerModel[0].InputTokens)
 	}
 }
+
+func TestTracker_StartFinishSubAgent_TableLifecycle(t *testing.T) {
+	tr := NewTracker("sess_abc")
+	tr.StartSubAgent("run_e5", "sub_e5", "researcher", "sonnet")
+	tr.RecordLLMCall("sonnet", "run_e5", &types.Usage{InputTokens: 40, OutputTokens: 10}, 100)
+	tr.FinishSubAgent("run_e5", "completed", 1200)
+
+	s := tr.Snapshot()
+	if len(s.SubAgents) != 1 {
+		t.Fatalf("SubAgents len = %d", len(s.SubAgents))
+	}
+	row := s.SubAgents[0]
+	if row.AgentRunID != "run_e5" || row.AgentID != "sub_e5" {
+		t.Errorf("identity wrong: %+v", row)
+	}
+	if row.AgentType != "researcher" || row.Model != "sonnet" {
+		t.Errorf("type/model wrong: %+v", row)
+	}
+	if row.InputTokens != 40 || row.OutputTokens != 10 || row.TotalTokens != 50 {
+		t.Errorf("tokens wrong: %+v", row)
+	}
+	if row.LLMCalls != 1 {
+		t.Errorf("LLMCalls = %d, want 1", row.LLMCalls)
+	}
+	if row.Status != "completed" || row.DurationMs != 1200 {
+		t.Errorf("finish fields wrong: %+v", row)
+	}
+}
+
+func TestTracker_StartSubAgent_OrderPreserved(t *testing.T) {
+	tr := NewTracker("sess_abc")
+	tr.StartSubAgent("r1", "a1", "t", "m")
+	tr.StartSubAgent("r2", "a2", "t", "m")
+	tr.StartSubAgent("r3", "a3", "t", "m")
+	s := tr.Snapshot()
+	if len(s.SubAgents) != 3 {
+		t.Fatalf("len = %d", len(s.SubAgents))
+	}
+	want := []string{"r1", "r2", "r3"}
+	for i, w := range want {
+		if s.SubAgents[i].AgentRunID != w {
+			t.Errorf("position %d: got %q, want %q", i, s.SubAgents[i].AgentRunID, w)
+		}
+	}
+}
+
+func TestTracker_StartSubAgent_IdempotentOnSameRunID(t *testing.T) {
+	tr := NewTracker("sess_abc")
+	tr.StartSubAgent("r1", "a1", "t", "m1")
+	tr.StartSubAgent("r1", "a1", "t", "m2") // second call should not duplicate or overwrite
+	s := tr.Snapshot()
+	if len(s.SubAgents) != 1 {
+		t.Errorf("duplicate StartSubAgent created %d rows", len(s.SubAgents))
+	}
+	if s.SubAgents[0].Model != "m1" {
+		t.Errorf("model overwritten: got %q, want m1", s.SubAgents[0].Model)
+	}
+}
+
+func TestTracker_FinishSubAgent_UnknownRunIDIsNoop(t *testing.T) {
+	tr := NewTracker("sess_abc")
+	tr.FinishSubAgent("does_not_exist", "failed", 100) // must not panic or append
+	s := tr.Snapshot()
+	if len(s.SubAgents) != 0 {
+		t.Errorf("SubAgents len = %d on no-op finish", len(s.SubAgents))
+	}
+}
+
+func TestTracker_RecordToolCall_Counts(t *testing.T) {
+	tr := NewTracker("sess_abc")
+	tr.RecordToolCall()
+	tr.RecordToolCall()
+	tr.RecordToolCall()
+	if got := tr.Snapshot().ToolCalls; got != 3 {
+		t.Errorf("ToolCalls = %d, want 3", got)
+	}
+}
+
+func TestTracker_UpdateContextWindow_OverwritesSnapshot(t *testing.T) {
+	tr := NewTracker("sess_abc")
+	tr.UpdateContextWindow(100, 200000, 80, 15, 5)
+	tr.UpdateContextWindow(120, 200000, 90, 20, 10) // second call wins (most-recent semantics)
+	cw := tr.Snapshot().ContextWindow
+	if cw.Used != 120 || cw.History != 90 || cw.ToolResults != 20 || cw.SystemPrompt != 10 {
+		t.Errorf("ContextWindow not overwritten: %+v", cw)
+	}
+}
+
+func TestTracker_RecordLLMCall_CrossModelSubAgentMarksMixed(t *testing.T) {
+	tr := NewTracker("sess_abc")
+	tr.StartSubAgent("run_e5", "sub_e5", "researcher", "")
+	tr.RecordLLMCall("opus", "run_e5", &types.Usage{InputTokens: 10}, 0)
+	tr.RecordLLMCall("sonnet", "run_e5", &types.Usage{InputTokens: 10}, 0)
+	s := tr.Snapshot()
+	if s.SubAgents[0].Model != "mixed" {
+		t.Errorf("Model = %q, want mixed", s.SubAgents[0].Model)
+	}
+}

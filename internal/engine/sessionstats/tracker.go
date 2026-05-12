@@ -153,6 +153,74 @@ func (t *Tracker) snapshotLocked() types.SessionStats {
 	return out
 }
 
+// StartSubAgent opens a new row in the sub-agent breakdown table. If a
+// row already exists for runID the call is a no-op (idempotent) — re-
+// dispatch of the same agent_run_id only ever happens on retry paths,
+// where we want to keep the original identity.
+func (t *Tracker) StartSubAgent(runID, agentID, agentType, model string) {
+	if runID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.subAgents[runID]; ok {
+		return
+	}
+	t.subAgents[runID] = &types.SubAgentStats{
+		AgentRunID: runID,
+		AgentID:    agentID,
+		AgentType:  agentType,
+		Model:      model,
+		Status:     "running",
+	}
+	t.subOrder = append(t.subOrder, runID)
+	t.stats.UpdatedAt = time.Now().UTC()
+	t.kickNotifyLocked()
+}
+
+// FinishSubAgent stamps the terminal status and total duration. Unknown
+// runID is a no-op so out-of-order or duplicated subagent_end events
+// don't corrupt the table.
+func (t *Tracker) FinishSubAgent(runID, status string, durationMs int64) {
+	if runID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	sa, ok := t.subAgents[runID]
+	if !ok {
+		return
+	}
+	sa.Status = status
+	sa.DurationMs = durationMs
+	t.stats.UpdatedAt = time.Now().UTC()
+	t.kickNotifyLocked()
+}
+
+// RecordToolCall bumps the top-level tool-call counter. Called once per
+// tool_end event from the engine layer.
+func (t *Tracker) RecordToolCall() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.stats.ToolCalls++
+	t.stats.UpdatedAt = time.Now().UTC()
+	t.kickNotifyLocked()
+}
+
+// UpdateContextWindow replaces the context-window panel data with the
+// most-recent LLM call's composition. The dashboard reads "as of latest
+// call", not cumulative — overwrite is intentional.
+func (t *Tracker) UpdateContextWindow(used, limit, history, toolResults, systemPrompt int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.stats.ContextWindow = types.ContextWindowStats{
+		Used: used, Limit: limit,
+		History: history, ToolResults: toolResults, SystemPrompt: systemPrompt,
+	}
+	t.stats.UpdatedAt = time.Now().UTC()
+	t.kickNotifyLocked()
+}
+
 // kickNotifyLocked fires the persist worker without blocking. Caller
 // holds t.mu.
 func (t *Tracker) kickNotifyLocked() {
