@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/pkg/types"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -34,23 +35,35 @@ type Store interface {
 
 // Manager handles session lifecycle: creation, retrieval, persistence, and cleanup.
 type Manager struct {
-	mu       sync.RWMutex
-	active   map[string]*Session       // in-memory active sessions
-	workers  map[string]*persistWorker // sessionID → debounced persist worker
-	store    Store
-	logger   *zap.Logger
-	maxIdle  time.Duration
+	mu            sync.RWMutex
+	active        map[string]*Session            // in-memory active sessions
+	workers       map[string]*persistWorker      // sessionID → debounced persist worker
+	statsWorkers  map[string]*statsPersistWorker // sessionID → stats persist worker
+	statsRegistry *sessionstats.Registry
+	store         Store
+	logger        *zap.Logger
+	maxIdle       time.Duration
 }
 
 // NewManager creates a session manager.
 func NewManager(store Store, logger *zap.Logger, maxIdle time.Duration) *Manager {
 	return &Manager{
-		active:  make(map[string]*Session),
-		workers: make(map[string]*persistWorker),
-		store:   store,
-		logger:  logger,
-		maxIdle: maxIdle,
+		active:       make(map[string]*Session),
+		workers:      make(map[string]*persistWorker),
+		statsWorkers: make(map[string]*statsPersistWorker),
+		store:        store,
+		logger:       logger,
+		maxIdle:      maxIdle,
 	}
+}
+
+// BindStatsRegistry injects the shared Registry that the StatsProvider
+// decorator and the HTTP handler also read. Call once at server startup
+// before the first GetOrCreate. Passing nil disables stats tracking.
+func (m *Manager) BindStatsRegistry(reg *sessionstats.Registry) {
+	m.mu.Lock()
+	m.statsRegistry = reg
+	m.mu.Unlock()
 }
 
 // GetOrCreate retrieves an active session or creates a new one.
@@ -65,6 +78,7 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID string, channelName
 		s.UpdatedAt = time.Now()
 		s.mu.Unlock()
 		m.bindOnChange(s)
+		m.bindStatsLocked(ctx, s)
 		return s, nil
 	}
 
@@ -75,6 +89,7 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID string, channelName
 		stored.UpdatedAt = time.Now()
 		m.active[sessionID] = stored
 		m.bindOnChange(stored)
+		m.bindStatsLocked(ctx, stored)
 		m.logger.Info("session restored from storage", zap.String("session_id", sessionID))
 		return stored, nil
 	}
@@ -95,6 +110,7 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID string, channelName
 	}
 	m.active[s.ID] = s
 	m.bindOnChange(s)
+	m.bindStatsLocked(ctx, s)
 	m.logger.Info("session created", zap.String("session_id", s.ID))
 	return s, nil
 }
@@ -148,6 +164,28 @@ func (m *Manager) bindOnChange(s *Session) {
 	s.SetOnChange(w.notify)
 }
 
+// bindStatsLocked attaches (or reattaches) the stats tracker + persist
+// worker for s. Caller MUST hold m.mu (write lock). No-op when no
+// Registry is bound (tests / channels that don't enable metrics).
+func (m *Manager) bindStatsLocked(ctx context.Context, s *Session) {
+	if m.statsRegistry == nil {
+		return
+	}
+	if _, ok := m.statsWorkers[s.ID]; ok {
+		return
+	}
+	tr := m.statsRegistry.GetOrCreate(s.ID)
+	if snap, err := m.store.LoadSessionStats(ctx, s.ID); err == nil && snap.SessionID != "" {
+		tr.RestoreFrom(snap)
+	} else if err != nil {
+		m.logger.Warn("load session stats during bind",
+			zap.String("session_id", s.ID), zap.Error(err))
+	}
+	w := newStatsPersistWorker(s.ID, tr, m.store, m.logger)
+	m.statsWorkers[s.ID] = w
+	tr.BindNotify(w.NotifyChan())
+}
+
 // PersistAll synchronously flushes all active sessions to storage.
 // Used at shutdown and on explicit snapshot calls. Each session is
 // flushed through its worker (debounced flush honours flushNow path).
@@ -178,9 +216,14 @@ func (m *Manager) PersistAll(ctx context.Context) error {
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	workers := m.workers
+	statsWorkers := m.statsWorkers
 	m.workers = make(map[string]*persistWorker)
+	m.statsWorkers = make(map[string]*statsPersistWorker)
 	m.mu.Unlock()
 	for _, w := range workers {
+		w.Stop()
+	}
+	for _, w := range statsWorkers {
 		w.Stop()
 	}
 }
@@ -212,6 +255,16 @@ func (m *Manager) CleanupIdle(ctx context.Context) int {
 				}
 				w.Stop()
 				delete(m.workers, id)
+				if sw, ok := m.statsWorkers[id]; ok {
+					if err := sw.Flush(ctx); err != nil {
+						m.logger.Error("flush stats before archive", zap.String("session_id", id), zap.Error(err))
+					}
+					sw.Stop()
+					delete(m.statsWorkers, id)
+				}
+				if m.statsRegistry != nil {
+					m.statsRegistry.Drop(id)
+				}
 			} else if err := m.store.SaveSession(ctx, s); err != nil {
 				m.logger.Error("failed to archive session", zap.String("session_id", id), zap.Error(err))
 				continue
