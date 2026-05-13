@@ -113,12 +113,13 @@ type ProviderConfig struct {
 	// EnableThinking controls provider-side chain-of-thought / reasoning
 	// output (DeepSeek v3.1+ thinking models, etc.). Pointer semantics:
 	//   nil   = field not sent; provider uses its own default
-	//   false = explicitly disabled (sent as `enable_thinking: false`)
-	//   true  = explicitly enabled  (sent as `enable_thinking: true`)
-	// Only meaningful for OpenAI-compatible providers that honor the
-	// `enable_thinking` extra param (notably DeepSeek). Anthropic's
-	// extended thinking uses a different schema (`thinking.budget_tokens`)
-	// — not covered by this flag.
+	//   false = explicitly disabled
+	//   true  = explicitly enabled
+	// The adapter forwards this as DeepSeek's nested
+	// {"thinking": {"type": "enabled"|"disabled"}} extra param. See
+	// https://api-docs.deepseek.com/zh-cn/guides/thinking_mode . Other
+	// providers ignore the unknown field, so this is safe to leave set
+	// when switching providers.
 	EnableThinking *bool `mapstructure:"enable_thinking"`
 }
 

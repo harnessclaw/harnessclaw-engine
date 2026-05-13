@@ -1064,18 +1064,19 @@ func TestConsumeStream_CapturesDeltaReasoning(t *testing.T) {
 	}
 }
 
-// TestBuildChatRequest_EnableThinkingControlled verifies the thinking
-// toggle reaches the wire via ExtraParams when the operator sets it,
-// and stays absent when nil.
-func TestBuildChatRequest_EnableThinkingControlled(t *testing.T) {
+// TestBuildChatRequest_ThinkingControlled verifies the thinking toggle
+// reaches the wire via ExtraParams as DeepSeek's nested
+// {"thinking": {"type": "enabled"|"disabled"}} form, and stays absent
+// when nil. See https://api-docs.deepseek.com/zh-cn/guides/thinking_mode .
+func TestBuildChatRequest_ThinkingControlled(t *testing.T) {
 	cases := []struct {
-		name string
-		flag *bool
-		want any
+		name     string
+		flag     *bool
+		wantType string // empty → field absent
 	}{
-		{"nil leaves ExtraParams untouched", nil, nil},
-		{"false explicitly disables", boolPtr(false), false},
-		{"true explicitly enables", boolPtr(true), true},
+		{"nil leaves ExtraParams untouched", nil, ""},
+		{"false sends type=disabled", boolPtr(false), "disabled"},
+		{"true sends type=enabled", boolPtr(true), "enabled"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1088,10 +1089,10 @@ func TestBuildChatRequest_EnableThinkingControlled(t *testing.T) {
 				MaxTokens: 128,
 				Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}}},
 			})
-			if tc.want == nil {
+			if tc.wantType == "" {
 				if bfReq.Params != nil && bfReq.Params.ExtraParams != nil {
-					if _, present := bfReq.Params.ExtraParams["enable_thinking"]; present {
-						t.Errorf("expected no enable_thinking in ExtraParams, got %+v", bfReq.Params.ExtraParams)
+					if _, present := bfReq.Params.ExtraParams["thinking"]; present {
+						t.Errorf("expected no thinking in ExtraParams, got %+v", bfReq.Params.ExtraParams)
 					}
 				}
 				return
@@ -1099,12 +1100,16 @@ func TestBuildChatRequest_EnableThinkingControlled(t *testing.T) {
 			if bfReq.Params == nil || bfReq.Params.ExtraParams == nil {
 				t.Fatalf("expected Params.ExtraParams set, got %+v", bfReq.Params)
 			}
-			got, ok := bfReq.Params.ExtraParams["enable_thinking"]
+			raw, ok := bfReq.Params.ExtraParams["thinking"]
 			if !ok {
-				t.Fatalf("enable_thinking missing from ExtraParams: %+v", bfReq.Params.ExtraParams)
+				t.Fatalf("thinking missing from ExtraParams: %+v", bfReq.Params.ExtraParams)
 			}
-			if got != tc.want {
-				t.Errorf("enable_thinking = %v, want %v", got, tc.want)
+			obj, ok := raw.(map[string]string)
+			if !ok {
+				t.Fatalf("thinking should be map[string]string, got %T: %+v", raw, raw)
+			}
+			if obj["type"] != tc.wantType {
+				t.Errorf("thinking.type = %q, want %q", obj["type"], tc.wantType)
 			}
 		})
 	}

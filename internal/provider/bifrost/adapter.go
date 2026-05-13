@@ -398,18 +398,25 @@ func (a *Adapter) buildChatRequest(model string, req *provider.ChatRequest) *sch
 
 	params := buildParams(req)
 	if a.enableThinking != nil {
-		// DeepSeek thinking-mode is the primary consumer of this flag.
-		// `enable_thinking` is a non-standard OpenAI extension that
-		// bifrost passes through verbatim via ExtraParams. Other
-		// providers (OpenAI proper, xAI, 讯飞 / 通义) ignore unknown
-		// fields, so it's safe to set unconditionally.
+		// DeepSeek thinking-mode uses {"thinking": {"type": "enabled"|"disabled"}}.
+		// See https://api-docs.deepseek.com/zh-cn/guides/thinking_mode .
+		// Verified 2026-05-13 against deepseek-v4-flash: setting
+		// `thinking.type=disabled` actually suppresses reasoning_tokens
+		// in usage (whereas the bare `enable_thinking: false` field is
+		// silently ignored). Forwarded via ExtraParams since the field
+		// isn't part of standard OpenAI schema; other providers ignore
+		// it.
+		typeStr := "disabled"
+		if *a.enableThinking {
+			typeStr = "enabled"
+		}
 		if params == nil {
 			params = &schemas.ChatParameters{}
 		}
 		if params.ExtraParams == nil {
 			params.ExtraParams = make(map[string]interface{})
 		}
-		params.ExtraParams["enable_thinking"] = *a.enableThinking
+		params.ExtraParams["thinking"] = map[string]string{"type": typeStr}
 	}
 	if params != nil {
 		bifReq.Params = params

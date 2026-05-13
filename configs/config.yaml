@@ -42,7 +42,10 @@ llm:
 #      max_tokens: 4096
 #      # enable_thinking controls provider-side chain-of-thought output.
 #      # nil/unset = provider default;  false = force disable;  true = force enable.
-#      # Mainly for DeepSeek v3.1+ thinking models — leave unset for OpenAI / 讯飞 / 通义.
+#      # Adapter forwards this as DeepSeek's {"thinking": {"type": "enabled"|"disabled"}}
+#      # extra param (see https://api-docs.deepseek.com/zh-cn/guides/thinking_mode ).
+#      # Other providers ignore unknown fields, so setting it on OpenAI / 讯飞 / 通义
+#      # is a no-op rather than an error.
 #      # enable_thinking: false
 
 # --- Query Engine ---
