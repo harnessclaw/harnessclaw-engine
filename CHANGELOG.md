@@ -3,6 +3,32 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
+## [0.0.12] - 2026-05-14
+
+### Added
+- Session metrics dashboard: per-session LLM / sub-agent / tool counters tracked by `sessionstats.Tracker`, persisted as `metrics_json` column on session rows, snapshotted via debounced worker, and served at `GET /api/v1/sessions/{id}/metrics` on the Console port; survives service restart via `Tracker.RestoreFrom`
+- Provider-stats decorator: wraps any `provider.Provider` to record per-model token usage (input / output / reasoning / cache hits) into `sessionstats.Registry` from a single ctx-key plumbing point, no per-call instrumentation
+- `thinking_tokens` field on `Usage`: bifrost adapter now surfaces upstream reasoning-token counts so the dashboard can break out chain-of-thought cost separately from regular completion tokens
+- Model registry catalog (`internal/provider/registry`): YAML manifest declaring `ProviderSpec` (auth / endpoints / quirks) and `ModelSpec` (modalities / supports / limits / defaults) for 8 vendors and 16 models (OpenAI, Anthropic, Google, DeepSeek, Zhipu, Moonshot, MiniMax, iFlyTek); embedded default manifest loaded at startup, queryable by manifest key or by provider+model_id
+- Public models endpoint: `GET /api/v1/models` and `GET /api/v1/models/{provider}/{model_id}` on the Console server, JSON-tagged snake_case payload for the front-end capability gate; documented in `docs/api/models-registry-api.md`
+- Provider quirks routing in bifrost adapter: `ThinkingParamStyle` selects the wire format per provider (`deepseek_type` → `extra_params.thinking.type`, `openai_effort` → `reasoning.effort`, `anthropic_budget` → `reasoning.max_tokens`, `openrouter` → `reasoning.enabled`); `ExtraParamsPassthroughRequired` and `ToolCallsRequireReasoningField` now gate behavior per-quirk instead of being applied unconditionally
+- `enable_thinking` provider config option: per-provider override that drives the new quirk routing without changing the call site
+- iFlyTek Spark X2 Flash support: `xunfei/spark-x` (256K context, text-only, function_calling + reasoning + web_search) wired through the registry and bifrost adapter
+- Structured tool error classification: `ToolErrorType` (`tool_timeout` / `rate_limit` / `overloaded` / `contract_fail` / `dependency_fail` / `permission_denied` / `invalid_input` / `user_aborted` / `model_error` / `internal`) set by the executor and every built-in tool at the failure site; WebSocket translator emits it as `card.close.error.type` instead of defaulting all failures to `internal`
+
+### Changed
+- Session-metrics endpoint moved from the WebSocket channel mux to the Console HTTP server (port 8090) so the front-end has one management origin to consult
+- Bifrost adapter `Config` accepts a `*ProviderQuirks` mirror struct; quirks come from the registry at startup and gate behavior that was previously hard-coded (e.g. `ExtraParams` passthrough was always-on; now opt-in only for providers that declare it)
+- Claude model `family` field regrouped to `claude4.5` / `claude4.6` / `claude4.7` (was `claude-haiku` / `claude-sonnet` / `claude-opus`) so the UI groups by generation rather than tier
+
+### Fixed
+- DeepSeek thinking mode now actually disables reasoning: adapter sends `thinking: {"type": "disabled"}` via ExtraParams per the official docs, and opts into bifrost's `BifrostContextKeyPassthroughExtraParams` so the field reaches the wire (the SDK was silently dropping `Params.ExtraParams` during marshalling, so the legacy `enable_thinking: false` field was both ignored by the server and never sent)
+- `reasoning_content` is now preserved on assistant messages across DeepSeek thinking-mode turns when thinking is enabled, and emitted as an empty-string placeholder on tool_calls assistant messages when the provider quirk requires the field present — fixes 400 "reasoning_content must be passed back to the API"
+- Reasoning replay across turns is suppressed when `enable_thinking` is disabled, instead of inflating input tokens with every prior turn's chain-of-thought
+- Bifrost adapter waits for the synthetic usage chunk after `finish_reason` instead of emitting `MessageEnd` immediately, so token totals are no longer lost when bifrost's OpenAI provider holds usage back to a trailing chunk
+- Per-model stats now key off the provider-reported model name (echoed back in `Usage`) instead of the adapter's configured default, so usage attribution stays correct when fallbacks or model overrides kick in
+- New session rows are persisted eagerly in `Manager.GetOrCreate` so the foreign key for `SessionStats.SaveSessionStats` exists by the time the first metrics flush fires (previously dropped with `no such row`)
+
 ## [0.0.11] - 2026-05-11
 
 ### Added
