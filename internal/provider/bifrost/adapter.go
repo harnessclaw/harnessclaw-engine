@@ -471,12 +471,37 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 				}
 			}
 
+			// Provider-side diagnostic: log whether the upstream actually
+			// returned a usage block on the final chunk. Some OpenAI-
+			// compatible gateways silently ignore stream_options.include_usage,
+			// leaving usage=nil so session metrics show zero tokens.
+			// Knowing this from logs (vs. wireshark) lets operators decide
+			// whether to switch providers or wire a fallback estimator.
+			if a.logger != nil {
+				if usage != nil {
+					a.logger.Debug("bifrost stream MessageEnd",
+						zap.String("model", chunk.BifrostChatResponse.Model),
+						zap.Bool("has_usage", true),
+						zap.Int("input_tokens", usage.InputTokens),
+						zap.Int("output_tokens", usage.OutputTokens),
+						zap.Int("cache_read", usage.CacheRead),
+						zap.Int("thinking", usage.ThinkingTokens),
+					)
+				} else {
+					a.logger.Warn("bifrost stream MessageEnd without usage",
+						zap.String("model", chunk.BifrostChatResponse.Model),
+						zap.Bool("has_usage", false),
+					)
+				}
+			}
+
 			stopReason := mapFinishReason(*choice.FinishReason)
 
 			out <- types.StreamEvent{
 				Type:       types.StreamEventMessageEnd,
 				StopReason: stopReason,
 				Usage:      usage,
+				Model:      chunk.BifrostChatResponse.Model,
 			}
 
 			// Early return — see function-level comment. The upstream

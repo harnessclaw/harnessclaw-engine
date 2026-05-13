@@ -214,3 +214,34 @@ func TestStatsProvider_WrapperExitsOnContextCancel(t *testing.T) {
 		t.Errorf("expected 1 LLMCall recorded; got tr=%v", tr)
 	}
 }
+
+func TestStatsProvider_PrefersStreamReportedModelOverRequestModel(t *testing.T) {
+	reg := sessionstats.NewRegistry()
+	// Provider reports a different model in MessageEnd than what (if anything)
+	// req.Model carries. This is the common case for OpenAI-compatible
+	// gateways: engine leaves req.Model empty, adapter falls back to the
+	// configured default model, and the wire response echoes it back.
+	inner := &fakeProvider{events: []types.StreamEvent{{
+		Type:  types.StreamEventMessageEnd,
+		Usage: &types.Usage{InputTokens: 10, OutputTokens: 5},
+		Model: "xopglm51",
+	}}}
+	sp := New(inner, reg)
+
+	ctx := sessionstats.WithSessionID(context.Background(), "sess_x")
+	stream, err := sp.Chat(ctx, &provider.ChatRequest{
+		// Note: req.Model intentionally empty to match the engine's
+		// queryloop.go / subagent.go ChatRequest construction.
+		MaxTokens: 256,
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	for range stream.Events {
+	}
+
+	s := reg.Get("sess_x").Snapshot()
+	if len(s.PerModel) != 1 || s.PerModel[0].Model != "xopglm51" {
+		t.Errorf("PerModel = %+v, want one row for stream-reported model xopglm51", s.PerModel)
+	}
+}

@@ -47,9 +47,19 @@ func (p *StatsProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*p
 		return nil, err
 	}
 
-	return wrapStream(ctx, stream, func(usage *types.Usage) {
+	return wrapStream(ctx, stream, func(usage *types.Usage, streamModel string) {
 		latencyMs := time.Since(started).Milliseconds()
-		tracker.RecordLLMCall(req.Model, agentRunID, usage, latencyMs)
+
+		// Prefer the model reported by the provider's MessageEnd over
+		// the (often empty) req.Model — engine call sites don't fill
+		// req.Model, relying on the provider's configured default.
+		// Falling back to req.Model preserves correctness for callers
+		// that do set it.
+		effectiveModel := streamModel
+		if effectiveModel == "" {
+			effectiveModel = req.Model
+		}
+		tracker.RecordLLMCall(effectiveModel, agentRunID, usage, latencyMs)
 
 		// Prefer the model's reported input token count when present so
 		// "used" is exact. The cheap estimate is kept only for the

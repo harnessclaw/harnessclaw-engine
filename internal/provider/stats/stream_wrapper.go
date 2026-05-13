@@ -9,12 +9,14 @@ import (
 
 // onEnd is invoked exactly once when the stream is fully drained. usage
 // may be nil if the stream errored before MessageEnd or if ctx was
-// cancelled before any usage arrived.
-type onEnd func(usage *types.Usage)
+// cancelled before any usage arrived. model is the LLM model that
+// actually served the call, captured from MessageEnd.Model — empty
+// when the provider didn't report one.
+type onEnd func(usage *types.Usage, model string)
 
 // wrapStream forwards every event from `in` to a fresh channel while
-// tapping MessageEnd usage. The returned ChatStream preserves the inner
-// Err() func so retry classifiers stay accurate.
+// tapping MessageEnd usage and model. The returned ChatStream preserves
+// the inner Err() func so retry classifiers stay accurate.
 //
 // ctx governs the wrapper goroutine's lifetime: if the consumer breaks
 // out of the event loop early (or the caller cancels), ctx cancellation
@@ -26,24 +28,30 @@ func wrapStream(ctx context.Context, in *provider.ChatStream, cb onEnd) *provide
 	go func() {
 		defer close(out)
 		var lastUsage *types.Usage
+		var lastModel string
 		for {
 			select {
 			case ev, ok := <-in.Events:
 				if !ok {
-					cb(lastUsage)
+					cb(lastUsage, lastModel)
 					return
 				}
-				if ev.Type == types.StreamEventMessageEnd && ev.Usage != nil {
-					lastUsage = ev.Usage
+				if ev.Type == types.StreamEventMessageEnd {
+					if ev.Usage != nil {
+						lastUsage = ev.Usage
+					}
+					if ev.Model != "" {
+						lastModel = ev.Model
+					}
 				}
 				select {
 				case out <- ev:
 				case <-ctx.Done():
-					cb(lastUsage)
+					cb(lastUsage, lastModel)
 					return
 				}
 			case <-ctx.Done():
-				cb(lastUsage)
+				cb(lastUsage, lastModel)
 				return
 			}
 		}

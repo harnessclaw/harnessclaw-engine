@@ -19,6 +19,13 @@ type StreamEvent struct {
 	ToolCall   *ToolCall       `json:"tool_call,omitempty"`
 	Usage      *Usage          `json:"usage,omitempty"`
 	StopReason string          `json:"stop_reason,omitempty"`
+	// Model carries the LLM model that actually served this call. Filled
+	// on StreamEventMessageEnd by the provider adapter so downstream
+	// observers (notably sessionstats) can attribute usage per-model
+	// without the engine having to plumb model identity through
+	// ChatRequest.Model — which is empty in the common case (engine lets
+	// the provider's configured default win).
+	Model      string          `json:"model,omitempty"`
 	Error      error           `json:"-"`
 }
 
