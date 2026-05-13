@@ -1,3 +1,6 @@
+#vibe coding
+.claude
+
 # Binaries
 *.exe
 *.exe~
@@ -51,6 +54,7 @@ docs/design/
 docs/emit*
 docs/multi-agent-design.md
 docs/agent-yaml-reference.md
+docs/superpowers/
 
 # Debug
 __debug_bin*
