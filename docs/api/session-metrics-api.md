@@ -5,24 +5,28 @@
 > | 日期 | 变更 |
 > |------|------|
 > | 2026-05-13 | 初版：`GET /api/v1/sessions/{id}/metrics` 端点 |
+> | 2026-05-13 | 端点挂载点从 WebSocket 端口（`:8081`）迁移到 Console 管理端口（`:8090`），与其他 REST 管理接口统一 |
 
 Session Metrics API 暴露每个 session 的 token / 延迟 / 子 agent / 上下文窗口运行指标，供仪表盘 UI 按需拉取并渲染。
 
-- **Base URL**: `http://localhost:8081`（默认；与 WebSocket Channel 共用端口和 HTTP 多路复用）
+- **Base URL**: `http://localhost:8090`（默认；与 Console API 共用端口和同一 HTTP server）
 - **路由前缀**: `/api/v1/sessions/`
 - **Content-Type**: `application/json`
 - **数据来源**: 优先内存中的实时 Tracker；不存在则回退到 SQLite `sessions.metrics_json` 列
-- **鉴权**: 暂无（与 WebSocket Channel 保持一致；`session_id` 作为难猜的隐式凭证）
+- **鉴权**: 暂无（`session_id` 作为难猜的隐式凭证；与 Console API 同一安全域）
 
-### 与 Console API 的差异
+### 与 Console API 的关系
 
-| 维度 | Console API（`:8090`） | Session Metrics API（`:8081`） |
-|------|------------------------|--------------------------------|
-| 用途 | Agent 定义运维 | 仪表盘读取运行指标 |
-| 响应包络 | `{code: "OK", data: {...}}` | 直接平铺业务数据 |
-| 错误体 | `{code, message}` | `{error, message?}` |
+两类接口**部署在同一端口** `:8090`，按路由前缀区分：
 
-之所以不统一包络：仪表盘前端直接消费 `SessionStats` 对象，加一层 `data` 包装是负担；运维场景需要 `total` / `code` 这种元数据，Console API 包络合理。
+| 前缀 | 用途 | 响应包络 |
+|------|------|----------|
+| `/console/v1/...` | Agent 定义运维（增删改查、导入导出） | `{code: "OK", data: {...}}` |
+| `/api/v1/sessions/{id}/metrics` | 仪表盘读取运行指标 | 直接平铺业务数据 |
+
+包络不统一是有意的：仪表盘前端直接消费 `SessionStats` 对象，加一层 `data` 包装是负担；运维场景需要 `total` / `code` 这种元数据，Console API 包络合理。两类前缀互不影响。
+
+**注意**：当 `cfg.Console.Enabled=false` 时整个 `:8090` server 不启动，Session Metrics 端点也随之关闭。
 
 ---
 
@@ -254,7 +258,7 @@ HTTP/1.1 500 Internal Server Error
 **curl 示例**
 
 ```bash
-curl -s http://localhost:8081/api/v1/sessions/sess_abc/metrics | jq .
+curl -s http://localhost:8090/api/v1/sessions/sess_abc/metrics | jq .
 ```
 
 ---

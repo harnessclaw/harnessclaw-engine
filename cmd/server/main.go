@@ -499,11 +499,6 @@ func main() {
 		wsCh.SetPrompter(waitPrompter)
 		wsCh.SetResumer(resume.New(rtr.Handle, logger))
 		wsCh.GetTranslator().SetIssuer(waitPrompter)
-		// Mount GET /api/v1/sessions/{id}/metrics on the same HTTP mux as
-		// the websocket upgrade. The handler prefers the live in-memory
-		// tracker and falls back to the persisted snapshot via `store`.
-		metricsHandler := sessionmetrics.New(statsRegistry, store, logger)
-		wsCh.SetMetricsHandler(metricsHandler)
 
 		// Periodic janitor: every hour, sweep waits that have passed
 		// their TTL (15d default) so abandoned conversations don't
@@ -541,12 +536,19 @@ func main() {
 	// TODO: Start HTTP and Feishu channels when implementations are ready.
 
 	// --- Step 10.5: Start Console management API server ---
+	// Session metrics dashboard is served at /api/v1/sessions/{id}/metrics
+	// on the same port as Console management so the front-end has a
+	// single management endpoint to consult. The handler prefers the
+	// live in-memory tracker and falls back to the persisted snapshot
+	// via `store`.
+	metricsHandler := sessionmetrics.New(statsRegistry, store, logger)
+
 	var consoleServer *api.Server
 	if cfg.Console.Enabled {
 		consoleServer = api.NewServer(api.ServerConfig{
 			Host: cfg.Console.Host,
 			Port: cfg.Console.Port,
-		}, agentSvc, logger)
+		}, agentSvc, metricsHandler, logger)
 		go func() {
 			if err := consoleServer.Start(); err != nil {
 				logger.Error("console API server exited", zap.Error(err))

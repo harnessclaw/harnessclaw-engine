@@ -24,12 +24,21 @@ type Server struct {
 }
 
 // NewServer creates a console API server and registers all handlers.
-func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, logger *zap.Logger) *Server {
+//
+// metricsHandler, if non-nil, is mounted at /api/v1/sessions/ so the
+// session metrics dashboard can fetch per-session token / latency
+// stats over the same port as the rest of the management API.
+func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler http.Handler, logger *zap.Logger) *Server {
 	mux := http.NewServeMux()
 
 	// Register agent management routes
 	agentHandler := NewAgentHandler(agentSvc, logger)
 	agentHandler.RegisterRoutes(mux)
+
+	// Session metrics: GET /api/v1/sessions/{id}/metrics
+	if metricsHandler != nil {
+		mux.Handle("/api/v1/sessions/", metricsHandler)
+	}
 
 	// Health check
 	mux.HandleFunc("GET /console/v1/health", func(w http.ResponseWriter, r *http.Request) {
