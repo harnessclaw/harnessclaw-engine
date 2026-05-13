@@ -226,6 +226,15 @@ func (a *Adapter) Chat(ctx context.Context, req *provider.ChatRequest) (*provide
 	bifReq := a.buildChatRequest(model, req)
 
 	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	// Opt into Bifrost's ExtraParams passthrough. Without this flag the
+	// SDK silently drops Params.ExtraParams during request marshalling
+	// (see providers/utils/utils.go CheckContextAndGetRequestBody:1066),
+	// so provider-specific extensions we set via ExtraParams — notably
+	// DeepSeek's {"thinking": {"type": "disabled"}} — never reach the
+	// wire. This is the difference between "enable_thinking config
+	// reports disabled" and "DeepSeek actually returns 0 reasoning
+	// tokens".
+	bfCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	stream, bfErr := a.client.ChatCompletionStreamRequest(bfCtx, bifReq)
 	if bfErr != nil {
