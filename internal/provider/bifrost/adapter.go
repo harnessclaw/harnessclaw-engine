@@ -531,6 +531,23 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 		// so a same-chunk finish_reason isn't dropped.
 		if chunk.BifrostChatResponse.Usage != nil && pendingUsage == nil {
 			u := chunk.BifrostChatResponse.Usage
+
+			// Verbose debug: dump the raw BifrostLLMUsage as JSON so
+			// operators can see exactly what the provider returned
+			// (including provider-specific subfields like
+			// prompt_tokens_details.cached_tokens, reasoning_tokens,
+			// cache_creation_input_tokens etc.). Costs one Marshal per
+			// LLM call, gated on Debug level so production runs at
+			// INFO see nothing.
+			if a.logger != nil && a.logger.Core().Enabled(zap.DebugLevel) {
+				if raw, err := json.Marshal(u); err == nil {
+					a.logger.Debug("bifrost raw usage",
+						zap.String("model", chunk.BifrostChatResponse.Model),
+						zap.ByteString("usage_json", raw),
+					)
+				}
+			}
+
 			pendingUsage = &types.Usage{
 				InputTokens:  u.PromptTokens,
 				OutputTokens: u.CompletionTokens,

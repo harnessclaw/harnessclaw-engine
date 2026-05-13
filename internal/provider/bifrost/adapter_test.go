@@ -2,10 +2,12 @@ package bifrost
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/pkg/types"
@@ -1109,3 +1111,60 @@ func TestBuildChatRequest_EnableThinkingControlled(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// TestConsumeStream_LogsRawUsageJSON verifies that the verbose debug
+// log captures the full BifrostLLMUsage object as JSON, including
+// provider-specific subfields, so operators can troubleshoot
+// missing/unexpected tokens against the upstream wire format.
+func TestConsumeStream_LogsRawUsageJSON(t *testing.T) {
+	core, recorded := observer.New(zap.DebugLevel)
+	a := &Adapter{logger: zap.New(core)}
+
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	out := make(chan types.StreamEvent, 4)
+	finish := "stop"
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			Model: "deepseek-v4-flash",
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     1234,
+				CompletionTokens: 56,
+				TotalTokens:      1290,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					CachedReadTokens: 800,
+				},
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					ReasoningTokens: 9,
+				},
+			},
+			Choices: []schemas.BifrostResponseChoice{{FinishReason: &finish}},
+		},
+	}
+	close(stream)
+
+	go func() { a.consumeStream(stream, out); close(out) }()
+	for range out {
+	}
+
+	var rawJSON string
+	for _, e := range recorded.All() {
+		if e.Message == "bifrost raw usage" {
+			for _, f := range e.Context {
+				if f.Key == "usage_json" {
+					if b, ok := f.Interface.([]byte); ok {
+						rawJSON = string(b)
+					}
+				}
+			}
+		}
+	}
+	if rawJSON == "" {
+		t.Fatalf("expected 'bifrost raw usage' log entry with usage_json field; got %d entries", len(recorded.All()))
+	}
+	// Spot-check that key provider subfields made it into the JSON dump.
+	for _, want := range []string{"\"prompt_tokens\":1234", "\"cached_read_tokens\":800", "\"reasoning_tokens\":9"} {
+		if !strings.Contains(rawJSON, want) {
+			t.Errorf("usage_json missing %q;\nfull: %s", want, rawJSON)
+		}
+	}
+}
