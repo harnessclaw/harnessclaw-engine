@@ -31,6 +31,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/api"
+	"harnessclaw-go/internal/api/modelsregistry"
 	"harnessclaw-go/internal/api/sessionmetrics"
 	"harnessclaw-go/internal/artifact"
 	"harnessclaw-go/internal/channel"
@@ -47,6 +48,7 @@ import (
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/bifrost"
+	modelregistry "harnessclaw-go/internal/provider/registry"
 	providerstats "harnessclaw-go/internal/provider/stats"
 	"harnessclaw-go/internal/router"
 	"harnessclaw-go/internal/router/middleware"
@@ -230,7 +232,17 @@ func main() {
 	)
 
 	// --- Step 6: Initialize LLM provider ---
-	llmProvider := initProvider(cfg.LLM, logger)
+	// Load the embedded model + provider registry. The default manifest
+	// ships in the binary; the registry tells the bifrost adapter which
+	// quirks to apply for the configured provider, and serves the same
+	// data over /api/v1/models for the client capability gate.
+	regManifest, err := modelregistry.DefaultManifest()
+	if err != nil {
+		logger.Fatal("load default model manifest", zap.Error(err))
+	}
+	modelReg := modelregistry.NewRegistry(regManifest)
+
+	llmProvider := initProvider(cfg.LLM, modelReg, logger)
 
 	// Session-metrics registry: a single in-process registry holds the
 	// per-session Tracker (cumulative LLM/tool/sub-agent counters). The
@@ -542,13 +554,14 @@ func main() {
 	// live in-memory tracker and falls back to the persisted snapshot
 	// via `store`.
 	metricsHandler := sessionmetrics.New(statsRegistry, store, logger)
+	modelsHandler := modelsregistry.New(modelReg, logger)
 
 	var consoleServer *api.Server
 	if cfg.Console.Enabled {
 		consoleServer = api.NewServer(api.ServerConfig{
 			Host: cfg.Console.Host,
 			Port: cfg.Console.Port,
-		}, agentSvc, metricsHandler, logger)
+		}, agentSvc, metricsHandler, modelsHandler, logger)
 		go func() {
 			if err := consoleServer.Start(); err != nil {
 				logger.Error("console API server exited", zap.Error(err))
@@ -817,7 +830,7 @@ func runWaitJanitor(ctx context.Context, p *prompter.Prompter, logger *zap.Logge
 // Provider initialization
 // ---------------------------------------------------------------------------
 
-func initProvider(cfg config.LLMConfig, logger *zap.Logger) provider.Provider {
+func initProvider(cfg config.LLMConfig, modelReg *modelregistry.Registry, logger *zap.Logger) provider.Provider {
 	provName := cfg.DefaultProvider
 	if provName == "" {
 		provName = "anthropic"
@@ -847,6 +860,21 @@ func initProvider(cfg config.LLMConfig, logger *zap.Logger) provider.Provider {
 		bfBaseURL = provCfg.BaseURL
 	}
 
+	// Look up the active provider in the model registry to pick up its
+	// quirks (thinking param style, ExtraParams passthrough, etc.).
+	// Falls back to nil (canonical OpenAI behavior) when the provider
+	// isn't listed in the manifest.
+	var quirks *bifrost.ProviderQuirks
+	if prov := modelReg.LookupProvider(provName); prov != nil {
+		quirks = &bifrost.ProviderQuirks{
+			ThinkingParamStyle:             prov.Quirks.ThinkingParamStyle,
+			ToolCallsRequireReasoningField: prov.Quirks.ToolCallsRequireReasoningField,
+			ExtraParamsPassthroughRequired: prov.Quirks.ExtraParamsPassthroughRequired,
+			InlineUsageOnEveryChunk:        prov.Quirks.InlineUsageOnEveryChunk,
+			ExplicitCacheControl:           prov.Quirks.ExplicitCacheControl,
+		}
+	}
+
 	adapter, err := bifrost.New(bifrost.Config{
 		Provider:       bfProvider,
 		Model:          bfModel,
@@ -858,6 +886,7 @@ func initProvider(cfg config.LLMConfig, logger *zap.Logger) provider.Provider {
 		ProxyURL:       cfg.ProxyURL,
 		CustomHeaders:  cfg.CustomHeaders,
 		EnableThinking: provCfg.EnableThinking,
+		Quirks:         quirks,
 		Logger:         logger,
 	})
 	if err != nil {
