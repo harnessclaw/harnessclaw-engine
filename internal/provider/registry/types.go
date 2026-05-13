@@ -60,9 +60,13 @@ type ProviderEndpoints struct {
 }
 
 // ModelsDiscovery describes whether the registry pulls live model lists.
+// RefreshInterval is stored as a human-authored string ("1h", "30m") and
+// parsed with time.ParseDuration at use time — yaml.v3 marshals
+// time.Duration as raw int64 nanoseconds, which is unreadable in a
+// hand-edited manifest.
 type ModelsDiscovery struct {
-	Mode            string        `yaml:"mode"`
-	RefreshInterval time.Duration `yaml:"refresh_interval"`
+	Mode            string `yaml:"mode"`
+	RefreshInterval string `yaml:"refresh_interval"`
 }
 
 // ModelSpec is one model's full capability profile.
@@ -136,8 +140,8 @@ type DefaultsSpec struct {
 
 // ModelMetadata is loose provenance / docs information.
 type ModelMetadata struct {
-	Source            string    `yaml:"source,omitempty"`
-	LastVerified      time.Time `yaml:"last_verified,omitempty"`
-	Notes             string    `yaml:"notes,omitempty"`
-	UpstreamModelCard string    `yaml:"upstream_model_card,omitempty"`
+	Source            string     `yaml:"source,omitempty"`
+	LastVerified      *time.Time `yaml:"last_verified,omitempty"`
+	Notes             string     `yaml:"notes,omitempty"`
+	UpstreamModelCard string     `yaml:"upstream_model_card,omitempty"`
 }
