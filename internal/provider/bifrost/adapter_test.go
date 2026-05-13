@@ -1238,3 +1238,89 @@ func TestBuildChatRequest_DisablingThinkingSuppressesReasoningOnWire(t *testing.
 		}
 	}
 }
+
+// TestConvertSingleMessage_ToolCallAlwaysHasReasoningField verifies the
+// strict schema requirement DeepSeek enforces on thinking-mode tool_calls:
+// the reasoning_content / reasoning field MUST be present (any value OK,
+// including empty string) — omitting it returns 400.
+// Verified against api.deepseek.com / deepseek-v4-flash 2026-05-13.
+func TestConvertSingleMessage_ToolCallAlwaysHasReasoningField(t *testing.T) {
+	// Even with includeReasoning=false (i.e. enable_thinking disabled),
+	// an assistant tool_call must carry the field as an empty string.
+	msg := types.Message{
+		Role: types.RoleAssistant,
+		Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ToolUseID: "c1", ToolName: "noop", ToolInput: "{}"},
+		},
+		// No ReasoningContent: thinking was disabled so adapter dropped it.
+	}
+	bf := convertSingleMessage(msg, false)
+	if bf == nil || bf.ChatAssistantMessage == nil {
+		t.Fatalf("expected assistant message with tool_calls, got %+v", bf)
+	}
+	if bf.ChatAssistantMessage.Reasoning == nil {
+		t.Fatal("tool_call message must include reasoning field (empty allowed); was nil")
+	}
+	if *bf.ChatAssistantMessage.Reasoning != "" {
+		t.Errorf("reasoning should be empty placeholder, got %q", *bf.ChatAssistantMessage.Reasoning)
+	}
+	if len(bf.ChatAssistantMessage.ToolCalls) != 1 {
+		t.Errorf("expected 1 tool call, got %d", len(bf.ChatAssistantMessage.ToolCalls))
+	}
+}
+
+// TestConsumeStream_DropsReasoningWhenThinkingDisabled verifies the
+// receive-side companion: when the adapter's enable_thinking=false, the
+// per-chunk reasoning text is dropped on the floor, so the resulting
+// MessageEnd.Reasoning is empty and the assistant Message saved by the
+// engine carries no reasoning_content to inflate the next request.
+func TestConsumeStream_DropsReasoningWhenThinkingDisabled(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 4)
+	out := make(chan types.StreamEvent, 10)
+	r1 := "discardable thinking step"
+	content := "answer"
+	finish := "stop"
+
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{Reasoning: &r1},
+				},
+			}},
+		},
+	}
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content},
+				},
+			}},
+		},
+	}
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			Usage:   &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 1, TotalTokens: 6},
+			Choices: []schemas.BifrostResponseChoice{{FinishReason: &finish}},
+		},
+	}
+	close(stream)
+
+	disabled := false
+	a := &Adapter{logger: zap.NewNop(), enableThinking: &disabled}
+	go func() { a.consumeStream(stream, out); close(out) }()
+
+	var end *types.StreamEvent
+	for ev := range out {
+		if ev.Type == types.StreamEventMessageEnd {
+			end = &ev
+		}
+	}
+	if end == nil {
+		t.Fatal("expected MessageEnd event")
+	}
+	if end.Reasoning != "" {
+		t.Errorf("MessageEnd.Reasoning = %q, want empty (thinking disabled)", end.Reasoning)
+	}
+}

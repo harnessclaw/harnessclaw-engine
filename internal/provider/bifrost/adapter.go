@@ -597,10 +597,15 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 			// / xAI all surface it via delta.Reasoning — bifrost SDK
 			// also maps DeepSeek's `reasoning_content` alias here).
 			// We don't stream it to the wire (UI doesn't render it
-			// today), but it MUST be threaded back into the next
-			// request for DeepSeek thinking models, so it lands on the
-			// terminal MessageEnd event.
-			if delta.Reasoning != nil && *delta.Reasoning != "" {
+			// today). When the operator has explicitly disabled
+			// thinking we drop the content immediately so it never
+			// hits the assistant Message and inflates input tokens
+			// on replay. The reasoning_content FIELD is still echoed
+			// back on tool_call assistant turns (see convertSingleMessage)
+			// with an empty string, which DeepSeek's strict validator
+			// requires but costs zero tokens.
+			thinkingEnabled := a.enableThinking == nil || *a.enableThinking
+			if thinkingEnabled && delta.Reasoning != nil && *delta.Reasoning != "" {
 				reasoningBuf.WriteString(*delta.Reasoning)
 			}
 
@@ -724,21 +729,32 @@ func convertSingleMessage(msg types.Message, includeReasoning bool) *schemas.Cha
 		}
 	}
 
-	// Attach assistant-only metadata: tool_calls and reasoning_content.
-	// reasoning is preserved only when includeReasoning=true so the
-	// caller can avoid bloating input tokens on every replay. A few
-	// providers historically required reasoning to come back on the
-	// wire ("thinking mode must be passed back") but the common case
-	// (verified against DeepSeek) is they don't — so the flag defaults
-	// to true to be safe, but a.enableThinking=false suppresses it.
+	// Attach assistant-only metadata.
+	//
+	// DeepSeek thinking-mode (verified against deepseek-v4-flash on
+	// 2026-05-13) enforces strict schema on assistant messages that
+	// carry tool_calls: the `reasoning_content` FIELD must be present
+	// — its VALUE may be the empty string. Omitting the field returns
+	// 400 "thinking mode must be passed back". Plain-text assistant
+	// messages are NOT validated this strictly and may skip the field.
+	//
+	// So the rule is:
+	//   tool_calls → always emit reasoning (echo what we have, or "")
+	//   text-only  → only emit reasoning when we actually captured some
+	//                AND the caller asked us to forward it
 	echoReasoning := includeReasoning && msg.ReasoningContent != ""
 	if msg.Role == types.RoleAssistant && (len(toolCalls) > 0 || echoReasoning) {
 		am := &schemas.ChatAssistantMessage{}
 		if len(toolCalls) > 0 {
 			am.ToolCalls = toolCalls
 		}
-		if echoReasoning {
+		switch {
+		case echoReasoning:
 			am.Reasoning = schemas.Ptr(msg.ReasoningContent)
+		case len(toolCalls) > 0:
+			// Empty placeholder — satisfies DeepSeek's "field must be
+			// present" check without spending tokens on reasoning text.
+			am.Reasoning = schemas.Ptr("")
 		}
 		bfMsg.ChatAssistantMessage = am
 	}
