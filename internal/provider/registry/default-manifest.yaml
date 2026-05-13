@@ -189,7 +189,7 @@ models:
     provider: anthropic
     model_id: claude-opus-4-7
     display_name: "Claude Opus 4.7"
-    family: claude-opus
+    family: claude4.7
     generation: "4.7"
     knowledge_cutoff: "2026-01"
     modalities: { input: [text, image, pdf], output: [text] }
@@ -218,7 +218,7 @@ models:
     provider: anthropic
     model_id: claude-sonnet-4-6
     display_name: "Claude Sonnet 4.6"
-    family: claude-sonnet
+    family: claude4.6
     generation: "4.6"
     knowledge_cutoff: "2025-08"
     modalities: { input: [text, image, pdf], output: [text] }
@@ -246,7 +246,7 @@ models:
     provider: anthropic
     model_id: claude-haiku-4-5
     display_name: "Claude Haiku 4.5"
-    family: claude-haiku
+    family: claude4.5
     generation: "4.5"
     knowledge_cutoff: "2025-02"
     modalities: { input: [text, image, pdf], output: [text] }
