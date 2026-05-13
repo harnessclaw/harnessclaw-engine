@@ -40,6 +40,10 @@ llm:
 #      api_key: "your-openai-api-key"
 #      model: "gpt-4o"
 #      max_tokens: 4096
+#      # enable_thinking controls provider-side chain-of-thought output.
+#      # nil/unset = provider default;  false = force disable;  true = force enable.
+#      # Mainly for DeepSeek v3.1+ thinking models — leave unset for OpenAI / 讯飞 / 通义.
+#      # enable_thinking: false
 
 # --- Query Engine ---
 engine:

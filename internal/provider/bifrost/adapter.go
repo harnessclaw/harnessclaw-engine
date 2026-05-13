@@ -60,6 +60,14 @@ type Config struct {
 	// CustomHeaders are forwarded to the provider on every request.
 	CustomHeaders map[string]string
 
+	// EnableThinking controls provider-side thinking-mode output.
+	// nil   = don't send the field (provider default)
+	// false = `enable_thinking: false` (DeepSeek v3.1+ extra param)
+	// true  = `enable_thinking: true`
+	// Forwarded via ChatParameters.ExtraParams so it reaches OpenAI-
+	// compatible gateways without polluting the standard schema.
+	EnableThinking *bool
+
 	// Logger for operational events. Nil uses a no-op logger.
 	Logger *zap.Logger
 }
@@ -150,6 +158,11 @@ type Adapter struct {
 	logger        *zap.Logger
 	customHeaders map[string]string
 
+	// enableThinking, when non-nil, is injected into every Chat request's
+	// ExtraParams as `enable_thinking`. See Config.EnableThinking for
+	// semantics. nil means "don't send the field".
+	enableThinking *bool
+
 	mu            sync.Mutex
 	usingFallback bool
 	activeModel   string
@@ -190,12 +203,13 @@ func New(cfg Config) (*Adapter, error) {
 	}
 
 	return &Adapter{
-		client:        client,
-		providerKey:   cfg.Provider,
-		defaultModel:  cfg.Model,
-		fallbackModel: cfg.FallbackModel,
-		logger:        logger,
-		customHeaders: cfg.CustomHeaders,
+		client:         client,
+		providerKey:    cfg.Provider,
+		defaultModel:   cfg.Model,
+		fallbackModel:  cfg.FallbackModel,
+		logger:         logger,
+		customHeaders:  cfg.CustomHeaders,
+		enableThinking: cfg.EnableThinking,
 	}, nil
 }
 
@@ -375,6 +389,20 @@ func (a *Adapter) buildChatRequest(model string, req *provider.ChatRequest) *sch
 	}
 
 	params := buildParams(req)
+	if a.enableThinking != nil {
+		// DeepSeek thinking-mode is the primary consumer of this flag.
+		// `enable_thinking` is a non-standard OpenAI extension that
+		// bifrost passes through verbatim via ExtraParams. Other
+		// providers (OpenAI proper, xAI, 讯飞 / 通义) ignore unknown
+		// fields, so it's safe to set unconditionally.
+		if params == nil {
+			params = &schemas.ChatParameters{}
+		}
+		if params.ExtraParams == nil {
+			params.ExtraParams = make(map[string]interface{})
+		}
+		params.ExtraParams["enable_thinking"] = *a.enableThinking
+	}
 	if params != nil {
 		bifReq.Params = params
 	}

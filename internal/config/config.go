@@ -109,6 +109,17 @@ type ProviderConfig struct {
 	MaxTokens   int     `mapstructure:"max_tokens"`
 	Temperature float64 `mapstructure:"temperature"`
 	BaseURL     string  `mapstructure:"base_url"`
+
+	// EnableThinking controls provider-side chain-of-thought / reasoning
+	// output (DeepSeek v3.1+ thinking models, etc.). Pointer semantics:
+	//   nil   = field not sent; provider uses its own default
+	//   false = explicitly disabled (sent as `enable_thinking: false`)
+	//   true  = explicitly enabled  (sent as `enable_thinking: true`)
+	// Only meaningful for OpenAI-compatible providers that honor the
+	// `enable_thinking` extra param (notably DeepSeek). Anthropic's
+	// extended thinking uses a different schema (`thinking.budget_tokens`)
+	// — not covered by this flag.
+	EnableThinking *bool `mapstructure:"enable_thinking"`
 }
 
 // BifrostConfig holds Bifrost unified SDK settings.

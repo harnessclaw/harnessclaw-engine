@@ -1061,3 +1061,51 @@ func TestConsumeStream_CapturesDeltaReasoning(t *testing.T) {
 		t.Errorf("Reasoning = %q, want %q", msgEnd.Reasoning, want)
 	}
 }
+
+// TestBuildChatRequest_EnableThinkingControlled verifies the thinking
+// toggle reaches the wire via ExtraParams when the operator sets it,
+// and stays absent when nil.
+func TestBuildChatRequest_EnableThinkingControlled(t *testing.T) {
+	cases := []struct {
+		name string
+		flag *bool
+		want any
+	}{
+		{"nil leaves ExtraParams untouched", nil, nil},
+		{"false explicitly disables", boolPtr(false), false},
+		{"true explicitly enables", boolPtr(true), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Adapter{
+				providerKey:    schemas.OpenAI,
+				defaultModel:   "deepseek-chat",
+				enableThinking: tc.flag,
+			}
+			bfReq := a.buildChatRequest("deepseek-chat", &provider.ChatRequest{
+				MaxTokens: 128,
+				Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}}},
+			})
+			if tc.want == nil {
+				if bfReq.Params != nil && bfReq.Params.ExtraParams != nil {
+					if _, present := bfReq.Params.ExtraParams["enable_thinking"]; present {
+						t.Errorf("expected no enable_thinking in ExtraParams, got %+v", bfReq.Params.ExtraParams)
+					}
+				}
+				return
+			}
+			if bfReq.Params == nil || bfReq.Params.ExtraParams == nil {
+				t.Fatalf("expected Params.ExtraParams set, got %+v", bfReq.Params)
+			}
+			got, ok := bfReq.Params.ExtraParams["enable_thinking"]
+			if !ok {
+				t.Fatalf("enable_thinking missing from ExtraParams: %+v", bfReq.Params.ExtraParams)
+			}
+			if got != tc.want {
+				t.Errorf("enable_thinking = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }

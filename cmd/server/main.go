@@ -857,16 +857,26 @@ func initProvider(cfg config.LLMConfig, logger *zap.Logger) provider.Provider {
 		BufferSize:     cfg.Bifrost.BufferSize,
 		ProxyURL:       cfg.ProxyURL,
 		CustomHeaders:  cfg.CustomHeaders,
+		EnableThinking: provCfg.EnableThinking,
 		Logger:         logger,
 	})
 	if err != nil {
 		logger.Fatal("failed to create bifrost adapter", zap.Error(err))
+	}
+	thinkingState := "default"
+	if provCfg.EnableThinking != nil {
+		if *provCfg.EnableThinking {
+			thinkingState = "enabled"
+		} else {
+			thinkingState = "disabled"
+		}
 	}
 	logger.Info("bifrost provider initialized",
 		zap.String("provider", string(bfProvider)),
 		zap.String("model", bfModel),
 		zap.String("fallback", cfg.Bifrost.FallbackModel),
 		zap.Bool("proxy", cfg.ProxyURL != ""),
+		zap.String("thinking", thinkingState),
 	)
 	return adapter
 }
