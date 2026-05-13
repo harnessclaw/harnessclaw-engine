@@ -28,7 +28,10 @@ type Server struct {
 // metricsHandler, if non-nil, is mounted at /api/v1/sessions/ so the
 // session metrics dashboard can fetch per-session token / latency
 // stats over the same port as the rest of the management API.
-func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler http.Handler, logger *zap.Logger) *Server {
+//
+// modelsHandler, if non-nil, is mounted at /api/v1/models for the
+// model + provider capability registry consumed by the client UI.
+func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler http.Handler, modelsHandler http.Handler, logger *zap.Logger) *Server {
 	mux := http.NewServeMux()
 
 	// Register agent management routes
@@ -38,6 +41,12 @@ func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler ht
 	// Session metrics: GET /api/v1/sessions/{id}/metrics
 	if metricsHandler != nil {
 		mux.Handle("/api/v1/sessions/", metricsHandler)
+	}
+
+	// Model registry: GET /api/v1/models, GET /api/v1/models/{provider}/{model_id}
+	if modelsHandler != nil {
+		mux.Handle("/api/v1/models", modelsHandler)
+		mux.Handle("/api/v1/models/", modelsHandler)
 	}
 
 	// Health check
