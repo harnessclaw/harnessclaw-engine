@@ -172,7 +172,7 @@ func TestConvertMessages_SystemPrompt(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hello"}}},
 	}
-	result := convertMessages(msgs, "You are helpful.")
+	result := convertMessages(msgs, "You are helpful.", true)
 
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages (system + user), got %d", len(result))
@@ -192,7 +192,7 @@ func TestConvertMessages_NoSystemPrompt(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}},
 	}
-	result := convertMessages(msgs, "")
+	result := convertMessages(msgs, "", true)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
 	}
@@ -209,7 +209,7 @@ func TestConvertMessages_ToolResult(t *testing.T) {
 			}},
 		},
 	}
-	result := convertMessages(msgs, "")
+	result := convertMessages(msgs, "", true)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
@@ -235,7 +235,7 @@ func TestConvertMessages_ToolUse(t *testing.T) {
 			},
 		},
 	}
-	result := convertMessages(msgs, "")
+	result := convertMessages(msgs, "", true)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
@@ -264,7 +264,7 @@ func TestConvertMessages_SkipSystemRole(t *testing.T) {
 		{Role: types.RoleSystem, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "system text"}}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}},
 	}
-	result := convertMessages(msgs, "")
+	result := convertMessages(msgs, "", true)
 	// System role messages in the input are skipped (system prompt is separate param).
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message (system role skipped), got %d", len(result))
@@ -985,7 +985,7 @@ func TestConvertSingleMessage_AssistantReasoningRoundTrip(t *testing.T) {
 		},
 		ReasoningContent: "用户问 X,我推导 X = 42,所以...",
 	}
-	bf := convertSingleMessage(msg)
+	bf := convertSingleMessage(msg, true)
 	if bf == nil || bf.ChatAssistantMessage == nil {
 		t.Fatalf("expected ChatAssistantMessage to be set, got %+v", bf)
 	}
@@ -1165,6 +1165,76 @@ func TestConsumeStream_LogsRawUsageJSON(t *testing.T) {
 	for _, want := range []string{"\"prompt_tokens\":1234", "\"cached_read_tokens\":800", "\"reasoning_tokens\":9"} {
 		if !strings.Contains(rawJSON, want) {
 			t.Errorf("usage_json missing %q;\nfull: %s", want, rawJSON)
+		}
+	}
+}
+
+// TestConvertMessages_SkipsReasoningWhenDisabled verifies that prior
+// assistant ReasoningContent is dropped on the wire when the operator
+// disables thinking. Keeping it would inflate input tokens every turn
+// without serving any provider that requires it (verified DeepSeek
+// doesn't, on 2026-05-13).
+func TestConvertMessages_SkipsReasoningWhenDisabled(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{
+				{Type: types.ContentTypeText, Text: "答案是 42"},
+			},
+			ReasoningContent: "用户问 X, 我推导 X = 42, 所以...",
+		},
+	}
+
+	// Include = true → reasoning forwarded.
+	withReasoning := convertMessages(msgs, "", true)
+	if len(withReasoning) != 1 || withReasoning[0].ChatAssistantMessage == nil ||
+		withReasoning[0].ChatAssistantMessage.Reasoning == nil ||
+		*withReasoning[0].ChatAssistantMessage.Reasoning != msgs[0].ReasoningContent {
+		t.Errorf("with includeReasoning=true: expected reasoning forwarded, got %+v", withReasoning[0].ChatAssistantMessage)
+	}
+
+	// Include = false → reasoning suppressed (no ChatAssistantMessage at all,
+	// because there are no tool_calls either).
+	withoutReasoning := convertMessages(msgs, "", false)
+	if len(withoutReasoning) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(withoutReasoning))
+	}
+	if withoutReasoning[0].ChatAssistantMessage != nil &&
+		withoutReasoning[0].ChatAssistantMessage.Reasoning != nil {
+		t.Errorf("with includeReasoning=false: reasoning leaked through: %+v", withoutReasoning[0].ChatAssistantMessage.Reasoning)
+	}
+}
+
+// TestBuildChatRequest_DisablingThinkingSuppressesReasoningOnWire ties
+// the operator-facing enable_thinking flag to the wire-level behaviour:
+// flag=false silences the local reasoning replay even if the model
+// keeps emitting reasoning_content (deepseek-v4-flash does this — its
+// reasoning is baked into the model so we can't make it stop generating,
+// but we can avoid resending it every turn).
+func TestBuildChatRequest_DisablingThinkingSuppressesReasoningOnWire(t *testing.T) {
+	disabled := false
+	a := &Adapter{
+		providerKey:    schemas.OpenAI,
+		defaultModel:   "deepseek-v4-flash",
+		enableThinking: &disabled,
+	}
+	bfReq := a.buildChatRequest("deepseek-v4-flash", &provider.ChatRequest{
+		MaxTokens: 128,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "q"}}},
+			{
+				Role:             types.RoleAssistant,
+				Content:          []types.ContentBlock{{Type: types.ContentTypeText, Text: "a"}},
+				ReasoningContent: "previous thinking we don't want to resend",
+			},
+			{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "q2"}}},
+		},
+	})
+
+	for i, m := range bfReq.Input {
+		if m.ChatAssistantMessage != nil && m.ChatAssistantMessage.Reasoning != nil {
+			t.Errorf("message[%d]: reasoning leaked through despite enable_thinking=false: %q",
+				i, *m.ChatAssistantMessage.Reasoning)
 		}
 	}
 }

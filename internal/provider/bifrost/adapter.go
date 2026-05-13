@@ -382,10 +382,18 @@ func (a *Adapter) currentModel() string {
 }
 
 func (a *Adapter) buildChatRequest(model string, req *provider.ChatRequest) *schemas.BifrostChatRequest {
+	// Skip replaying assistant reasoning_content when the operator
+	// explicitly disabled thinking. Most providers don't require it on
+	// the wire (verified against DeepSeek api.deepseek.com 2026-05-13:
+	// both plain-text and tool-calls multi-turn replay without it).
+	// Sending it back when disabled just inflates input tokens by the
+	// length of every prior turn's chain-of-thought, defeating the
+	// point of disabling thinking.
+	includeReasoning := a.enableThinking == nil || *a.enableThinking
 	bifReq := &schemas.BifrostChatRequest{
 		Provider: a.providerKey,
 		Model:    model,
-		Input:    convertMessages(req.Messages, req.System),
+		Input:    convertMessages(req.Messages, req.System, includeReasoning),
 	}
 
 	params := buildParams(req)
@@ -628,7 +636,10 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 // ---------- Message conversion ----------
 
 // convertMessages transforms internal messages to Bifrost ChatMessage format.
-func convertMessages(msgs []types.Message, systemPrompt string) []schemas.ChatMessage {
+// includeReasoning controls whether prior assistant ReasoningContent is
+// echoed back on the wire — disable to avoid input-token inflation when
+// the provider doesn't require it (most don't).
+func convertMessages(msgs []types.Message, systemPrompt string, includeReasoning bool) []schemas.ChatMessage {
 	var result []schemas.ChatMessage
 
 	// System prompt as a system message.
@@ -647,7 +658,7 @@ func convertMessages(msgs []types.Message, systemPrompt string) []schemas.ChatMe
 			continue
 		}
 
-		bfMsg := convertSingleMessage(msg)
+		bfMsg := convertSingleMessage(msg, includeReasoning)
 		if bfMsg != nil {
 			result = append(result, *bfMsg)
 		}
@@ -655,7 +666,7 @@ func convertMessages(msgs []types.Message, systemPrompt string) []schemas.ChatMe
 	return result
 }
 
-func convertSingleMessage(msg types.Message) *schemas.ChatMessage {
+func convertSingleMessage(msg types.Message, includeReasoning bool) *schemas.ChatMessage {
 	role := mapRole(msg.Role)
 
 	// Check if this is a tool result message.
@@ -714,22 +725,22 @@ func convertSingleMessage(msg types.Message) *schemas.ChatMessage {
 	}
 
 	// Attach assistant-only metadata: tool_calls and reasoning_content.
-	// Some providers (DeepSeek thinking-mode) REQUIRE reasoning to come
-	// back on the wire when the message is replayed; omitting it fails
-	// the request with "thinking mode must be passed back".
-	if msg.Role == types.RoleAssistant && (len(toolCalls) > 0 || msg.ReasoningContent != "") {
+	// reasoning is preserved only when includeReasoning=true so the
+	// caller can avoid bloating input tokens on every replay. A few
+	// providers historically required reasoning to come back on the
+	// wire ("thinking mode must be passed back") but the common case
+	// (verified against DeepSeek) is they don't — so the flag defaults
+	// to true to be safe, but a.enableThinking=false suppresses it.
+	echoReasoning := includeReasoning && msg.ReasoningContent != ""
+	if msg.Role == types.RoleAssistant && (len(toolCalls) > 0 || echoReasoning) {
 		am := &schemas.ChatAssistantMessage{}
 		if len(toolCalls) > 0 {
 			am.ToolCalls = toolCalls
 		}
-		if msg.ReasoningContent != "" {
+		if echoReasoning {
 			am.Reasoning = schemas.Ptr(msg.ReasoningContent)
 		}
 		bfMsg.ChatAssistantMessage = am
-	} else if len(toolCalls) > 0 {
-		bfMsg.ChatAssistantMessage = &schemas.ChatAssistantMessage{
-			ToolCalls: toolCalls,
-		}
 	}
 
 	return bfMsg
