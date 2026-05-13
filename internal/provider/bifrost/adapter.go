@@ -68,8 +68,27 @@ type Config struct {
 	// compatible gateways without polluting the standard schema.
 	EnableThinking *bool
 
+	// Quirks declares per-provider behavior deviations from the OpenAI
+	// baseline (thinking param style, ExtraParams passthrough need,
+	// tool_calls reasoning requirement, etc.). Sourced from the model
+	// registry's ProviderSpec.Quirks. Nil leaves all defaults applied.
+	Quirks *ProviderQuirks
+
 	// Logger for operational events. Nil uses a no-op logger.
 	Logger *zap.Logger
+}
+
+// ProviderQuirks is a runtime mirror of registry.ProviderQuirks used to
+// drive adapter behavior. The cmd/server wires the two together at
+// startup. The mirror exists so the bifrost package stays free of a
+// dependency on internal/provider/registry (would create an import
+// cycle if registry ever needs to call bifrost).
+type ProviderQuirks struct {
+	ThinkingParamStyle             string
+	ToolCallsRequireReasoningField bool
+	ExtraParamsPassthroughRequired bool
+	InlineUsageOnEveryChunk        bool
+	ExplicitCacheControl           bool
 }
 
 // account implements schemas.Account for Bifrost initialization.
@@ -163,6 +182,10 @@ type Adapter struct {
 	// semantics. nil means "don't send the field".
 	enableThinking *bool
 
+	// quirks drives provider-specific behavior (thinking param style,
+	// passthrough, reasoning placeholder). Nil means apply defaults.
+	quirks *ProviderQuirks
+
 	mu            sync.Mutex
 	usingFallback bool
 	activeModel   string
@@ -210,6 +233,7 @@ func New(cfg Config) (*Adapter, error) {
 		logger:         logger,
 		customHeaders:  cfg.CustomHeaders,
 		enableThinking: cfg.EnableThinking,
+		quirks:         cfg.Quirks,
 	}, nil
 }
 
@@ -226,15 +250,16 @@ func (a *Adapter) Chat(ctx context.Context, req *provider.ChatRequest) (*provide
 	bifReq := a.buildChatRequest(model, req)
 
 	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-	// Opt into Bifrost's ExtraParams passthrough. Without this flag the
-	// SDK silently drops Params.ExtraParams during request marshalling
-	// (see providers/utils/utils.go CheckContextAndGetRequestBody:1066),
-	// so provider-specific extensions we set via ExtraParams — notably
-	// DeepSeek's {"thinking": {"type": "disabled"}} — never reach the
-	// wire. This is the difference between "enable_thinking config
-	// reports disabled" and "DeepSeek actually returns 0 reasoning
-	// tokens".
-	bfCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	// ExtraParams passthrough: needed only for providers that rely on
+	// non-OpenAI-standard parameters reaching the wire (DeepSeek
+	// thinking, MiniMax wrappers, etc.). Without this flag the SDK
+	// silently drops Params.ExtraParams during request marshalling (see
+	// providers/utils/utils.go CheckContextAndGetRequestBody:1066).
+	// Default-off keeps the request body canonical for providers that
+	// don't need it.
+	if a.quirks != nil && a.quirks.ExtraParamsPassthroughRequired {
+		bfCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	}
 
 	stream, bfErr := a.client.ChatCompletionStreamRequest(bfCtx, bifReq)
 	if bfErr != nil {
@@ -399,6 +424,14 @@ func (a *Adapter) buildChatRequest(model string, req *provider.ChatRequest) *sch
 	// length of every prior turn's chain-of-thought, defeating the
 	// point of disabling thinking.
 	includeReasoning := a.enableThinking == nil || *a.enableThinking
+	if a.quirks != nil && a.quirks.ToolCallsRequireReasoningField && !includeReasoning {
+		// Provider's schema (DeepSeek thinking-mode) demands the
+		// reasoning_content field on tool_calls assistant messages even
+		// when thinking is disabled. Keep the wire-level placeholder
+		// flowing; convertSingleMessage only emits "" content, not the
+		// actual reasoning history.
+		includeReasoning = true
+	}
 	bifReq := &schemas.BifrostChatRequest{
 		Provider: a.providerKey,
 		Model:    model,
@@ -407,25 +440,59 @@ func (a *Adapter) buildChatRequest(model string, req *provider.ChatRequest) *sch
 
 	params := buildParams(req)
 	if a.enableThinking != nil {
-		// DeepSeek thinking-mode uses {"thinking": {"type": "enabled"|"disabled"}}.
-		// See https://api-docs.deepseek.com/zh-cn/guides/thinking_mode .
-		// Verified 2026-05-13 against deepseek-v4-flash: setting
-		// `thinking.type=disabled` actually suppresses reasoning_tokens
-		// in usage (whereas the bare `enable_thinking: false` field is
-		// silently ignored). Forwarded via ExtraParams since the field
-		// isn't part of standard OpenAI schema; other providers ignore
-		// it.
-		typeStr := "disabled"
-		if *a.enableThinking {
-			typeStr = "enabled"
+		style := ""
+		if a.quirks != nil {
+			style = a.quirks.ThinkingParamStyle
 		}
-		if params == nil {
-			params = &schemas.ChatParameters{}
+		switch style {
+		case "deepseek_type":
+			// DeepSeek: extra_params.thinking = {"type": "enabled"|"disabled"}.
+			// See https://api-docs.deepseek.com/zh-cn/guides/thinking_mode .
+			// Verified 2026-05-13 against deepseek-v4-flash: setting
+			// `thinking.type=disabled` actually suppresses reasoning_tokens
+			// (the bare `enable_thinking: false` field is silently
+			// ignored). Forwarded via ExtraParams.
+			if params == nil {
+				params = &schemas.ChatParameters{}
+			}
+			if params.ExtraParams == nil {
+				params.ExtraParams = make(map[string]interface{})
+			}
+			typeStr := "disabled"
+			if *a.enableThinking {
+				typeStr = "enabled"
+			}
+			params.ExtraParams["thinking"] = map[string]string{"type": typeStr}
+		case "openai_effort":
+			// OpenAI o-series reasoning models: params.reasoning.effort.
+			if params == nil {
+				params = &schemas.ChatParameters{}
+			}
+			eff := "none"
+			if *a.enableThinking {
+				eff = "medium"
+			}
+			params.Reasoning = &schemas.ChatReasoning{Effort: &eff}
+		case "anthropic_budget":
+			// Anthropic Claude extended thinking: reasoning.max_tokens
+			// (only when enabled — no off-equivalent on the wire).
+			if *a.enableThinking {
+				if params == nil {
+					params = &schemas.ChatParameters{}
+				}
+				budget := 4096
+				params.Reasoning = &schemas.ChatReasoning{MaxTokens: &budget}
+			}
+		case "openrouter":
+			// OpenRouter aggregator: reasoning.enabled boolean toggle.
+			if params == nil {
+				params = &schemas.ChatParameters{}
+			}
+			enabled := *a.enableThinking
+			params.Reasoning = &schemas.ChatReasoning{Enabled: &enabled}
+		case "", "none":
+			// Provider doesn't support a thinking toggle — silently noop.
 		}
-		if params.ExtraParams == nil {
-			params.ExtraParams = make(map[string]interface{})
-		}
-		params.ExtraParams["thinking"] = map[string]string{"type": typeStr}
 	}
 	if params != nil {
 		bifReq.Params = params

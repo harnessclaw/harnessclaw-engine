@@ -1084,6 +1084,7 @@ func TestBuildChatRequest_ThinkingControlled(t *testing.T) {
 				providerKey:    schemas.OpenAI,
 				defaultModel:   "deepseek-chat",
 				enableThinking: tc.flag,
+				quirks:         &ProviderQuirks{ThinkingParamStyle: "deepseek_type"},
 			}
 			bfReq := a.buildChatRequest("deepseek-chat", &provider.ChatRequest{
 				MaxTokens: 128,
@@ -1327,5 +1328,80 @@ func TestConsumeStream_DropsReasoningWhenThinkingDisabled(t *testing.T) {
 	}
 	if end.Reasoning != "" {
 		t.Errorf("MessageEnd.Reasoning = %q, want empty (thinking disabled)", end.Reasoning)
+	}
+}
+
+// TestBuildChatRequest_QuirkRoutesThinkingParam verifies that
+// ProviderQuirks.ThinkingParamStyle drives which wire format the
+// adapter uses to enable/disable reasoning.
+func TestBuildChatRequest_QuirkRoutesThinkingParam(t *testing.T) {
+	cases := []struct {
+		name        string
+		style       string
+		enabled     bool
+		wantPath    string
+		wantStringV string
+		wantIntV    int
+	}{
+		{"deepseek disabled", "deepseek_type", false, "extra_params.thinking.type", "disabled", 0},
+		{"deepseek enabled", "deepseek_type", true, "extra_params.thinking.type", "enabled", 0},
+		{"openai effort enabled", "openai_effort", true, "reasoning.effort", "medium", 0},
+		{"openai effort disabled", "openai_effort", false, "reasoning.effort", "none", 0},
+		{"anthropic budget enabled", "anthropic_budget", true, "reasoning.max_tokens", "", 4096},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			flag := tc.enabled
+			a := &Adapter{
+				providerKey:    schemas.OpenAI,
+				defaultModel:   "x",
+				enableThinking: &flag,
+				quirks:         &ProviderQuirks{ThinkingParamStyle: tc.style},
+			}
+			bfReq := a.buildChatRequest("x", &provider.ChatRequest{
+				MaxTokens: 16,
+				Messages:  []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "h"}}}},
+			})
+			switch tc.wantPath {
+			case "extra_params.thinking.type":
+				m, _ := bfReq.Params.ExtraParams["thinking"].(map[string]string)
+				if m["type"] != tc.wantStringV {
+					t.Errorf("extra_params.thinking.type = %q, want %q", m["type"], tc.wantStringV)
+				}
+			case "reasoning.effort":
+				if bfReq.Params.Reasoning == nil || bfReq.Params.Reasoning.Effort == nil ||
+					*bfReq.Params.Reasoning.Effort != tc.wantStringV {
+					t.Errorf("reasoning.effort wrong: %+v", bfReq.Params.Reasoning)
+				}
+			case "reasoning.max_tokens":
+				if bfReq.Params.Reasoning == nil || bfReq.Params.Reasoning.MaxTokens == nil ||
+					*bfReq.Params.Reasoning.MaxTokens != tc.wantIntV {
+					t.Errorf("reasoning.max_tokens wrong: %+v", bfReq.Params.Reasoning)
+				}
+			}
+		})
+	}
+}
+
+// TestChat_PassthroughExtraParamsOnlyWhenQuirkSet is a structural sanity
+// check for the ExtraParams passthrough gate on the Chat() ctx value.
+func TestChat_PassthroughExtraParamsOnlyWhenQuirkSet(t *testing.T) {
+	cases := []struct {
+		name string
+		q    *ProviderQuirks
+		want bool
+	}{
+		{"nil quirks", nil, false},
+		{"quirk false", &ProviderQuirks{ExtraParamsPassthroughRequired: false}, false},
+		{"quirk true", &ProviderQuirks{ExtraParamsPassthroughRequired: true}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Adapter{quirks: tc.q}
+			got := a.quirks != nil && a.quirks.ExtraParamsPassthroughRequired
+			if got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
