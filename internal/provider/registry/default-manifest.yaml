@@ -1,0 +1,508 @@
+version: 1
+generated_at: 2026-05-13T12:00:00Z
+
+providers:
+  openai:
+    display_name: OpenAI
+    family: openai
+    base_url: https://api.openai.com
+    protocol: native
+    region: us
+    quirks:
+      thinking_param_style: openai_effort
+      tool_calls_require_reasoning_field: false
+      extra_params_passthrough_required: false
+    auth:
+      type: bearer
+      key_header: Authorization
+      key_prefix: "Bearer "
+    endpoints:
+      chat_completions: /v1/chat/completions
+      models_list: /v1/models
+
+  anthropic:
+    display_name: Anthropic
+    family: anthropic
+    base_url: https://api.anthropic.com
+    protocol: native
+    region: us
+    quirks:
+      thinking_param_style: anthropic_budget
+      tool_calls_require_reasoning_field: false
+      extra_params_passthrough_required: false
+      explicit_cache_control: true
+    auth:
+      type: header
+      key_header: x-api-key
+      key_prefix: ""
+    endpoints:
+      chat_completions: /v1/messages
+      models_list: /v1/models
+
+  google:
+    display_name: Google
+    family: gemini
+    base_url: https://generativelanguage.googleapis.com
+    protocol: native
+    region: us
+    quirks:
+      thinking_param_style: none
+      tool_calls_require_reasoning_field: false
+      extra_params_passthrough_required: false
+    auth:
+      type: header
+      key_header: x-goog-api-key
+      key_prefix: ""
+    endpoints:
+      chat_completions: /v1beta/models
+      models_list: /v1beta/models
+
+  deepseek:
+    display_name: DeepSeek
+    family: deepseek
+    base_url: https://api.deepseek.com
+    protocol: openai_compatible
+    region: cn
+    quirks:
+      thinking_param_style: deepseek_type
+      tool_calls_require_reasoning_field: true
+      extra_params_passthrough_required: true
+    auth:
+      type: bearer
+      key_header: Authorization
+      key_prefix: "Bearer "
+    endpoints:
+      chat_completions: /v1/chat/completions
+      models_list: /v1/models
+
+  zhipu:
+    display_name: 智谱 GLM
+    family: zhipu
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    protocol: openai_compatible
+    region: cn
+    quirks:
+      thinking_param_style: none
+      tool_calls_require_reasoning_field: false
+      extra_params_passthrough_required: false
+    auth:
+      type: bearer
+      key_header: Authorization
+      key_prefix: "Bearer "
+    endpoints:
+      chat_completions: /chat/completions
+      models_list: /models
+
+  moonshot:
+    display_name: Moonshot (Kimi)
+    family: moonshot
+    base_url: https://api.moonshot.cn
+    protocol: openai_compatible
+    region: cn
+    quirks:
+      thinking_param_style: none
+      tool_calls_require_reasoning_field: false
+      extra_params_passthrough_required: false
+    auth:
+      type: bearer
+      key_header: Authorization
+      key_prefix: "Bearer "
+    endpoints:
+      chat_completions: /v1/chat/completions
+      models_list: /v1/models
+
+  minimax:
+    display_name: MiniMax
+    family: minimax
+    base_url: https://api.minimax.chat
+    protocol: openai_compatible
+    region: cn
+    quirks:
+      thinking_param_style: none
+      tool_calls_require_reasoning_field: false
+      extra_params_passthrough_required: false
+    auth:
+      type: bearer
+      key_header: Authorization
+      key_prefix: "Bearer "
+    endpoints:
+      chat_completions: /v1/text/chatcompletion_v2
+      models_list: /v1/models
+
+models:
+  "openai/gpt-5.5":
+    provider: openai
+    model_id: gpt-5.5
+    display_name: "GPT-5.5"
+    family: gpt-5
+    generation: "5.5"
+    knowledge_cutoff: "2025-12"
+    modalities: { input: [text, image], output: [text] }
+    supports:
+      vision: true
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      parallel_function_calling: true
+      tool_choice: true
+      web_search: true
+      reasoning: true
+      reasoning_can_disable: true
+      reasoning_effort_levels: [none, low, medium, high, xhigh]
+      prompt_caching: true
+    limits: { context_window: 1050000, max_input_tokens: 922000, max_output_tokens: 128000 }
+    defaults: { temperature: 1.0, top_p: 1.0, max_output_tokens_default: 16384 }
+    metadata:
+      source: "OpenAI API docs"
+      last_verified: 2026-05-13T00:00:00Z
+      upstream_model_card: https://developers.openai.com/api/docs/models/gpt-5.5
+
+  "openai/gpt-5.4":
+    provider: openai
+    model_id: gpt-5.4
+    display_name: "GPT-5.4"
+    family: gpt-5
+    generation: "5.4"
+    modalities: { input: [text, image], output: [text] }
+    supports:
+      vision: true
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      parallel_function_calling: true
+      tool_choice: true
+      web_search: true
+      reasoning: true
+      reasoning_can_disable: true
+      reasoning_effort_levels: [none, low, medium, high]
+      prompt_caching: true
+    limits: { context_window: 1050000, max_input_tokens: 922000, max_output_tokens: 128000 }
+    defaults: { temperature: 1.0, top_p: 1.0, max_output_tokens_default: 16384 }
+    metadata:
+      source: "OpenAI API docs"
+      last_verified: 2026-05-13T00:00:00Z
+      upstream_model_card: https://developers.openai.com/api/docs/models/gpt-5.4
+
+  "anthropic/claude-opus-4-7":
+    provider: anthropic
+    model_id: claude-opus-4-7
+    display_name: "Claude Opus 4.7"
+    family: claude-opus
+    generation: "4.7"
+    knowledge_cutoff: "2026-01"
+    modalities: { input: [text, image, pdf], output: [text] }
+    supports:
+      vision: true
+      pdf_input: true
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      parallel_function_calling: true
+      tool_choice: true
+      computer_use: true
+      reasoning: true
+      reasoning_can_disable: true
+      prompt_caching: true
+      explicit_cache_control: true
+    limits: { context_window: 1000000, max_input_tokens: 872000, max_output_tokens: 128000 }
+    defaults: { temperature: 1.0, top_p: 1.0, max_output_tokens_default: 8192 }
+    metadata:
+      source: "Anthropic docs"
+      last_verified: 2026-05-13T00:00:00Z
+      upstream_model_card: https://platform.claude.com/docs/en/docs/about-claude/models/overview
+
+  "anthropic/claude-sonnet-4-6":
+    provider: anthropic
+    model_id: claude-sonnet-4-6
+    display_name: "Claude Sonnet 4.6"
+    family: claude-sonnet
+    generation: "4.6"
+    knowledge_cutoff: "2025-08"
+    modalities: { input: [text, image, pdf], output: [text] }
+    supports:
+      vision: true
+      pdf_input: true
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      parallel_function_calling: true
+      tool_choice: true
+      computer_use: true
+      reasoning: true
+      reasoning_can_disable: true
+      prompt_caching: true
+      explicit_cache_control: true
+    limits: { context_window: 1000000, max_input_tokens: 936000, max_output_tokens: 64000 }
+    defaults: { temperature: 1.0, top_p: 1.0, max_output_tokens_default: 8192 }
+    metadata:
+      source: "Anthropic docs"
+      last_verified: 2026-05-13T00:00:00Z
+
+  "anthropic/claude-haiku-4-5":
+    provider: anthropic
+    model_id: claude-haiku-4-5
+    display_name: "Claude Haiku 4.5"
+    family: claude-haiku
+    generation: "4.5"
+    knowledge_cutoff: "2025-02"
+    modalities: { input: [text, image, pdf], output: [text] }
+    supports:
+      vision: true
+      pdf_input: true
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      tool_choice: true
+      reasoning: true
+      reasoning_can_disable: true
+      prompt_caching: true
+      explicit_cache_control: true
+    limits: { context_window: 200000, max_input_tokens: 136000, max_output_tokens: 64000 }
+    defaults: { temperature: 1.0, top_p: 1.0, max_output_tokens_default: 8192 }
+    metadata:
+      source: "Anthropic docs"
+      last_verified: 2026-05-13T00:00:00Z
+
+  "google/gemini-3.1-pro-preview":
+    provider: google
+    model_id: gemini-3.1-pro-preview
+    display_name: "Gemini 3.1 Pro"
+    family: gemini-3
+    generation: "3.1"
+    modalities: { input: [text, image, audio, video, pdf], output: [text] }
+    supports:
+      vision: true
+      audio_input: true
+      video_input: true
+      pdf_input: true
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      tool_choice: true
+      web_search: true
+      reasoning: true
+      reasoning_can_disable: false
+      prompt_caching: true
+    limits: { context_window: 2000000, max_input_tokens: 1991808, max_output_tokens: 8192 }
+    defaults: { temperature: 1.0, top_p: 0.95, max_output_tokens_default: 8192 }
+    metadata:
+      source: "Google AI Studio docs"
+      last_verified: 2026-05-13T00:00:00Z
+      notes: "Preview state — promote to stable when GA"
+      upstream_model_card: https://ai.google.dev/gemini-api/docs/models
+
+  "google/gemini-2.5-pro":
+    provider: google
+    model_id: gemini-2.5-pro
+    display_name: "Gemini 2.5 Pro"
+    family: gemini-2
+    generation: "2.5"
+    modalities: { input: [text, image, audio, video, pdf], output: [text] }
+    supports:
+      vision: true
+      audio_input: true
+      video_input: true
+      pdf_input: true
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      tool_choice: true
+      web_search: true
+      reasoning: true
+      reasoning_can_disable: false
+      prompt_caching: true
+    limits: { context_window: 2000000, max_input_tokens: 1991808, max_output_tokens: 8192 }
+    defaults: { temperature: 1.0, top_p: 0.95, max_output_tokens_default: 8192 }
+    metadata:
+      source: "Google AI Studio docs"
+      last_verified: 2026-05-13T00:00:00Z
+
+  "deepseek/deepseek-v4-flash":
+    provider: deepseek
+    model_id: deepseek-v4-flash
+    display_name: "DeepSeek V4 Flash"
+    family: deepseek-v4
+    generation: "v4-flash"
+    modalities: { input: [text], output: [text] }
+    supports:
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      parallel_function_calling: true
+      tool_choice: true
+      reasoning: true
+      reasoning_can_disable: true
+      prompt_caching: true
+    limits: { context_window: 1000000, max_input_tokens: 616000, max_output_tokens: 384000 }
+    defaults: { temperature: 0.7, top_p: 1.0, max_output_tokens_default: 8192 }
+    metadata:
+      source: "DeepSeek API docs"
+      last_verified: 2026-05-13T00:00:00Z
+      notes: "Thinking via ExtraParams.thinking.type (official spec); enable_thinking field is ignored."
+      upstream_model_card: https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+
+  "deepseek/deepseek-v4-pro":
+    provider: deepseek
+    model_id: deepseek-v4-pro
+    display_name: "DeepSeek V4 Pro"
+    family: deepseek-v4
+    generation: "v4-pro"
+    modalities: { input: [text], output: [text] }
+    supports:
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      parallel_function_calling: true
+      tool_choice: true
+      reasoning: true
+      reasoning_can_disable: true
+      prompt_caching: true
+    limits: { context_window: 1000000, max_input_tokens: 616000, max_output_tokens: 384000 }
+    defaults: { temperature: 0.7, top_p: 1.0, max_output_tokens_default: 8192 }
+    metadata:
+      source: "DeepSeek API docs"
+      last_verified: 2026-05-13T00:00:00Z
+
+  "zhipu/glm-5.1":
+    provider: zhipu
+    model_id: glm-5.1
+    display_name: "GLM-5.1"
+    family: glm-5
+    generation: "5.1"
+    modalities: { input: [text], output: [text] }
+    supports:
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      tool_choice: true
+      reasoning: true
+      reasoning_can_disable: true
+      prompt_caching: true
+    limits: { context_window: 200000, max_input_tokens: 72000, max_output_tokens: 128000 }
+    defaults: { temperature: 0.7, top_p: 1.0, max_output_tokens_default: 8192 }
+    metadata:
+      source: "Zhipu BigModel docs"
+      last_verified: 2026-05-13T00:00:00Z
+      notes: "Flagship; 8h autonomous tasking. Performance on par with Claude Opus 4.6."
+      upstream_model_card: https://docs.bigmodel.cn/cn/guide/models/text/glm-5
+
+  "zhipu/glm-5":
+    provider: zhipu
+    model_id: glm-5
+    display_name: "GLM-5"
+    family: glm-5
+    generation: "5"
+    modalities: { input: [text], output: [text] }
+    supports:
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      tool_choice: true
+      reasoning: true
+      reasoning_can_disable: true
+      prompt_caching: true
+    limits: { context_window: 200000, max_input_tokens: 72000, max_output_tokens: 128000 }
+    defaults: { temperature: 0.7, top_p: 1.0, max_output_tokens_default: 8192 }
+    metadata:
+      source: "Zhipu BigModel docs"
+      last_verified: 2026-05-13T00:00:00Z
+      notes: "744B MoE; 40B activated. Coding/agent SOTA among open-source."
+
+  "moonshot/kimi-k2.6":
+    provider: moonshot
+    model_id: kimi-k2.6
+    display_name: "Kimi K2.6"
+    family: kimi-k2
+    generation: "2.6"
+    modalities: { input: [text, image, video], output: [text] }
+    supports:
+      vision: true
+      video_input: true
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      tool_choice: true
+    limits: { context_window: 256000, max_input_tokens: 239616, max_output_tokens: 16384 }
+    defaults: { temperature: 0.7, top_p: 1.0, max_output_tokens_default: 8192 }
+    metadata:
+      source: "Kimi platform docs"
+      last_verified: 2026-05-13T00:00:00Z
+      notes: "Long-horizon coding + multimodal (text/image/video)."
+      upstream_model_card: https://platform.kimi.com/docs
+
+  "moonshot/kimi-k2.5":
+    provider: moonshot
+    model_id: kimi-k2.5
+    display_name: "Kimi K2.5"
+    family: kimi-k2
+    generation: "2.5"
+    modalities: { input: [text, image, video], output: [text] }
+    supports:
+      vision: true
+      video_input: true
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      tool_choice: true
+    limits: { context_window: 256000, max_input_tokens: 239616, max_output_tokens: 16384 }
+    defaults: { temperature: 0.7, top_p: 1.0, max_output_tokens_default: 8192 }
+    metadata:
+      source: "Kimi platform docs"
+      last_verified: 2026-05-13T00:00:00Z
+
+  "minimax/MiniMax-M2.7":
+    provider: minimax
+    model_id: MiniMax-M2.7
+    display_name: "MiniMax M2.7"
+    family: minimax-m2
+    generation: "2.7"
+    modalities: { input: [text], output: [text] }
+    supports:
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      tool_choice: true
+      reasoning: true
+      reasoning_can_disable: true
+    limits: { context_window: 204800, max_input_tokens: 188416, max_output_tokens: 16384 }
+    defaults: { temperature: 0.7, top_p: 1.0, max_output_tokens_default: 8192 }
+    metadata:
+      source: "MiniMax platform docs"
+      last_verified: 2026-05-13T00:00:00Z
+      notes: "Agentic model; full tool use; thinking chain returned as separate content block."
+      upstream_model_card: https://platform.minimaxi.com/docs/api-reference/text-anthropic-api
+
+  "minimax/MiniMax-M2.5":
+    provider: minimax
+    model_id: MiniMax-M2.5
+    display_name: "MiniMax M2.5"
+    family: minimax-m2
+    generation: "2.5"
+    modalities: { input: [text], output: [text] }
+    supports:
+      streaming: true
+      system_messages: true
+      structured_output: true
+      function_calling: true
+      tool_choice: true
+      reasoning: true
+      reasoning_can_disable: true
+    limits: { context_window: 204800, max_input_tokens: 188416, max_output_tokens: 16384 }
+    defaults: { temperature: 0.7, top_p: 1.0, max_output_tokens_default: 8192 }
+    metadata:
+      source: "MiniMax platform docs"
+      last_verified: 2026-05-13T00:00:00Z
