@@ -129,6 +129,24 @@ providers:
       chat_completions: /v1/text/chatcompletion_v2
       models_list: /v1/models
 
+  xunfei:
+    display_name: 科大讯飞 Spark
+    family: spark
+    base_url: https://spark-api-open.xf-yun.com/agent/v1
+    protocol: openai_compatible
+    region: cn
+    quirks:
+      thinking_param_style: deepseek_type
+      tool_calls_require_reasoning_field: false
+      extra_params_passthrough_required: true
+    auth:
+      type: bearer
+      key_header: Authorization
+      key_prefix: "Bearer "
+    endpoints:
+      chat_completions: /chat/completions
+      models_list: /models
+
 models:
   "openai/gpt-5.5":
     provider: openai
@@ -506,3 +524,29 @@ models:
     metadata:
       source: "MiniMax platform docs"
       last_verified: 2026-05-13T00:00:00Z
+
+  # ===== 科大讯飞 (iFlyTek Spark) =====
+  # Source: https://www.xfyun.cn/doc/spark/X2-Flash.html (verified 2026-05-14).
+  # OpenAI-compatible gateway; thinking_param uses {type: "enabled"|"disabled"|"auto"} via ExtraParams.
+  "xunfei/spark-x":
+    provider: xunfei
+    model_id: spark-x
+    display_name: "Spark X2 Flash"
+    family: spark-x2
+    generation: "x2-flash"
+    modalities: { input: [text], output: [text] }
+    supports:
+      streaming: true
+      system_messages: true
+      function_calling: true
+      tool_choice: true
+      web_search: true
+      reasoning: true
+      reasoning_can_disable: true
+    limits: { context_window: 262144, max_output_tokens: 262144 }
+    defaults: { temperature: 1.2, top_p: 0.95, max_output_tokens_default: 8192 }
+    metadata:
+      source: "iFlyTek Spark X2 Flash docs"
+      last_verified: 2026-05-14T00:00:00Z
+      notes: "thinking.type 支持 enabled/disabled/auto;OpenAI 兼容协议,认证用 APIpassword Bearer。"
+      upstream_model_card: https://www.xfyun.cn/doc/spark/X2-Flash.html
