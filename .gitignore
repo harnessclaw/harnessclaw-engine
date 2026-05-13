@@ -44,11 +44,10 @@ configs/config_self.yaml
 # Dependency
 vendor/
 
-# docs — local-only design / draft / API docs (only docs/protocols/ and docs/release-rules.md are tracked)
+# docs — local-only design / draft notes (API references under docs/api/ and protocol docs are tracked)
 docs/refactor
 docs/prompt
 docs/design/
-docs/api/
 docs/emit*
 docs/multi-agent-design.md
 docs/agent-yaml-reference.md
