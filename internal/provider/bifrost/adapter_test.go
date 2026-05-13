@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/pkg/types"
@@ -881,5 +882,90 @@ func TestConsumeStream_ExtractsReasoningTokensFromCompletionDetails(t *testing.T
 	}
 	if got.CacheRead != 20 || got.CacheWrite != 5 {
 		t.Errorf("cache fields wrong: read=%d write=%d", got.CacheRead, got.CacheWrite)
+	}
+}
+
+// TestConsumeStream_UsageOnSyntheticFinalChunk simulates how bifrost's
+// OpenAI provider actually forwards chunks for OpenAI-compatible gateways
+// like 讯飞 MaaS: a chunk with finish_reason but zero usage (bifrost
+// strips it), followed by a usage-bearing chunk with no choices.
+// The adapter must defer MessageEnd until the usage-only chunk lands.
+func TestConsumeStream_UsageOnSyntheticFinalChunk(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 4)
+	out := make(chan types.StreamEvent, 10)
+
+	content := "hello"
+	finishReason := "stop"
+
+	// chunk 1: text delta
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			Model: "xopglm51",
+			Choices: []schemas.BifrostResponseChoice{{
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{
+						Content: &content,
+					},
+				},
+			}},
+		},
+	}
+	// chunk 2: finish_reason, no usage (bifrost cleared it)
+	emptyContent := ""
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			Model: "xopglm51",
+			Choices: []schemas.BifrostResponseChoice{{
+				FinishReason: &finishReason,
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &emptyContent},
+				},
+			}},
+		},
+	}
+	// chunk 3 (bifrost synthetic): usage, no choices, no finish
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			Model: "xopglm51",
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     7,
+				CompletionTokens: 13,
+				TotalTokens:      20,
+			},
+		},
+	}
+	close(stream)
+
+	a := &Adapter{logger: zap.NewNop()}
+	go func() {
+		a.consumeStream(stream, out)
+		close(out)
+	}()
+
+	var events []types.StreamEvent
+	for evt := range out {
+		events = append(events, evt)
+	}
+
+	var msgEnd *types.StreamEvent
+	for i := range events {
+		if events[i].Type == types.StreamEventMessageEnd {
+			msgEnd = &events[i]
+		}
+	}
+	if msgEnd == nil {
+		t.Fatalf("expected MessageEnd event, got events: %+v", events)
+	}
+	if msgEnd.Usage == nil {
+		t.Fatalf("MessageEnd.Usage is nil; want {7,13}")
+	}
+	if msgEnd.Usage.InputTokens != 7 || msgEnd.Usage.OutputTokens != 13 {
+		t.Errorf("usage = %+v, want {InputTokens:7 OutputTokens:13}", msgEnd.Usage)
+	}
+	if msgEnd.Model != "xopglm51" {
+		t.Errorf("Model = %q, want xopglm51", msgEnd.Model)
+	}
+	if msgEnd.StopReason != "end_turn" {
+		t.Errorf("StopReason = %q, want end_turn (mapped from 'stop')", msgEnd.StopReason)
 	}
 }

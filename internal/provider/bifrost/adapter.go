@@ -400,6 +400,71 @@ func (a *Adapter) buildChatRequest(model string, req *provider.ChatRequest) *sch
 func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out chan<- types.StreamEvent) error {
 	var toolCalls []toolCallAccumulator
 
+	// Bifrost's OpenAI provider for chat streams (see core/providers/openai/openai.go
+	// HandleOpenAIChatCompletionStreaming) accumulates usage from every chunk into a
+	// goroutine-local variable, clears `response.Usage = nil` on each chunk it
+	// forwards, then — after the upstream channel closes (or [DONE] arrives) —
+	// emits ONE extra synthetic chunk carrying the aggregated usage. That
+	// synthetic chunk has NO choices (or empty delta) and NO finish_reason.
+	//
+	// We therefore can't emit MessageEnd the moment we see finish_reason on
+	// a per-content chunk: that chunk's Usage is always nil (bifrost cleared it),
+	// and the real usage rides on a later chunk we'd miss with an early return.
+	//
+	// Strategy: stash finish_reason + model when seen; keep reading until the
+	// stream closes OR we receive a usage-bearing chunk. Emit MessageEnd
+	// exactly once on close (or on first usage-bearing chunk after we've seen
+	// a finish_reason). Tool-call deltas accumulated across the run are flushed
+	// just before MessageEnd.
+	var pendingStopReason, pendingModel string
+	var pendingFinish bool
+	var pendingUsage *types.Usage
+
+	flushToolCalls := func() {
+		for _, tc := range toolCalls {
+			out <- types.StreamEvent{
+				Type: types.StreamEventToolUse,
+				ToolCall: &types.ToolCall{
+					ID:    tc.id,
+					Name:  tc.name,
+					Input: tc.args.String(),
+				},
+			}
+		}
+		toolCalls = nil
+	}
+
+	emitMessageEnd := func() {
+		flushToolCalls()
+		if a.logger != nil {
+			if pendingUsage != nil {
+				a.logger.Debug("bifrost stream MessageEnd",
+					zap.String("model", pendingModel),
+					zap.Bool("has_usage", true),
+					zap.Int("input_tokens", pendingUsage.InputTokens),
+					zap.Int("output_tokens", pendingUsage.OutputTokens),
+					zap.Int("cache_read", pendingUsage.CacheRead),
+					zap.Int("thinking", pendingUsage.ThinkingTokens),
+				)
+			} else {
+				a.logger.Warn("bifrost stream MessageEnd without usage",
+					zap.String("model", pendingModel),
+					zap.Bool("has_usage", false),
+				)
+			}
+		}
+		stopReason := pendingStopReason
+		if stopReason == "" {
+			stopReason = "end_turn"
+		}
+		out <- types.StreamEvent{
+			Type:       types.StreamEventMessageEnd,
+			StopReason: stopReason,
+			Usage:      pendingUsage,
+			Model:      pendingModel,
+		}
+	}
+
 	for chunkPtr := range stream {
 		if chunkPtr == nil {
 			continue
@@ -415,17 +480,53 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 			return apiErr
 		}
 
-		if chunk.BifrostChatResponse == nil || len(chunk.BifrostChatResponse.Choices) == 0 {
+		if chunk.BifrostChatResponse == nil {
 			continue
 		}
 
+		// Capture model name on the first chunk that reports one.
+		if pendingModel == "" && chunk.BifrostChatResponse.Model != "" {
+			pendingModel = chunk.BifrostChatResponse.Model
+		}
+
+		// Capture usage whenever a chunk carries it. Bifrost's chat path
+		// forwards usage only on the synthetic final chunk (no choices,
+		// no finish_reason), but other providers / future versions may
+		// inline it on the same chunk that carries finish_reason; take
+		// the first non-nil usage we see and keep processing the chunk
+		// so a same-chunk finish_reason isn't dropped.
+		if chunk.BifrostChatResponse.Usage != nil && pendingUsage == nil {
+			u := chunk.BifrostChatResponse.Usage
+			pendingUsage = &types.Usage{
+				InputTokens:  u.PromptTokens,
+				OutputTokens: u.CompletionTokens,
+			}
+			if u.PromptTokensDetails != nil {
+				pendingUsage.CacheRead = u.PromptTokensDetails.CachedReadTokens
+				pendingUsage.CacheWrite = u.PromptTokensDetails.CachedWriteTokens
+			}
+			if u.CompletionTokensDetails != nil {
+				pendingUsage.ThinkingTokens = u.CompletionTokensDetails.ReasoningTokens
+			}
+		}
+
+		if len(chunk.BifrostChatResponse.Choices) == 0 {
+			// Pure usage-only synthetic chunk (bifrost's chat wrap-up).
+			// If finish_reason already arrived earlier, this is the last
+			// piece we needed — emit and exit. Otherwise keep reading,
+			// finish_reason may still be coming.
+			if pendingFinish && pendingUsage != nil {
+				emitMessageEnd()
+				return nil
+			}
+			continue
+		}
 		choice := chunk.BifrostChatResponse.Choices[0]
 
 		// Streaming delta.
 		if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
 			delta := choice.ChatStreamResponseChoice.Delta
 
-			// Text content.
 			if delta.Content != nil && *delta.Content != "" {
 				out <- types.StreamEvent{
 					Type: types.StreamEventText,
@@ -433,83 +534,31 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 				}
 			}
 
-			// Tool call deltas.
 			for _, tc := range delta.ToolCalls {
 				toolCalls = accumulateToolCall(toolCalls, tc)
 			}
 		}
 
-		// Final chunk with finish_reason and usage.
+		// finish_reason: stash it and keep reading. The usage-bearing
+		// synthetic chunk (see header comment) lands AFTER this point on
+		// the bifrost chat path, so an early return here would lose it.
 		if choice.FinishReason != nil {
-			// Emit accumulated tool calls.
-			for _, tc := range toolCalls {
-				out <- types.StreamEvent{
-					Type: types.StreamEventToolUse,
-					ToolCall: &types.ToolCall{
-						ID:    tc.id,
-						Name:  tc.name,
-						Input: tc.args.String(),
-					},
-				}
+			pendingFinish = true
+			pendingStopReason = mapFinishReason(*choice.FinishReason)
+
+			// If usage was already captured (rare: provider inlined it
+			// on or before this chunk), emit and return now.
+			if pendingUsage != nil {
+				emitMessageEnd()
+				return nil
 			}
-			toolCalls = nil
-
-			// Build usage from Bifrost response.
-			var usage *types.Usage
-			if chunk.BifrostChatResponse.Usage != nil {
-				u := chunk.BifrostChatResponse.Usage
-				usage = &types.Usage{
-					InputTokens:  u.PromptTokens,
-					OutputTokens: u.CompletionTokens,
-				}
-				if u.PromptTokensDetails != nil {
-					usage.CacheRead = u.PromptTokensDetails.CachedReadTokens
-					usage.CacheWrite = u.PromptTokensDetails.CachedWriteTokens
-				}
-				if u.CompletionTokensDetails != nil {
-					usage.ThinkingTokens = u.CompletionTokensDetails.ReasoningTokens
-				}
-			}
-
-			// Provider-side diagnostic: log whether the upstream actually
-			// returned a usage block on the final chunk. Some OpenAI-
-			// compatible gateways silently ignore stream_options.include_usage,
-			// leaving usage=nil so session metrics show zero tokens.
-			// Knowing this from logs (vs. wireshark) lets operators decide
-			// whether to switch providers or wire a fallback estimator.
-			if a.logger != nil {
-				if usage != nil {
-					a.logger.Debug("bifrost stream MessageEnd",
-						zap.String("model", chunk.BifrostChatResponse.Model),
-						zap.Bool("has_usage", true),
-						zap.Int("input_tokens", usage.InputTokens),
-						zap.Int("output_tokens", usage.OutputTokens),
-						zap.Int("cache_read", usage.CacheRead),
-						zap.Int("thinking", usage.ThinkingTokens),
-					)
-				} else {
-					a.logger.Warn("bifrost stream MessageEnd without usage",
-						zap.String("model", chunk.BifrostChatResponse.Model),
-						zap.Bool("has_usage", false),
-					)
-				}
-			}
-
-			stopReason := mapFinishReason(*choice.FinishReason)
-
-			out <- types.StreamEvent{
-				Type:       types.StreamEventMessageEnd,
-				StopReason: stopReason,
-				Usage:      usage,
-				Model:      chunk.BifrostChatResponse.Model,
-			}
-
-			// Early return — see function-level comment. The upstream
-			// channel will be drained by GC; we don't need to wait for
-			// it to close on its own (which the SDK doesn't do until
-			// socket idle timeout fires, ~400s later).
-			return nil
 		}
+	}
+
+	// Stream closed without a usage-bearing final chunk. Emit whatever we
+	// have so the engine never hangs waiting on MessageEnd.
+	if pendingFinish || len(toolCalls) > 0 {
+		emitMessageEnd()
 	}
 	return nil
 }
