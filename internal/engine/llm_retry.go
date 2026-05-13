@@ -75,7 +75,12 @@ type llmCallResult struct {
 	toolCalls  []types.ToolCall
 	stopReason string
 	lastUsage  *types.Usage
-	streamErr  error // non-nil if the call or stream failed
+	// reasoning is the thinking-mode chain-of-thought captured on the
+	// terminal MessageEnd event. Threaded onto the outgoing assistant
+	// Message so the next request can echo it back (required by
+	// DeepSeek thinking-mode models).
+	reasoning string
+	streamErr error // non-nil if the call or stream failed
 
 	// Timing breakdown captured by doSingleLLMCall. All durations are
 	// from the moment Chat() was invoked. Zero means "never observed".
@@ -469,6 +474,7 @@ func doSingleLLMCall(
 			result.endAt = time.Since(callStart)
 			result.stopReason = evt.StopReason
 			result.lastUsage = evt.Usage
+			result.reasoning = evt.Reasoning
 		case types.StreamEventError:
 			// In-stream error; will be captured by stream.Err() below.
 		}

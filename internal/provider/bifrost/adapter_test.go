@@ -969,3 +969,95 @@ func TestConsumeStream_UsageOnSyntheticFinalChunk(t *testing.T) {
 		t.Errorf("StopReason = %q, want end_turn (mapped from 'stop')", msgEnd.StopReason)
 	}
 }
+
+// TestConvertSingleMessage_AssistantReasoningRoundTrip ensures that the
+// thinking-mode reasoning_content captured from an upstream stream is
+// faithfully reattached to the wire when the message is replayed on the
+// next request. DeepSeek thinking models REJECT requests that omit it
+// ("The reasoning_content in the thinking mode must be passed back").
+func TestConvertSingleMessage_AssistantReasoningRoundTrip(t *testing.T) {
+	msg := types.Message{
+		Role: types.RoleAssistant,
+		Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "答案是 42。"},
+		},
+		ReasoningContent: "用户问 X,我推导 X = 42,所以...",
+	}
+	bf := convertSingleMessage(msg)
+	if bf == nil || bf.ChatAssistantMessage == nil {
+		t.Fatalf("expected ChatAssistantMessage to be set, got %+v", bf)
+	}
+	if bf.ChatAssistantMessage.Reasoning == nil {
+		t.Fatalf("expected Reasoning to be set on assistant wire message")
+	}
+	if *bf.ChatAssistantMessage.Reasoning != msg.ReasoningContent {
+		t.Errorf("reasoning round-trip mismatch: got %q, want %q",
+			*bf.ChatAssistantMessage.Reasoning, msg.ReasoningContent)
+	}
+}
+
+// TestConsumeStream_CapturesDeltaReasoning verifies that delta.Reasoning
+// chunks (DeepSeek's reasoning_content, mapped by bifrost SDK) are
+// accumulated and surfaced on MessageEnd.Reasoning.
+func TestConsumeStream_CapturesDeltaReasoning(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 4)
+	out := make(chan types.StreamEvent, 10)
+
+	r1, r2 := "思考 step 1。", "思考 step 2。"
+	content := "答案"
+	finish := "stop"
+
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{Reasoning: &r1},
+				},
+			}},
+		},
+	}
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{Reasoning: &r2},
+				},
+			}},
+		},
+	}
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content},
+				},
+			}},
+		},
+	}
+	stream <- &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8},
+			Choices: []schemas.BifrostResponseChoice{{
+				FinishReason: &finish,
+			}},
+		},
+	}
+	close(stream)
+
+	a := &Adapter{logger: zap.NewNop()}
+	go func() { a.consumeStream(stream, out); close(out) }()
+
+	var msgEnd *types.StreamEvent
+	for ev := range out {
+		if ev.Type == types.StreamEventMessageEnd {
+			msgEnd = &ev
+		}
+	}
+	if msgEnd == nil {
+		t.Fatal("expected MessageEnd")
+	}
+	want := r1 + r2
+	if msgEnd.Reasoning != want {
+		t.Errorf("Reasoning = %q, want %q", msgEnd.Reasoning, want)
+	}
+}

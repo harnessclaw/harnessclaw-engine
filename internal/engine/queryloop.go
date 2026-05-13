@@ -1421,8 +1421,10 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		// Emit message.stop to close this message.
 		out <- types.EngineEvent{Type: types.EngineEventMessageStop}
 
-		// Append assistant message to session.
-		assistantMsg := buildAssistantMessage(textBuf, toolCalls, ls.lastUsage)
+		// Append assistant message to session. Reasoning is threaded
+		// through so providers that require thinking-mode replay
+		// (DeepSeek) see it on the next request.
+		assistantMsg := buildAssistantMessage(textBuf, toolCalls, ls.lastUsage, llmResult.reasoning)
 		sess.AddMessage(assistantMsg)
 
 		// ---- Phase 5 (part A): Check terminal — no tool calls means LLM is done. ----
@@ -1713,7 +1715,10 @@ func (qe *QueryEngine) cumulativeUsageFor(sessionID string) types.Usage {
 }
 
 // buildAssistantMessage creates a Message from the LLM's streamed output.
-func buildAssistantMessage(text string, toolCalls []types.ToolCall, usage *types.Usage) types.Message {
+// reasoning is the thinking-mode chain-of-thought (DeepSeek / o1 / xAI);
+// preserved on the Message so the bifrost adapter can replay it on the
+// next turn — DeepSeek thinking models reject requests where it's absent.
+func buildAssistantMessage(text string, toolCalls []types.ToolCall, usage *types.Usage, reasoning string) types.Message {
 	content := make([]types.ContentBlock, 0, 1+len(toolCalls))
 
 	if text != "" {
@@ -1738,10 +1743,11 @@ func buildAssistantMessage(text string, toolCalls []types.ToolCall, usage *types
 	}
 
 	return types.Message{
-		Role:      types.RoleAssistant,
-		Content:   content,
-		CreatedAt: time.Now(),
-		Tokens:    tokens,
+		Role:             types.RoleAssistant,
+		Content:          content,
+		CreatedAt:        time.Now(),
+		Tokens:           tokens,
+		ReasoningContent: reasoning,
 	}
 }
 

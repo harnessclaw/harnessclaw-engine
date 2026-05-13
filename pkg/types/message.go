@@ -41,6 +41,16 @@ type Message struct {
 	Content   []ContentBlock `json:"content"`
 	CreatedAt time.Time      `json:"created_at"`
 	Tokens    int            `json:"tokens,omitempty"`
+
+	// ReasoningContent captures the assistant's thinking-mode output
+	// (OpenAI's `reasoning` / DeepSeek+xAI's `reasoning_content`).
+	// Some providers (notably DeepSeek thinking-mode models) REQUIRE the
+	// reasoning to be sent back on every subsequent request that
+	// includes the assistant message — omitting it returns
+	// "The reasoning_content in the thinking mode must be passed back".
+	// Engine preserves it verbatim; the bifrost adapter writes it onto
+	// the wire via ChatAssistantMessage.Reasoning.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // IncomingMessage is the standardized input from any channel.

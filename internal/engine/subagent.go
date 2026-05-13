@@ -1107,7 +1107,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 		out <- types.EngineEvent{Type: types.EngineEventMessageStop}
 
 		// Append assistant message to session.
-		assistantMsg := buildAssistantMessage(textBuf, toolCalls, ls.lastUsage)
+		assistantMsg := buildAssistantMessage(textBuf, toolCalls, ls.lastUsage, llmResult.reasoning)
 		sess.AddMessage(assistantMsg)
 
 		// ---- Phase 5 (part A): No tool calls = LLM tried to terminate ----

@@ -25,8 +25,14 @@ type StreamEvent struct {
 	// without the engine having to plumb model identity through
 	// ChatRequest.Model — which is empty in the common case (engine lets
 	// the provider's configured default win).
-	Model      string          `json:"model,omitempty"`
-	Error      error           `json:"-"`
+	Model string `json:"model,omitempty"`
+	// Reasoning is the assistant's accumulated thinking-mode output
+	// captured across the stream's delta.reasoning fields and folded
+	// into the terminal MessageEnd event. Engine forwards it onto the
+	// outgoing assistant Message so the next request can echo it back
+	// (DeepSeek thinking models reject requests where it's missing).
+	Reasoning string `json:"reasoning,omitempty"`
+	Error     error  `json:"-"`
 }
 
 // EngineEventType classifies events emitted by the query engine.

@@ -201,7 +201,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 		out <- types.EngineEvent{Type: types.EngineEventMessageDelta, StopReason: stopReason, Usage: ls.lastUsage}
 		out <- types.EngineEvent{Type: types.EngineEventMessageStop}
 
-		assistantMsg := buildAssistantMessage(textBuf, toolCalls, ls.lastUsage)
+		assistantMsg := buildAssistantMessage(textBuf, toolCalls, ls.lastUsage, llmResult.reasoning)
 		sess.AddMessage(assistantMsg)
 
 		// ---- Phase 5 (part A): No tool calls ----

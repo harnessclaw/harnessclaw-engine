@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -419,6 +420,7 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 	var pendingStopReason, pendingModel string
 	var pendingFinish bool
 	var pendingUsage *types.Usage
+	var reasoningBuf strings.Builder
 
 	flushToolCalls := func() {
 		for _, tc := range toolCalls {
@@ -436,6 +438,7 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 
 	emitMessageEnd := func() {
 		flushToolCalls()
+		reasoning := reasoningBuf.String()
 		if a.logger != nil {
 			if pendingUsage != nil {
 				a.logger.Debug("bifrost stream MessageEnd",
@@ -445,11 +448,13 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 					zap.Int("output_tokens", pendingUsage.OutputTokens),
 					zap.Int("cache_read", pendingUsage.CacheRead),
 					zap.Int("thinking", pendingUsage.ThinkingTokens),
+					zap.Int("reasoning_chars", len(reasoning)),
 				)
 			} else {
 				a.logger.Warn("bifrost stream MessageEnd without usage",
 					zap.String("model", pendingModel),
 					zap.Bool("has_usage", false),
+					zap.Int("reasoning_chars", len(reasoning)),
 				)
 			}
 		}
@@ -462,6 +467,7 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 			StopReason: stopReason,
 			Usage:      pendingUsage,
 			Model:      pendingModel,
+			Reasoning:  reasoning,
 		}
 	}
 
@@ -532,6 +538,17 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 					Type: types.StreamEventText,
 					Text: *delta.Content,
 				}
+			}
+
+			// Accumulate thinking-mode reasoning (DeepSeek / OpenAI o*
+			// / xAI all surface it via delta.Reasoning — bifrost SDK
+			// also maps DeepSeek's `reasoning_content` alias here).
+			// We don't stream it to the wire (UI doesn't render it
+			// today), but it MUST be threaded back into the next
+			// request for DeepSeek thinking models, so it lands on the
+			// terminal MessageEnd event.
+			if delta.Reasoning != nil && *delta.Reasoning != "" {
+				reasoningBuf.WriteString(*delta.Reasoning)
 			}
 
 			for _, tc := range delta.ToolCalls {
@@ -651,7 +668,20 @@ func convertSingleMessage(msg types.Message) *schemas.ChatMessage {
 		}
 	}
 
-	if len(toolCalls) > 0 {
+	// Attach assistant-only metadata: tool_calls and reasoning_content.
+	// Some providers (DeepSeek thinking-mode) REQUIRE reasoning to come
+	// back on the wire when the message is replayed; omitting it fails
+	// the request with "thinking mode must be passed back".
+	if msg.Role == types.RoleAssistant && (len(toolCalls) > 0 || msg.ReasoningContent != "") {
+		am := &schemas.ChatAssistantMessage{}
+		if len(toolCalls) > 0 {
+			am.ToolCalls = toolCalls
+		}
+		if msg.ReasoningContent != "" {
+			am.Reasoning = schemas.Ptr(msg.ReasoningContent)
+		}
+		bfMsg.ChatAssistantMessage = am
+	} else if len(toolCalls) > 0 {
 		bfMsg.ChatAssistantMessage = &schemas.ChatAssistantMessage{
 			ToolCalls: toolCalls,
 		}
