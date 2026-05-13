@@ -153,7 +153,7 @@ func (t *TavilySearchTool) CheckPermission(_ context.Context, _ json.RawMessage)
 func (t *TavilySearchTool) Execute(ctx context.Context, input json.RawMessage) (*types.ToolResult, error) {
 	var p searchInput
 	if err := json.Unmarshal(input, &p); err != nil {
-		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
 	reqBody := apiRequest{
@@ -192,7 +192,7 @@ func (t *TavilySearchTool) Execute(ctx context.Context, input json.RawMessage) (
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiEndpoint, bytes.NewReader(body))
 	if err != nil {
-		return &types.ToolResult{Content: "failed to create request: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "failed to create request: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInternal}, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+t.cfg.APIKey)
@@ -204,25 +204,35 @@ func (t *TavilySearchTool) Execute(ctx context.Context, input json.RawMessage) (
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return &types.ToolResult{Content: "request failed: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "request failed: " + err.Error(), IsError: true, ErrorType: types.ToolErrorModelError}, nil
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if err != nil {
-		return &types.ToolResult{Content: "failed to read response: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "failed to read response: " + err.Error(), IsError: true, ErrorType: types.ToolErrorModelError}, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		errType := types.ToolErrorModelError
+		switch resp.StatusCode {
+		case http.StatusTooManyRequests:
+			errType = types.ToolErrorRateLimit
+		case http.StatusServiceUnavailable, 529:
+			errType = types.ToolErrorOverloaded
+		case http.StatusUnauthorized, http.StatusForbidden:
+			errType = types.ToolErrorPermissionDenied
+		}
 		return &types.ToolResult{
-			Content: fmt.Sprintf("Tavily API error (HTTP %d): %s", resp.StatusCode, string(respBody)),
-			IsError: true,
+			Content:   fmt.Sprintf("Tavily API error (HTTP %d): %s", resp.StatusCode, string(respBody)),
+			IsError:   true,
+			ErrorType: errType,
 		}, nil
 	}
 
 	var apiResp apiResponse
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return &types.ToolResult{Content: "failed to parse response: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "failed to parse response: " + err.Error(), IsError: true, ErrorType: types.ToolErrorModelError}, nil
 	}
 
 	// Build metadata for WebSocket client (URLs for display).

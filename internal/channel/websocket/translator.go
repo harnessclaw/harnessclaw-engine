@@ -307,7 +307,16 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			inner.Output = ev.ToolResult.Content
 			if ev.ToolResult.IsError {
 				status = emitv2.StatusFailed
-				errInfo = emitv2.NewError(emitv2.ErrorTypeInternal, ev.ToolResult.Content)
+				// Trust the tool's structured ErrorType when set;
+				// otherwise default to Internal. NewError fills the
+				// user_message / retryable defaults from the registry,
+				// so the front-end gets a localized fallback even when
+				// the tool only said `ErrorType=permission_denied`.
+				typ := emitv2.ErrorType(ev.ToolResult.ErrorType)
+				if typ == "" {
+					typ = emitv2.ErrorTypeInternal
+				}
+				errInfo = emitv2.NewError(typ, ev.ToolResult.Content)
 			}
 			// Promote known metadata keys to typed fields; everything
 			// else flows through to ToolPayload.Metadata verbatim. This

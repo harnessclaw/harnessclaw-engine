@@ -4,6 +4,7 @@ package grep
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -108,7 +109,7 @@ func (t *GrepTool) ValidateInput(input json.RawMessage) error {
 func (t *GrepTool) Execute(ctx context.Context, input json.RawMessage) (*types.ToolResult, error) {
 	var gi grepInput
 	if err := json.Unmarshal(input, &gi); err != nil {
-		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
 	// Build ripgrep command.
@@ -135,11 +136,16 @@ func (t *GrepTool) Execute(ctx context.Context, input json.RawMessage) (*types.T
 			}, nil
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
-			return &types.ToolResult{Content: "Error: " + output, IsError: true}, nil
+			// rg exit 2 = invalid pattern / regex error — semantically an invalid input.
+			return &types.ToolResult{Content: "Error: " + output, IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 		}
-		// Context cancelled.
+		// Context cancelled (timeout vs user-cancel).
 		if ctx.Err() != nil {
-			return &types.ToolResult{Content: "search cancelled", IsError: true}, nil
+			errType := types.ToolErrorUserAborted
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				errType = types.ToolErrorToolTimeout
+			}
+			return &types.ToolResult{Content: "search cancelled", IsError: true, ErrorType: errType}, nil
 		}
 	}
 

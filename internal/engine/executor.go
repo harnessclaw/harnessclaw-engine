@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -276,8 +277,9 @@ func (te *ToolExecutor) executeSingle(
 				zap.Any("panic", r),
 			)
 			result = types.ToolResult{
-				Content: fmt.Sprintf("internal error: tool %s panicked", tc.Name),
-				IsError: true,
+				Content:   fmt.Sprintf("internal error: tool %s panicked", tc.Name),
+				IsError:   true,
+				ErrorType: types.ToolErrorInternal,
 			}
 		}
 	}()
@@ -286,16 +288,18 @@ func (te *ToolExecutor) executeSingle(
 	t := te.pool.Get(tc.Name)
 	if t == nil {
 		return types.ToolResult{
-			Content: fmt.Sprintf("unknown tool: %s", tc.Name),
-			IsError: true,
+			Content:   fmt.Sprintf("unknown tool: %s", tc.Name),
+			IsError:   true,
+			ErrorType: types.ToolErrorInvalidInput,
 		}
 	}
 
 	// Check enabled.
 	if !t.IsEnabled() {
 		return types.ToolResult{
-			Content: fmt.Sprintf("tool %s is disabled", tc.Name),
-			IsError: true,
+			Content:   fmt.Sprintf("tool %s is disabled", tc.Name),
+			IsError:   true,
+			ErrorType: types.ToolErrorPermissionDenied,
 		}
 	}
 
@@ -303,8 +307,9 @@ func (te *ToolExecutor) executeSingle(
 	rawInput := json.RawMessage(tc.Input)
 	if err := t.ValidateInput(rawInput); err != nil {
 		return types.ToolResult{
-			Content: fmt.Sprintf("invalid input for %s: %v", tc.Name, err),
-			IsError: true,
+			Content:   fmt.Sprintf("invalid input for %s: %v", tc.Name, err),
+			IsError:   true,
+			ErrorType: types.ToolErrorInvalidInput,
 		}
 	}
 
@@ -321,8 +326,9 @@ func (te *ToolExecutor) executeSingle(
 			permSkipped = true
 		case "deny":
 			return types.ToolResult{
-				Content: fmt.Sprintf("permission denied for %s: %s", tc.Name, preResult.Message),
-				IsError: true,
+				Content:   fmt.Sprintf("permission denied for %s: %s", tc.Name, preResult.Message),
+				IsError:   true,
+				ErrorType: types.ToolErrorPermissionDenied,
 			}
 		}
 	}
@@ -332,16 +338,18 @@ func (te *ToolExecutor) executeSingle(
 	switch permResult.Decision {
 	case permission.Deny:
 		return types.ToolResult{
-			Content: fmt.Sprintf("permission denied for %s: %s", tc.Name, permResult.Message),
-			IsError: true,
+			Content:   fmt.Sprintf("permission denied for %s: %s", tc.Name, permResult.Message),
+			IsError:   true,
+			ErrorType: types.ToolErrorPermissionDenied,
 		}
 	case permission.Ask:
 		// Send approval request to client and wait for response.
 		if te.approvalFn == nil {
 			// No approval handler — fall back to deny.
 			return types.ToolResult{
-				Content: fmt.Sprintf("tool %s requires approval: %s", tc.Name, permResult.Message),
-				IsError: true,
+				Content:   fmt.Sprintf("tool %s requires approval: %s", tc.Name, permResult.Message),
+				IsError:   true,
+				ErrorType: types.ToolErrorPermissionDenied,
 			}
 		}
 
@@ -385,8 +393,9 @@ func (te *ToolExecutor) executeSingle(
 				msg = resp.Message
 			}
 			return types.ToolResult{
-				Content: fmt.Sprintf("Permission denied for %s: %s", tc.Name, msg),
-				IsError: true,
+				Content:   fmt.Sprintf("Permission denied for %s: %s", tc.Name, msg),
+				IsError:   true,
+				ErrorType: types.ToolErrorPermissionDenied,
 			}
 		}
 		te.logger.Info("permission approved",
@@ -430,9 +439,20 @@ func (te *ToolExecutor) executeSingle(
 			zap.String("tool", tc.Name),
 			zap.Error(err),
 		)
+		// Distinguish "we ran past our deadline" from generic
+		// execute errors. The former is retryable (next attempt
+		// might get more time); the latter is opaque so we fall
+		// back to internal. errors.Is handles wrapped DeadlineExceeded.
+		errType := types.ToolErrorInternal
+		if errors.Is(err, context.DeadlineExceeded) {
+			errType = types.ToolErrorToolTimeout
+		} else if errors.Is(err, context.Canceled) {
+			errType = types.ToolErrorUserAborted
+		}
 		return types.ToolResult{
-			Content: fmt.Sprintf("tool %s failed: %v", tc.Name, err),
-			IsError: true,
+			Content:   fmt.Sprintf("tool %s failed: %v", tc.Name, err),
+			IsError:   true,
+			ErrorType: errType,
 		}
 	}
 

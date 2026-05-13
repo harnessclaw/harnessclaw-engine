@@ -82,18 +82,18 @@ func (t *FileWriteTool) ValidateInput(input json.RawMessage) error {
 func (t *FileWriteTool) Execute(_ context.Context, input json.RawMessage) (*types.ToolResult, error) {
 	var wi writeInput
 	if err := json.Unmarshal(input, &wi); err != nil {
-		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
 	content := wi.Content
 	if content == "" {
-		return &types.ToolResult{Content: "content is required", IsError: true}, nil
+		return &types.ToolResult{Content: "content is required", IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
 	// Verify target directory exists.
 	dir := filepath.Dir(wi.FilePath)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return &types.ToolResult{Content: fmt.Sprintf("directory %s does not exist; create it first", dir), IsError: true}, nil
+		return &types.ToolResult{Content: fmt.Sprintf("directory %s does not exist; create it first", dir), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
 	// Preserve existing permissions if file exists.
@@ -103,7 +103,7 @@ func (t *FileWriteTool) Execute(_ context.Context, input json.RawMessage) (*type
 	}
 
 	if err := os.WriteFile(wi.FilePath, []byte(content), perm); err != nil {
-		return &types.ToolResult{Content: "error writing file: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "error writing file: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInternal}, nil
 	}
 
 	return &types.ToolResult{

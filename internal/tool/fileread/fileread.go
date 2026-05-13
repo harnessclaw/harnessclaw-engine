@@ -77,16 +77,16 @@ func (t *FileReadTool) ValidateInput(input json.RawMessage) error {
 func (t *FileReadTool) Execute(_ context.Context, input json.RawMessage) (*types.ToolResult, error) {
 	var ri readInput
 	if err := json.Unmarshal(input, &ri); err != nil {
-		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
 	// Check file exists.
 	info, err := os.Stat(ri.FilePath)
 	if err != nil {
-		return &types.ToolResult{Content: fmt.Sprintf("file not found: %s", ri.FilePath), IsError: true}, nil
+		return &types.ToolResult{Content: fmt.Sprintf("file not found: %s", ri.FilePath), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 	if info.IsDir() {
-		return &types.ToolResult{Content: fmt.Sprintf("%s is a directory, not a file. Use ls via Bash to list directory contents.", ri.FilePath), IsError: true}, nil
+		return &types.ToolResult{Content: fmt.Sprintf("%s is a directory, not a file. Use ls via Bash to list directory contents.", ri.FilePath), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
 	// Default limits.
@@ -102,7 +102,7 @@ func (t *FileReadTool) Execute(_ context.Context, input json.RawMessage) (*types
 	// Read file with line numbers (cat -n format).
 	f, err := os.Open(ri.FilePath)
 	if err != nil {
-		return &types.ToolResult{Content: "error opening file: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "error opening file: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInternal}, nil
 	}
 	defer f.Close()
 
@@ -126,7 +126,7 @@ func (t *FileReadTool) Execute(_ context.Context, input json.RawMessage) (*types
 	}
 
 	if err := scanner.Err(); err != nil {
-		return &types.ToolResult{Content: "error reading file: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "error reading file: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInternal}, nil
 	}
 
 	if sb.Len() == 0 {

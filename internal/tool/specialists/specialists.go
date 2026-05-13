@@ -104,14 +104,14 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 			zap.Int("raw_len", len(raw)),
 			zap.String("raw_preview", truncate(string(raw), 200)),
 		)
-		return errResult("invalid input: " + err.Error()), nil
+		return errTypedResult("invalid input: "+err.Error(), types.ToolErrorInvalidInput), nil
 	}
 	if err := in.validate(); err != nil {
 		t.logger.Warn("Specialists: validate input failed",
 			zap.Error(err),
 			zap.Int("task_len", len(in.Task)),
 		)
-		return errResult(err.Error()), nil
+		return errTypedResult(err.Error(), types.ToolErrorInvalidInput), nil
 	}
 
 	// Forward parent-session context so events stitch back to emma's session
@@ -179,7 +179,10 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 			zap.Error(err),
 			zap.Duration("duration", time.Since(startTime)),
 		)
-		return errResult(fmt.Sprintf("Specialists execution failed: %s", err.Error())), nil
+		// Spawner failures are typically transient (model_error /
+		// budget / contract). Tag dependency_fail so the parent agent
+		// understands an inner orchestration step gave up.
+		return errTypedResult(fmt.Sprintf("Specialists execution failed: %s", err.Error()), types.ToolErrorDependencyFail), nil
 	}
 
 	t.logger.Info("specialists completed",
@@ -301,8 +304,16 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	}, nil
 }
 
+// errResult is a short-form failure helper. Defaults ErrorType to
+// Internal so callers that don't know better still produce a valid
+// structured error; specific paths that DO know (input parse, validate)
+// should use errTypedResult.
 func errResult(msg string) *types.ToolResult {
-	return &types.ToolResult{Content: msg, IsError: true}
+	return errTypedResult(msg, types.ToolErrorInternal)
+}
+
+func errTypedResult(msg string, errType types.ToolErrorType) *types.ToolResult {
+	return &types.ToolResult{Content: msg, IsError: true, ErrorType: errType}
 }
 
 func defaultDescription(desc string) string {

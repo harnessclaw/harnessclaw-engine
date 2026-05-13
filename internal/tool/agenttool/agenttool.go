@@ -79,7 +79,7 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 			zap.Int("raw_len", len(raw)),
 			zap.String("raw_preview", truncate(string(raw), 200)),
 		)
-		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 	if err := input.validate(); err != nil {
 		t.logger.Warn("Task: validate input failed",
@@ -87,7 +87,7 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 			zap.String("subagent_type", input.SubagentType),
 			zap.Int("prompt_len", len(input.Prompt)),
 		)
-		return &types.ToolResult{Content: err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
 	// Resolve agent type from subagent_type string.
@@ -165,8 +165,9 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		asyncSpawner, ok := t.spawner.(agent.AsyncSpawner)
 		if !ok {
 			return &types.ToolResult{
-				Content: "async spawning not supported by this engine configuration",
-				IsError: true,
+				Content:   "async spawning not supported by this engine configuration",
+				IsError:   true,
+				ErrorType: types.ToolErrorInternal,
 			}, nil
 		}
 		agentID, err := asyncSpawner.SpawnAsync(ctx, cfg)
@@ -178,8 +179,9 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 				zap.Duration("duration", time.Since(startTime)),
 			)
 			return &types.ToolResult{
-				Content: fmt.Sprintf("Failed to spawn async agent: %s", err.Error()),
-				IsError: true,
+				Content:   fmt.Sprintf("Failed to spawn async agent: %s", err.Error()),
+				IsError:   true,
+				ErrorType: types.ToolErrorInternal,
 			}, nil
 		}
 		return &types.ToolResult{
@@ -200,9 +202,14 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 			zap.Error(err),
 			zap.Duration("duration", time.Since(startTime)),
 		)
+		// Sub-agent failures from the spawner are typically transient
+		// (model_error / network / contract). Mark dependency_fail so
+		// the parent agent gets the right hint that an inner step
+		// fell over, not a malformed input.
 		return &types.ToolResult{
-			Content: fmt.Sprintf("Agent execution failed: %s", err.Error()),
-			IsError: true,
+			Content:   fmt.Sprintf("Agent execution failed: %s", err.Error()),
+			IsError:   true,
+			ErrorType: types.ToolErrorDependencyFail,
 		}, nil
 	}
 

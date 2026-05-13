@@ -114,16 +114,18 @@ func (b *BashTool) Execute(ctx context.Context, input json.RawMessage) (*types.T
 	var in bashInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return &types.ToolResult{
-			Content: fmt.Sprintf("invalid input: %v", err),
-			IsError: true,
+			Content:   fmt.Sprintf("invalid input: %v", err),
+			IsError:   true,
+			ErrorType: types.ToolErrorInvalidInput,
 		}, nil
 	}
 
 	// Background commands are not yet supported.
 	if in.RunInBG != nil && *in.RunInBG {
 		return &types.ToolResult{
-			Content: "background execution is not yet supported",
-			IsError: true,
+			Content:   "background execution is not yet supported",
+			IsError:   true,
+			ErrorType: types.ToolErrorInvalidInput,
 		}, nil
 	}
 
@@ -158,8 +160,9 @@ func (b *BashTool) Execute(ctx context.Context, input json.RawMessage) (*types.T
 	cwdFile, err := os.CreateTemp("", "bash-cwd-*")
 	if err != nil {
 		return &types.ToolResult{
-			Content: fmt.Sprintf("failed to create temp file: %v", err),
-			IsError: true,
+			Content:   fmt.Sprintf("failed to create temp file: %v", err),
+			IsError:   true,
+			ErrorType: types.ToolErrorInternal,
 		}, nil
 	}
 	cwdFilePath := cwdFile.Name()
@@ -224,9 +227,23 @@ __ec=$?; pwd -P > %s; exit $__ec`,
 
 	content = truncateOutput(content, maxOutputLen)
 
+	// Classify when the ctx ended the command. Non-ctx exit codes
+	// (e.g. command returns 1) are not IsError — the LLM reads the
+	// exit code from Metadata. Only ctx-cancel / timeout is a true
+	// tool-level failure.
+	errType := types.ToolErrorType("")
+	if isCtxErr {
+		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			errType = types.ToolErrorToolTimeout
+		} else {
+			errType = types.ToolErrorUserAborted
+		}
+	}
+
 	return &types.ToolResult{
-		Content: content,
-		IsError: isCtxErr,
+		Content:   content,
+		IsError:   isCtxErr,
+		ErrorType: errType,
 		Metadata: map[string]any{
 			"render_hint": "terminal",
 			"exit_code":   exitCode,

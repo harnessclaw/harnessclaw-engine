@@ -117,8 +117,9 @@ func (*EscalateTool) Execute(_ context.Context, raw json.RawMessage) (*types.Too
 	if err := json.Unmarshal(raw, &e); err != nil {
 		// Schema layer should have caught this; defensive only.
 		return &types.ToolResult{
-			Content: "Escalation rejected: " + err.Error(),
-			IsError: true,
+			Content:   "Escalation rejected: " + err.Error(),
+			IsError:   true,
+			ErrorType: types.ToolErrorInvalidInput,
 		}, nil
 	}
 

@@ -386,8 +386,9 @@ func expectedRoles(contract tool.TaskContract) []string {
 // the retry cap and surface to telemetry.
 func rejected(reason string) (*types.ToolResult, error) {
 	return &types.ToolResult{
-		Content: "Submission rejected: " + reason,
-		IsError: true,
+		Content:   "Submission rejected: " + reason,
+		IsError:   true,
+		ErrorType: types.ToolErrorContractFail,
 		Metadata: map[string]any{
 			"render_hint":       MetadataRenderHint,
 			MetadataKeyAccepted: false,

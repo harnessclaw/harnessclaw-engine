@@ -95,7 +95,7 @@ func (t *WebSearchTool) ValidateInput(input json.RawMessage) error {
 func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*types.ToolResult, error) {
 	var si searchInput
 	if err := json.Unmarshal(input, &si); err != nil {
-		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
 	query := strings.TrimSpace(si.Query)
@@ -127,12 +127,12 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
-		return &types.ToolResult{Content: "error encoding request: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "error encoding request: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInternal}, nil
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, signedURL, strings.NewReader(string(bodyJSON)))
 	if err != nil {
-		return &types.ToolResult{Content: "error creating request: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "error creating request: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInternal}, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -144,13 +144,16 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 			zap.Duration("elapsed", elapsed),
 			zap.Error(err),
 		)
-		return &types.ToolResult{Content: "search request failed: " + err.Error(), IsError: true}, nil
+		// Upstream HTTP transport failed (DNS / connection / TLS / read).
+		// Classify as model_error — same bucket as upstream LLM hiccups,
+		// retryable on the next dispatch.
+		return &types.ToolResult{Content: "search request failed: " + err.Error(), IsError: true, ErrorType: types.ToolErrorModelError}, nil
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
-		return &types.ToolResult{Content: "error reading response: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "error reading response: " + err.Error(), IsError: true, ErrorType: types.ToolErrorModelError}, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -160,13 +163,23 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 			zap.String("response", string(respBody)),
 			zap.Duration("elapsed", elapsed),
 		)
+		errType := types.ToolErrorModelError
+		switch resp.StatusCode {
+		case http.StatusTooManyRequests:
+			errType = types.ToolErrorRateLimit
+		case http.StatusServiceUnavailable, 529:
+			errType = types.ToolErrorOverloaded
+		case http.StatusUnauthorized, http.StatusForbidden:
+			errType = types.ToolErrorPermissionDenied
+		}
 		return &types.ToolResult{
-			Content: fmt.Sprintf("search API returned HTTP %d", resp.StatusCode),
-			IsError: true,
+			Content:   fmt.Sprintf("search API returned HTTP %d", resp.StatusCode),
+			IsError:   true,
+			ErrorType: errType,
 		}, nil
 	}
 	if err != nil {
-		return &types.ToolResult{Content: "error reading response: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "error reading response: " + err.Error(), IsError: true, ErrorType: types.ToolErrorModelError}, nil
 	}
 
 	// Parse the response and extract search results.
@@ -182,7 +195,8 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 			zap.String("query", query),
 			zap.Error(err),
 		)
-		return &types.ToolResult{Content: "error parsing search results: " + err.Error(), IsError: true}, nil
+		// Upstream returned something we can't parse — treat as transient model_error.
+		return &types.ToolResult{Content: "error parsing search results: " + err.Error(), IsError: true, ErrorType: types.ToolErrorModelError}, nil
 	}
 
 	t.logger.Info("web search success",

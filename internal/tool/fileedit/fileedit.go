@@ -84,13 +84,13 @@ func (t *FileEditTool) ValidateInput(input json.RawMessage) error {
 func (t *FileEditTool) Execute(_ context.Context, input json.RawMessage) (*types.ToolResult, error) {
 	var ei editInput
 	if err := json.Unmarshal(input, &ei); err != nil {
-		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
 	// Read file.
 	content, err := os.ReadFile(ei.FilePath)
 	if err != nil {
-		return &types.ToolResult{Content: "error reading file: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "error reading file: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
 	fileContent := string(content)
@@ -101,21 +101,24 @@ func (t *FileEditTool) Execute(_ context.Context, input json.RawMessage) (*types
 		count := strings.Count(fileContent, ei.OldString)
 		if count == 0 {
 			return &types.ToolResult{
-				Content: fmt.Sprintf("old_string not found in %s. Make sure it matches exactly, including whitespace and indentation.", ei.FilePath),
-				IsError: true,
+				Content:   fmt.Sprintf("old_string not found in %s. Make sure it matches exactly, including whitespace and indentation.", ei.FilePath),
+				IsError:   true,
+				ErrorType: types.ToolErrorInvalidInput,
 			}, nil
 		}
 		if count > 1 {
 			return &types.ToolResult{
-				Content: fmt.Sprintf("old_string found %d times in %s. Provide more context to make it unique, or use replace_all.", count, ei.FilePath),
-				IsError: true,
+				Content:   fmt.Sprintf("old_string found %d times in %s. Provide more context to make it unique, or use replace_all.", count, ei.FilePath),
+				IsError:   true,
+				ErrorType: types.ToolErrorInvalidInput,
 			}, nil
 		}
 	} else {
 		if !strings.Contains(fileContent, ei.OldString) {
 			return &types.ToolResult{
-				Content: fmt.Sprintf("old_string not found in %s.", ei.FilePath),
-				IsError: true,
+				Content:   fmt.Sprintf("old_string not found in %s.", ei.FilePath),
+				IsError:   true,
+				ErrorType: types.ToolErrorInvalidInput,
 			}, nil
 		}
 	}
@@ -135,7 +138,7 @@ func (t *FileEditTool) Execute(_ context.Context, input json.RawMessage) (*types
 		perm = info.Mode()
 	}
 	if err := os.WriteFile(ei.FilePath, []byte(newContent), perm); err != nil {
-		return &types.ToolResult{Content: "error writing file: " + err.Error(), IsError: true}, nil
+		return &types.ToolResult{Content: "error writing file: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInternal}, nil
 	}
 
 	return &types.ToolResult{

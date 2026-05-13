@@ -149,7 +149,7 @@ func isHex(c rune) bool {
 func (*ReadTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
 	var in readInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return errResult("invalid input: " + err.Error()), nil
+		return errResultTyped("invalid input: "+err.Error(), types.ToolErrorInvalidInput), nil
 	}
 
 	store, ok := getStore(ctx)
@@ -165,10 +165,13 @@ func (*ReadTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolR
 	a, err := store.Get(ctx, in.ArtifactID)
 	if err != nil {
 		if errors.Is(err, artifact.ErrNotFound) {
-			return errResult(fmt.Sprintf("artifact %s not found (may have expired or never existed)", in.ArtifactID)), nil
+			// LLM referenced a non-existent id — that's an invalid input
+			// from its side. Surfacing as invalid_input lets the LLM /
+			// agent retry the prior step rather than abort everything.
+			return errResultTyped(fmt.Sprintf("artifact %s not found (may have expired or never existed)", in.ArtifactID), types.ToolErrorInvalidInput), nil
 		}
 		if errors.Is(err, artifact.ErrAccessDenied) {
-			return errResult(fmt.Sprintf("artifact %s is not readable in this scope", in.ArtifactID)), nil
+			return errResultTyped(fmt.Sprintf("artifact %s is not readable in this scope", in.ArtifactID), types.ToolErrorPermissionDenied), nil
 		}
 		return errResult("read artifact: " + err.Error()), nil
 	}

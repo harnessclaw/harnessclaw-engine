@@ -171,7 +171,7 @@ func (*WriteTool) ValidateInput(raw json.RawMessage) error {
 func (*WriteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
 	var in writeInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return errResult("invalid input: " + err.Error()), nil
+		return errResultTyped("invalid input: "+err.Error(), types.ToolErrorInvalidInput), nil
 	}
 
 	store, ok := getStore(ctx)
