@@ -72,7 +72,7 @@ func setupTest(t *testing.T) (*Handler, string) {
 	return New(mgr, cfgPath, zap.NewNop()), cfgPath
 }
 
-func TestGet_Providers_Lists_With_MaskedKey(t *testing.T) {
+func TestGet_Providers_ReturnsAPIKeyVerbatim(t *testing.T) {
 	h, _ := setupTest(t)
 
 	req := httptest.NewRequest("GET", "/api/v1/providers", nil)
@@ -83,11 +83,16 @@ func TestGet_Providers_Lists_With_MaskedKey(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if strings.Contains(body, "sk-alpha-old-key-xxxx") {
-		t.Fatalf("response leaks raw api_key:\n%s", body)
+	// API is intentionally not redacted — clients pre-fill PATCH
+	// forms with the existing key.
+	if !strings.Contains(body, "sk-alpha-old-key-xxxx") {
+		t.Fatalf("response missing raw api_key:\n%s", body)
 	}
-	if !strings.Contains(body, "api_key_mask") {
-		t.Fatalf("response missing api_key_mask field:\n%s", body)
+	if !strings.Contains(body, `"api_key"`) {
+		t.Fatalf("response missing api_key field:\n%s", body)
+	}
+	if strings.Contains(body, "api_key_mask") {
+		t.Fatalf("response still emits api_key_mask field (should be removed):\n%s", body)
 	}
 }
 

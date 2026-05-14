@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -127,7 +126,9 @@ func (m *Manager) CountTokens(ctx context.Context, msgs []types.Message) (int, e
 
 // ProvidersSnapshot returns every provider configured in
 // llm.providers (NOT just the ones in the current chain). API keys
-// are masked. Sorted by name for stable client UX.
+// are returned in plain text — the API is intentionally not
+// redacted; gate access to /api/v1/providers at the network layer
+// if key exposure is a concern. Sorted by name for stable client UX.
 func (m *Manager) ProvidersSnapshot() []ProviderSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -137,7 +138,7 @@ func (m *Manager) ProvidersSnapshot() []ProviderSnapshot {
 			Name:        name,
 			Model:       p.Model,
 			BaseURL:     p.BaseURL,
-			APIKeyMask:  maskAPIKey(p.APIKey),
+			APIKey:      p.APIKey,
 			MaxTokens:   p.MaxTokens,
 			Temperature: p.Temperature,
 			InChain:     containsString(m.cfg.FallbackChain, name),
@@ -347,15 +348,6 @@ func cloneLLMConfig(c config.LLMConfig) config.LLMConfig {
 		}
 	}
 	return out
-}
-
-// maskAPIKey reveals the first 4 and last 4 chars of a key with
-// stars in between. Short keys (≤8 chars) are fully masked.
-func maskAPIKey(k string) string {
-	if len(k) <= 8 {
-		return strings.Repeat("*", len(k))
-	}
-	return k[:4] + strings.Repeat("*", len(k)-8) + k[len(k)-4:]
 }
 
 func containsString(s []string, want string) bool {

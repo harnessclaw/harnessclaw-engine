@@ -3,13 +3,15 @@ package manager
 import "harnessclaw-go/internal/provider/failover"
 
 // ProviderSnapshot is the API-facing view of a single provider
-// configuration. APIKeyMask is the only field exposed publicly to
-// avoid leaking secrets through the management endpoint.
+// configuration. APIKey is returned verbatim — the management API
+// is intentionally not redacted so the client can pre-fill PATCH
+// forms with the existing value. Protect /api/v1/providers with
+// network-level controls if leaking keys is a concern.
 type ProviderSnapshot struct {
 	Name        string  `json:"name"`
 	Model       string  `json:"model"`
 	BaseURL     string  `json:"base_url"`
-	APIKeyMask  string  `json:"api_key_mask"`
+	APIKey      string  `json:"api_key"`
 	MaxTokens   int     `json:"max_tokens"`
 	Temperature float64 `json:"temperature,omitempty"`
 	// InChain reports whether the provider currently participates

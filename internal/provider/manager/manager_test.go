@@ -190,15 +190,16 @@ func TestUpdateProvider_BuildFailureLeavesStateAlone(t *testing.T) {
 	}
 }
 
-func TestProvidersSnapshot_MasksAPIKeys(t *testing.T) {
+func TestProvidersSnapshot_ReturnsAPIKeyVerbatim(t *testing.T) {
 	fb := newFakeBuilder()
 	m := mustNewManager(t, baseCfg(), fb)
+	want := map[string]string{
+		"alpha": "sk-aaaaaaaaaaaaaaaa",
+		"beta":  "sk-bbbbbbbbbbbbbbbb",
+	}
 	for _, s := range m.ProvidersSnapshot() {
-		if s.APIKeyMask == "" {
-			t.Fatalf("provider %s: api_key_mask empty", s.Name)
-		}
-		if s.APIKeyMask == "sk-aaaaaaaaaaaaaaaa" || s.APIKeyMask == "sk-bbbbbbbbbbbbbbbb" {
-			t.Fatalf("provider %s: api_key not masked: %q", s.Name, s.APIKeyMask)
+		if s.APIKey != want[s.Name] {
+			t.Fatalf("provider %s: api_key = %q, want %q", s.Name, s.APIKey, want[s.Name])
 		}
 	}
 }

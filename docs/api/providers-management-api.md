@@ -5,6 +5,7 @@
 > | 日期 | 变更 |
 > |------|------|
 > | 2026-05-14 | 初版：`GET /api/v1/providers` / `GET|PUT /api/v1/providers/fallback-chain` / `PATCH /api/v1/providers/{name}` |
+> | 2026-05-14 | `api_key` 改为明文返回（去掉脱敏），方便客户端 PATCH 表单回填 |
 
 Providers Management API 让客户端在运行时**热生效**地修改服务端的 LLM provider 配置 —— 改完立即作用于后续请求，同时持久化回 `config_self.yaml`，下次重启不丢失。
 
@@ -50,7 +51,7 @@ Providers Management API 让客户端在运行时**热生效**地修改服务端
 | `name` | string | provider 名（= `llm.providers` 的 map key）|
 | `model` | string | 模型 ID（按 provider 协议解释，如 `deepseek-v4-flash`）|
 | `base_url` | string | provider HTTP endpoint |
-| `api_key_mask` | string | 脱敏后的 API key：前 4 + `*` 中间 + 后 4 字符；≤8 字符时全 `*`。**真实 key 不会被任何接口返回。** |
+| `api_key` | string | **明文** API key。本 API 不做脱敏，方便客户端 PATCH 表单回填编辑。⚠️ **务必在网络层限制 `/api/v1/providers*` 的访问**（内网 / 本机 / 反向代理鉴权），不要暴露到公网。 |
 | `max_tokens` | int | 单次响应允许的最大 token 数 |
 | `temperature` | float | 采样温度（0.0–2.0），0 表示沿用 provider 默认 |
 | `in_chain` | bool | 该 provider 是否在当前 `fallback_chain` 中 |
@@ -82,7 +83,7 @@ Providers Management API 让客户端在运行时**热生效**地修改服务端
 
 `GET /api/v1/providers`
 
-列出 `llm.providers` 下声明的全部 provider（**包括未在 chain 中的**），api_key 已脱敏。客户端用来：
+列出 `llm.providers` 下声明的全部 provider（**包括未在 chain 中的**），api_key 以明文返回。客户端用来：
 - 渲染 provider 选择器
 - 显示当前 model / base_url
 - 标识哪些已在 chain 中（`in_chain`）
@@ -98,7 +99,7 @@ Providers Management API 让客户端在运行时**热生效**地修改服务端
         "name": "anthropic",
         "model": "claude-3-haiku",
         "base_url": "http://127.0.0.1:1",
-        "api_key_mask": "*******",
+        "api_key": "sk-fake",
         "max_tokens": 1000,
         "in_chain": true
       },
@@ -106,7 +107,7 @@ Providers Management API 让客户端在运行时**热生效**地修改服务端
         "name": "openai",
         "model": "deepseek-v4-flash",
         "base_url": "https://api.deepseek.com",
-        "api_key_mask": "sk-c***************************7058",
+        "api_key": "sk-c75ca2a47b4c41609e9ec751f9a77058",
         "max_tokens": 100000,
         "in_chain": true
       }
