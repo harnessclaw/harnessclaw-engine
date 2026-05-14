@@ -43,10 +43,12 @@ func newProviderState(p cooldownPolicy) *providerState {
 	return &providerState{policy: p}
 }
 
-// healthy reports whether the provider may be used at the given moment
-// (i.e. not currently inside an active cooldown window).
-func (s *providerState) healthy(now time.Time) bool {
-	return !s.tripped(now)
+// healthy reports whether the provider has NEVER been tripped (or
+// has been explicitly recovered). A "cooldown expired but not yet
+// successfully probed" provider is NOT healthy — see shouldProbe.
+// Strictly mutually exclusive with tripped / shouldProbe.
+func (s *providerState) healthy(_ time.Time) bool {
+	return s.trippedUntil.IsZero()
 }
 
 // tripped reports whether the provider is currently inside an active
@@ -57,7 +59,8 @@ func (s *providerState) tripped(now time.Time) bool {
 
 // shouldProbe reports whether the provider was tripped at some point
 // AND its cooldown has now expired — i.e. the dispatcher is allowed
-// to use this provider again as a probe.
+// to use this provider again as a probe. A successful probe call
+// recover()s the state, returning the provider to Healthy.
 func (s *providerState) shouldProbe(now time.Time) bool {
 	return !s.trippedUntil.IsZero() && !now.Before(s.trippedUntil)
 }
