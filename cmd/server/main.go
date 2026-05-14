@@ -18,6 +18,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -46,9 +47,11 @@ import (
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
+	"harnessclaw-go/internal/api/providersmgmt"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/bifrost"
 	"harnessclaw-go/internal/provider/failover"
+	"harnessclaw-go/internal/provider/manager"
 	modelregistry "harnessclaw-go/internal/provider/registry"
 	providerstats "harnessclaw-go/internal/provider/stats"
 	"harnessclaw-go/internal/router"
@@ -243,7 +246,7 @@ func main() {
 	}
 	modelReg := modelregistry.NewRegistry(regManifest)
 
-	llmProvider := initProvider(cfg.LLM, modelReg, logger)
+	llmProvider, providerMgr := initProvider(cfg.LLM, modelReg, logger)
 
 	// Session-metrics registry: a single in-process registry holds the
 	// per-session Tracker (cumulative LLM/tool/sub-agent counters). The
@@ -557,12 +560,22 @@ func main() {
 	metricsHandler := sessionmetrics.New(statsRegistry, store, logger)
 	modelsHandler := modelsregistry.New(modelReg, logger)
 
+	// providersHandler is non-nil only when running in multi-provider
+	// mode (providerMgr != nil). Single-provider deployments don't
+	// mount the runtime providers API because there's nothing to
+	// hot-swap and persisting an empty fallback_chain would be
+	// surprising.
+	var providersHandler http.Handler
+	if providerMgr != nil {
+		providersHandler = providersmgmt.New(providerMgr, *configPath, logger)
+	}
+
 	var consoleServer *api.Server
 	if cfg.Console.Enabled {
 		consoleServer = api.NewServer(api.ServerConfig{
 			Host: cfg.Console.Host,
 			Port: cfg.Console.Port,
-		}, agentSvc, metricsHandler, modelsHandler, logger)
+		}, agentSvc, metricsHandler, modelsHandler, providersHandler, logger)
 		go func() {
 			if err := consoleServer.Start(); err != nil {
 				logger.Error("console API server exited", zap.Error(err))
@@ -834,55 +847,58 @@ func runWaitJanitor(ctx context.Context, p *prompter.Prompter, logger *zap.Logge
 // initProvider builds the engine-facing provider.Provider. Two paths:
 //
 //   1. Single-provider deployment (FallbackChain empty or one entry):
-//      build one bifrost adapter and return it directly. Behavior is
-//      identical to the pre-failover wiring — engine retry uses its
-//      full default budget, no Failover layer in the call path.
+//      build one bifrost adapter and return it directly. Behavior
+//      identical to the pre-failover wiring. The second return value
+//      is nil — no Manager, no providersmgmt API.
 //
 //   2. Multi-provider deployment (FallbackChain has ≥ 2 entries):
-//      build one bifrost adapter per chain entry, wrap them in a
-//      Failover dispatcher configured from llm.health.*. The
-//      dispatcher implements provider.Provider so the rest of the
-//      engine sees no change.
-func initProvider(cfg config.LLMConfig, modelReg *modelregistry.Registry, logger *zap.Logger) provider.Provider {
+//      construct a manager.Manager that wraps a hot-swappable
+//      Failover dispatcher. The Manager implements provider.Provider
+//      so the engine sees no change; the second return value is the
+//      typed *manager.Manager so cmd/server can mount the
+//      providersmgmt API against it.
+func initProvider(cfg config.LLMConfig, modelReg *modelregistry.Registry, logger *zap.Logger) (provider.Provider, *manager.Manager) {
 	chain := cfg.FallbackChain
-	if len(chain) == 0 {
+	if len(chain) <= 1 {
 		name := cfg.DefaultProvider
 		if name == "" {
 			name = "anthropic"
 		}
-		chain = []string{name}
+		if len(chain) == 1 {
+			name = chain[0]
+		}
+		provCfg, ok := cfg.Providers[name]
+		if !ok {
+			logger.Fatal("provider config not found",
+				zap.String("provider", name),
+				zap.Any("available", mapKeys(cfg.Providers)),
+			)
+		}
+		adapter, err := buildBifrostAdapter(name, provCfg, cfg, modelReg, logger, true /*isPrimary*/)
+		if err != nil {
+			logger.Fatal("build bifrost adapter",
+				zap.String("name", name),
+				zap.Error(err),
+			)
+		}
+		logger.Info("LLM provider initialized (single)", zap.String("provider", name))
+		return adapter, nil
 	}
 
-	// Single-provider path: skip Failover entirely.
-	if len(chain) == 1 {
-		adapter := buildBifrostAdapter(chain[0], cfg, modelReg, logger, true /*isPrimary*/)
-		logger.Info("LLM provider initialized (single)",
-			zap.String("provider", chain[0]),
-		)
-		return adapter
+	// Multi-provider: wrap a Manager around Failover.
+	adapterBuilder := func(name string, provCfg config.ProviderConfig, isPrimary bool) (*bifrost.Adapter, error) {
+		return buildBifrostAdapter(name, provCfg, cfg, modelReg, logger, isPrimary)
 	}
-
-	// Multi-provider path: build a chain → wrap in Failover.
-	innerProviders := make([]provider.Provider, 0, len(chain))
-	for i, name := range chain {
-		isPrimary := i == 0
-		innerProviders = append(innerProviders, buildBifrostAdapter(name, cfg, modelReg, logger, isPrimary))
+	policyBuilder := func(h config.ProviderHealthConfig) (failover.RetryPolicy, failover.RetryPolicy, failover.RetryPolicy) {
+		return failoverPolicyFromBudget("fast", h.PrimaryBudget, failover.FastPolicy),
+			failoverPolicyFromBudget("medium", h.LastHealthyBudget, failover.MediumPolicy),
+			failoverPolicyFromBudget("probe", h.ProbeBudget, failover.ProbePolicy)
 	}
-
-	fo, err := failover.New(failover.Config{
-		Providers:      innerProviders,
-		CooldownBase:   cfg.Health.CooldownBase,
-		CooldownMax:    cfg.Health.CooldownMax,
-		CooldownFactor: cfg.Health.CooldownFactor,
-		FastPolicy:     failoverPolicyFromBudget("fast", cfg.Health.PrimaryBudget, failover.FastPolicy),
-		MediumPolicy:   failoverPolicyFromBudget("medium", cfg.Health.LastHealthyBudget, failover.MediumPolicy),
-		ProbePolicy:    failoverPolicyFromBudget("probe", cfg.Health.ProbeBudget, failover.ProbePolicy),
-		Logger:         logger,
-	})
+	mgr, err := manager.New(cfg, modelReg, adapterBuilder, policyBuilder, logger)
 	if err != nil {
-		logger.Fatal("failed to build failover dispatcher", zap.Error(err))
+		logger.Fatal("failed to build provider manager", zap.Error(err))
 	}
-	logger.Info("LLM provider failover chain ready",
+	logger.Info("LLM provider manager ready (hot-swap enabled)",
 		zap.Strings("chain", chain),
 		zap.Duration("cooldown_base", cfg.Health.CooldownBase),
 		zap.Duration("cooldown_max", cfg.Health.CooldownMax),
@@ -891,29 +907,27 @@ func initProvider(cfg config.LLMConfig, modelReg *modelregistry.Registry, logger
 		zap.Duration("last_healthy_budget", cfg.Health.LastHealthyBudget),
 		zap.Duration("probe_budget", cfg.Health.ProbeBudget),
 	)
-	return fo
+	return mgr, mgr
 }
 
-// buildBifrostAdapter constructs one Bifrost adapter for a single
-// chain entry. Only the primary entry inherits llm.bifrost.* override
-// fields (Model / APIKey / BaseURL / FallbackModel) — these were
-// historically scoped to "the one provider"; fallback chain entries
-// always use their own llm.providers[name] config exclusively.
+// buildBifrostAdapter constructs one Bifrost adapter from a typed
+// ProviderConfig. Only the primary entry inherits llm.bifrost.*
+// override fields (Model / APIKey / BaseURL / FallbackModel) — these
+// were historically scoped to "the one provider"; fallback chain
+// entries always use their own llm.providers[name] config exclusively.
+//
+// Returns (adapter, nil) on success; (nil, err) on failure. Callers
+// decide whether to Fatal (single-provider path, where startup
+// failure is unrecoverable) or surface the error (Manager runtime
+// rebuild, where a bad patch should not crash the server).
 func buildBifrostAdapter(
 	name string,
+	provCfg config.ProviderConfig,
 	cfg config.LLMConfig,
 	modelReg *modelregistry.Registry,
 	logger *zap.Logger,
 	isPrimary bool,
-) *bifrost.Adapter {
-	provCfg, ok := cfg.Providers[name]
-	if !ok {
-		logger.Fatal("provider config not found",
-			zap.String("provider", name),
-			zap.Any("available", mapKeys(cfg.Providers)),
-		)
-	}
-
+) (*bifrost.Adapter, error) {
 	bfProvider := mapBifrostProvider("", name)
 	bfModel := provCfg.Model
 	bfAPIKey := provCfg.APIKey
@@ -959,10 +973,7 @@ func buildBifrostAdapter(
 		Logger:         logger,
 	})
 	if err != nil {
-		logger.Fatal("failed to create bifrost adapter",
-			zap.String("name", name),
-			zap.Error(err),
-		)
+		return nil, err
 	}
 	thinkingState := "default"
 	if provCfg.EnableThinking != nil {
@@ -981,7 +992,7 @@ func buildBifrostAdapter(
 		zap.String("thinking", thinkingState),
 		zap.Bool("primary", isPrimary),
 	)
-	return adapter
+	return adapter, nil
 }
 
 // failoverPolicyFromBudget converts a config Duration into a
