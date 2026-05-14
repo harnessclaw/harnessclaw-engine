@@ -26,6 +26,13 @@ type Config struct {
 	// Must be non-empty.
 	Providers []provider.Provider
 
+	// Names is parallel to Providers; entry i holds the chain entry
+	// name (= llm.providers map key) so logs and Snapshot can
+	// identify providers by their configured name instead of the
+	// underlying adapter's generic Name(). When nil or empty,
+	// names default to "chain[i]".
+	Names []string
+
 	// CooldownBase / CooldownMax / CooldownFactor configure the
 	// per-provider exponential-backoff cooldown schedule. Zero
 	// values use built-in defaults (30s / 10m / 2).
@@ -50,6 +57,7 @@ type Config struct {
 // and policy-driven per-call budgets.
 type Failover struct {
 	providers    []provider.Provider
+	names        []string
 	logger       *zap.Logger
 	fastPolicy   RetryPolicy
 	mediumPolicy RetryPolicy
@@ -102,8 +110,17 @@ func New(cfg Config) (*Failover, error) {
 	for i := range state {
 		state[i] = newProviderState(cooldown)
 	}
+	names := make([]string, len(cfg.Providers))
+	for i := range names {
+		if i < len(cfg.Names) && cfg.Names[i] != "" {
+			names[i] = cfg.Names[i]
+		} else {
+			names[i] = fmt.Sprintf("chain[%d]", i)
+		}
+	}
 	return &Failover{
 		providers:    cfg.Providers,
+		names:        names,
 		logger:       logger,
 		fastPolicy:   fast,
 		mediumPolicy: medium,
@@ -152,8 +169,9 @@ func (f *Failover) Chat(ctx context.Context, req *provider.ChatRequest) (*provid
 		}
 		tried[idx] = true
 
+		name := f.names[idx]
 		if f.pickHook != nil {
-			f.pickHook(idx, prov.Name(), policy, probing)
+			f.pickHook(idx, name, policy, probing)
 		}
 
 		attemptCtx, bt := armBudget(ctx, policy.Budget)
@@ -171,7 +189,7 @@ func (f *Failover) Chat(ctx context.Context, req *provider.ChatRequest) (*provid
 			if probing {
 				f.logger.Info("failover: probing provider serving call",
 					zap.Int("index", idx),
-					zap.String("name", prov.Name()),
+					zap.String("name", name),
 					zap.String("policy", policy.Name),
 				)
 			}
@@ -191,7 +209,7 @@ func (f *Failover) Chat(ctx context.Context, req *provider.ChatRequest) (*provid
 		f.recordFailure(idx, err)
 		f.logger.Warn("failover: provider tripped, trying next",
 			zap.Int("index", idx),
-			zap.String("name", prov.Name()),
+			zap.String("name", name),
 			zap.String("policy", policy.Name),
 			zap.Error(err),
 		)
@@ -308,7 +326,7 @@ func (f *Failover) recordSuccess(idx int) {
 	if wasTripped {
 		f.logger.Info("failover: provider recovered",
 			zap.Int("index", idx),
-			zap.String("name", f.providers[idx].Name()),
+			zap.String("name", f.names[idx]),
 		)
 	}
 }
@@ -326,6 +344,57 @@ func (f *Failover) state_(idx int) *providerState { //nolint:unused
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.state[idx]
+}
+
+// ProviderHealth is a per-provider snapshot exposed to the
+// management API. The shape is a stable JSON contract for the
+// console client.
+type ProviderHealth struct {
+	// Index in the chain (0 = primary).
+	Index int `json:"index"`
+	// Name is the provider name as configured in llm.providers.
+	Name string `json:"name"`
+	// State is one of "healthy" / "tripped" / "ready_to_probe".
+	// Strictly mutually exclusive — see providerState semantics.
+	State string `json:"state"`
+	// TrippedUntil is RFC3339 timestamp when cooldown expires
+	// (empty when never tripped).
+	TrippedUntil string `json:"tripped_until,omitempty"`
+	// CooldownSeconds is the most recent cooldown duration applied
+	// (0 when never tripped).
+	CooldownSeconds int `json:"cooldown_seconds"`
+	// ConsecutiveFailures since the last recover().
+	ConsecutiveFailures int `json:"consecutive_failures"`
+}
+
+// Snapshot returns a point-in-time view of every provider's health
+// state. Safe to call concurrently with Chat — runs under f.mu.
+func (f *Failover) Snapshot() []ProviderHealth {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := f.now()
+	out := make([]ProviderHealth, len(f.state))
+	for i, s := range f.state {
+		state := "healthy"
+		var trippedUntil string
+		switch {
+		case s.tripped(now):
+			state = "tripped"
+			trippedUntil = s.trippedUntil.UTC().Format(time.RFC3339)
+		case s.shouldProbe(now):
+			state = "ready_to_probe"
+			trippedUntil = s.trippedUntil.UTC().Format(time.RFC3339)
+		}
+		out[i] = ProviderHealth{
+			Index:               i,
+			Name:                f.names[i],
+			State:               state,
+			TrippedUntil:        trippedUntil,
+			CooldownSeconds:     int(s.currentCooldown / time.Second),
+			ConsecutiveFailures: s.consecutiveFails,
+		}
+	}
+	return out
 }
 
 // ----- budget tracker ---------------------------------------------
