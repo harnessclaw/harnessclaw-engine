@@ -48,6 +48,48 @@ llm:
 #      # is a no-op rather than an error.
 #      # enable_thinking: false
 
+  # ---------------------------------------------------------------------------
+  # 多 Providers 失败降级 (fallback_chain) — 取消注释启用
+  # ---------------------------------------------------------------------------
+  # 思路：在 providers 下声明多个 provider；用 fallback_chain 给一个优先级队列。
+  # 请求先打主 (chain[0])；遇到可降级错误 (429/5xx/529/网络抖动/连续 529 触发的
+  # fallback 信号 / 网关首字节超时 / 401/403) 时，trip 该 provider 并 routes 到
+  # 下一个。冷却到期后下一次请求把 tripped provider 作为探活 (Probe budget=5s)；
+  # 探活成功 → 恢复并重新作为主；失败 → 冷却指数翻倍。
+  #
+  # 不会触发降级的错误：prompt_too_long / max_output_tokens (payload 问题，换
+  # provider 也会失败) 以及 ctx.Canceled / DeadlineExceeded (调用方主动取消)。
+  #
+  # 当 fallback_chain 为空或只有 1 项时，跳过 Failover 直接走单 provider 路径，
+  # 行为与现有部署完全一致。
+  #
+  # 示例：
+  # fallback_chain:
+  #   - anthropic     # 主
+  #   - openai        # 备 1
+  #   - openrouter    # 备 2
+
+  # ---------------------------------------------------------------------------
+  # Health：Failover 健康检查与降级行为调优 (全部可省略，用默认值)
+  # ---------------------------------------------------------------------------
+  # health:
+  #   # 冷却调度 (per-provider 状态机)
+  #   cooldown_base:    "30s"     # 首次 trip 的冷却
+  #   cooldown_max:     "10m"     # 冷却上限
+  #   cooldown_factor:  2          # 连续 trip 的冷却倍率
+  #
+  #   # 单次 provider 调用的墙钟预算
+  #   primary_budget:        "15s"  # Fast — 主 healthy 时 (有备可切，激进快切)
+  #   last_healthy_budget:   "30s"  # Medium — 最后一个 healthy 或 Tier 3 兜底
+  #   probe_budget:          "5s"   # Probe — 探活 (冷却已过的 trip provider)
+  #
+  # 设计要点：
+  #   - "主 budget 15s" 不是说主只能等 15s 完成响应，而是 Failover 层面给主的
+  #     调用上限——超过 15s 视为失败、切到备。LLM 正常请求首字节 1-5s，15s
+  #     给单次抖动留了余量；如果主总是慢，把 primary_budget 调到 30s 或更大。
+  #   - 单 provider 部署 (fallback_chain 留空) 不走这套，等价于现有 retry 默认。
+  #   - 健康状态全部通过真实请求驱动 (被动)；没有后台拨测，零额外 token。
+
 # --- Query Engine ---
 engine:
   max_turns: 50
