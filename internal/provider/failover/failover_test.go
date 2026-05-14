@@ -30,9 +30,11 @@ func successResponse() mock.Response {
 func newForTest(t *testing.T, provs ...provider.Provider) *Failover {
 	t.Helper()
 	fo, err := New(Config{
-		Providers: provs,
-		Cooldown:  cooldownPolicy{base: 30 * time.Second, max: 5 * time.Minute, factor: 2},
-		Logger:    zap.NewNop(),
+		Providers:      provs,
+		CooldownBase:   30 * time.Second,
+		CooldownMax:    5 * time.Minute,
+		CooldownFactor: 2,
+		Logger:         zap.NewNop(),
 	})
 	if err != nil {
 		t.Fatalf("failover.New err = %v", err)

@@ -26,9 +26,12 @@ type Config struct {
 	// Must be non-empty.
 	Providers []provider.Provider
 
-	// Cooldown configures the per-provider exponential backoff.
-	// Zero value uses defaultCooldownPolicy().
-	Cooldown cooldownPolicy
+	// CooldownBase / CooldownMax / CooldownFactor configure the
+	// per-provider exponential-backoff cooldown schedule. Zero
+	// values use built-in defaults (30s / 10m / 2).
+	CooldownBase   time.Duration
+	CooldownMax    time.Duration
+	CooldownFactor int
 
 	// FastPolicy / MediumPolicy / ProbePolicy override the package
 	// defaults (FastPolicy / MediumPolicy / ProbePolicy variables).
@@ -73,9 +76,15 @@ func New(cfg Config) (*Failover, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	cooldown := cfg.Cooldown
-	if cooldown.base == 0 {
-		cooldown = defaultCooldownPolicy()
+	cooldown := defaultCooldownPolicy()
+	if cfg.CooldownBase > 0 {
+		cooldown.base = cfg.CooldownBase
+	}
+	if cfg.CooldownMax > 0 {
+		cooldown.max = cfg.CooldownMax
+	}
+	if cfg.CooldownFactor > 0 {
+		cooldown.factor = cfg.CooldownFactor
 	}
 	fast := cfg.FastPolicy
 	if fast == (RetryPolicy{}) {
