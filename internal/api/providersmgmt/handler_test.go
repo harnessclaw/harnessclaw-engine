@@ -30,11 +30,13 @@ llm:
   providers:
     # alpha is primary
     alpha:
+      type: anthropic
       base_url: "https://a.example"
       api_key: "sk-alpha-old-key-xxxx"
       model: "model-a"
       max_tokens: 4096
     beta:
+      type: openai
       base_url: "https://b.example"
       api_key: "sk-beta-old-key-xxxx"
       model: "model-b"
@@ -210,6 +212,38 @@ func TestPatch_Provider_UpdatesAndPersists(t *testing.T) {
 	b := cfg.LLM.Providers["beta"]
 	if b.APIKey != "sk-beta-old-key-xxxx" {
 		t.Fatalf("beta clobbered: %+v", b)
+	}
+}
+
+func TestPatch_Provider_TypeSwitch(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	body, _ := json.Marshal(map[string]any{"type": "openai"})
+	req := httptest.NewRequest("PATCH", "/api/v1/providers/alpha", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.Providers["alpha"].Type != "openai" {
+		t.Fatalf("alpha type after patch = %q, want openai", cfg.LLM.Providers["alpha"].Type)
+	}
+}
+
+func TestPatch_Provider_UnknownTypeRejected(t *testing.T) {
+	h, _ := setupTest(t)
+	body, _ := json.Marshal(map[string]any{"type": "kimi"})
+	req := httptest.NewRequest("PATCH", "/api/v1/providers/alpha", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for unknown type", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "not allowed") {
+		t.Fatalf("response should mention 'not allowed'; got %s", rec.Body.String())
 	}
 }
 

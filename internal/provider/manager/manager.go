@@ -136,6 +136,7 @@ func (m *Manager) ProvidersSnapshot() []ProviderSnapshot {
 	for name, p := range m.cfg.Providers {
 		out = append(out, ProviderSnapshot{
 			Name:        name,
+			Type:        p.Type,
 			Model:       p.Model,
 			BaseURL:     p.BaseURL,
 			APIKey:      p.APIKey,
@@ -174,7 +175,14 @@ func (m *Manager) CurrentConfig() config.LLMConfig {
 // ProviderPatch is the partial update accepted by UpdateProvider.
 // nil fields mean "leave unchanged". The Manager rebuilds the
 // provider's Bifrost adapter whenever any field is non-nil.
+//
+// Type, when non-nil, switches the bifrost backend protocol for
+// this provider — e.g. flipping from anthropic to openai. The
+// Manager validates against the bifrost-allowed list before
+// rebuilding, so a bad value fails the patch without disrupting
+// the live chain.
 type ProviderPatch struct {
+	Type    *string
 	Model   *string
 	APIKey  *string
 	BaseURL *string
@@ -182,7 +190,7 @@ type ProviderPatch struct {
 
 // IsEmpty reports whether the patch would change anything.
 func (p ProviderPatch) IsEmpty() bool {
-	return p.Model == nil && p.APIKey == nil && p.BaseURL == nil
+	return p.Type == nil && p.Model == nil && p.APIKey == nil && p.BaseURL == nil
 }
 
 // UpdateProvider applies a partial patch to llm.providers[name],
@@ -205,6 +213,9 @@ func (m *Manager) UpdateProvider(name string, patch ProviderPatch) error {
 	provCfg, ok := m.cfg.Providers[name]
 	if !ok {
 		return fmt.Errorf("manager: unknown provider %q", name)
+	}
+	if patch.Type != nil {
+		provCfg.Type = *patch.Type
 	}
 	if patch.Model != nil {
 		provCfg.Model = *patch.Model

@@ -30,12 +30,58 @@ llm:
   # custom_headers:
   #   X-Custom: "value"
   providers:
+    # 每个 provider 必须声明 `type`，决定 bifrost 用哪个后端协议对接。
+    # 允许的 type 值：openai / anthropic / gemini / azure / bedrock / cohere /
+    #                vertex / mistral / ollama / groq / openrouter / perplexity /
+    #                cerebras / huggingface
+    # OpenAI-compatible 厂商 (DeepSeek / Kimi / GLM / MiniMax 等) 用 type=openai
+    # 加各自的 base_url 即可。yaml key 是任意"档位名"，可以重复使用同一个 type
+    # 比如 claude-45 / claude-46 都 type=anthropic 但 model 不同。
     anthropic:
+      type: anthropic
       base_url: "your-api-url"
       api_key: "your-api-key-here"
       model: "your-model-id"
       max_tokens: 16384
+#    kimi:
+#      type: openai
+#      base_url: "https://api.moonshot.cn/v1"
+#      api_key: "your-moonshot-key"
+#      model: "kimi-k2"
+#      max_tokens: 8192
+#    deepseek:
+#      type: openai
+#      base_url: "https://api.deepseek.com"
+#      api_key: "your-deepseek-key"
+#      model: "deepseek-v4-flash"
+#      max_tokens: 100000
+#    glm:
+#      type: openai
+#      base_url: "https://open.bigmodel.cn/api/paas/v4"
+#      api_key: "your-zhipu-key"
+#      model: "glm-4"
+#      max_tokens: 8192
+#    # 同一后端不同 model — yaml key 任意，type 都 = anthropic
+#    claude-45:
+#      type: anthropic
+#      base_url: "https://api.anthropic.com"
+#      api_key: "sk-ant-..."
+#      model: "claude-sonnet-4-5"
+#      max_tokens: 16384
+#    claude-46:
+#      type: anthropic
+#      base_url: "https://api.anthropic.com"
+#      api_key: "sk-ant-..."
+#      model: "claude-sonnet-4-6"
+#      max_tokens: 16384
+#    gemini-2:
+#      type: gemini
+#      base_url: "https://generativelanguage.googleapis.com/v1beta"
+#      api_key: "..."
+#      model: "gemini-2.0-pro"
+#      max_tokens: 8192
 #    openai:
+#      type: openai
 #      base_url: "https://api.openai.com"
 #      api_key: "your-openai-api-key"
 #      model: "gpt-4o"
@@ -63,11 +109,17 @@ llm:
   # 当 fallback_chain 为空或只有 1 项时，跳过 Failover 直接走单 provider 路径，
   # 行为与现有部署完全一致。
   #
+  # fallback_chain 里的名字必须对应 providers 下的 yaml key (不是 type)。
+  # 顺序即优先级：chain[0] = 主。
+  #
   # 示例：
   # fallback_chain:
-  #   - anthropic     # 主
-  #   - openai        # 备 1
-  #   - openrouter    # 备 2
+  #   - claude-46     # 主：最新 Claude
+  #   - claude-45     # 备 1：上一代 Claude
+  #   - openai        # 备 2：OpenAI
+  #   - deepseek      # 备 3
+  #   - kimi          # 备 4
+  #   - glm           # 备 5
 
   # ---------------------------------------------------------------------------
   # Health：Failover 健康检查与降级行为调优 (全部可省略，用默认值)

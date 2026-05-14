@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+
+	"harnessclaw-go/internal/provider/bifrost"
 )
 
 // Validate checks that the loaded configuration contains valid values.
@@ -36,6 +38,14 @@ func (c *Config) Validate() error {
 	}
 	if c.LLM.FirstByteTimeout < 0 {
 		return fmt.Errorf("llm.first_byte_timeout must be non-negative, got %s", c.LLM.FirstByteTimeout)
+	}
+	for name, p := range c.LLM.Providers {
+		if p.Type == "" {
+			return fmt.Errorf("llm.providers.%s.type is required (allowed: %v)", name, bifrost.AllowedTypeNames())
+		}
+		if _, ok := bifrost.ProviderTypeOf(p.Type); !ok {
+			return fmt.Errorf("llm.providers.%s.type %q is not a known backend (allowed: %v)", name, p.Type, bifrost.AllowedTypeNames())
+		}
 	}
 	for _, name := range c.LLM.FallbackChain {
 		if _, ok := c.LLM.Providers[name]; !ok {
@@ -179,6 +189,18 @@ type ProviderHealthConfig struct {
 
 // ProviderConfig holds a single provider's settings.
 type ProviderConfig struct {
+	// Type identifies the bifrost backend protocol used to talk to
+	// this provider. Required. Allowed values are provided by the
+	// bifrost package (openai / anthropic / gemini / azure / bedrock /
+	// cohere / vertex / mistral / ollama / groq / openrouter /
+	// perplexity / cerebras / huggingface).
+	//
+	// Vendors with OpenAI-compatible APIs (DeepSeek, Moonshot/Kimi,
+	// Zhipu/GLM, MiniMax, etc.) use Type=openai plus a custom BaseURL.
+	// Same Type can appear under multiple yaml keys when you want
+	// independent chain entries on the same backend with different
+	// models (e.g. claude-45 and claude-46 both Type=anthropic).
+	Type        string  `mapstructure:"type"`
 	APIKey      string  `mapstructure:"api_key"`
 	Model       string  `mapstructure:"model"`
 	MaxTokens   int     `mapstructure:"max_tokens"`

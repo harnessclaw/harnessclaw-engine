@@ -139,8 +139,14 @@ func (f *File) llmNode() (*yaml.Node, error) {
 // providerToNode builds a Mapping node from a ProviderConfig. Empty
 // fields are omitted so a round-trip doesn't introduce zero-valued
 // keys that weren't in the source.
+//
+// Field order matches the natural reading order operators expect:
+// type → base_url → api_key → model → numeric tuning → enable_thinking.
 func providerToNode(p config.ProviderConfig) *yaml.Node {
 	n := &yaml.Node{Kind: yaml.MappingNode}
+	if p.Type != "" {
+		appendScalar(n, "type", p.Type)
+	}
 	if p.BaseURL != "" {
 		appendScalar(n, "base_url", p.BaseURL)
 	}

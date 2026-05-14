@@ -25,6 +25,7 @@ import (
 
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/config/persist"
+	"harnessclaw-go/internal/provider/bifrost"
 	"harnessclaw-go/internal/provider/manager"
 )
 
@@ -96,6 +97,7 @@ func (h *Handler) getChain(w http.ResponseWriter) {
 // PatchProviderRequest is the JSON body for PATCH /providers/{name}.
 // All fields are optional; nil means "leave unchanged".
 type PatchProviderRequest struct {
+	Type    *string `json:"type,omitempty"`
 	Model   *string `json:"model,omitempty"`
 	APIKey  *string `json:"api_key,omitempty"`
 	BaseURL *string `json:"base_url,omitempty"`
@@ -107,13 +109,23 @@ func (h *Handler) patchProvider(w http.ResponseWriter, name string, r *http.Requ
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
 		return
 	}
+	// Reject unknown `type` BEFORE touching the manager — bad input
+	// shouldn't trigger a rebuild attempt that fails downstream.
+	if body.Type != nil {
+		if _, ok := bifrost.ProviderTypeOf(*body.Type); !ok {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				fmt.Sprintf("type %q is not allowed; expected one of %v", *body.Type, bifrost.AllowedTypeNames()))
+			return
+		}
+	}
 	patch := manager.ProviderPatch{
+		Type:    body.Type,
 		Model:   body.Model,
 		APIKey:  body.APIKey,
 		BaseURL: body.BaseURL,
 	}
 	if patch.IsEmpty() {
-		writeError(w, http.StatusBadRequest, "bad_request", "no fields to update; supply at least one of model/api_key/base_url")
+		writeError(w, http.StatusBadRequest, "bad_request", "no fields to update; supply at least one of type/model/api_key/base_url")
 		return
 	}
 	if err := h.mgr.UpdateProvider(name, patch); err != nil {
@@ -134,6 +146,7 @@ func (h *Handler) patchProvider(w http.ResponseWriter, name string, r *http.Requ
 	}
 	h.logger.Info("providersmgmt: provider patched",
 		zap.String("name", name),
+		zap.Bool("type_changed", body.Type != nil),
 		zap.Bool("model_changed", body.Model != nil),
 		zap.Bool("api_key_changed", body.APIKey != nil),
 		zap.Bool("base_url_changed", body.BaseURL != nil),

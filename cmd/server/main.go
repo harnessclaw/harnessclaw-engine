@@ -27,7 +27,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/maximhq/bifrost/core/schemas"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"harnessclaw-go/internal/agent"
@@ -928,13 +927,20 @@ func buildBifrostAdapter(
 	logger *zap.Logger,
 	isPrimary bool,
 ) (*bifrost.Adapter, error) {
-	bfProvider := mapBifrostProvider("", name)
+	// Backend protocol is decided by provCfg.Type, never by the
+	// yaml key — that lets chain entries have arbitrary names
+	// (`claude-46`, `kimi`, `glm`) while still mapping to a real
+	// bifrost backend.
+	bfProvider, ok := bifrost.ProviderTypeOf(provCfg.Type)
+	if !ok {
+		return nil, fmt.Errorf("provider %q: unknown type %q (allowed: %v)",
+			name, provCfg.Type, bifrost.AllowedTypeNames())
+	}
 	bfModel := provCfg.Model
 	bfAPIKey := provCfg.APIKey
 	bfBaseURL := provCfg.BaseURL
 	fallbackModel := ""
 	if isPrimary {
-		bfProvider = mapBifrostProvider(cfg.Bifrost.Provider, name)
 		if cfg.Bifrost.Model != "" {
 			bfModel = cfg.Bifrost.Model
 		}
@@ -947,8 +953,11 @@ func buildBifrostAdapter(
 		fallbackModel = cfg.Bifrost.FallbackModel
 	}
 
+	// Quirks lookup keys on the BACKEND type, not the yaml entry
+	// name — registry knows "anthropic"/"openai" etc., not arbitrary
+	// chain entry names like "claude-46".
 	var quirks *bifrost.ProviderQuirks
-	if prov := modelReg.LookupProvider(name); prov != nil {
+	if prov := modelReg.LookupProvider(provCfg.Type); prov != nil {
 		quirks = &bifrost.ProviderQuirks{
 			ThinkingParamStyle:             prov.Quirks.ThinkingParamStyle,
 			ToolCallsRequireReasoningField: prov.Quirks.ToolCallsRequireReasoningField,
@@ -985,7 +994,8 @@ func buildBifrostAdapter(
 	}
 	logger.Info("bifrost adapter built",
 		zap.String("name", name),
-		zap.String("provider", string(bfProvider)),
+		zap.String("type", provCfg.Type),
+		zap.String("backend", string(bfProvider)),
 		zap.String("model", bfModel),
 		zap.String("fallback_model", fallbackModel),
 		zap.Bool("proxy", cfg.ProxyURL != ""),
@@ -1003,23 +1013,6 @@ func failoverPolicyFromBudget(name string, budget time.Duration, fallback failov
 		return fallback
 	}
 	return failover.RetryPolicy{Name: name, Budget: budget}
-}
-
-// mapBifrostProvider converts a config string to a schemas.ModelProvider constant.
-func mapBifrostProvider(override string, fallback string) schemas.ModelProvider {
-	name := override
-	if name == "" {
-		name = fallback
-	}
-	switch name {
-	case "anthropic":
-		return schemas.Anthropic
-	case "openai":
-		return schemas.OpenAI
-	default:
-		// Use as-is for other providers (bedrock, vertex, etc.).
-		return schemas.ModelProvider(name)
-	}
 }
 
 func mapKeys(m map[string]config.ProviderConfig) []string {

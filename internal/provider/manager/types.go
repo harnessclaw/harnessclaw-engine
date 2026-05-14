@@ -9,6 +9,7 @@ import "harnessclaw-go/internal/provider/failover"
 // network-level controls if leaking keys is a concern.
 type ProviderSnapshot struct {
 	Name        string  `json:"name"`
+	Type        string  `json:"type"`
 	Model       string  `json:"model"`
 	BaseURL     string  `json:"base_url"`
 	APIKey      string  `json:"api_key"`

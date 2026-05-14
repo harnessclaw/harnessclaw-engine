@@ -65,8 +65,8 @@ func baseCfg() config.LLMConfig {
 	return config.LLMConfig{
 		DefaultProvider: "alpha",
 		Providers: map[string]config.ProviderConfig{
-			"alpha": {APIKey: "sk-aaaaaaaaaaaaaaaa", Model: "ma", BaseURL: "https://a.example"},
-			"beta":  {APIKey: "sk-bbbbbbbbbbbbbbbb", Model: "mb", BaseURL: "https://b.example"},
+			"alpha": {Type: "anthropic", APIKey: "sk-aaaaaaaaaaaaaaaa", Model: "ma", BaseURL: "https://a.example"},
+			"beta":  {Type: "openai", APIKey: "sk-bbbbbbbbbbbbbbbb", Model: "mb", BaseURL: "https://b.example"},
 		},
 		FallbackChain: []string{"alpha", "beta"},
 		Health: config.ProviderHealthConfig{
@@ -134,6 +134,22 @@ func TestReplaceChain_EmptyRejected(t *testing.T) {
 	m := mustNewManager(t, baseCfg(), fb)
 	if err := m.ReplaceChain(nil); err == nil {
 		t.Fatalf("expected error for empty chain")
+	}
+}
+
+func TestUpdateProvider_TypeSwitchSwapsBackend(t *testing.T) {
+	fb := newFakeBuilder()
+	m := mustNewManager(t, baseCfg(), fb)
+
+	// Flip alpha from anthropic → openai.
+	newType := "openai"
+	if err := m.UpdateProvider("alpha", ProviderPatch{Type: &newType}); err != nil {
+		t.Fatalf("UpdateProvider type err = %v", err)
+	}
+	for _, s := range m.ProvidersSnapshot() {
+		if s.Name == "alpha" && s.Type != "openai" {
+			t.Fatalf("alpha type = %q, want openai", s.Type)
+		}
 	}
 }
 

@@ -6,6 +6,7 @@
 > |------|------|
 > | 2026-05-14 | 初版：`GET /api/v1/providers` / `GET|PUT /api/v1/providers/fallback-chain` / `PATCH /api/v1/providers/{name}` |
 > | 2026-05-14 | `api_key` 改为明文返回（去掉脱敏），方便客户端 PATCH 表单回填 |
+> | 2026-05-14 | 新增 `type` 字段（必填）解耦 yaml key 与 bifrost 后端协议；PATCH 支持改 `type` 热切换后端 |
 
 Providers Management API 让客户端在运行时**热生效**地修改服务端的 LLM provider 配置 —— 改完立即作用于后续请求，同时持久化回 `config_self.yaml`，下次重启不丢失。
 
@@ -48,13 +49,38 @@ Providers Management API 让客户端在运行时**热生效**地修改服务端
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `name` | string | provider 名（= `llm.providers` 的 map key）|
+| `name` | string | provider 名（= `llm.providers` 的 map key）。任意字符串，作为 chain 引用的标识 |
+| `type` | enum | bifrost 后端协议（见下表"`type` 枚举"）|
 | `model` | string | 模型 ID（按 provider 协议解释，如 `deepseek-v4-flash`）|
 | `base_url` | string | provider HTTP endpoint |
 | `api_key` | string | **明文** API key。本 API 不做脱敏，方便客户端 PATCH 表单回填编辑。⚠️ **务必在网络层限制 `/api/v1/providers*` 的访问**（内网 / 本机 / 反向代理鉴权），不要暴露到公网。 |
 | `max_tokens` | int | 单次响应允许的最大 token 数 |
 | `temperature` | float | 采样温度（0.0–2.0），0 表示沿用 provider 默认 |
 | `in_chain` | bool | 该 provider 是否在当前 `fallback_chain` 中 |
+
+### `type` 枚举
+
+| 值 | 后端协议 | 典型用途 |
+|----|---------|---------|
+| `openai` | OpenAI Chat Completions API | OpenAI 自家 + 所有 OpenAI-compatible 厂商（DeepSeek / Kimi / GLM / MiniMax / 讯飞星火 / 通义千问 等），改 `base_url` 即可 |
+| `anthropic` | Anthropic Messages API | Claude 系列；如有 Anthropic-compatible 网关也用这个 |
+| `gemini` | Google Gemini API | Google Gemini 系列 |
+| `azure` | Azure OpenAI Service | 部署在 Azure 上的 GPT 系列 |
+| `bedrock` | AWS Bedrock | AWS 托管模型 |
+| `cohere` | Cohere | Cohere 自家 |
+| `vertex` | Google Vertex AI | GCP 托管 |
+| `mistral` | Mistral API | Mistral 自家 |
+| `ollama` | Ollama 本地 | 本地部署 / 自建 |
+| `groq` | Groq | Groq 加速 |
+| `openrouter` | OpenRouter 聚合 | OpenRouter 转发 |
+| `perplexity` | Perplexity | Perplexity |
+| `cerebras` | Cerebras | Cerebras |
+| `huggingface` | HuggingFace Inference | HF Hub 推理 |
+
+**重要**：
+1. yaml 里 `llm.providers` 下的 map key（即本 API 中的 `name`）是**任意字符串**，用作 chain 引用 + 客户端展示
+2. 多个 yaml key 可以共用同一个 `type`（典型场景：`claude-45` / `claude-46` 都 `type: anthropic`，但 `model` 不同 → 两个独立的 chain entry，独立的 trip / probe 状态）
+3. 改 `type` 等于换后端协议；PATCH 后服务端会 rebuild adapter 立即生效
 
 ### `ChainEntry`（GET /fallback-chain 的 `entries[i]`）
 
@@ -96,20 +122,31 @@ Providers Management API 让客户端在运行时**热生效**地修改服务端
   "data": {
     "providers": [
       {
-        "name": "anthropic",
-        "model": "claude-3-haiku",
-        "base_url": "http://127.0.0.1:1",
-        "api_key": "sk-fake",
-        "max_tokens": 1000,
+        "name": "claude-46",
+        "type": "anthropic",
+        "model": "claude-sonnet-4-6",
+        "base_url": "https://api.anthropic.com",
+        "api_key": "sk-ant-***",
+        "max_tokens": 16384,
         "in_chain": true
       },
       {
-        "name": "openai",
+        "name": "deepseek",
+        "type": "openai",
         "model": "deepseek-v4-flash",
         "base_url": "https://api.deepseek.com",
-        "api_key": "sk-c75ca2a47b4c41609e9ec751f9a77058",
+        "api_key": "sk-***",
         "max_tokens": 100000,
         "in_chain": true
+      },
+      {
+        "name": "kimi",
+        "type": "openai",
+        "model": "kimi-k2",
+        "base_url": "https://api.moonshot.cn/v1",
+        "api_key": "sk-***",
+        "max_tokens": 8192,
+        "in_chain": false
       }
     ]
   }
@@ -208,6 +245,7 @@ Providers Management API 让客户端在运行时**热生效**地修改服务端
 
 ```json
 {
+  "type":     "openai",
   "model":    "deepseek-chat",
   "api_key":  "sk-new-key-here",
   "base_url": "https://new.api.example.com"
@@ -218,7 +256,8 @@ Providers Management API 让客户端在运行时**热生效**地修改服务端
 
 - `{name}` 必须是 `llm.providers` 中已存在的 provider（404 ❌，是 400 `update_failed`，因为不存在视为业务校验失败）
 - 至少传一个字段（空 patch 返回 400 `bad_request`）
-- 三个字段都接受**任意非空字符串**，服务端不校验 URL / model 是否真实可用 —— 验证时机是下次真实 LLM 请求打过去
+- `type` 如果传，必须是 [`type` 枚举](#type-枚举) 中的值；未知值返回 400 `bad_request`
+- `model` / `api_key` / `base_url` 接受**任意非空字符串**，服务端不校验 URL / model 是否真实可用 —— 验证时机是下次真实 LLM 请求打过去
 
 **响应**（200）：响应体与 [GET providers](#1-列出所有-providers) **完全一致**（含全部 provider 的最新快照）。同样可以用响应直接刷新本地缓存。
 
@@ -234,7 +273,8 @@ Providers Management API 让客户端在运行时**热生效**地修改服务端
 | 场景 | code | HTTP |
 |------|------|------|
 | 请求体不是合法 JSON | `bad_request` | 400 |
-| 空 patch（三个字段都没传）| `bad_request` | 400 |
+| 空 patch（四个字段都没传）| `bad_request` | 400 |
+| `type` 不在允许列表中 | `bad_request` | 400 |
 | `{name}` 不在 `llm.providers` 中 | `update_failed` | 400 |
 | 新配置导致 Bifrost adapter 构建失败 | `update_failed` | 400 |
 | 内存改成功但 yaml 写盘失败 | `persist_failed` | 500 |
@@ -346,4 +386,9 @@ curl -sS -X PATCH http://localhost:8090/api/v1/providers/openai \
 curl -sS -X PATCH http://localhost:8090/api/v1/providers/openai \
   -H 'Content-Type: application/json' \
   -d '{"model":"deepseek-chat","api_key":"sk-new"}'
+
+# 切换后端协议（把 anthropic 换成 openai 后端 + 同步换 model）
+curl -sS -X PATCH http://localhost:8090/api/v1/providers/claude-46 \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"openai","model":"gpt-5","base_url":"https://api.openai.com"}'
 ```

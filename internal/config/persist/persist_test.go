@@ -22,11 +22,13 @@ llm:
   providers:
     # alpha is primary
     alpha:
+      type: anthropic
       base_url: "https://a.example"
       api_key: "sk-alpha-xxxx"
       model: "model-a"
       max_tokens: 4096
     beta:
+      type: openai
       base_url: "https://b.example"
       api_key: "sk-beta-xxxx"
       model: "model-b"
@@ -108,6 +110,7 @@ func TestSetProvider_UpdatesExisting(t *testing.T) {
 	f, _ := Load(path)
 
 	newCfg := config.ProviderConfig{
+		Type:      "anthropic",
 		BaseURL:   "https://a2.example",
 		APIKey:    "sk-alpha-NEW",
 		Model:     "model-a-v2",
@@ -139,6 +142,7 @@ func TestSetProvider_InsertsNew(t *testing.T) {
 	path := writeTemp(t, sampleYAML)
 	f, _ := Load(path)
 	gamma := config.ProviderConfig{
+		Type:      "openai",
 		BaseURL:   "https://g.example",
 		APIKey:    "sk-gamma",
 		Model:     "model-g",
