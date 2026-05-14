@@ -37,6 +37,29 @@ func (c *Config) Validate() error {
 	if c.LLM.FirstByteTimeout < 0 {
 		return fmt.Errorf("llm.first_byte_timeout must be non-negative, got %s", c.LLM.FirstByteTimeout)
 	}
+	for _, name := range c.LLM.FallbackChain {
+		if _, ok := c.LLM.Providers[name]; !ok {
+			return fmt.Errorf("llm.fallback_chain references unknown provider %q (not in llm.providers)", name)
+		}
+	}
+	if c.LLM.Health.CooldownBase < 0 {
+		return fmt.Errorf("llm.health.cooldown_base must be non-negative, got %s", c.LLM.Health.CooldownBase)
+	}
+	if c.LLM.Health.CooldownMax < 0 {
+		return fmt.Errorf("llm.health.cooldown_max must be non-negative, got %s", c.LLM.Health.CooldownMax)
+	}
+	if c.LLM.Health.CooldownFactor < 0 {
+		return fmt.Errorf("llm.health.cooldown_factor must be non-negative, got %d", c.LLM.Health.CooldownFactor)
+	}
+	if c.LLM.Health.PrimaryBudget < 0 {
+		return fmt.Errorf("llm.health.primary_budget must be non-negative, got %s", c.LLM.Health.PrimaryBudget)
+	}
+	if c.LLM.Health.LastHealthyBudget < 0 {
+		return fmt.Errorf("llm.health.last_healthy_budget must be non-negative, got %s", c.LLM.Health.LastHealthyBudget)
+	}
+	if c.LLM.Health.ProbeBudget < 0 {
+		return fmt.Errorf("llm.health.probe_budget must be non-negative, got %s", c.LLM.Health.ProbeBudget)
+	}
 	return nil
 }
 
@@ -100,6 +123,58 @@ type LLMConfig struct {
 	FirstByteTimeout time.Duration `mapstructure:"first_byte_timeout"`
 	ProxyURL         string        `mapstructure:"proxy_url"`
 	CustomHeaders    map[string]string `mapstructure:"custom_headers"`
+
+	// FallbackChain is the ordered list of provider names (keys in
+	// Providers) used for multi-provider failover. The first entry is
+	// primary; subsequent entries are tried in order when earlier
+	// ones are tripped.
+	//
+	// When empty or single-entry, the server keeps the legacy
+	// single-provider wiring (using DefaultProvider) — Failover is
+	// not instantiated at all, so retry behavior is identical to the
+	// pre-failover code path.
+	FallbackChain []string `mapstructure:"fallback_chain"`
+
+	// Health tunes per-provider cooldown behavior and the budgets
+	// applied to the Failover dispatcher's three internal routing
+	// tiers (Fast/Medium/Probe). Zero fields fall back to built-in
+	// defaults (see ProviderHealthConfig docs).
+	Health ProviderHealthConfig `mapstructure:"health"`
+}
+
+// ProviderHealthConfig tunes Failover dispatcher behavior: the
+// exponential-backoff cooldown applied when a provider trips, plus
+// the per-call wall-clock budgets that bound how long the dispatcher
+// waits on a provider before advancing to the next chain entry.
+//
+// Defaults (applied when fields are zero):
+//   - CooldownBase=30s, CooldownMax=10m, CooldownFactor=2
+//   - PrimaryBudget=15s   (Fast — chain head with fallback behind it)
+//   - LastHealthyBudget=30s (Medium — last Healthy / last-resort)
+//   - ProbeBudget=5s      (Probe — eligibility check)
+type ProviderHealthConfig struct {
+	// CooldownBase is the cooldown applied on the FIRST trip after a
+	// reset. Default 30s.
+	CooldownBase time.Duration `mapstructure:"cooldown_base"`
+	// CooldownMax caps the cooldown when consecutive trips compound.
+	// Default 10m.
+	CooldownMax time.Duration `mapstructure:"cooldown_max"`
+	// CooldownFactor multiplies the cooldown on each consecutive trip
+	// without intervening recovery. Default 2.
+	CooldownFactor int `mapstructure:"cooldown_factor"`
+
+	// PrimaryBudget caps the wall-clock duration spent on the
+	// selected provider when at least one OTHER Healthy provider
+	// remains as a fallback (FastPolicy). Default 15s.
+	PrimaryBudget time.Duration `mapstructure:"primary_budget"`
+	// LastHealthyBudget caps the wall-clock duration spent on the
+	// selected provider when it is the LAST Healthy in the chain, or
+	// when Tier 3 last-resort is invoked (MediumPolicy). Default 30s.
+	LastHealthyBudget time.Duration `mapstructure:"last_healthy_budget"`
+	// ProbeBudget caps the wall-clock duration spent on a probe call
+	// (a tripped provider whose cooldown just expired; ProbePolicy).
+	// Default 5s.
+	ProbeBudget time.Duration `mapstructure:"probe_budget"`
 }
 
 // ProviderConfig holds a single provider's settings.
@@ -266,6 +341,12 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("llm.max_retries", 10)
 	v.SetDefault("llm.api_timeout", "600s")
 	v.SetDefault("llm.first_byte_timeout", "120s")
+	v.SetDefault("llm.health.cooldown_base", "30s")
+	v.SetDefault("llm.health.cooldown_max", "10m")
+	v.SetDefault("llm.health.cooldown_factor", 2)
+	v.SetDefault("llm.health.primary_budget", "15s")
+	v.SetDefault("llm.health.last_healthy_budget", "30s")
+	v.SetDefault("llm.health.probe_budget", "5s")
 	v.SetDefault("engine.max_turns", 50)
 	v.SetDefault("engine.auto_compact_threshold", 0.8)
 	v.SetDefault("engine.tool_timeout", "120s")
