@@ -3,6 +3,42 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
+## [0.0.13] - 2026-05-15
+
+### Added
+- Multi-provider failover dispatcher (`internal/provider/failover`): four-tier RetryPolicy (Probe 5s / Fast 15s / Medium 30s / Full) plus three-state per-provider health (`healthy` / `tripped` / `ready_to_probe`) with exponential cooldown backoff; classifies which errors cross provider boundaries and which stay local (prompt_too_long / max_output_tokens / ctx.Canceled never trip the provider)
+- Hot-swappable provider manager (`internal/provider/manager`): atomic.Pointer wraps the live Failover dispatcher so chain mutations don't disturb in-flight calls; adapter cache reuses bifrost adapters across chain-only mutations
+- Top-level `agent:` yaml block replacing `llm.fallback_chain`: `primary` (single dotted ref `"provider:endpoint"`), `fallback_chain` (ordered backups), `max_tokens` / `temperature` (adapter-baked defaults, unified [0,1] temperature scaled per provider type — anthropic ×1, openai/gemini ×2), `context_window`, `max_turns` (moved from `engine.max_turns`), `max_tool_calls` (0 = unlimited), `thinking_intensity` (`low` / `medium` / `high` / blank)
+- `endpoint.context_window` field per endpoint declares the model's intrinsic context limit; `Manager.EffectiveContextWindow()` returns `min(agent.context_window, primary_endpoint.context_window)` with 200_000 fallback; surfaced as `effective_context_window` in `GET /api/v1/agent` and the `engine initialized` startup log
+- `GET` / `PATCH /api/v1/agent` endpoint (replaces `/api/v1/fallback-chain`): partial-updates any subset of agent fields, validates `max_turns ≥ 1`, `max_tool_calls ≥ 0`, `thinking_intensity` enum
+- `POST /api/v1/providers` runtime API for creating new provider entries without restart; `gemini` added to `type` whitelist alongside `openai` / `anthropic`
+- Comment-preserving yaml persistence (`internal/config/persist`): `yaml.Node`-based mutator rewrites only changed keys, preserving inline comments / key order / hand-tuned indentation across PATCH-driven persistence cycles
+- Per-call token usage on `llm.call ok` log: `input_tokens` / `output_tokens` / `cache_read` / `cache_write` / `thinking_tokens` now at INFO level (was DEBUG-only via `bifrost stream MessageEnd`)
+- Bifrost stream lifecycle DEBUG logs: `llm.call.dial` (before SDK call) / `llm.call.connected` (after stream returned) / `llm.call.stream_closed` (when wrapper goroutine exits) — a hang can now be located between dial / connected / streaming / closing
+- Stream-stuck WARN watchdog: `doSingleLLMCall` emits `llm.call.stream_stuck` every 30 s of no new chunk; observability only — `firstByteTimeout` / `apiTimeout` still own hard cancellation
+- Provider endpoint `disabled` field (cascading with `provider.disabled`): effective disabled = `provider.Disabled OR endpoint.Disabled`; auto-removed from chain on PATCH `disabled:true`, chain auto-fills with first enabled endpoint when empty
+
+### Changed
+- `agent.max_tokens` / `agent.temperature` baked into each bifrost adapter as defaults; `ChatRequest.Temperature/MaxTokens == 0` falls back to these. `PATCH /api/v1/agent` on these fields invalidates the adapter cache so subsequent calls pick up the new defaults
+- `ChatRequest.ContextWindow` field added as observability hint (not sent to vendor); `stats classify.limit` now reads it instead of `req.MaxTokens` — dashboard `ContextWindow.Limit` correctly reflects configured budget instead of response cap
+- `Manager.AdapterBuilder` signature now takes `agent config.AgentConfig` so adapters can resolve effective temperature / max_tokens at build time
+- `emmaPrinciples` trimmed from 8142 → 3824 chars (−53%): removed redundant repetition, anti-pattern lists rewritten as positive instructions, reordered for LLM head-attention bias; `TestPrinciplesSection_*` invariants kept intact
+- Manager `AgentSnapshot` payload now includes `effective_context_window` so operators can compare configured vs. capped value
+- Provider `type` field is now required (was optional with implicit default); empty / unknown types dropped at startup with WARN, not FATAL — server stays bootable with valid providers when one entry is malformed
+- Empty fallback chain and bad yaml entries now warn-and-drop instead of FATAL: server enters degraded mode (Chat returns `ErrNoEndpoint`, management API stays mountable) until operator PATCHes a valid agent config
+
+### Fixed
+- `GET /api/v1/sessions/{id}/metrics` returned empty `sub_agents`: `executor.go` never injected `ToolUseContext` before `t.Execute`, so Specialists read `parent_session_id=""`, short-circuited `StartSubAgent`, and bypassed `stats_provider` entirely — Specialists + all L3 sub-agent token spend was invisible. Fix injects `ToolUseContext` (SessionID / ToolCallID / ToolName / ToolInput) at the executor boundary
+- Task tool rejected legitimate sub-agent types (`writer` / `researcher` / `analyst` / `developer` / `lifestyle` / `scheduler`): hardcoded 3-entry whitelist in `agenttool/input.go` contradicted the tool description, costing one wasted LLM round-trip per Specialists dispatch (~6.5k token / 6 s). Validate now defers name resolution to the `defRegistry` at spawn time
+- Orchestration tool cards (Specialists / Task) false-positive `orphan_timeout` on the `EngineEventToolCall` path: only `EngineEventToolStart` had the `isOrchestrationTool` check appending `WithoutLifecycle()`; client-side tool calls were still subject to the 120 s `CardTool` watchdog, causing UI to show "工具失败" while the underlying multi-minute plan was healthy. Both paths now opt out
+- `QueryEngineConfig.MaxTokens` was overloaded as both "response cap" and "context budget" — compactor was misclassifying agent.max_tokens (e.g. 2048) as the context window, triggering auto-compact at trivial token counts. Split into distinct `MaxTokens` (response cap) and `ContextWindow` (compactor budget) fields
+
+### Removed
+- `/api/v1/fallback-chain` endpoint (replaced by `/api/v1/agent`)
+- `llm.fallback_chain` yaml field (migrated to `agent.fallback_chain`); `persist.SetAgent` strips the legacy key on first save
+- `engine.max_turns` yaml field (moved to `agent.max_turns`)
+- Hardcoded `200_000` literal for prompt-context window size in `internal/engine/queryloop.go` and `subagent.go` — now derived from `qe.contextWindow()`
+
 ## [0.0.12] - 2026-05-14
 
 ### Added
