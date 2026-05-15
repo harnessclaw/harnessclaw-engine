@@ -13,13 +13,24 @@ import (
 
 // ChatRequest contains all parameters for an LLM call.
 type ChatRequest struct {
-	Model       string           `json:"model"`
-	Messages    []types.Message  `json:"messages"`
-	System      string           `json:"system,omitempty"`
-	Tools       []ToolSchema     `json:"tools,omitempty"`
-	MaxTokens   int              `json:"max_tokens"`
-	Temperature float64          `json:"temperature,omitempty"`
-	StopReason  string           `json:"stop_reason,omitempty"`
+	Model       string          `json:"model"`
+	Messages    []types.Message `json:"messages"`
+	System      string          `json:"system,omitempty"`
+	Tools       []ToolSchema    `json:"tools,omitempty"`
+	// MaxTokens caps the response length (vendor-side max_tokens /
+	// max_completion_tokens parameter). Distinct from ContextWindow.
+	MaxTokens int `json:"max_tokens"`
+	// ContextWindow is the conversation-level token budget the
+	// caller wants reflected in session metrics — auto-compact
+	// thresholds, dashboard panels, etc. NOT sent to the vendor as
+	// a request parameter; purely an observability hint. 0 = caller
+	// has no preference (downstream stats fall back to 200_000).
+	// Sourced from cfg.Agent.ContextWindow, capped against the
+	// primary endpoint's intrinsic ContextWindow by main.go at
+	// engine construction.
+	ContextWindow int     `json:"context_window,omitempty"`
+	Temperature   float64 `json:"temperature,omitempty"`
+	StopReason    string  `json:"stop_reason,omitempty"`
 }
 
 // ToolSchema describes a tool for the LLM.

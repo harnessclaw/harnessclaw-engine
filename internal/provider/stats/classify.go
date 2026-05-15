@@ -16,7 +16,16 @@ import (
 // and the absolute "used" value is overwritten with the model's reported
 // input_tokens on MessageEnd.
 func classifyContext(req *provider.ChatRequest) (used, limit, history, toolResults, system int64) {
-	limit = int64(req.MaxTokens)
+	// limit is the conversation-level context-window budget, NOT the
+	// per-response cap (req.MaxTokens). Caller fills req.ContextWindow
+	// from cfg.Agent.ContextWindow (already capped against the primary
+	// endpoint's intrinsic limit upstream). 200_000 fallback covers
+	// callers that don't set it — matches the engine compactor's
+	// fallback so the dashboard and compactor agree on "the budget".
+	limit = int64(req.ContextWindow)
+	if limit <= 0 {
+		limit = 200000
+	}
 	for _, m := range req.Messages {
 		for _, b := range m.Content {
 			switch b.Type {
@@ -29,6 +38,10 @@ func classifyContext(req *provider.ChatRequest) (used, limit, history, toolResul
 			}
 		}
 	}
+	// system bucket carries both the system_prompt string AND the tool
+	// schemas (both occupy the same "system" slot from a token-budget
+	// perspective). breakdownBuckets exposes them separately for the
+	// observability log line.
 	system = estimateTokens(req.System) + estimateToolSchemas(req.Tools)
 	used = history + toolResults + system
 	return

@@ -43,10 +43,11 @@ func TestStatsProvider_RecordsUsageWhenSessionPresent(t *testing.T) {
 
 	ctx := sessionstats.WithSessionID(context.Background(), "sess_abc")
 	stream, err := sp.Chat(ctx, &provider.ChatRequest{
-		Model:     "opus",
-		Messages:  []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hello"}}}},
-		System:    "you are useful",
-		MaxTokens: 1024,
+		Model:         "opus",
+		Messages:      []types.Message{{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hello"}}}},
+		System:        "you are useful",
+		MaxTokens:     1024,
+		ContextWindow: 1024,
 	})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -120,18 +121,19 @@ func TestStatsProvider_AttributesToSubAgentRow(t *testing.T) {
 
 func TestClassifyContext_BucketsContentBlocks(t *testing.T) {
 	req := &provider.ChatRequest{
-		Model:     "opus",
-		MaxTokens: 8192,
-		System:    "you are useful",
-		Tools:     []provider.ToolSchema{{Name: "bash", Description: "run shell", InputSchema: map[string]any{"x": "y"}}},
+		Model:         "opus",
+		MaxTokens:     8192,   // response cap — should NOT show up in limit
+		ContextWindow: 100000, // conversation budget — IS the limit
+		System:        "you are useful",
+		Tools:         []provider.ToolSchema{{Name: "bash", Description: "run shell", InputSchema: map[string]any{"x": "y"}}},
 		Messages: []types.Message{
 			{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "first user message"}}},
 			{Role: types.RoleAssistant, Content: []types.ContentBlock{{Type: types.ContentTypeToolResult, ToolResult: "the result of the tool call"}}},
 		},
 	}
 	used, limit, hist, tr, sys := classifyContext(req)
-	if limit != 8192 {
-		t.Errorf("limit = %d, want 8192", limit)
+	if limit != 100000 {
+		t.Errorf("limit = %d, want 100000 (req.ContextWindow, NOT req.MaxTokens)", limit)
 	}
 	if hist == 0 || tr == 0 || sys == 0 {
 		t.Errorf("composition zero: hist=%d tr=%d sys=%d", hist, tr, sys)
@@ -141,13 +143,32 @@ func TestClassifyContext_BucketsContentBlocks(t *testing.T) {
 	}
 }
 
+// TestClassifyContext_LimitFallsBackWhenContextWindowUnset confirms
+// the 200_000 fallback kicks in when the caller didn't fill
+// ContextWindow — important because req.MaxTokens (a small response
+// cap like 2048) used to be wrongly surfaced as the dashboard limit.
+func TestClassifyContext_LimitFallsBackWhenContextWindowUnset(t *testing.T) {
+	req := &provider.ChatRequest{
+		Model:     "opus",
+		MaxTokens: 2048,
+		System:    "x",
+	}
+	_, limit, _, _, _ := classifyContext(req)
+	if limit != 200000 {
+		t.Errorf("limit = %d, want 200000 (default fallback)", limit)
+	}
+}
+
 func TestStatsProvider_RecordsAttemptOnDialFailure(t *testing.T) {
 	reg := sessionstats.NewRegistry()
 	inner := &fakeProvider{err: errors.New("network down")}
 	sp := New(inner, reg)
 
 	ctx := sessionstats.WithSessionID(context.Background(), "sess_abc")
-	stream, err := sp.Chat(ctx, &provider.ChatRequest{Model: "opus", MaxTokens: 256})
+	// ContextWindow (conversation budget) — 256 chosen so the assert is
+	// distinct from MaxTokens (response cap), confirming the limit is
+	// sourced from the right field.
+	stream, err := sp.Chat(ctx, &provider.ChatRequest{Model: "opus", MaxTokens: 256, ContextWindow: 256})
 	if err == nil {
 		t.Fatalf("expected error from dial failure, got nil")
 	}
