@@ -69,9 +69,13 @@ func TestAgentTool_ValidateInput(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "invalid subagent_type",
+			// subagent_type validation was removed in Phase 8: arbitrary names
+			// are accepted at the input layer and resolved by defRegistry at
+			// spawn time (see engine/subagent.go). "invalid" is still a valid
+			// input — the registry falls back to AgentTypeSync default.
+			name:    "unknown subagent_type accepted (registry resolves at spawn)",
 			input:   `{"prompt":"hello","subagent_type":"invalid"}`,
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name:    "invalid JSON",

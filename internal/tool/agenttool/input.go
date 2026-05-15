@@ -38,15 +38,16 @@ func (i *agentInput) validate() error {
 		return fmt.Errorf("prompt is required")
 	}
 
-	// Validate subagent_type if provided.
-	if i.SubagentType != "" {
-		switch i.SubagentType {
-		case "general-purpose", "Explore", "explore", "Plan", "plan":
-			// valid
-		default:
-			return fmt.Errorf("unsupported subagent_type: %s (valid: general-purpose, Explore, Plan)", i.SubagentType)
-		}
-	}
+	// subagent_type is informational at this layer. The actual resolution
+	// happens in engine/subagent.go via defRegistry.Get(SubagentType):
+	// built-in types (general-purpose / Explore / Plan) plus any
+	// AgentDefinition registered at startup (writer / researcher /
+	// analyst / developer / lifestyle / scheduler / custom names). The
+	// resolver falls back to AgentTypeSync default for unknown names, so
+	// hardcoded rejection here just wasted one LLM round-trip per
+	// Specialists dispatch that picked a team-member name (the tool
+	// description advertises those names — schema and description must
+	// not contradict each other).
 
 	return nil
 }
@@ -61,8 +62,10 @@ var inputSchema = map[string]any{
 		},
 		"subagent_type": map[string]any{
 			"type":        "string",
-			"description": "要 spawn 的 sub-agent 类型。决定工具集和 prompt profile。",
-			"enum":        []string{"general-purpose", "Explore", "Plan"},
+			"description": "要 spawn 的 sub-agent 类型。决定工具集和 prompt profile。常见值:general-purpose / Explore / Plan / writer / researcher / analyst / developer / lifestyle / scheduler。未列出的名字也接受,由 agent definition registry 在 spawn 时解析(未注册的回退到通用 sync default)。",
+			// No "enum" — registered AgentDefinitions extend the allowed set at
+			// runtime. A hardcoded enum would re-introduce the
+			// description-vs-schema mismatch this Phase fixed.
 		},
 		"description": map[string]any{
 			"type":        "string",
