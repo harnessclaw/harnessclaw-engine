@@ -25,29 +25,38 @@ server:
   port: 8080
 
 llm:
-  default_provider: "alpha"
   max_retries: 3
+  default_max_tokens: 8192
   providers:
     # alpha is primary
     alpha:
       type: anthropic
       base_url: "https://a.example"
       api_key: "sk-alpha-old-key-xxxx"
-      model: "model-a"
-      max_tokens: 4096
+      endpoints:
+        claude-46:
+          model: claude-sonnet-4-6
+          max_tokens: 16384
+        claude-45:
+          model: claude-sonnet-4-5
+          max_tokens: 16384
     beta:
       type: openai
       base_url: "https://b.example"
       api_key: "sk-beta-old-key-xxxx"
-      model: "model-b"
-      max_tokens: 4096
-  fallback_chain:
-    - alpha
-    - beta
+      endpoints:
+        gpt-5:
+          model: gpt-5-turbo
+          max_tokens: 4096
   health:
     cooldown_base: "30s"
     cooldown_max: "5m"
     cooldown_factor: 2
+
+agent:
+  primary: "alpha:claude-46"
+  fallback_chain:
+    - "beta:gpt-5"
 `
 
 func setupTest(t *testing.T) (*Handler, string) {
@@ -61,240 +70,376 @@ func setupTest(t *testing.T) (*Handler, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	build := func(_ string, _ config.ProviderConfig, _ bool) (*bifrost.Adapter, error) {
+	build := func(_ string, _ config.ProviderConfig, _ string, _ config.EndpointConfig, _ config.AgentConfig) (*bifrost.Adapter, error) {
 		return &bifrost.Adapter{}, nil
 	}
 	policy := func(_ config.ProviderHealthConfig) (failover.RetryPolicy, failover.RetryPolicy, failover.RetryPolicy) {
 		return failover.FastPolicy, failover.MediumPolicy, failover.ProbePolicy
 	}
-	mgr, err := manager.New(cfg.LLM, nil, build, policy, zap.NewNop())
+	mgr, err := manager.New(cfg.LLM, cfg.Agent, nil, build, policy, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
 	return New(mgr, cfgPath, zap.NewNop()), cfgPath
 }
 
-func TestGet_Providers_ReturnsAPIKeyVerbatim(t *testing.T) {
-	h, _ := setupTest(t)
-
-	req := httptest.NewRequest("GET", "/api/v1/providers", nil)
+func doRequest(t *testing.T, h *Handler, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader *bytes.Reader
+	if body != "" {
+		reader = bytes.NewReader([]byte(body))
+	}
+	var req *http.Request
+	if reader != nil {
+		req = httptest.NewRequest(method, path, reader)
+	} else {
+		req = httptest.NewRequest(method, path, nil)
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
+	return rec
+}
 
+// --- GET /providers --------------------------------------------------
+
+func TestGet_Providers_Lists_With_NestedEndpoints(t *testing.T) {
+	h, _ := setupTest(t)
+	rec := doRequest(t, h, "GET", "/api/v1/providers", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	// API is intentionally not redacted — clients pre-fill PATCH
-	// forms with the existing key.
+	if !strings.Contains(body, `"endpoints"`) {
+		t.Fatalf("response missing nested endpoints:\n%s", body)
+	}
+	if !strings.Contains(body, "claude-46") {
+		t.Fatalf("response missing endpoint name:\n%s", body)
+	}
 	if !strings.Contains(body, "sk-alpha-old-key-xxxx") {
-		t.Fatalf("response missing raw api_key:\n%s", body)
-	}
-	if !strings.Contains(body, `"api_key"`) {
-		t.Fatalf("response missing api_key field:\n%s", body)
-	}
-	if strings.Contains(body, "api_key_mask") {
-		t.Fatalf("response still emits api_key_mask field (should be removed):\n%s", body)
+		t.Fatalf("api_key should be plaintext (not masked):\n%s", body)
 	}
 }
 
-func TestGet_Chain_ReturnsCurrentOrderAndHealth(t *testing.T) {
+// --- POST /providers (create new provider) -------------------------
+
+func TestPost_Provider_CreatesAndPersists(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	body := `{"name":"deepseek","type":"openai","base_url":"https://api.deepseek.com","api_key":"sk-deepseek"}`
+	rec := doRequest(t, h, "POST", "/api/v1/providers", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, _ := config.Load(cfgPath)
+	d, ok := cfg.LLM.Providers["deepseek"]
+	if !ok {
+		t.Fatalf("deepseek not persisted to yaml")
+	}
+	if d.Type != "openai" || d.BaseURL != "https://api.deepseek.com" || d.APIKey != "sk-deepseek" {
+		t.Errorf("unexpected fields: %+v", d)
+	}
+}
+
+func TestPost_Provider_AcceptsGemini(t *testing.T) {
 	h, _ := setupTest(t)
+	body := `{"name":"google","type":"gemini","base_url":"https://generativelanguage.googleapis.com/v1beta","api_key":"key"}`
+	rec := doRequest(t, h, "POST", "/api/v1/providers", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("gemini should be accepted, status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
 
-	req := httptest.NewRequest("GET", "/api/v1/providers/fallback-chain", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+func TestPost_Provider_RejectsUnknownType(t *testing.T) {
+	h, _ := setupTest(t)
+	body := `{"name":"kimi","type":"kimi","base_url":"x","api_key":"x"}`
+	rec := doRequest(t, h, "POST", "/api/v1/providers", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for unknown type", rec.Code)
+	}
+}
 
+func TestPost_Provider_RejectsDuplicate(t *testing.T) {
+	h, _ := setupTest(t)
+	body := `{"name":"alpha","type":"openai","base_url":"x","api_key":"x"}`
+	rec := doRequest(t, h, "POST", "/api/v1/providers", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for duplicate", rec.Code)
+	}
+}
+
+func TestPost_Provider_RejectsMissingFields(t *testing.T) {
+	h, _ := setupTest(t)
+	for _, b := range []string{
+		`{"type":"openai"}`,       // missing name
+		`{"name":"x"}`,            // missing type
+		`{}`,                      // both missing
+	} {
+		rec := doRequest(t, h, "POST", "/api/v1/providers", b)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status = %d, want 400", b, rec.Code)
+		}
+	}
+}
+
+// --- PATCH /providers/{p} --------------------------------------------
+
+func TestPatch_ProviderCreds_RotatesAndPersists(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha",
+		`{"api_key":"sk-alpha-NEW"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.Providers["alpha"].APIKey != "sk-alpha-NEW" {
+		t.Fatalf("api_key not persisted: %s", cfg.LLM.Providers["alpha"].APIKey)
+	}
+	// Endpoints under alpha survived.
+	if len(cfg.LLM.Providers["alpha"].Endpoints) != 2 {
+		t.Fatalf("endpoints lost: %+v", cfg.LLM.Providers["alpha"].Endpoints)
+	}
+}
+
+func TestPatch_ProviderCreds_UnknownTypeRejected(t *testing.T) {
+	h, _ := setupTest(t)
+	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha", `{"type":"kimi"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestPatch_ProviderCreds_EmptyRejected(t *testing.T) {
+	h, _ := setupTest(t)
+	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha", `{}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// --- /providers/{p}/endpoints (collection) ---------------------------
+
+func TestGet_EndpointsList(t *testing.T) {
+	h, _ := setupTest(t)
+	rec := doRequest(t, h, "GET", "/api/v1/providers/alpha/endpoints", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "claude-46") {
+		t.Fatalf("response missing claude-46: %s", rec.Body.String())
+	}
+}
+
+func TestPost_Endpoint_AddsAndPersists(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	rec := doRequest(t, h, "POST", "/api/v1/providers/alpha/endpoints",
+		`{"name":"claude-haiku","model":"claude-3-5-haiku"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, ok := cfg.LLM.Providers["alpha"].Endpoints["claude-haiku"]
+	if !ok {
+		t.Fatalf("claude-haiku not persisted: %+v", cfg.LLM.Providers["alpha"].Endpoints)
+	}
+	if ep.Model != "claude-3-5-haiku" {
+		t.Fatalf("wrong model: %s", ep.Model)
+	}
+}
+
+func TestPost_Endpoint_MissingFields(t *testing.T) {
+	h, _ := setupTest(t)
+	for _, body := range []string{`{"name":"only-name"}`, `{"model":"only-model"}`, `{}`} {
+		rec := doRequest(t, h, "POST", "/api/v1/providers/alpha/endpoints", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status = %d, want 400", body, rec.Code)
+		}
+	}
+}
+
+// TestPost_Endpoint_NameWithDotAllowed verifies endpoint names with
+// '.' (e.g. "gpt-5.5", "claude-3.5-sonnet") are accepted.
+func TestPost_Endpoint_NameWithDotAllowed(t *testing.T) {
+	h, _ := setupTest(t)
+	rec := doRequest(t, h, "POST", "/api/v1/providers/alpha/endpoints",
+		`{"name":"claude-3.5-sonnet","model":"claude-3-5-sonnet"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestPost_Endpoint_NameWithColonRejected verifies ':' is still
+// rejected — it's the canonical chain ref separator.
+func TestPost_Endpoint_NameWithColonRejected(t *testing.T) {
+	h, _ := setupTest(t)
+	rec := doRequest(t, h, "POST", "/api/v1/providers/alpha/endpoints",
+		`{"name":"bad:name","model":"x"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// --- /providers/{p}/endpoints/{e} (single) ---------------------------
+
+func TestPatch_Endpoint_UpdatesAndPersists(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"model":"claude-sonnet-4-6-v2","max_tokens":32768}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, _ := config.Load(cfgPath)
+	ep := cfg.LLM.Providers["alpha"].Endpoints["claude-46"]
+	if ep.Model != "claude-sonnet-4-6-v2" || ep.MaxTokens != 32768 {
+		t.Fatalf("not updated: %+v", ep)
+	}
+}
+
+func TestDelete_Endpoint_RemovesAndUpdatesChain(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	// claude-46 is the agent.primary; deleting it should auto-clear
+	// primary so beta:gpt-5 (the only fallback) becomes the effective
+	// chain head.
+	rec := doRequest(t, h, "DELETE", "/api/v1/providers/alpha/endpoints/claude-46", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, _ := config.Load(cfgPath)
+	if _, ok := cfg.LLM.Providers["alpha"].Endpoints["claude-46"]; ok {
+		t.Fatalf("claude-46 still in yaml")
+	}
+	if cfg.Agent.Primary == "alpha:claude-46" {
+		t.Fatalf("agent.primary still references deleted endpoint: %q", cfg.Agent.Primary)
+	}
+	for _, c := range cfg.Agent.FallbackChain {
+		if c == "alpha:claude-46" {
+			t.Fatalf("fallback_chain still references deleted endpoint: %v", cfg.Agent.FallbackChain)
+		}
+	}
+}
+
+// --- /agent ----------------------------------------------------------
+
+func TestGet_Agent_ReturnsOrderAndHealth(t *testing.T) {
+	h, _ := setupTest(t)
+	rec := doRequest(t, h, "GET", "/api/v1/agent", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	var resp struct {
 		Data struct {
-			Chain   []string                  `json:"chain"`
-			Entries []failover.ProviderHealth `json:"entries"`
+			Primary       string                    `json:"primary"`
+			FallbackChain []string                  `json:"fallback_chain"`
+			Entries       []failover.ProviderHealth `json:"entries"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got := resp.Data.Chain; got[0] != "alpha" || got[1] != "beta" {
-		t.Fatalf("chain = %v, want [alpha beta]", got)
+	if resp.Data.Primary != "alpha:claude-46" {
+		t.Fatalf("primary = %q, want alpha:claude-46", resp.Data.Primary)
 	}
-	if len(resp.Data.Entries) != 2 {
-		t.Fatalf("entries len = %d, want 2", len(resp.Data.Entries))
+	if len(resp.Data.FallbackChain) != 1 || resp.Data.FallbackChain[0] != "beta:gpt-5" {
+		t.Fatalf("fallback_chain = %v, want [beta:gpt-5]", resp.Data.FallbackChain)
 	}
-	for _, e := range resp.Data.Entries {
-		if e.State != "healthy" {
-			t.Errorf("entry %s state = %s, want healthy", e.Name, e.State)
+	if resp.Data.Entries[0].Provider != "alpha" || resp.Data.Entries[0].Endpoint != "claude-46" {
+		t.Fatalf("entry split wrong: %+v", resp.Data.Entries[0])
+	}
+}
+
+func TestPatch_Agent_UpdatesPrimaryAndPersists(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	rec := doRequest(t, h, "PATCH", "/api/v1/agent",
+		`{"primary":"beta:gpt-5","fallback_chain":["alpha:claude-46"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, _ := config.Load(cfgPath)
+	if cfg.Agent.Primary != "beta:gpt-5" {
+		t.Fatalf("primary not persisted: %q", cfg.Agent.Primary)
+	}
+	if len(cfg.Agent.FallbackChain) != 1 || cfg.Agent.FallbackChain[0] != "alpha:claude-46" {
+		t.Fatalf("fallback_chain not persisted: %v", cfg.Agent.FallbackChain)
+	}
+}
+
+func TestPatch_Agent_UpdatesTuning(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	rec := doRequest(t, h, "PATCH", "/api/v1/agent",
+		`{"max_tokens":12345,"temperature":0.7,"context_window":200000}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, _ := config.Load(cfgPath)
+	if cfg.Agent.MaxTokens != 12345 {
+		t.Errorf("max_tokens = %d, want 12345", cfg.Agent.MaxTokens)
+	}
+	if cfg.Agent.Temperature != 0.7 {
+		t.Errorf("temperature = %v, want 0.7", cfg.Agent.Temperature)
+	}
+	if cfg.Agent.ContextWindow != 200000 {
+		t.Errorf("context_window = %d, want 200000", cfg.Agent.ContextWindow)
+	}
+}
+
+func TestPatch_Agent_RejectsMalformed(t *testing.T) {
+	h, _ := setupTest(t)
+	for _, body := range []string{
+		`{"primary":"missing-separator"}`,
+		`{"primary":"ghost:x"}`,
+		`{"fallback_chain":["alpha:ghost-ep"]}`,
+		`{"primary":"alpha:claude-46","fallback_chain":["alpha:claude-46"]}`, // duplicates primary
+		`{"max_turns":0}`,                                                    // must be ≥ 1
+		`{"max_turns":-3}`,
+		`{"max_tool_calls":-1}`,                          // must be ≥ 0
+		`{"thinking_intensity":"super"}`,                 // not in low/medium/high
+		`{}`,
+	} {
+		rec := doRequest(t, h, "PATCH", "/api/v1/agent", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status = %d, want 400", body, rec.Code)
 		}
 	}
 }
 
-func TestPut_Chain_ReordersAndPersists(t *testing.T) {
+func TestPatch_Agent_UpdatesBehaviorLimits(t *testing.T) {
 	h, cfgPath := setupTest(t)
-
-	body, _ := json.Marshal(map[string]any{"chain": []string{"beta", "alpha"}})
-	req := httptest.NewRequest("PUT", "/api/v1/providers/fallback-chain", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
+	rec := doRequest(t, h, "PATCH", "/api/v1/agent",
+		`{"max_turns":80,"max_tool_calls":120,"thinking_intensity":"high"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	// Reload from disk — yaml must reflect the new order.
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		t.Fatal(err)
+	cfg, _ := config.Load(cfgPath)
+	if cfg.Agent.MaxTurns != 80 {
+		t.Errorf("max_turns = %d, want 80", cfg.Agent.MaxTurns)
 	}
-	if got := cfg.LLM.FallbackChain; got[0] != "beta" || got[1] != "alpha" {
-		t.Fatalf("yaml chain = %v, want [beta alpha]", got)
+	if cfg.Agent.MaxToolCalls != 120 {
+		t.Errorf("max_tool_calls = %d, want 120", cfg.Agent.MaxToolCalls)
 	}
-	// Comments survived.
-	raw, _ := os.ReadFile(cfgPath)
-	if !strings.Contains(string(raw), "# alpha is primary") {
-		t.Fatalf("yaml comment lost:\n%s", string(raw))
+	if cfg.Agent.ThinkingIntensity != "high" {
+		t.Errorf("thinking_intensity = %q, want high", cfg.Agent.ThinkingIntensity)
 	}
 }
 
-func TestPut_Chain_RejectsUnknownProvider(t *testing.T) {
+func TestPatch_Agent_ClearsChainWithEmptyArray(t *testing.T) {
 	h, cfgPath := setupTest(t)
-	original, _ := os.ReadFile(cfgPath)
-
-	body, _ := json.Marshal(map[string]any{"chain": []string{"alpha", "ghost"}})
-	req := httptest.NewRequest("PUT", "/api/v1/providers/fallback-chain", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
-	// yaml unchanged.
-	after, _ := os.ReadFile(cfgPath)
-	if string(original) != string(after) {
-		t.Fatalf("yaml mutated despite rejected request")
-	}
-}
-
-func TestPut_Chain_EmptyRejected(t *testing.T) {
-	h, _ := setupTest(t)
-	body, _ := json.Marshal(map[string]any{"chain": []string{}})
-	req := httptest.NewRequest("PUT", "/api/v1/providers/fallback-chain", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
-}
-
-func TestPatch_Provider_UpdatesAndPersists(t *testing.T) {
-	h, cfgPath := setupTest(t)
-
-	body, _ := json.Marshal(map[string]any{
-		"model":   "model-a-v2",
-		"api_key": "sk-alpha-NEW",
-	})
-	req := httptest.NewRequest("PATCH", "/api/v1/providers/alpha", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
+	rec := doRequest(t, h, "PATCH", "/api/v1/agent", `{"fallback_chain":[]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := cfg.LLM.Providers["alpha"]
-	if a.Model != "model-a-v2" || a.APIKey != "sk-alpha-NEW" {
-		t.Fatalf("yaml not updated: %+v", a)
-	}
-	// Beta untouched.
-	b := cfg.LLM.Providers["beta"]
-	if b.APIKey != "sk-beta-old-key-xxxx" {
-		t.Fatalf("beta clobbered: %+v", b)
+	cfg, _ := config.Load(cfgPath)
+	if len(cfg.Agent.FallbackChain) != 0 {
+		t.Fatalf("fallback_chain not cleared: %v", cfg.Agent.FallbackChain)
 	}
 }
 
-func TestPatch_Provider_TypeSwitch(t *testing.T) {
-	h, cfgPath := setupTest(t)
-	body, _ := json.Marshal(map[string]any{"type": "openai"})
-	req := httptest.NewRequest("PATCH", "/api/v1/providers/alpha", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.LLM.Providers["alpha"].Type != "openai" {
-		t.Fatalf("alpha type after patch = %q, want openai", cfg.LLM.Providers["alpha"].Type)
-	}
-}
-
-func TestPatch_Provider_UnknownTypeRejected(t *testing.T) {
+func TestAgentSnapshot_TimestampsAreRFC3339(t *testing.T) {
 	h, _ := setupTest(t)
-	body, _ := json.Marshal(map[string]any{"type": "kimi"})
-	req := httptest.NewRequest("PATCH", "/api/v1/providers/alpha", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for unknown type", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "not allowed") {
-		t.Fatalf("response should mention 'not allowed'; got %s", rec.Body.String())
-	}
-}
-
-func TestPatch_Provider_EmptyPatchRejected(t *testing.T) {
-	h, _ := setupTest(t)
-	req := httptest.NewRequest("PATCH", "/api/v1/providers/alpha", strings.NewReader("{}"))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
-}
-
-func TestPatch_Provider_UnknownNameRejected(t *testing.T) {
-	h, _ := setupTest(t)
-	body, _ := json.Marshal(map[string]any{"model": "x"})
-	req := httptest.NewRequest("PATCH", "/api/v1/providers/ghost", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
-}
-
-func TestRoute_MethodNotAllowed(t *testing.T) {
-	h, _ := setupTest(t)
-	req := httptest.NewRequest("DELETE", "/api/v1/providers/alpha", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("status = %d, want 405", rec.Code)
-	}
-}
-
-func TestRoute_UnknownPath(t *testing.T) {
-	h, _ := setupTest(t)
-	req := httptest.NewRequest("GET", "/api/v1/providers/alpha/extra", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code == http.StatusOK {
-		t.Fatalf("expected non-OK for unknown nested path; body=%s", rec.Body.String())
-	}
-}
-
-// Verify timezone-independent comparison won't break health entries.
-func TestChainSnapshot_TimestampsAreRFC3339(t *testing.T) {
-	h, _ := setupTest(t)
-	req := httptest.NewRequest("GET", "/api/v1/providers/fallback-chain", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
+	rec := doRequest(t, h, "GET", "/api/v1/agent", "")
 	var resp struct {
 		Data struct {
 			Entries []failover.ProviderHealth `json:"entries"`
@@ -310,5 +455,13 @@ func TestChainSnapshot_TimestampsAreRFC3339(t *testing.T) {
 		if _, err := time.Parse(time.RFC3339, e.TrippedUntil); err != nil {
 			t.Errorf("entry %s: tripped_until %q not RFC3339: %v", e.Name, e.TrippedUntil, err)
 		}
+	}
+}
+
+func TestRoute_UnknownPath(t *testing.T) {
+	h, _ := setupTest(t)
+	rec := doRequest(t, h, "GET", "/api/v1/providers/alpha/extra/deep", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }

@@ -32,10 +32,10 @@ type Server struct {
 // modelsHandler, if non-nil, is mounted at /api/v1/models for the
 // model + provider capability registry consumed by the client UI.
 //
-// providersHandler, if non-nil, is mounted at /api/v1/providers for
-// runtime provider / fallback-chain management. Only non-nil when
-// the server runs in multi-provider mode — single-provider
-// deployments don't expose runtime mutation.
+// providersHandler, if non-nil, is mounted at /api/v1/providers and
+// /api/v1/agent for runtime provider / agent-routing management.
+// Only non-nil when the server runs in multi-provider mode —
+// single-provider deployments don't expose runtime mutation.
 func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler http.Handler, modelsHandler http.Handler, providersHandler http.Handler, logger *zap.Logger) *Server {
 	mux := http.NewServeMux()
 
@@ -54,10 +54,15 @@ func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler ht
 		mux.Handle("/api/v1/models/", modelsHandler)
 	}
 
-	// Providers management: GET/PATCH/PUT under /api/v1/providers
+	// Providers management API: nested under /api/v1/providers plus
+	// /api/v1/agent (agent-level routing config — primary +
+	// fallback_chain + per-call defaults — sits at the LLM root, not
+	// under a specific provider).
 	if providersHandler != nil {
 		mux.Handle("/api/v1/providers", providersHandler)
 		mux.Handle("/api/v1/providers/", providersHandler)
+		mux.Handle("/api/v1/agent", providersHandler)
+		mux.Handle("/api/v1/agent/", providersHandler)
 	}
 
 	// Health check
