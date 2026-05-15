@@ -48,13 +48,10 @@ configs/config_self.yaml
 vendor/
 
 # docs — local-only design / draft notes (API references under docs/api/ and protocol docs are tracked)
-docs/refactor
-docs/prompt
-docs/design/
-docs/emit*
-docs/multi-agent-design.md
-docs/agent-yaml-reference.md
-docs/superpowers/
+docs/*
+!docs/api/console-api.md
+!docs/protocols/websocket.md
+!docs/release-rules.md
 
 # Debug
 __debug_bin*
