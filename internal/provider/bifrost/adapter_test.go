@@ -793,7 +793,8 @@ func TestCountTokens(t *testing.T) {
 
 func TestBuildParams_Empty(t *testing.T) {
 	req := &provider.ChatRequest{}
-	params := buildParams(req)
+	a := &Adapter{}
+	params := a.buildParams(req)
 	if params != nil {
 		t.Error("expected nil params for empty request")
 	}
@@ -807,7 +808,8 @@ func TestBuildParams_WithToolsAndTemp(t *testing.T) {
 			{Name: "test", Description: "test tool", InputSchema: map[string]any{"type": "object"}},
 		},
 	}
-	params := buildParams(req)
+	a := &Adapter{}
+	params := a.buildParams(req)
 	if params == nil {
 		t.Fatal("expected non-nil params")
 	}
@@ -819,6 +821,32 @@ func TestBuildParams_WithToolsAndTemp(t *testing.T) {
 	}
 	if len(params.Tools) != 1 {
 		t.Errorf("expected 1 tool, got %d", len(params.Tools))
+	}
+}
+
+// TestBuildParams_AgentDefaultsApplied confirms agent-level defaults
+// (pre-scaled / pre-capped by the builder) kick in only when the
+// per-call request leaves Temperature/MaxTokens at zero.
+func TestBuildParams_AgentDefaultsApplied(t *testing.T) {
+	a := &Adapter{
+		defaultTemperature: 0.5,
+		defaultMaxTokens:   1234,
+	}
+	params := a.buildParams(&provider.ChatRequest{})
+	if params == nil {
+		t.Fatal("expected params populated from defaults")
+	}
+	if params.Temperature == nil || *params.Temperature != 0.5 {
+		t.Errorf("default temp not applied: %v", params.Temperature)
+	}
+	if params.MaxCompletionTokens == nil || *params.MaxCompletionTokens != 1234 {
+		t.Errorf("default max_tokens not applied: %v", params.MaxCompletionTokens)
+	}
+
+	// Request fields beat defaults when set.
+	params = a.buildParams(&provider.ChatRequest{Temperature: 0.9, MaxTokens: 4096})
+	if *params.Temperature != 0.9 || *params.MaxCompletionTokens != 4096 {
+		t.Errorf("request values should win over defaults: %+v", params)
 	}
 }
 

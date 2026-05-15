@@ -19,6 +19,24 @@ import (
 // inside so callers retain the diagnostic detail.
 var ErrAllProvidersDown = errors.New("failover: all providers exhausted")
 
+// indexSep finds the first chain-ref separator in s: ':' preferred,
+// '.' as backward-compatible fallback. Mirrors the precedence used
+// by config.ParseChainEntry so Snapshot output stays consistent
+// with how chain entries are parsed.
+func indexSep(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == ':' {
+			return i
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] == '.' {
+			return i
+		}
+	}
+	return -1
+}
+
 // Config configures a Failover dispatcher.
 type Config struct {
 	// Providers is the ordered chain. Index 0 is primary; subsequent
@@ -32,6 +50,12 @@ type Config struct {
 	// underlying adapter's generic Name(). When nil or empty,
 	// names default to "chain[i]".
 	Names []string
+
+	// Disabled is parallel to Providers; entry i = true makes pick()
+	// skip this chain entry entirely (no routing, no probing, no
+	// auto-recovery). Used to park an endpoint without removing it
+	// from chain. When nil/empty, no entry is disabled.
+	Disabled []bool
 
 	// CooldownBase / CooldownMax / CooldownFactor configure the
 	// per-provider exponential-backoff cooldown schedule. Zero
@@ -58,6 +82,7 @@ type Config struct {
 type Failover struct {
 	providers    []provider.Provider
 	names        []string
+	disabled     []bool
 	logger       *zap.Logger
 	fastPolicy   RetryPolicy
 	mediumPolicy RetryPolicy
@@ -118,9 +143,16 @@ func New(cfg Config) (*Failover, error) {
 			names[i] = fmt.Sprintf("chain[%d]", i)
 		}
 	}
+	disabled := make([]bool, len(cfg.Providers))
+	for i := range disabled {
+		if i < len(cfg.Disabled) {
+			disabled[i] = cfg.Disabled[i]
+		}
+	}
 	return &Failover{
 		providers:    cfg.Providers,
 		names:        names,
+		disabled:     disabled,
 		logger:       logger,
 		fastPolicy:   fast,
 		mediumPolicy: medium,
@@ -264,10 +296,11 @@ func (f *Failover) pick(tried map[int]bool) (int, provider.Provider, RetryPolicy
 	now := f.now()
 
 	// Count remaining Healthy providers (needed for the Fast vs Medium
-	// decision when we pick a Healthy entry below).
+	// decision when we pick a Healthy entry below). Disabled entries
+	// don't count.
 	healthyTotal := 0
 	for i, s := range f.state {
-		if tried[i] {
+		if tried[i] || f.disabled[i] {
 			continue
 		}
 		if s.healthy(now) {
@@ -275,9 +308,9 @@ func (f *Failover) pick(tried map[int]bool) (int, provider.Provider, RetryPolicy
 		}
 	}
 
-	// Walk chain in priority order; first eligible entry wins.
+	// Walk chain in priority order; first eligible non-disabled entry wins.
 	for i, s := range f.state {
-		if tried[i] {
+		if tried[i] || f.disabled[i] {
 			continue
 		}
 		if s.healthy(now) {
@@ -294,12 +327,13 @@ func (f *Failover) pick(tried map[int]bool) (int, provider.Provider, RetryPolicy
 		// down the chain.
 	}
 
-	// Tier 3: every remaining entry is in active cooldown. Pick the
-	// one whose cooldown expires soonest and hard-try it.
+	// Tier 3: every remaining non-disabled entry is in active cooldown.
+	// Pick the one whose cooldown expires soonest and hard-try it.
+	// Disabled entries are NEVER picked, even as last resort.
 	bestIdx := -1
 	var bestUntil time.Time
 	for i, s := range f.state {
-		if tried[i] {
+		if tried[i] || f.disabled[i] {
 			continue
 		}
 		if bestIdx < 0 || s.trippedUntil.Before(bestUntil) {
@@ -346,17 +380,26 @@ func (f *Failover) state_(idx int) *providerState { //nolint:unused
 	return f.state[idx]
 }
 
-// ProviderHealth is a per-provider snapshot exposed to the
+// ProviderHealth is a per-chain-entry snapshot exposed to the
 // management API. The shape is a stable JSON contract for the
 // console client.
 type ProviderHealth struct {
 	// Index in the chain (0 = primary).
 	Index int `json:"index"`
-	// Name is the provider name as configured in llm.providers.
+	// Name is the dotted chain entry "provider.endpoint".
 	Name string `json:"name"`
+	// Provider is the credentials block name (llm.providers map key).
+	Provider string `json:"provider"`
+	// Endpoint is the endpoint name nested under the provider
+	// (llm.providers.<provider>.endpoints map key).
+	Endpoint string `json:"endpoint"`
 	// State is one of "healthy" / "tripped" / "ready_to_probe".
 	// Strictly mutually exclusive — see providerState semantics.
 	State string `json:"state"`
+	// Disabled is true when the endpoint has been marked disabled
+	// via EndpointConfig.Disabled or PATCH. Disabled entries are
+	// never routed regardless of State.
+	Disabled bool `json:"disabled"`
 	// TrippedUntil is RFC3339 timestamp when cooldown expires
 	// (empty when never tripped).
 	TrippedUntil string `json:"tripped_until,omitempty"`
@@ -385,10 +428,20 @@ func (f *Failover) Snapshot() []ProviderHealth {
 			state = "ready_to_probe"
 			trippedUntil = s.trippedUntil.UTC().Format(time.RFC3339)
 		}
+		// names[i] is the dotted "provider.endpoint" form; split for
+		// the wire to spare the client doing the parse.
+		var prov, ep string
+		if idx := indexSep(f.names[i]); idx > 0 {
+			prov = f.names[i][:idx]
+			ep = f.names[i][idx+1:]
+		}
 		out[i] = ProviderHealth{
 			Index:               i,
 			Name:                f.names[i],
+			Provider:            prov,
+			Endpoint:            ep,
 			State:               state,
+			Disabled:            f.disabled[i],
 			TrippedUntil:        trippedUntil,
 			CooldownSeconds:     int(s.currentCooldown / time.Second),
 			ConsecutiveFailures: s.consecutiveFails,

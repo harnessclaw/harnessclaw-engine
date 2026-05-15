@@ -12,26 +12,16 @@ import (
 // config validation, management API validation, and adapter
 // construction all consult it.
 //
-// Additions: keep the user-facing name lowercase and match what the
-// vendor calls itself (e.g. "openai" not "openai-chat-completions").
-// Vendors with OpenAI-compatible HTTP APIs (DeepSeek, Moonshot/Kimi,
-// Zhipu/GLM, MiniMax, etc.) are configured with type=openai plus a
-// custom base_url — they aren't separate types here.
+// Current scope: only the two backends actually exercised in
+// production. Adding more is a one-line edit; revisit when an
+// operator wants Gemini / Bedrock / etc. Vendors with OpenAI-
+// compatible HTTP APIs (DeepSeek, Moonshot/Kimi, Zhipu/GLM, MiniMax,
+// 讯飞, 通义, etc.) are configured with type=openai plus a custom
+// base_url — they aren't separate types here.
 var allowedProviderTypes = map[string]schemas.ModelProvider{
-	"openai":      schemas.OpenAI,
-	"anthropic":   schemas.Anthropic,
-	"gemini":      schemas.Gemini,
-	"azure":       schemas.Azure,
-	"bedrock":     schemas.Bedrock,
-	"cohere":      schemas.Cohere,
-	"vertex":      schemas.Vertex,
-	"mistral":     schemas.Mistral,
-	"ollama":      schemas.Ollama,
-	"groq":        schemas.Groq,
-	"openrouter":  schemas.OpenRouter,
-	"perplexity":  schemas.Perplexity,
-	"cerebras":    schemas.Cerebras,
-	"huggingface": schemas.HuggingFace,
+	"openai":    schemas.OpenAI,
+	"anthropic": schemas.Anthropic,
+	"gemini":    schemas.Gemini,
 }
 
 // ProviderTypeOf returns the bifrost ModelProvider mapped to the

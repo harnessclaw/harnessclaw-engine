@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -67,6 +68,20 @@ type Config struct {
 	// Forwarded via ChatParameters.ExtraParams so it reaches OpenAI-
 	// compatible gateways without polluting the standard schema.
 	EnableThinking *bool
+
+	// DefaultTemperature is the sampling temperature used when the
+	// incoming ChatRequest's Temperature is 0. Callers are expected to
+	// pre-scale this into the target provider's legal range (caller
+	// owns the range knowledge — e.g. main.buildBifrostAdapter scales
+	// the agent-level [0,1] value by ×2 for openai/gemini). 0 means
+	// "no default — only send Temperature when the request supplies it".
+	DefaultTemperature float64
+
+	// DefaultMaxTokens is the response cap used when the incoming
+	// ChatRequest's MaxTokens is 0. Caller pre-caps this against the
+	// endpoint's own MaxTokens so the value never exceeds endpoint
+	// configuration. 0 disables the default.
+	DefaultMaxTokens int
 
 	// Quirks declares per-provider behavior deviations from the OpenAI
 	// baseline (thinking param style, ExtraParams passthrough need,
@@ -186,6 +201,15 @@ type Adapter struct {
 	// passthrough, reasoning placeholder). Nil means apply defaults.
 	quirks *ProviderQuirks
 
+	// defaultTemperature / defaultMaxTokens are agent-level defaults
+	// applied when the incoming ChatRequest leaves the corresponding
+	// field as zero. Caller (cmd/server.buildBifrostAdapter) is
+	// responsible for pre-scaling temperature into the target
+	// provider's legal range and pre-capping max_tokens against the
+	// endpoint's own MaxTokens.
+	defaultTemperature float64
+	defaultMaxTokens   int
+
 	mu            sync.Mutex
 	usingFallback bool
 	activeModel   string
@@ -226,14 +250,16 @@ func New(cfg Config) (*Adapter, error) {
 	}
 
 	return &Adapter{
-		client:         client,
-		providerKey:    cfg.Provider,
-		defaultModel:   cfg.Model,
-		fallbackModel:  cfg.FallbackModel,
-		logger:         logger,
-		customHeaders:  cfg.CustomHeaders,
-		enableThinking: cfg.EnableThinking,
-		quirks:         cfg.Quirks,
+		client:             client,
+		providerKey:        cfg.Provider,
+		defaultModel:       cfg.Model,
+		fallbackModel:      cfg.FallbackModel,
+		logger:             logger,
+		customHeaders:      cfg.CustomHeaders,
+		enableThinking:     cfg.EnableThinking,
+		quirks:             cfg.Quirks,
+		defaultTemperature: cfg.DefaultTemperature,
+		defaultMaxTokens:   cfg.DefaultMaxTokens,
 	}, nil
 }
 
@@ -246,6 +272,14 @@ func (a *Adapter) Chat(ctx context.Context, req *provider.ChatRequest) (*provide
 	if req.Model != "" {
 		model = req.Model
 	}
+
+	dialStart := time.Now()
+	a.logger.Debug("llm.call.dial",
+		zap.String("provider", string(a.providerKey)),
+		zap.String("model", model),
+		zap.Int("messages", len(req.Messages)),
+		zap.Int("tools", len(req.Tools)),
+	)
 
 	bifReq := a.buildChatRequest(model, req)
 
@@ -284,10 +318,21 @@ func (a *Adapter) Chat(ctx context.Context, req *provider.ChatRequest) (*provide
 		}
 	}
 
+	a.logger.Debug("llm.call.connected",
+		zap.String("model", model),
+		zap.Duration("dial_elapsed", time.Since(dialStart)),
+	)
+
 	eventsCh := make(chan types.StreamEvent, 64)
 	var streamErr error
 
 	go func() {
+		defer func() {
+			a.logger.Debug("llm.call.stream_closed",
+				zap.String("model", model),
+				zap.Duration("total_elapsed", time.Since(dialStart)),
+			)
+		}()
 		defer close(eventsCh)
 		streamErr = a.consumeStream(stream, eventsCh)
 	}()
@@ -438,7 +483,7 @@ func (a *Adapter) buildChatRequest(model string, req *provider.ChatRequest) *sch
 		Input:    convertMessages(req.Messages, req.System, includeReasoning),
 	}
 
-	params := buildParams(req)
+	params := a.buildParams(req)
 	if a.enableThinking != nil {
 		style := ""
 		if a.quirks != nil {
@@ -897,10 +942,23 @@ func convertInputSchema(schema map[string]any) *schemas.ToolFunctionParameters {
 	return params
 }
 
-func buildParams(req *provider.ChatRequest) *schemas.ChatParameters {
+// buildParams resolves the per-call ChatParameters: request-supplied
+// Temperature/MaxTokens win when non-zero, otherwise the Adapter's
+// agent-level defaults (already pre-scaled and pre-capped by the
+// builder) kick in.
+func (a *Adapter) buildParams(req *provider.ChatRequest) *schemas.ChatParameters {
 	hasTools := len(req.Tools) > 0
-	hasTemp := req.Temperature > 0
-	hasMaxTokens := req.MaxTokens > 0
+
+	effectiveTemp := req.Temperature
+	if effectiveTemp == 0 && a.defaultTemperature > 0 {
+		effectiveTemp = a.defaultTemperature
+	}
+	effectiveMax := req.MaxTokens
+	if effectiveMax == 0 && a.defaultMaxTokens > 0 {
+		effectiveMax = a.defaultMaxTokens
+	}
+	hasTemp := effectiveTemp > 0
+	hasMaxTokens := effectiveMax > 0
 
 	if !hasTools && !hasTemp && !hasMaxTokens {
 		return nil
@@ -912,10 +970,12 @@ func buildParams(req *provider.ChatRequest) *schemas.ChatParameters {
 		params.Tools = ConvertTools(req.Tools)
 	}
 	if hasTemp {
-		params.Temperature = &req.Temperature
+		t := effectiveTemp
+		params.Temperature = &t
 	}
 	if hasMaxTokens {
-		params.MaxCompletionTokens = &req.MaxTokens
+		m := effectiveMax
+		params.MaxCompletionTokens = &m
 	}
 
 	return params
