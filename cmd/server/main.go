@@ -111,10 +111,18 @@ func main() {
 	}
 	defer logger.Sync()
 
+	// Drop malformed LLM content (bad providers / endpoints / chain
+	// entries) with WARN logs. Hard config errors are already caught
+	// by Validate above; this pass only removes the parts that
+	// won't load cleanly, leaving the rest usable.
+	cfg.SanitizeLLM(logger)
+
 	logger.Info("starting harnessclaw-engine",
 		zap.String("host", cfg.Server.Host),
 		zap.Int("port", cfg.Server.Port),
-		zap.String("default_provider", cfg.LLM.DefaultProvider),
+		zap.Int("provider_count", len(cfg.LLM.Providers)),
+		zap.String("agent_primary", cfg.Agent.Primary),
+		zap.Strings("agent_fallback_chain", cfg.Agent.FallbackChain),
 	)
 
 	// --- Step 3: Initialize storage (always SQLite) ---
@@ -245,7 +253,7 @@ func main() {
 	}
 	modelReg := modelregistry.NewRegistry(regManifest)
 
-	llmProvider, providerMgr := initProvider(cfg.LLM, modelReg, logger)
+	llmProvider, providerMgr := initProvider(cfg.LLM, cfg.Agent, cfg.SourcePath, modelReg, logger)
 
 	// Session-metrics registry: a single in-process registry holds the
 	// per-session Tracker (cumulative LLM/tool/sub-agent counters). The
@@ -308,11 +316,19 @@ func main() {
 	// L1 settings (emma profile, restricted tool palette, small loop) are
 	// applied by NewL1Engine below and overwrite the main-agent fields here.
 	engCfg := engine.QueryEngineConfig{
-		MaxTurns:             cfg.Engine.MaxTurns,
+		MaxTurns:             cfg.Agent.MaxTurns,
 		AutoCompactThreshold: cfg.Engine.AutoCompactThreshold,
 		ToolTimeout:          cfg.Engine.ToolTimeout,
-		MaxTokens:            16384,
-		SystemPrompt:         systemPrompt,
+		// MaxTokens is the per-response cap forwarded as
+		// ChatRequest.MaxTokens; the bifrost adapter's
+		// agent/endpoint-resolved default kicks in when this is 0.
+		MaxTokens: cfg.Agent.MaxTokens,
+		// ContextWindow is capped against the primary endpoint's intrinsic
+		// limit by Manager.EffectiveContextWindow() — agent.context_window=500k
+		// against an endpoint.context_window=200k → engine compactor uses 200k.
+		// Reported in startup log + GET /api/v1/agent so operators can confirm.
+		ContextWindow: providerMgr.EffectiveContextWindow(),
+		SystemPrompt:  systemPrompt,
 		// ClientTools comes from the WebSocket channel config since L1's
 		// only delivery surface for client-routed tools (AskUserQuestion,
 		// etc.) is the WebSocket. Forgetting this defaults Go's zero value
@@ -332,6 +348,8 @@ func main() {
 	logger.Info("engine initialized",
 		zap.Int("max_turns", engCfg.MaxTurns),
 		zap.Float64("compact_threshold", engCfg.AutoCompactThreshold),
+		zap.Int("agent_context_window", cfg.Agent.ContextWindow),
+		zap.Int("effective_context_window", engCfg.ContextWindow),
 	)
 
 	// Wrap the QueryEngine in an L1Engine. From this point on, the channel
@@ -564,9 +582,17 @@ func main() {
 	// mount the runtime providers API because there's nothing to
 	// hot-swap and persisting an empty fallback_chain would be
 	// surprising.
+	//
+	// cfg.SourcePath is the absolute path of the yaml viper actually
+	// loaded — whether the operator passed -config explicitly or
+	// viper auto-discovered one in ./configs/ or .. So mutations
+	// always write back to the same file the server started with.
 	var providersHandler http.Handler
 	if providerMgr != nil {
-		providersHandler = providersmgmt.New(providerMgr, *configPath, logger)
+		providersHandler = providersmgmt.New(providerMgr, cfg.SourcePath, logger)
+		logger.Info("providersmgmt API mounted",
+			zap.String("config_source", cfg.SourcePath),
+		)
 	}
 
 	var consoleServer *api.Server
@@ -843,62 +869,42 @@ func runWaitJanitor(ctx context.Context, p *prompter.Prompter, logger *zap.Logge
 // Provider initialization
 // ---------------------------------------------------------------------------
 
-// initProvider builds the engine-facing provider.Provider. Two paths:
+// initProvider builds the engine-facing provider.Provider.
 //
-//   1. Single-provider deployment (FallbackChain empty or one entry):
-//      build one bifrost adapter and return it directly. Behavior
-//      identical to the pre-failover wiring. The second return value
-//      is nil — no Manager, no providersmgmt API.
-//
-//   2. Multi-provider deployment (FallbackChain has ≥ 2 entries):
-//      construct a manager.Manager that wraps a hot-swappable
-//      Failover dispatcher. The Manager implements provider.Provider
-//      so the engine sees no change; the second return value is the
-//      typed *manager.Manager so cmd/server can mount the
-//      providersmgmt API against it.
-func initProvider(cfg config.LLMConfig, modelReg *modelregistry.Registry, logger *zap.Logger) (provider.Provider, *manager.Manager) {
-	chain := cfg.FallbackChain
-	if len(chain) <= 1 {
-		name := cfg.DefaultProvider
-		if name == "" {
-			name = "anthropic"
-		}
-		if len(chain) == 1 {
-			name = chain[0]
-		}
-		provCfg, ok := cfg.Providers[name]
-		if !ok {
-			logger.Fatal("provider config not found",
-				zap.String("provider", name),
-				zap.Any("available", mapKeys(cfg.Providers)),
-			)
-		}
-		adapter, err := buildBifrostAdapter(name, provCfg, cfg, modelReg, logger, true /*isPrimary*/)
-		if err != nil {
-			logger.Fatal("build bifrost adapter",
-				zap.String("name", name),
-				zap.Error(err),
-			)
-		}
-		logger.Info("LLM provider initialized (single)", zap.String("provider", name))
-		return adapter, nil
-	}
+// Always goes through manager.Manager so the providersmgmt API is
+// available regardless of chain length. Manager wraps a hot-swappable
+// Failover dispatcher and implements provider.Provider so the engine
+// sees no change. Empty effective chain (no primary, no fallback)
+// enters degraded mode — Chat returns ErrNoEndpoint until the
+// operator populates the chain via PATCH /api/v1/agent.
+func initProvider(cfg config.LLMConfig, agent config.AgentConfig, sourcePath string, modelReg *modelregistry.Registry, logger *zap.Logger) (provider.Provider, *manager.Manager) {
+	chain := effectiveChain(agent)
 
-	// Multi-provider: wrap a Manager around Failover.
-	adapterBuilder := func(name string, provCfg config.ProviderConfig, isPrimary bool) (*bifrost.Adapter, error) {
-		return buildBifrostAdapter(name, provCfg, cfg, modelReg, logger, isPrimary)
+	if len(chain) == 0 {
+		logger.Warn("agent.primary and agent.fallback_chain are both empty — server starting in degraded mode; LLM requests will fail until the chain is populated",
+			zap.String("config_source", sourcePath),
+			zap.Any("providers_declared", mapKeys(cfg.Providers)),
+			zap.String("how_to_fix", "PATCH /api/v1/agent {\"primary\":\"provider:endpoint\"}"),
+		)
+	}
+	adapterBuilder := func(provName string, provCfg config.ProviderConfig, epName string, epCfg config.EndpointConfig, agent config.AgentConfig) (*bifrost.Adapter, error) {
+		if epCfg.MaxTokens == 0 {
+			epCfg.MaxTokens = defaultMaxTokens(cfg)
+		}
+		return buildBifrostAdapter(provName, provCfg, epName, epCfg, agent, cfg, modelReg, logger)
 	}
 	policyBuilder := func(h config.ProviderHealthConfig) (failover.RetryPolicy, failover.RetryPolicy, failover.RetryPolicy) {
 		return failoverPolicyFromBudget("fast", h.PrimaryBudget, failover.FastPolicy),
 			failoverPolicyFromBudget("medium", h.LastHealthyBudget, failover.MediumPolicy),
 			failoverPolicyFromBudget("probe", h.ProbeBudget, failover.ProbePolicy)
 	}
-	mgr, err := manager.New(cfg, modelReg, adapterBuilder, policyBuilder, logger)
+	mgr, err := manager.New(cfg, agent, modelReg, adapterBuilder, policyBuilder, logger)
 	if err != nil {
 		logger.Fatal("failed to build provider manager", zap.Error(err))
 	}
 	logger.Info("LLM provider manager ready (hot-swap enabled)",
-		zap.Strings("chain", chain),
+		zap.String("primary", agent.Primary),
+		zap.Strings("fallback_chain", agent.FallbackChain),
 		zap.Duration("cooldown_base", cfg.Health.CooldownBase),
 		zap.Duration("cooldown_max", cfg.Health.CooldownMax),
 		zap.Int("cooldown_factor", cfg.Health.CooldownFactor),
@@ -909,53 +915,52 @@ func initProvider(cfg config.LLMConfig, modelReg *modelregistry.Registry, logger
 	return mgr, mgr
 }
 
-// buildBifrostAdapter constructs one Bifrost adapter from a typed
-// ProviderConfig. Only the primary entry inherits llm.bifrost.*
-// override fields (Model / APIKey / BaseURL / FallbackModel) — these
-// were historically scoped to "the one provider"; fallback chain
-// entries always use their own llm.providers[name] config exclusively.
-//
-// Returns (adapter, nil) on success; (nil, err) on failure. Callers
-// decide whether to Fatal (single-provider path, where startup
-// failure is unrecoverable) or surface the error (Manager runtime
-// rebuild, where a bad patch should not crash the server).
+// effectiveChain returns [primary, ...fallback_chain] deduplicated —
+// the actual order the dispatcher will try endpoints. Mirrors
+// manager.effectiveChain (kept here to avoid a build dependency from
+// logging code into manager).
+func effectiveChain(a config.AgentConfig) []string {
+	out := make([]string, 0, 1+len(a.FallbackChain))
+	seen := map[string]bool{}
+	if a.Primary != "" {
+		out = append(out, a.Primary)
+		seen[a.Primary] = true
+	}
+	for _, e := range a.FallbackChain {
+		if seen[e] {
+			continue
+		}
+		seen[e] = true
+		out = append(out, e)
+	}
+	return out
+}
+
+// buildBifrostAdapter constructs one Bifrost adapter for a
+// (provider, endpoint) pair. The provider supplies credentials
+// (type / base_url / api_key); the endpoint supplies the model and
+// per-call tuning (max_tokens / temperature / enable_thinking); the
+// agent supplies app-level defaults that override the endpoint's own
+// values when present, after range adjustment (temperature) and
+// capping (max_tokens). See resolveDefaults for the rules.
 func buildBifrostAdapter(
-	name string,
+	provName string,
 	provCfg config.ProviderConfig,
+	epName string,
+	epCfg config.EndpointConfig,
+	agent config.AgentConfig,
 	cfg config.LLMConfig,
 	modelReg *modelregistry.Registry,
 	logger *zap.Logger,
-	isPrimary bool,
 ) (*bifrost.Adapter, error) {
-	// Backend protocol is decided by provCfg.Type, never by the
-	// yaml key — that lets chain entries have arbitrary names
-	// (`claude-46`, `kimi`, `glm`) while still mapping to a real
-	// bifrost backend.
 	bfProvider, ok := bifrost.ProviderTypeOf(provCfg.Type)
 	if !ok {
 		return nil, fmt.Errorf("provider %q: unknown type %q (allowed: %v)",
-			name, provCfg.Type, bifrost.AllowedTypeNames())
-	}
-	bfModel := provCfg.Model
-	bfAPIKey := provCfg.APIKey
-	bfBaseURL := provCfg.BaseURL
-	fallbackModel := ""
-	if isPrimary {
-		if cfg.Bifrost.Model != "" {
-			bfModel = cfg.Bifrost.Model
-		}
-		if cfg.Bifrost.APIKey != "" {
-			bfAPIKey = cfg.Bifrost.APIKey
-		}
-		if cfg.Bifrost.BaseURL != "" {
-			bfBaseURL = cfg.Bifrost.BaseURL
-		}
-		fallbackModel = cfg.Bifrost.FallbackModel
+			provName, provCfg.Type, bifrost.AllowedTypeNames())
 	}
 
-	// Quirks lookup keys on the BACKEND type, not the yaml entry
-	// name — registry knows "anthropic"/"openai" etc., not arbitrary
-	// chain entry names like "claude-46".
+	// Quirks lookup keys on the BACKEND type (registry knows
+	// "anthropic"/"openai", not yaml-key names like "claude-46").
 	var quirks *bifrost.ProviderQuirks
 	if prov := modelReg.LookupProvider(provCfg.Type); prov != nil {
 		quirks = &bifrost.ProviderQuirks{
@@ -967,42 +972,100 @@ func buildBifrostAdapter(
 		}
 	}
 
+	effectiveTemp := resolveEffectiveTemperature(provCfg.Type, agent.Temperature, epCfg.Temperature)
+	effectiveMax := resolveEffectiveMaxTokens(agent.MaxTokens, epCfg.MaxTokens)
+
 	adapter, err := bifrost.New(bifrost.Config{
-		Provider:       bfProvider,
-		Model:          bfModel,
-		APIKey:         bfAPIKey,
-		BaseURL:        bfBaseURL,
-		FallbackModel:  fallbackModel,
-		MaxConcurrency: cfg.Bifrost.MaxConcurrency,
-		BufferSize:     cfg.Bifrost.BufferSize,
-		ProxyURL:       cfg.ProxyURL,
-		CustomHeaders:  cfg.CustomHeaders,
-		EnableThinking: provCfg.EnableThinking,
-		Quirks:         quirks,
-		Logger:         logger,
+		Provider:           bfProvider,
+		Model:              epCfg.Model,
+		APIKey:             provCfg.APIKey,
+		BaseURL:            provCfg.BaseURL,
+		MaxConcurrency:     cfg.Bifrost.MaxConcurrency,
+		BufferSize:         cfg.Bifrost.BufferSize,
+		ProxyURL:           cfg.ProxyURL,
+		CustomHeaders:      cfg.CustomHeaders,
+		EnableThinking:     epCfg.EnableThinking,
+		Quirks:             quirks,
+		DefaultTemperature: effectiveTemp,
+		DefaultMaxTokens:   effectiveMax,
+		Logger:             logger,
 	})
 	if err != nil {
 		return nil, err
 	}
 	thinkingState := "default"
-	if provCfg.EnableThinking != nil {
-		if *provCfg.EnableThinking {
+	if epCfg.EnableThinking != nil {
+		if *epCfg.EnableThinking {
 			thinkingState = "enabled"
 		} else {
 			thinkingState = "disabled"
 		}
 	}
 	logger.Info("bifrost adapter built",
-		zap.String("name", name),
+		zap.String("provider", provName),
+		zap.String("endpoint", epName),
 		zap.String("type", provCfg.Type),
 		zap.String("backend", string(bfProvider)),
-		zap.String("model", bfModel),
-		zap.String("fallback_model", fallbackModel),
+		zap.String("model", epCfg.Model),
+		zap.Int("max_tokens", epCfg.MaxTokens),
+		zap.Int("effective_max_tokens", effectiveMax),
+		zap.Float64("effective_temperature", effectiveTemp),
 		zap.Bool("proxy", cfg.ProxyURL != ""),
 		zap.String("thinking", thinkingState),
-		zap.Bool("primary", isPrimary),
 	)
 	return adapter, nil
+}
+
+// resolveEffectiveTemperature picks the temperature baked into the
+// adapter as its default when ChatRequest.Temperature is 0.
+//
+// Convention: agent.temperature is authored on a unified [0, 1] scale
+// (so config / API consumers don't need to know per-vendor ranges).
+// The framework scales it by provider type to the vendor's legal range:
+//
+//   - anthropic  → [0, 1]  scale factor 1.0  (no change)
+//   - openai     → [0, 2]  scale factor 2.0
+//   - gemini     → [0, 2]  scale factor 2.0
+//
+// When agent.temperature is 0 (unset), the endpoint's own Temperature
+// (assumed already in the vendor's native range) is used verbatim.
+// Unknown provider types pass through unscaled.
+func resolveEffectiveTemperature(providerType string, agentTemp, epTemp float64) float64 {
+	if agentTemp <= 0 {
+		return epTemp
+	}
+	switch providerType {
+	case "openai", "gemini":
+		return agentTemp * 2.0
+	case "anthropic":
+		return agentTemp
+	default:
+		return agentTemp
+	}
+}
+
+// resolveEffectiveMaxTokens picks the max_tokens baked into the
+// adapter as its default when ChatRequest.MaxTokens is 0.
+//
+// Rule: agent.max_tokens wins when set AND ≤ endpoint.max_tokens
+// (endpoint acts as the hard ceiling — operator-configured per-model
+// cap is never exceeded). Otherwise endpoint.max_tokens is used.
+func resolveEffectiveMaxTokens(agentMax, epMax int) int {
+	if agentMax <= 0 {
+		return epMax
+	}
+	if epMax > 0 && agentMax > epMax {
+		return epMax
+	}
+	return agentMax
+}
+
+// defaultMaxTokens returns the configured default or 8192 fallback.
+func defaultMaxTokens(cfg config.LLMConfig) int {
+	if cfg.DefaultMaxTokens > 0 {
+		return cfg.DefaultMaxTokens
+	}
+	return 8192
 }
 
 // failoverPolicyFromBudget converts a config Duration into a

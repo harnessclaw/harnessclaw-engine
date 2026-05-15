@@ -14,137 +14,171 @@ log:
   output: "stdout"       # stdout, file
   # file_path: "/var/log/harnessclaw-engine/service.log"
 
-# --- LLM Provider (all providers are routed through Bifrost SDK) ---
+# --- LLM (nested: providers (credentials) → endpoints (model bindings)) ---
 llm:
-  default_provider: "anthropic"              # Switch to "openai" to use OpenAI
   max_retries: 3
   api_timeout: "900s"
   # First-byte watchdog: max wait between Chat() returning and the first
-  # stream chunk. Disarms once any chunk arrives, so legitimate slow
-  # streams aren't penalised — only catches "gateway accepted the
-  # request but never sent a byte" (the 10-min orphan-timeout
-  # pathology). Tune up to 180s+ if upstream models commonly take
-  # 60-90s to start streaming.
+  # stream chunk. Disarms once any chunk arrives.
   first_byte_timeout: "120s"
+  # Default response cap inherited by endpoints that omit max_tokens.
+  default_max_tokens: 8192
   # proxy_url: "http://proxy:8888"
   # custom_headers:
   #   X-Custom: "value"
+
+  # ---------------------------------------------------------------------------
+  # 一层: providers — 厂商凭证 (一个厂商一组 key + base_url)
+  # ---------------------------------------------------------------------------
+  # 每个 provider entry = 一组 API 凭证, 可被多个 endpoint 复用。
+  # 改 api_key 一次, 所有 endpoint 自动用新凭证 (PATCH /api/v1/providers/{p}
+  # 触发热生效)。
+  #
+  # 字段:
+  #   type:      bifrost 后端协议。允许值: openai / anthropic
+  #   base_url:  凭证对应的 HTTP endpoint
+  #   api_key:   凭证
+  #   endpoints: 嵌套的 endpoint map (每个绑一个 model)
+  #
+  # OpenAI-compatible 厂商 (DeepSeek / Kimi / GLM / MiniMax / 讯飞 / 通义)
+  # 都用 type=openai, 改 base_url 区分。
   providers:
-    # 每个 provider 必须声明 `type`，决定 bifrost 用哪个后端协议对接。
-    # 允许的 type 值：openai / anthropic / gemini / azure / bedrock / cohere /
-    #                vertex / mistral / ollama / groq / openrouter / perplexity /
-    #                cerebras / huggingface
-    # OpenAI-compatible 厂商 (DeepSeek / Kimi / GLM / MiniMax 等) 用 type=openai
-    # 加各自的 base_url 即可。yaml key 是任意"档位名"，可以重复使用同一个 type
-    # 比如 claude-45 / claude-46 都 type=anthropic 但 model 不同。
     anthropic:
       type: anthropic
-      base_url: "your-api-url"
-      api_key: "your-api-key-here"
-      model: "your-model-id"
-      max_tokens: 16384
-#    kimi:
-#      type: openai
-#      base_url: "https://api.moonshot.cn/v1"
-#      api_key: "your-moonshot-key"
-#      model: "kimi-k2"
-#      max_tokens: 8192
+      base_url: "https://api.anthropic.com"
+      api_key: "sk-ant-xxxxxxxxxxxxxxxx"
+      endpoints:
+        # 同一组凭证下挂多个 endpoint, 每个绑一个 model
+        claude-46:
+          model: claude-sonnet-4-6
+          max_tokens: 16384
+        claude-45:
+          model: claude-sonnet-4-5
+          max_tokens: 16384
+        claude-haiku:
+          model: claude-3-5-haiku
+          # max_tokens 省略时继承 default_max_tokens (8192)
+
 #    deepseek:
 #      type: openai
 #      base_url: "https://api.deepseek.com"
 #      api_key: "your-deepseek-key"
-#      model: "deepseek-v4-flash"
-#      max_tokens: 100000
+#      endpoints:
+#        deepseek-flash:
+#          model: deepseek-v4-flash
+#          max_tokens: 100000
+#          enable_thinking: false   # DeepSeek 思考模式关掉省 token
+#        deepseek-reasoner:
+#          model: deepseek-reasoner
+#          max_tokens: 32768
+#          enable_thinking: true
+
+#    kimi:
+#      type: openai
+#      base_url: "https://api.moonshot.cn/v1"
+#      api_key: "your-moonshot-key"
+#      endpoints:
+#        kimi-k2:
+#          model: kimi-k2
+
 #    glm:
 #      type: openai
 #      base_url: "https://open.bigmodel.cn/api/paas/v4"
 #      api_key: "your-zhipu-key"
-#      model: "glm-4"
-#      max_tokens: 8192
-#    # 同一后端不同 model — yaml key 任意，type 都 = anthropic
-#    claude-45:
-#      type: anthropic
-#      base_url: "https://api.anthropic.com"
-#      api_key: "sk-ant-..."
-#      model: "claude-sonnet-4-5"
-#      max_tokens: 16384
-#    claude-46:
-#      type: anthropic
-#      base_url: "https://api.anthropic.com"
-#      api_key: "sk-ant-..."
-#      model: "claude-sonnet-4-6"
-#      max_tokens: 16384
-#    gemini-2:
-#      type: gemini
-#      base_url: "https://generativelanguage.googleapis.com/v1beta"
-#      api_key: "..."
-#      model: "gemini-2.0-pro"
-#      max_tokens: 8192
-#    openai:
+#      endpoints:
+#        glm-4:
+#          model: glm-4-plus
+
+#    openai-official:
 #      type: openai
 #      base_url: "https://api.openai.com"
-#      api_key: "your-openai-api-key"
-#      model: "gpt-4o"
-#      max_tokens: 4096
-#      # enable_thinking controls provider-side chain-of-thought output.
-#      # nil/unset = provider default;  false = force disable;  true = force enable.
-#      # Adapter forwards this as DeepSeek's {"thinking": {"type": "enabled"|"disabled"}}
-#      # extra param (see https://api-docs.deepseek.com/zh-cn/guides/thinking_mode ).
-#      # Other providers ignore unknown fields, so setting it on OpenAI / 讯飞 / 通义
-#      # is a no-op rather than an error.
-#      # enable_thinking: false
+#      api_key: "sk-openai-xxx"
+#      endpoints:
+#        gpt-5:
+#          model: gpt-5-turbo
+#          max_tokens: 4096
 
   # ---------------------------------------------------------------------------
-  # 多 Providers 失败降级 (fallback_chain) — 取消注释启用
-  # ---------------------------------------------------------------------------
-  # 思路：在 providers 下声明多个 provider；用 fallback_chain 给一个优先级队列。
-  # 请求先打主 (chain[0])；遇到可降级错误 (429/5xx/529/网络抖动/连续 529 触发的
-  # fallback 信号 / 网关首字节超时 / 401/403) 时，trip 该 provider 并 routes 到
-  # 下一个。冷却到期后下一次请求把 tripped provider 作为探活 (Probe budget=5s)；
-  # 探活成功 → 恢复并重新作为主；失败 → 冷却指数翻倍。
-  #
-  # 不会触发降级的错误：prompt_too_long / max_output_tokens (payload 问题，换
-  # provider 也会失败) 以及 ctx.Canceled / DeadlineExceeded (调用方主动取消)。
-  #
-  # 当 fallback_chain 为空或只有 1 项时，跳过 Failover 直接走单 provider 路径，
-  # 行为与现有部署完全一致。
-  #
-  # fallback_chain 里的名字必须对应 providers 下的 yaml key (不是 type)。
-  # 顺序即优先级：chain[0] = 主。
-  #
-  # 示例：
-  # fallback_chain:
-  #   - claude-46     # 主：最新 Claude
-  #   - claude-45     # 备 1：上一代 Claude
-  #   - openai        # 备 2：OpenAI
-  #   - deepseek      # 备 3
-  #   - kimi          # 备 4
-  #   - glm           # 备 5
-
-  # ---------------------------------------------------------------------------
-  # Health：Failover 健康检查与降级行为调优 (全部可省略，用默认值)
+  # Health: Failover 健康检查与降级行为调优 (全部可省略, 用默认值)
   # ---------------------------------------------------------------------------
   # health:
-  #   # 冷却调度 (per-provider 状态机)
   #   cooldown_base:    "30s"     # 首次 trip 的冷却
   #   cooldown_max:     "10m"     # 冷却上限
   #   cooldown_factor:  2          # 连续 trip 的冷却倍率
-  #
-  #   # 单次 provider 调用的墙钟预算
-  #   primary_budget:        "15s"  # Fast — 主 healthy 时 (有备可切，激进快切)
+  #   primary_budget:        "15s"  # Fast — 主 healthy 时 (有备可切, 激进快切)
   #   last_healthy_budget:   "30s"  # Medium — 最后一个 healthy 或 Tier 3 兜底
-  #   probe_budget:          "5s"   # Probe — 探活 (冷却已过的 trip provider)
+  #   probe_budget:          "5s"   # Probe — 探活 (冷却已过的 trip endpoint)
   #
-  # 设计要点：
-  #   - "主 budget 15s" 不是说主只能等 15s 完成响应，而是 Failover 层面给主的
-  #     调用上限——超过 15s 视为失败、切到备。LLM 正常请求首字节 1-5s，15s
-  #     给单次抖动留了余量；如果主总是慢，把 primary_budget 调到 30s 或更大。
-  #   - 单 provider 部署 (fallback_chain 留空) 不走这套，等价于现有 retry 默认。
-  #   - 健康状态全部通过真实请求驱动 (被动)；没有后台拨测，零额外 token。
+  # 设计要点:
+  #   - "主 budget 15s" 是 Failover 层面给主的调用上限——超过 15s 视为失败、
+  #     切到备。LLM 正常请求首字节 1-5s, 15s 给单次抖动留了余量; 如果主总是
+  #     慢, 把 primary_budget 调到 30s 或更大。
+  #   - 单 endpoint 部署 (agent.primary 设, fallback_chain 留空) 也走这套但
+  #     直接进 retry 路径, 失败即上抛, 等价于现有 retry。
+  #   - 健康状态全部通过真实请求驱动 (被动); 没有后台拨测, 零额外 token。
+
+# ---------------------------------------------------------------------------
+# Agent — 整个 agent 应用的 LLM 路由 + 共享调用参数
+# ---------------------------------------------------------------------------
+# 引用 endpoint 用 "provider:endpoint" 字符串 (canonical 分隔符 ':')。
+# primary = 主模型 (单 endpoint), fallback_chain = 备模型 (按顺序降级)。
+# 旧格式 "provider.endpoint" 仍兼容 (解析时 fallback 用第一个 '.')。
+#
+# 为什么用 ':' 而不是 '.':endpoint name 可能本身就含 '.'(例如 model 名
+# gpt-5.5 / claude-3.5-sonnet),用 ':' 避开歧义;新写的 yaml 一律用 ':'。
+#
+# 工作机制: 请求按 [primary, ...fallback_chain] 顺序尝试。某 endpoint
+# 返回可降级错误 (429/5xx/529/网络抖动/连续 529/网关首字节超时/401/403)
+# 时, trip 该 endpoint 并 route 到下一个。冷却到期后下一次请求把 tripped
+# endpoint 作为探活 (Probe budget=5s); 探活成功 → 恢复; 失败 → 冷却指数翻倍。
+#
+# 不会触发降级的错误: prompt_too_long / max_output_tokens / ctx.Canceled。
+#
+# primary 和 fallback_chain 都留空 → 进入降级模式 (Chat 调用直接返回
+# ErrNoEndpoint, 管理 API 可用); 通过 PATCH /api/v1/agent 修复。
+#
+# max_tokens / temperature / context_window 是 agent 层的默认值,会被烘进每个
+# adapter 作为"请求字段为 0 时的兜底值"(改动会触发 adapter 重建)。
+#
+# temperature 统一用 [0, 1] 区间,框架按 provider type 缩放:
+#   anthropic ×1.0  (原生 [0, 1])
+#   openai    ×2.0  (原生 [0, 2])
+#   gemini    ×2.0  (原生 [0, 2])
+# 例:agent.temperature=0.5 → anthropic endpoint 用 0.5,openai endpoint 用 1.0。
+#
+# max_tokens 取 min(agent.max_tokens, endpoint.max_tokens)(endpoint 是硬上限);
+# agent 为 0 时用 endpoint 自身值。
+#
+# context_window 是 engine compactor 的触发阈值分母 — 累计 message tokens 超过
+# context_window × engine.auto_compact_threshold (默认 0.8) 时自动 compact。
+# agent.context_window 为 0 → engine 用 200_000 兜底(claude 4.x / gpt-5 /
+# gemini 2.x 主流上下文窗口)。
+#
+# 行为限制(agent 维度,非 endpoint):
+#   max_turns          — 单次请求最多 LLM 轮次(必须 ≥ 1,默认 50)。原 engine.max_turns
+#   max_tool_calls     — 单次请求累计工具调用次数上限(0 = 不限,只受 max_turns 制约)
+#   thinking_intensity — 推理强度三档:low / medium / high(或空 = 不下发,沿用
+#                        endpoint.enable_thinking)。adapter 按 provider 翻译:
+#                        OpenAI o-series → reasoning_effort;Anthropic → 推理 token 预算;
+#                        DeepSeek → enable_thinking
+agent:
+  primary: "anthropic:claude-46"
+  fallback_chain:
+    - "anthropic:claude-45"
+    - "anthropic:claude-haiku"
+#    - "deepseek:deepseek-flash"
+#    - "kimi:kimi-k2"
+#    - "glm:glm-4"
+#    - "openai-official:gpt-5"
+#  max_tokens: 16384
+#  temperature: 0.7
+#  context_window: 200000
+  max_turns: 50
+#  max_tool_calls: 0          # 0 = 不限
+#  thinking_intensity: "medium"
 
 # --- Query Engine ---
 engine:
-  max_turns: 50
   auto_compact_threshold: 0.8
   tool_timeout: "120s"
 
