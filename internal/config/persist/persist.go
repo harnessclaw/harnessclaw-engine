@@ -1,14 +1,12 @@
 // Package persist reads/writes the engine's yaml config in a way
-// that preserves comments and key order. It is used by the
-// management API to write provider / fallback_chain edits back to
-// the source file without scrubbing the user's annotations.
+// that preserves comments and key order. The management API calls
+// these helpers after applying mutations to the in-memory manager,
+// so the on-disk yaml mirrors the live state.
 //
-// The implementation operates on yaml.Node trees rather than
-// re-marshalling a typed struct. This is verbose but is the only
-// approach that survives a round-trip through user-authored config:
-// re-marshalling a parsed config.Config drops every comment and
-// re-orders fields alphabetically, which is unacceptable for
-// hand-edited files.
+// Implementation operates on yaml.Node trees rather than
+// re-marshalling typed structs — the only approach that survives a
+// round-trip through user-authored config (comments + key order +
+// hand-tuned indentation).
 package persist
 
 import (
@@ -22,7 +20,7 @@ import (
 )
 
 // File is a parsed yaml config file with its AST plus the on-disk
-// path. All mutators run against the AST; Save serialises it back to
+// path. Mutators run against the AST; Save serialises it back to
 // disk atomically (write to <path>.tmp, then rename).
 type File struct {
 	path string
@@ -48,10 +46,17 @@ func Load(path string) (*File, error) {
 	return f, nil
 }
 
-// Save atomically writes the (possibly modified) AST back to the
-// original path. Uses tmp + rename so a crash mid-write leaves the
-// previous file intact.
+// Save atomically writes the AST back to the original path
+// (tmp + rename so a crash mid-write leaves the previous intact).
+//
+// Before marshalling, every mapping/sequence node has its Style
+// reset to 0 (block). This neutralises yaml.v3's tendency to
+// preserve flow style on nodes that were originally parsed from
+// flow syntax (e.g. an empty `endpoints: {}` left by a prior
+// marshal). Without this, a chain of edits could compact an
+// entire branch into one unreadable flow-style line.
 func (f *File) Save() error {
+	forceBlockStyle(&f.root)
 	data, err := yaml.Marshal(&f.root)
 	if err != nil {
 		return fmt.Errorf("persist: marshal: %w", err)
@@ -62,7 +67,7 @@ func (f *File) Save() error {
 		return fmt.Errorf("persist: tempfile: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // safe even if rename succeeds
+	defer os.Remove(tmpName)
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return fmt.Errorf("persist: write tmp: %w", err)
@@ -76,53 +81,164 @@ func (f *File) Save() error {
 	return nil
 }
 
-// SetFallbackChain replaces llm.fallback_chain with the given chain.
-// Creates the field if it doesn't exist. Empty chain removes the
-// field entirely.
-func (f *File) SetFallbackChain(chain []string) error {
-	llm, err := f.llmNode()
+// SetAgent rewrites the top-level `agent:` block with cfg, creating
+// the block when absent. Empty cfg.Primary / cfg.FallbackChain remove
+// the respective keys (degraded mode persists cleanly as either an
+// absent key or an empty agent block).
+//
+// As a one-time migration, any stale `llm.fallback_chain` left over
+// from the pre-agent config layout is removed on the same save —
+// keeps the on-disk file from carrying both keys after the cutover.
+func (f *File) SetAgent(cfg config.AgentConfig) error {
+	// Drop stale llm.fallback_chain if present (one-time migration).
+	if llm, _ := findValue(f.root.Content[0], "llm"); llm != nil && llm.Kind == yaml.MappingNode {
+		removeKey(llm, "fallback_chain")
+	}
+
+	root := f.root.Content[0]
+	agent, _ := findValue(root, "agent")
+	if agent == nil {
+		agent = &yaml.Node{Kind: yaml.MappingNode}
+		setKey(root, "agent", agent)
+	}
+	if agent.Kind != yaml.MappingNode {
+		return fmt.Errorf("persist: top-level agent is not a mapping")
+	}
+	// Wipe all known fields, then re-emit in canonical order. Block
+	// is small enough that comment loss on agent.* keys is acceptable
+	// (user comments belong on the surrounding free-form yaml).
+	for _, k := range []string{
+		"primary", "fallback_chain",
+		"max_tokens", "temperature", "context_window",
+		"max_turns", "max_tool_calls", "thinking_intensity",
+	} {
+		removeKey(agent, k)
+	}
+	if cfg.Primary != "" {
+		appendScalar(agent, "primary", cfg.Primary)
+	}
+	if len(cfg.FallbackChain) > 0 {
+		seq := &yaml.Node{Kind: yaml.SequenceNode}
+		for _, name := range cfg.FallbackChain {
+			seq.Content = append(seq.Content, &yaml.Node{
+				Kind:  yaml.ScalarNode,
+				Tag:   "!!str",
+				Value: name,
+			})
+		}
+		setKey(agent, "fallback_chain", seq)
+	}
+	if cfg.MaxTokens != 0 {
+		appendInt(agent, "max_tokens", cfg.MaxTokens)
+	}
+	if cfg.Temperature != 0 {
+		appendFloat(agent, "temperature", cfg.Temperature)
+	}
+	if cfg.ContextWindow != 0 {
+		appendInt(agent, "context_window", cfg.ContextWindow)
+	}
+	if cfg.MaxTurns != 0 {
+		appendInt(agent, "max_turns", cfg.MaxTurns)
+	}
+	if cfg.MaxToolCalls != 0 {
+		appendInt(agent, "max_tool_calls", cfg.MaxToolCalls)
+	}
+	if cfg.ThinkingIntensity != "" {
+		appendScalar(agent, "thinking_intensity", cfg.ThinkingIntensity)
+	}
+	return nil
+}
+
+// SetProviderCreds writes or replaces the credentials block at
+// llm.providers[name]. Preserves any existing nested `endpoints:`
+// node — only the top-level credentials (type/base_url/api_key)
+// are rewritten.
+func (f *File) SetProviderCreds(name string, cfg config.ProviderConfig) error {
+	provNode, _, err := f.providerNode(name, true /*create*/)
 	if err != nil {
 		return err
 	}
-	if len(chain) == 0 {
-		removeKey(llm, "fallback_chain")
+	// Build a fresh creds block but copy over any existing endpoints
+	// node so we don't drop nested config. Only carry forward a
+	// proper MappingNode — a null/scalar `endpoints:` left over from
+	// a previous marshal is discarded so it doesn't trip up future
+	// SetEndpoint calls.
+	existingEndpoints, _ := findValue(provNode, "endpoints")
+	if existingEndpoints != nil && existingEndpoints.Kind != yaml.MappingNode {
+		existingEndpoints = nil
+	}
+
+	// Wipe credential fields, leave endpoints alone.
+	for _, k := range []string{"type", "base_url", "api_key", "disabled"} {
+		removeKey(provNode, k)
+	}
+	if cfg.Type != "" {
+		appendScalar(provNode, "type", cfg.Type)
+	}
+	if cfg.BaseURL != "" {
+		appendScalar(provNode, "base_url", cfg.BaseURL)
+	}
+	if cfg.APIKey != "" {
+		appendScalar(provNode, "api_key", cfg.APIKey)
+	}
+	// Only emit disabled when true (default false stays out of yaml).
+	if cfg.Disabled {
+		appendBool(provNode, "disabled", true)
+	}
+	if existingEndpoints != nil {
+		setKey(provNode, "endpoints", existingEndpoints)
+	}
+	return nil
+}
+
+// SetEndpoint writes or replaces llm.providers[p].endpoints[e].
+// Creates the parent provider entry and `endpoints` mapping if
+// missing. Tolerates a degenerate `endpoints:` node that yaml has
+// serialised as null/scalar (e.g. after every endpoint was deleted
+// and yaml.v3 didn't emit `{}`) — replaces it with a fresh empty
+// mapping rather than failing.
+func (f *File) SetEndpoint(provName, epName string, ep config.EndpointConfig) error {
+	provNode, _, err := f.providerNode(provName, true /*create*/)
+	if err != nil {
+		return err
+	}
+	endpoints, _ := findValue(provNode, "endpoints")
+	if endpoints == nil || endpoints.Kind != yaml.MappingNode {
+		// Either the key didn't exist, OR it exists but is null /
+		// scalar (which yaml.v3 sometimes emits when a mapping was
+		// empty at marshal time). Replace with a fresh mapping.
+		endpoints = &yaml.Node{Kind: yaml.MappingNode}
+		setKey(provNode, "endpoints", endpoints)
+	}
+	setKey(endpoints, epName, endpointToNode(ep))
+	return nil
+}
+
+// RemoveEndpoint deletes llm.providers[p].endpoints[e] (no-op when
+// absent). Errors if the parent provider doesn't exist. If the
+// removal empties the endpoints mapping, the parent `endpoints:`
+// key is removed entirely — keeps the yaml clean and avoids the
+// "null endpoints" landmine for subsequent SetEndpoint calls.
+func (f *File) RemoveEndpoint(provName, epName string) error {
+	provNode, _, err := f.providerNode(provName, false)
+	if err != nil {
+		return err
+	}
+	if provNode == nil {
+		return fmt.Errorf("persist: provider %q not found", provName)
+	}
+	endpoints, _ := findValue(provNode, "endpoints")
+	if endpoints == nil {
 		return nil
 	}
-	seq := &yaml.Node{Kind: yaml.SequenceNode}
-	for _, name := range chain {
-		seq.Content = append(seq.Content, &yaml.Node{
-			Kind:  yaml.ScalarNode,
-			Tag:   "!!str",
-			Value: name,
-		})
+	removeKey(endpoints, epName)
+	if endpoints.Kind == yaml.MappingNode && len(endpoints.Content) == 0 {
+		removeKey(provNode, "endpoints")
 	}
-	setKey(llm, "fallback_chain", seq)
 	return nil
 }
 
-// SetProvider replaces or inserts llm.providers[name] with the given
-// ProviderConfig. Only the fields actually present in cfg are
-// emitted (zero-valued fields are skipped).
-func (f *File) SetProvider(name string, cfg config.ProviderConfig) error {
-	llm, err := f.llmNode()
-	if err != nil {
-		return err
-	}
-	providers, idx := findValue(llm, "providers")
-	if providers == nil {
-		providers = &yaml.Node{Kind: yaml.MappingNode}
-		setKey(llm, "providers", providers)
-		_ = idx
-	}
-	if providers.Kind != yaml.MappingNode {
-		return fmt.Errorf("persist: llm.providers is not a mapping")
-	}
-	provNode := providerToNode(cfg)
-	setKey(providers, name, provNode)
-	return nil
-}
-
-// llmNode returns the `llm` mapping under the document root.
+// llmNode returns (creating if needed) the `llm` mapping under root.
 func (f *File) llmNode() (*yaml.Node, error) {
 	root := f.root.Content[0]
 	llm, _ := findValue(root, "llm")
@@ -136,36 +252,86 @@ func (f *File) llmNode() (*yaml.Node, error) {
 	return llm, nil
 }
 
-// providerToNode builds a Mapping node from a ProviderConfig. Empty
-// fields are omitted so a round-trip doesn't introduce zero-valued
-// keys that weren't in the source.
+// providerNode returns the mapping node at llm.providers[name].
+// If create=true and the entry is absent, a fresh mapping is added.
+// If create=false and absent, returns (nil, -1, nil).
+func (f *File) providerNode(name string, create bool) (*yaml.Node, int, error) {
+	llm, err := f.llmNode()
+	if err != nil {
+		return nil, -1, err
+	}
+	providers, _ := findValue(llm, "providers")
+	if providers == nil {
+		if !create {
+			return nil, -1, nil
+		}
+		providers = &yaml.Node{Kind: yaml.MappingNode}
+		setKey(llm, "providers", providers)
+	}
+	if providers.Kind != yaml.MappingNode {
+		return nil, -1, fmt.Errorf("persist: llm.providers is not a mapping")
+	}
+	provNode, idx := findValue(providers, name)
+	if provNode == nil {
+		if !create {
+			return nil, -1, nil
+		}
+		provNode = &yaml.Node{Kind: yaml.MappingNode}
+		setKey(providers, name, provNode)
+	}
+	if provNode.Kind != yaml.MappingNode {
+		return nil, -1, fmt.Errorf("persist: llm.providers.%s is not a mapping", name)
+	}
+	return provNode, idx, nil
+}
+
+// endpointToNode builds a Mapping node from an EndpointConfig.
+// Empty/zero fields are omitted.
 //
-// Field order matches the natural reading order operators expect:
-// type → base_url → api_key → model → numeric tuning → enable_thinking.
-func providerToNode(p config.ProviderConfig) *yaml.Node {
+// Field order matches the natural reading order: model → numeric
+// tuning → enable_thinking.
+func endpointToNode(ep config.EndpointConfig) *yaml.Node {
 	n := &yaml.Node{Kind: yaml.MappingNode}
-	if p.Type != "" {
-		appendScalar(n, "type", p.Type)
+	if ep.Model != "" {
+		appendScalar(n, "model", ep.Model)
 	}
-	if p.BaseURL != "" {
-		appendScalar(n, "base_url", p.BaseURL)
+	if ep.MaxTokens != 0 {
+		appendInt(n, "max_tokens", ep.MaxTokens)
 	}
-	if p.APIKey != "" {
-		appendScalar(n, "api_key", p.APIKey)
+	if ep.Temperature != 0 {
+		appendFloat(n, "temperature", ep.Temperature)
 	}
-	if p.Model != "" {
-		appendScalar(n, "model", p.Model)
+	if ep.EnableThinking != nil {
+		appendBool(n, "enable_thinking", *ep.EnableThinking)
 	}
-	if p.MaxTokens != 0 {
-		appendInt(n, "max_tokens", p.MaxTokens)
+	if ep.ContextWindow != 0 {
+		appendInt(n, "context_window", ep.ContextWindow)
 	}
-	if p.Temperature != 0 {
-		appendFloat(n, "temperature", p.Temperature)
-	}
-	if p.EnableThinking != nil {
-		appendBool(n, "enable_thinking", *p.EnableThinking)
+	// Only emit disabled when true to keep enabled endpoints' yaml
+	// minimal (omitted = enabled is the default semantic).
+	if ep.Disabled {
+		appendBool(n, "disabled", true)
 	}
 	return n
+}
+
+// forceBlockStyle walks the AST and resets the Style field on every
+// mapping / sequence node to 0 (block style). yaml.v3's emitter
+// otherwise honours a node's parsed-in flow style, which compounds
+// across round-trips: once any mapping has been written as
+// `endpoints: {}` (or set FlowStyle by a manual edit), subsequent
+// edits inherit and compact further. Forcing block on save keeps
+// the file readable.
+func forceBlockStyle(n *yaml.Node) {
+	if n == nil {
+		return
+	}
+	if n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode {
+		n.Style = 0
+	}
+	for _, c := range n.Content {
+		forceBlockStyle(c)
+	}
 }
 
 // findValue locates the value paired with key in a Mapping node.
@@ -183,12 +349,10 @@ func findValue(m *yaml.Node, key string) (*yaml.Node, int) {
 }
 
 // setKey inserts or replaces key→value in a Mapping. New keys are
-// appended at the end (preserving existing comment ordering).
+// appended (preserving existing comment positioning).
 func setKey(m *yaml.Node, key string, value *yaml.Node) {
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		if m.Content[i].Value == key {
-			// Preserve the existing key node's comments by mutating
-			// the value in place rather than replacing the key.
 			m.Content[i+1] = value
 			return
 		}
@@ -209,7 +373,6 @@ func removeKey(m *yaml.Node, key string) {
 	}
 }
 
-// appendScalar adds key: "value" to a Mapping node.
 func appendScalar(m *yaml.Node, key, value string) {
 	m.Content = append(m.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
@@ -217,7 +380,6 @@ func appendScalar(m *yaml.Node, key, value string) {
 	)
 }
 
-// appendInt adds key: <int> to a Mapping node.
 func appendInt(m *yaml.Node, key string, value int) {
 	m.Content = append(m.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
@@ -225,7 +387,6 @@ func appendInt(m *yaml.Node, key string, value int) {
 	)
 }
 
-// appendFloat adds key: <float> to a Mapping node.
 func appendFloat(m *yaml.Node, key string, value float64) {
 	m.Content = append(m.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
@@ -233,7 +394,6 @@ func appendFloat(m *yaml.Node, key string, value float64) {
 	)
 }
 
-// appendBool adds key: <bool> to a Mapping node.
 func appendBool(m *yaml.Node, key string, value bool) {
 	v := "false"
 	if value {

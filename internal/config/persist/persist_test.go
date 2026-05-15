@@ -16,26 +16,33 @@ server:
 
 # --- LLM ---
 llm:
-  default_provider: "openai"
-  # 重要注释：这是 max_retries
   max_retries: 3
+  # 重要注释：这是 default_max_tokens
+  default_max_tokens: 8192
   providers:
     # alpha is primary
     alpha:
       type: anthropic
       base_url: "https://a.example"
       api_key: "sk-alpha-xxxx"
-      model: "model-a"
-      max_tokens: 4096
+      endpoints:
+        claude-46:
+          model: claude-sonnet-4-6
+          max_tokens: 16384
     beta:
       type: openai
       base_url: "https://b.example"
       api_key: "sk-beta-xxxx"
-      model: "model-b"
-      max_tokens: 4096
+      endpoints:
+        gpt-5:
+          model: gpt-5-turbo
+          max_tokens: 4096
+
+# --- Agent ---
+agent:
+  primary: "alpha:claude-46"
   fallback_chain:
-    - alpha
-    - beta
+    - "beta:gpt-5"
 `
 
 func writeTemp(t *testing.T, content string) string {
@@ -65,12 +72,10 @@ func TestSaveRoundTrip_PreservesComments(t *testing.T) {
 	}
 	raw, _ := os.ReadFile(path)
 	got := string(raw)
-
-	// Comments survive the round-trip.
 	for _, want := range []string{
 		"# Top-level comment.",
 		"# --- LLM ---",
-		"# 重要注释：这是 max_retries",
+		"# 重要注释：这是 default_max_tokens",
 		"# alpha is primary",
 	} {
 		if !strings.Contains(got, want) {
@@ -79,107 +84,269 @@ func TestSaveRoundTrip_PreservesComments(t *testing.T) {
 	}
 }
 
-func TestSetFallbackChain_ReplacesInPlace(t *testing.T) {
+func TestSetAgent_ReplacesInPlace(t *testing.T) {
 	path := writeTemp(t, sampleYAML)
 	f, _ := Load(path)
-	if err := f.SetFallbackChain([]string{"beta", "alpha"}); err != nil {
-		t.Fatalf("SetFallbackChain: %v", err)
+	if err := f.SetAgent(config.AgentConfig{
+		Primary:       "beta:gpt-5",
+		FallbackChain: []string{"alpha:claude-46"},
+	}); err != nil {
+		t.Fatalf("SetAgent: %v", err)
 	}
 	if err := f.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-
-	// Reload via config.Load and verify the chain reflects the new order.
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("config.Load reread: %v", err)
 	}
-	if got := cfg.LLM.FallbackChain; got[0] != "beta" || got[1] != "alpha" {
-		t.Fatalf("fallback_chain = %v, want [beta alpha]", got)
+	if cfg.Agent.Primary != "beta:gpt-5" {
+		t.Fatalf("agent.primary = %q, want beta:gpt-5", cfg.Agent.Primary)
 	}
-
-	// Comments still present.
+	if got := cfg.Agent.FallbackChain; len(got) != 1 || got[0] != "alpha:claude-46" {
+		t.Fatalf("agent.fallback_chain = %v, want [alpha:claude-46]", got)
+	}
 	raw, _ := os.ReadFile(path)
 	if !strings.Contains(string(raw), "# --- LLM ---") {
-		t.Errorf("comment lost after chain rewrite:\n%s", raw)
+		t.Errorf("LLM comment lost after agent rewrite:\n%s", raw)
 	}
 }
 
-func TestSetProvider_UpdatesExisting(t *testing.T) {
+func TestSetProviderCreds_UpdatesExisting(t *testing.T) {
 	path := writeTemp(t, sampleYAML)
 	f, _ := Load(path)
 
-	newCfg := config.ProviderConfig{
-		Type:      "anthropic",
-		BaseURL:   "https://a2.example",
-		APIKey:    "sk-alpha-NEW",
-		Model:     "model-a-v2",
-		MaxTokens: 8192,
+	newCreds := config.ProviderConfig{
+		Type:    "anthropic",
+		BaseURL: "https://a2.example",
+		APIKey:  "sk-alpha-NEW",
 	}
-	if err := f.SetProvider("alpha", newCfg); err != nil {
-		t.Fatalf("SetProvider: %v", err)
+	if err := f.SetProviderCreds("alpha", newCreds); err != nil {
+		t.Fatalf("SetProviderCreds: %v", err)
 	}
 	if err := f.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("config.Load reread: %v", err)
 	}
 	alpha := cfg.LLM.Providers["alpha"]
-	if alpha.BaseURL != "https://a2.example" || alpha.Model != "model-a-v2" || alpha.APIKey != "sk-alpha-NEW" || alpha.MaxTokens != 8192 {
-		t.Fatalf("alpha not updated; got %+v", alpha)
+	if alpha.BaseURL != "https://a2.example" || alpha.APIKey != "sk-alpha-NEW" || alpha.Type != "anthropic" {
+		t.Fatalf("alpha creds not updated: %+v", alpha)
+	}
+	// Endpoints survived the creds rewrite.
+	if _, ok := alpha.Endpoints["claude-46"]; !ok {
+		t.Fatalf("endpoints lost during SetProviderCreds: %+v", alpha.Endpoints)
 	}
 	// Beta untouched.
 	beta := cfg.LLM.Providers["beta"]
-	if beta.BaseURL != "https://b.example" || beta.APIKey != "sk-beta-xxxx" {
-		t.Fatalf("beta clobbered; got %+v", beta)
+	if beta.BaseURL != "https://b.example" {
+		t.Fatalf("beta clobbered: %+v", beta)
 	}
 }
 
-func TestSetProvider_InsertsNew(t *testing.T) {
+func TestSetEndpoint_AddsAndUpdates(t *testing.T) {
 	path := writeTemp(t, sampleYAML)
 	f, _ := Load(path)
-	gamma := config.ProviderConfig{
-		Type:      "openai",
-		BaseURL:   "https://g.example",
-		APIKey:    "sk-gamma",
-		Model:     "model-g",
-		MaxTokens: 2048,
+
+	// Add a new endpoint under alpha.
+	if err := f.SetEndpoint("alpha", "claude-45", config.EndpointConfig{
+		Model:     "claude-sonnet-4-5",
+		MaxTokens: 16384,
+	}); err != nil {
+		t.Fatalf("SetEndpoint new: %v", err)
 	}
-	if err := f.SetProvider("gamma", gamma); err != nil {
-		t.Fatalf("SetProvider: %v", err)
+	// Update existing endpoint claude-46.
+	if err := f.SetEndpoint("alpha", "claude-46", config.EndpointConfig{
+		Model:     "claude-sonnet-4-6-v2",
+		MaxTokens: 32768,
+	}); err != nil {
+		t.Fatalf("SetEndpoint update: %v", err)
 	}
 	if err := f.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("config.Load reread: %v", err)
 	}
-	g, ok := cfg.LLM.Providers["gamma"]
-	if !ok {
-		t.Fatalf("gamma not inserted; providers = %v", cfg.LLM.Providers)
+	alpha := cfg.LLM.Providers["alpha"]
+	if alpha.Endpoints["claude-45"].Model != "claude-sonnet-4-5" {
+		t.Fatalf("claude-45 not added: %+v", alpha.Endpoints)
 	}
-	if g.Model != "model-g" {
-		t.Fatalf("gamma fields wrong; got %+v", g)
+	if alpha.Endpoints["claude-46"].Model != "claude-sonnet-4-6-v2" || alpha.Endpoints["claude-46"].MaxTokens != 32768 {
+		t.Fatalf("claude-46 not updated: %+v", alpha.Endpoints["claude-46"])
 	}
 }
 
-func TestSetFallbackChain_EmptyRemovesKey(t *testing.T) {
+// TestSaveForcesBlockStyle reproduces the "flow style endpoints
+// compacted into one line" bug: yaml file initially has
+// `endpoints: {}` (flow). Adding a new endpoint via SetEndpoint
+// and Save should produce BLOCK style output, not preserve flow.
+func TestSaveForcesBlockStyle(t *testing.T) {
+	yaml := `llm:
+  providers:
+    openai:
+      type: openai
+      base_url: "x"
+      api_key: "k"
+      endpoints: {}
+`
+	path := writeTemp(t, yaml)
+	f, _ := Load(path)
+	if err := f.SetEndpoint("openai", "gpt-5", config.EndpointConfig{
+		Model:     "gpt-5",
+		MaxTokens: 4096,
+	}); err != nil {
+		t.Fatalf("SetEndpoint: %v", err)
+	}
+	if err := f.SetEndpoint("openai", "gpt-4", config.EndpointConfig{
+		Model:     "gpt-4",
+		MaxTokens: 4096,
+	}); err != nil {
+		t.Fatalf("SetEndpoint: %v", err)
+	}
+	if err := f.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	if strings.Contains(got, "{model:") || strings.Contains(got, "endpoints: {") {
+		t.Fatalf("output should be block style, not flow:\n%s", got)
+	}
+	// Each endpoint key should be on its own line.
+	if !strings.Contains(got, "gpt-5:") || !strings.Contains(got, "gpt-4:") {
+		t.Fatalf("expected each endpoint on its own line:\n%s", got)
+	}
+}
+
+// TestSetEndpoint_RecoversFromNullEndpoints reproduces the
+// "endpoints is not a mapping" 500 error: yaml file has
+// `endpoints:` followed by no value (null scalar). SetEndpoint
+// should rebuild the mapping in place rather than fail.
+func TestSetEndpoint_RecoversFromNullEndpoints(t *testing.T) {
+	yaml := `llm:
+  providers:
+    openai:
+      endpoints:
+      type: openai
+      base_url: "https://api.openai.com"
+      api_key: "sk-x"
+`
+	path := writeTemp(t, yaml)
+	f, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := f.SetEndpoint("openai", "gpt-5", config.EndpointConfig{
+		Model:     "gpt-5",
+		MaxTokens: 4096,
+	}); err != nil {
+		t.Fatalf("SetEndpoint with null endpoints: %v", err)
+	}
+	if err := f.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got := cfg.LLM.Providers["openai"].Endpoints["gpt-5"]
+	if got.Model != "gpt-5" || got.MaxTokens != 4096 {
+		t.Fatalf("endpoint not written: %+v", got)
+	}
+}
+
+// TestRemoveEndpoint_DropsEmptyEndpointsKey confirms that deleting
+// the last endpoint removes the `endpoints:` parent key entirely,
+// so we don't leave a null mapping behind.
+func TestRemoveEndpoint_DropsEmptyEndpointsKey(t *testing.T) {
+	yaml := `llm:
+  providers:
+    openai:
+      type: openai
+      base_url: "x"
+      api_key: "k"
+      endpoints:
+        gpt-5:
+          model: gpt-5
+`
+	path := writeTemp(t, yaml)
+	f, _ := Load(path)
+	if err := f.RemoveEndpoint("openai", "gpt-5"); err != nil {
+		t.Fatalf("RemoveEndpoint: %v", err)
+	}
+	if err := f.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "endpoints:") {
+		t.Fatalf("endpoints: key should be gone after removing last entry:\n%s", string(raw))
+	}
+}
+
+func TestRemoveEndpoint(t *testing.T) {
 	path := writeTemp(t, sampleYAML)
 	f, _ := Load(path)
-	if err := f.SetFallbackChain(nil); err != nil {
-		t.Fatalf("SetFallbackChain nil: %v", err)
+	if err := f.RemoveEndpoint("alpha", "claude-46"); err != nil {
+		t.Fatalf("RemoveEndpoint: %v", err)
+	}
+	if err := f.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	cfg, _ := config.Load(path)
+	if _, ok := cfg.LLM.Providers["alpha"].Endpoints["claude-46"]; ok {
+		t.Fatalf("claude-46 still present after remove")
+	}
+}
+
+func TestSetAgent_EmptyChainRemovesKey(t *testing.T) {
+	path := writeTemp(t, sampleYAML)
+	f, _ := Load(path)
+	if err := f.SetAgent(config.AgentConfig{Primary: "alpha:claude-46"}); err != nil {
+		t.Fatalf("SetAgent: %v", err)
 	}
 	if err := f.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	raw, _ := os.ReadFile(path)
 	if strings.Contains(string(raw), "fallback_chain") {
-		t.Fatalf("fallback_chain should be removed:\n%s", raw)
+		t.Fatalf("fallback_chain should be removed when empty:\n%s", raw)
+	}
+}
+
+func TestSetAgent_MigratesLLMFallbackChain(t *testing.T) {
+	// Old config layout has llm.fallback_chain; SetAgent should
+	// strip it on the same save so the on-disk file lands cleanly
+	// in the new shape.
+	oldLayout := `llm:
+  providers:
+    alpha:
+      type: anthropic
+      api_key: x
+      endpoints:
+        claude-46:
+          model: claude-sonnet-4-6
+  fallback_chain:
+    - "alpha:claude-46"
+`
+	path := writeTemp(t, oldLayout)
+	f, _ := Load(path)
+	if err := f.SetAgent(config.AgentConfig{
+		Primary: "alpha:claude-46",
+	}); err != nil {
+		t.Fatalf("SetAgent: %v", err)
+	}
+	if err := f.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "fallback_chain") {
+		t.Fatalf("legacy llm.fallback_chain should be migrated away:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "agent:") {
+		t.Fatalf("agent: block missing:\n%s", raw)
 	}
 }
 
@@ -192,19 +359,16 @@ func TestLoad_RejectsInvalidYAML(t *testing.T) {
 }
 
 func TestAtomicSave_FailureLeavesOriginalIntact(t *testing.T) {
-	// Make the directory unwritable to force rename failure.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "c.yaml")
 	original := sampleYAML
 	_ = os.WriteFile(path, []byte(original), 0644)
 	f, _ := Load(path)
-	_ = f.SetFallbackChain([]string{"beta"})
-	// Strip write perms on the dir to make CreateTemp fail.
+	_ = f.SetAgent(config.AgentConfig{Primary: "beta:gpt-5"})
 	_ = os.Chmod(dir, 0500)
 	defer os.Chmod(dir, 0700)
-
 	if err := f.Save(); err == nil {
-		t.Skip("filesystem allowed write despite chmod 500 (uid 0?)")
+		t.Skip("filesystem allowed write despite chmod 500")
 	}
 	raw, _ := os.ReadFile(path)
 	if string(raw) != original {
