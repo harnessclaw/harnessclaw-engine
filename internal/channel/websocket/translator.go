@@ -367,12 +367,22 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		}
 		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
 		s.tools[ev.ToolUseID] = toolCardID
+		opts := []emitv2.EmitOpt{emitv2.WithParent(parentForTool(s))}
+		// Symmetry with EngineEventToolStart path (line 287): orchestration
+		// tools (Specialists / Task) wrap multi-minute sub-agent runs that
+		// legitimately outlast the CardTool 120s orphan watchdog. Opt them
+		// out here too — previously only the ToolStart path had this fix,
+		// leaving client-side tool calls (this case) subject to false-
+		// positive orphan_timeout closes on the wire card.
+		if isOrchestrationTool(ev.ToolName) {
+			opts = append(opts, emitv2.WithoutLifecycle())
+		}
 		em.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
 			Name:   ev.ToolName,
 			Target: "client",
 			Intent: ev.Intent,
 			Input:  input,
-		}, emitv2.WithParent(parentForTool(s)))
+		}, opts...)
 
 	case types.EngineEventAgentIntent:
 		// Carry per-tool intent as a tick on the tool card if it's open;
