@@ -112,7 +112,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 		// ---- Phase 1: Preprocess ----
 		messages := sess.GetMessages()
 
-		if qe.compactor != nil && qe.compactor.ShouldCompact(messages, lc.config.MaxTokens, lc.config.AutoCompactThreshold) {
+		if qe.compactor != nil && qe.compactor.ShouldCompact(messages, effectiveContextWindow(lc.config.ContextWindow), lc.config.AutoCompactThreshold) {
 			logger.Info("sub-agent driver auto-compact triggered", zap.Int("msg_count", len(messages)))
 			compacted, err := qe.compactor.Compact(ctx, messages)
 			if err != nil {
@@ -140,10 +140,11 @@ func (qe *QueryEngine) runSubAgentDriver(
 		}
 
 		req := &provider.ChatRequest{
-			Messages:  messages,
-			System:    systemPrompt,
-			Tools:     pool.Schemas(),
-			MaxTokens: lc.config.MaxTokens,
+			Messages:      messages,
+			System:        systemPrompt,
+			Tools:         pool.Schemas(),
+			MaxTokens:     lc.config.MaxTokens,
+			ContextWindow: effectiveContextWindow(lc.config.ContextWindow),
 		}
 		if lc.temperature != nil {
 			req.Temperature = *lc.temperature

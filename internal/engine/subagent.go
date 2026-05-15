@@ -359,6 +359,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		AutoCompactThreshold: qe.config.AutoCompactThreshold,
 		ToolTimeout:          qe.config.ToolTimeout,
 		MaxTokens:             qe.config.MaxTokens,
+		ContextWindow:         qe.config.ContextWindow,
 		SystemPrompt:          qe.config.SystemPrompt,
 		ClientTools:           false, // sub-agents always server-side
 		MaxPlanReplans:        qe.config.MaxPlanReplans,
@@ -1013,7 +1014,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 		messages := sess.GetMessages()
 
 		// Auto-compact if needed.
-		if qe.compactor != nil && qe.compactor.ShouldCompact(messages, lc.config.MaxTokens, lc.config.AutoCompactThreshold) {
+		if qe.compactor != nil && qe.compactor.ShouldCompact(messages, effectiveContextWindow(lc.config.ContextWindow), lc.config.AutoCompactThreshold) {
 			logger.Info("sub-agent auto-compact triggered", zap.Int("msg_count", len(messages)))
 			compacted, err := qe.compactor.Compact(ctx, messages)
 			if err != nil {
@@ -1043,10 +1044,11 @@ func (qe *QueryEngine) runSubAgentLoop(
 		}
 
 		req := &provider.ChatRequest{
-			Messages:  messages,
-			System:    systemPrompt,
-			Tools:     lc.pool.Schemas(),
-			MaxTokens: lc.config.MaxTokens,
+			Messages:      messages,
+			System:        systemPrompt,
+			Tools:         lc.pool.Schemas(),
+			MaxTokens:     lc.config.MaxTokens,
+			ContextWindow: effectiveContextWindow(lc.config.ContextWindow),
 		}
 		if lc.temperature != nil {
 			req.Temperature = *lc.temperature
@@ -1386,7 +1388,7 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 		Tools:                qe.registry,
 		AvailableTools:       availableTools,
 		TotalTokensUsed:      totalTokens,
-		ContextWindowSize:    200000,
+		ContextWindowSize:    qe.contextWindow(),
 		Memory:               make(map[string]string),
 		EnvInfo:              qe.getEnvSnapshot(),
 		SkillListing:         skillListing,

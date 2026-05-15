@@ -34,8 +34,20 @@ type QueryEngineConfig struct {
 	MaxTurns             int
 	AutoCompactThreshold float64
 	ToolTimeout          time.Duration
-	MaxTokens            int
-	SystemPrompt         string
+	// MaxTokens caps the response length on each Chat() call (passed
+	// through as ChatRequest.MaxTokens). 0 = let the bifrost adapter
+	// fall back to its agent/endpoint-resolved default. Sourced from
+	// cfg.Agent.MaxTokens.
+	MaxTokens int
+	// ContextWindow is the conversation-level token budget the
+	// compactor watches; auto-compact fires when accumulated message
+	// tokens exceed ContextWindow × AutoCompactThreshold. Sourced
+	// from cfg.Agent.ContextWindow with a 200_000 fallback for
+	// modern provider defaults (anthropic / openai / gemini 200k).
+	// Distinct from MaxTokens — previously both lived in MaxTokens,
+	// which mixed "response cap" and "context budget" semantics.
+	ContextWindow int
+	SystemPrompt  string
 	// ClientTools enables client-side tool execution mode.
 	// When true, tool calls are sent to the client via tool_call events
 	// instead of being executed server-side.
@@ -131,6 +143,7 @@ func DefaultQueryEngineConfig() QueryEngineConfig {
 		AutoCompactThreshold: 0.8,
 		ToolTimeout:          120 * time.Second,
 		MaxTokens:             16384,
+		ContextWindow:         200000,
 		SystemPrompt:          "You are a helpful assistant.",
 		ClientTools:           true,
 		MaxPlanReplans:        3,
@@ -152,6 +165,26 @@ func (qe *QueryEngine) plannerModel() string {
 	// main turn, which keeps behaviour consistent with the previous
 	// HeuristicPlanner (which had no LLM cost at all).
 	return ""
+}
+
+// contextWindow returns the effective auto-compact budget — the
+// operator-configured ContextWindow when > 0, else a 200_000-token
+// fallback aligned with modern provider defaults (claude 4.x /
+// gpt-5 / gemini 2.x all sit at 200k). Centralised so subagent +
+// queryloop paths never disagree.
+func (qe *QueryEngine) contextWindow() int {
+	return effectiveContextWindow(qe.config.ContextWindow)
+}
+
+// effectiveContextWindow resolves the operator value with the
+// production fallback. Used by both QueryEngine and the sub-agent
+// loop (sub-agents inherit the parent ContextWindow, so the same
+// resolver applies).
+func effectiveContextWindow(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return 200000
 }
 
 // pendingToolCall tracks a tool call awaiting client result.
@@ -1266,7 +1299,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		messages := sess.GetMessages()
 
 		// Auto-compact if needed.
-		if qe.compactor != nil && qe.compactor.ShouldCompact(messages, qe.config.MaxTokens, qe.config.AutoCompactThreshold) {
+		if qe.compactor != nil && qe.compactor.ShouldCompact(messages, qe.contextWindow(), qe.config.AutoCompactThreshold) {
 			qe.logger.Info("auto-compact triggered", zap.String("session_id", sess.ID), zap.Int("msg_count", len(messages)))
 			qe.eventBus.Publish(event.Event{Topic: event.TopicCompactTriggered, Payload: map[string]string{"session_id": sess.ID}})
 
@@ -1302,10 +1335,11 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		systemPrompt := qe.buildSystemPrompt(ctx, sess, messages)
 
 		req := &provider.ChatRequest{
-			Messages:  messages,
-			System:    systemPrompt,
-			Tools:     pool.Schemas(),
-			MaxTokens: qe.config.MaxTokens,
+			Messages:      messages,
+			System:        systemPrompt,
+			Tools:         pool.Schemas(),
+			MaxTokens:     qe.config.MaxTokens,
+			ContextWindow: qe.contextWindow(),
 		}
 
 		// --- LLM request observability: dump what we're sending to the model ---
@@ -1860,7 +1894,7 @@ func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Sess
 		Session:           sess,
 		Tools:             qe.registry,
 		TotalTokensUsed:   totalTokens,
-		ContextWindowSize: 200000, // TODO: get from provider
+		ContextWindowSize: qe.contextWindow(),
 		Memory:            make(map[string]string),
 		EnvInfo:           qe.getEnvSnapshot(),
 		SkillListing:      qe.getSkillListing(),
