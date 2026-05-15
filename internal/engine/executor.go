@@ -433,6 +433,24 @@ func (te *ToolExecutor) executeSingle(
 	// degrades to existence-only checks.
 	execCtx = tool.WithTaskContract(execCtx, te.taskContract)
 
+	// Inject ToolUseContext so tools (e.g. Specialists) can read the
+	// session ID and tool-call identity without threading these fields
+	// through every call signature. Without this injection,
+	// tool.GetToolUseContext always returns nil and Specialists falls
+	// into the empty ParentSessionID branch — sub-agents never get
+	// attributed to the parent session and metrics show sub_agents:[].
+	if sid, ok := sessionstats.SessionIDFromCtx(execCtx); ok {
+		tuc := &types.ToolUseContext{
+			Core: types.CoreContext{
+				SessionID:  sid,
+				ToolCallID: tc.ID,
+				ToolName:   tc.Name,
+				ToolInput:  []byte(tc.Input),
+			},
+		}
+		execCtx = tool.WithToolUseContext(execCtx, tuc)
+	}
+
 	tr, err := t.Execute(execCtx, rawInput)
 	if err != nil {
 		te.logger.Warn("tool execution failed",
