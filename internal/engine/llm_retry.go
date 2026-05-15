@@ -205,13 +205,21 @@ func retryLLMCall(
 		)
 		// Pass nil — every attempt is buffered, never streamed live.
 		// See the comment block above for the rationale.
-		attemptResult := doSingleLLMCall(ctx, prov, req, nil, timeouts)
+		attemptResult := doSingleLLMCall(ctx, prov, req, nil, timeouts, logger)
 		elapsed := time.Since(startedAt)
 
 		if attemptResult.streamErr == nil {
 			tailAfterLastChunk := elapsed - attemptResult.lastChunkAt
 			if attemptResult.lastChunkAt == 0 {
 				tailAfterLastChunk = 0
+			}
+			var inputTok, outputTok, cacheRead, cacheWrite, thinkingTok int64
+			if attemptResult.lastUsage != nil {
+				inputTok = int64(attemptResult.lastUsage.InputTokens)
+				outputTok = int64(attemptResult.lastUsage.OutputTokens)
+				cacheRead = int64(attemptResult.lastUsage.CacheRead)
+				cacheWrite = int64(attemptResult.lastUsage.CacheWrite)
+				thinkingTok = int64(attemptResult.lastUsage.ThinkingTokens)
 			}
 			logger.Info("llm.call ok",
 				zap.Int("attempt", attempt),
@@ -223,6 +231,11 @@ func retryLLMCall(
 				zap.Int("text_chars", len(attemptResult.textBuf)),
 				zap.Int("tool_calls", len(attemptResult.toolCalls)),
 				zap.String("stop_reason", attemptResult.stopReason),
+				zap.Int64("input_tokens", inputTok),
+				zap.Int64("output_tokens", outputTok),
+				zap.Int64("cache_read", cacheRead),
+				zap.Int64("cache_write", cacheWrite),
+				zap.Int64("thinking_tokens", thinkingTok),
 			)
 			if attempt > 1 {
 				logger.Info("LLM call succeeded after retry",
@@ -398,6 +411,7 @@ func doSingleLLMCall(
 	req *provider.ChatRequest,
 	out chan<- types.EngineEvent,
 	timeouts llmCallTimeouts,
+	logger *zap.Logger,
 ) *llmCallResult {
 	if timeouts.api > 0 {
 		var cancel context.CancelFunc
@@ -441,6 +455,34 @@ func doSingleLLMCall(
 
 	result := &llmCallResult{}
 
+	// Stream-stuck watchdog: WARN every 30s if no new chunk has arrived.
+	// Observability only — does NOT cancel; firstByteTimeout / apiTimeout
+	// still own hard cancellation. Lets operators distinguish "vendor is
+	// slow but alive" from "actually wedged" without flipping to DEBUG.
+	streamWdDone := make(chan struct{})
+	defer close(streamWdDone)
+	var lastChunkMu sync.Mutex
+	lastChunkAt := time.Now()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-streamWdDone:
+				return
+			case <-ticker.C:
+				lastChunkMu.Lock()
+				age := time.Since(lastChunkAt)
+				lastChunkMu.Unlock()
+				if age > 30*time.Second {
+					logger.Warn("llm.call.stream_stuck",
+						zap.Duration("since_last_chunk", age),
+					)
+				}
+			}
+		}
+	}()
+
 	for evt := range stream.Events {
 		switch evt.Type {
 		case types.StreamEventText:
@@ -449,6 +491,9 @@ func doSingleLLMCall(
 				signalFirstByte()
 			}
 			result.lastChunkAt = time.Since(callStart)
+			lastChunkMu.Lock()
+			lastChunkAt = time.Now()
+			lastChunkMu.Unlock()
 			result.textBuf += evt.Text
 			if out != nil {
 				out <- types.EngineEvent{Type: types.EngineEventText, Text: evt.Text}
@@ -460,6 +505,9 @@ func doSingleLLMCall(
 					signalFirstByte()
 				}
 				result.lastChunkAt = time.Since(callStart)
+				lastChunkMu.Lock()
+				lastChunkAt = time.Now()
+				lastChunkMu.Unlock()
 				result.toolCalls = append(result.toolCalls, *evt.ToolCall)
 				if out != nil {
 					out <- types.EngineEvent{
