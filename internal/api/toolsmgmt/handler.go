@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/config"
+	persistPkg "harnessclaw-go/internal/config/persist"
 	"harnessclaw-go/internal/tool"
 )
 
@@ -162,13 +163,121 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		entry, _ := h.snapshotEntry(name)
 		writeSuccess(w, http.StatusOK, entry)
 	case http.MethodPatch:
-		// PATCH implementation lands in Task 5 — for now, 501.
-		writeError(w, http.StatusNotImplemented, "not_implemented",
-			"PATCH lands in a follow-up task; GET works")
+		h.handlePatch(w, r, name)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
 			"only GET/PATCH supported")
 	}
+}
+
+// ---------- PATCH helpers ----------
+
+// patchRequest is the JSON body shape. Both fields are optional;
+// omitted means "keep current value". config is a partial map merged
+// over the current snapshot, NOT a full replacement.
+type patchRequest struct {
+	Enabled *bool          `json:"enabled,omitempty"`
+	Config  map[string]any `json:"config,omitempty"`
+}
+
+// handlePatch builds the merged config, validates, hot-swaps, and persists.
+// Caller has already resolved name and confirmed factories[name] exists.
+func (h *Handler) handlePatch(w http.ResponseWriter, r *http.Request, name string) {
+	var body patchRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
+		return
+	}
+	f := factories[name]
+	// Start from current cfg, overlay body.
+	merged := f.snapshot(h.cfg)
+	if body.Enabled != nil {
+		merged["enabled"] = *body.Enabled
+	}
+	for k, v := range body.Config {
+		merged[k] = v
+	}
+
+	// Build new tool instance + new cfg chunk. Validation lives in apply.
+	newTool, newToolsChunk, err := f.apply(merged, h.logger)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_config", err.Error())
+		return
+	}
+
+	// Snapshot the current registry entry so we can roll back on persist failure.
+	prevTool := h.registry.Get(f.registeredName)
+	if prevTool == nil {
+		writeError(w, http.StatusInternalServerError, "registry_missing",
+			"tool "+f.registeredName+" not registered at startup; restart required")
+		return
+	}
+
+	// Hot-swap registry first — atomic under Registry mu.
+	if err := h.registry.Replace(f.registeredName, newTool); err != nil {
+		writeError(w, http.StatusInternalServerError, "hot_reload_failed", err.Error())
+		return
+	}
+
+	// Apply to in-mem cfg. We swap only the relevant sub-struct field so
+	// other tools' settings are untouched.
+	prevCfgChunk := h.cfg.Tools
+	applyToolsChunk(h.cfg, name, newToolsChunk)
+
+	// Persist yaml. On failure, roll back both registry and in-mem cfg.
+	if err := h.persist(name, merged); err != nil {
+		_ = h.registry.Replace(f.registeredName, prevTool)
+		h.cfg.Tools = prevCfgChunk
+		writeError(w, http.StatusInternalServerError, "persist_failed",
+			"hot-swap rolled back: "+err.Error())
+		return
+	}
+
+	entry, _ := h.snapshotEntry(name)
+	writeSuccess(w, http.StatusOK, entry)
+	h.logger.Info("tool config updated",
+		zap.String("name", name),
+		zap.Bool("enabled", merged["enabled"] == true),
+	)
+}
+
+// applyToolsChunk overwrites only the named tool's sub-struct in cfg.Tools,
+// leaving the other tools' fields intact. Because config.ToolsConfig is a
+// flat struct of per-tool configs, we can't just `cfg.Tools = chunk` —
+// we'd zero out everything else. Handle each known tool here.
+func applyToolsChunk(cfg *config.Config, name string, chunk config.ToolsConfig) {
+	switch name {
+	case "web_search":
+		cfg.Tools.WebSearch = chunk.WebSearch
+	case "tavily_search":
+		cfg.Tools.TavilySearch = chunk.TavilySearch
+	}
+}
+
+// persist round-trips the merged config through the yaml writer.
+// Pure helper — handler.go owns rollback semantics around this call.
+func (h *Handler) persist(name string, raw map[string]any) error {
+	if h.cfgPath == "" {
+		return nil // tests can opt out by passing empty cfgPath
+	}
+	return mutateYAML(h.cfgPath, func(f *persistFile) error {
+		return f.SetToolConfig(name, raw)
+	})
+}
+
+// mutateYAML / persistFile shim — wraps internal/config/persist so the
+// rest of the handler doesn't need to import persist directly throughout.
+type persistFile = persistPkg.File
+
+func mutateYAML(path string, fn func(f *persistFile) error) error {
+	f, err := persistPkg.Load(path)
+	if err != nil {
+		return err
+	}
+	if err := fn(f); err != nil {
+		return err
+	}
+	return f.Save()
 }
 
 // ---------- response helpers ----------

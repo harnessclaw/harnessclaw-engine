@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
@@ -136,5 +139,152 @@ func TestList_RejectsPOST(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status: got %d, want 405", rec.Code)
+	}
+}
+
+func TestPatch_WebSearch_HotSwapAndPersist(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`tools:
+  web_search:
+    enabled: false
+    api_key: "old"
+    api_secret: "old"
+    app_id: "old"
+`), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cfg := &config.Config{Tools: config.ToolsConfig{
+		WebSearch: config.WebSearchConfig{
+			Enabled:   false,
+			APIKey:    "old",
+			APISecret: "old",
+			AppID:     "old",
+		},
+	}}
+	reg := tool.NewRegistry()
+	if err := reg.Register(websearch.New(cfg.Tools.WebSearch, zap.NewNop())); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	h := New(reg, cfg, cfgPath, zap.NewNop())
+
+	body := strings.NewReader(`{"enabled":true,"config":{"api_key":"new","api_secret":"new","app_id":"new","host":"search.example.com","path":"/biz/search","limit":7}}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/tools/web_search", body)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d body=%s", rec.Code, rec.Body.String())
+	}
+	// Hot-swap check: registry now holds a tool whose IsEnabled() reflects new credentials.
+	got := reg.Get("WebSearch")
+	if got == nil || !got.IsEnabled() {
+		t.Errorf("expected hot-swapped enabled tool, got %v", got)
+	}
+	// In-mem cfg also updated.
+	if cfg.Tools.WebSearch.APIKey != "new" {
+		t.Errorf("cfg api_key not updated: %q", cfg.Tools.WebSearch.APIKey)
+	}
+	if !cfg.Tools.WebSearch.Enabled {
+		t.Error("cfg enabled not updated")
+	}
+	// YAML rewritten on disk.
+	contents, _ := os.ReadFile(cfgPath)
+	for _, frag := range []string{`api_key: "new"`, "enabled: true", `host: "search.example.com"`, "limit: 7"} {
+		if !strings.Contains(string(contents), frag) {
+			t.Errorf("yaml missing %q, got:\n%s", frag, contents)
+		}
+	}
+}
+
+func TestPatch_RejectsEnableWithoutCredentials(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("tools:\n  web_search:\n    enabled: false\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg := &config.Config{Tools: config.ToolsConfig{WebSearch: config.WebSearchConfig{}}}
+	reg := tool.NewRegistry()
+	if err := reg.Register(websearch.New(cfg.Tools.WebSearch, zap.NewNop())); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	h := New(reg, cfg, cfgPath, zap.NewNop())
+
+	body := strings.NewReader(`{"enabled":true,"config":{}}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/tools/web_search", body)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	// Registry untouched.
+	if reg.Get("WebSearch").IsEnabled() {
+		t.Error("registry should not have been hot-swapped on validation failure")
+	}
+}
+
+func TestPatch_PartialUpdate_PreservesUnsetFields(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`tools:
+  web_search:
+    enabled: true
+    api_key: "keep"
+    api_secret: "keep-secret"
+    app_id: "keep-app"
+`), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg := &config.Config{Tools: config.ToolsConfig{
+		WebSearch: config.WebSearchConfig{
+			Enabled:   true,
+			APIKey:    "keep",
+			APISecret: "keep-secret",
+			AppID:     "keep-app",
+		},
+	}}
+	reg := tool.NewRegistry()
+	if err := reg.Register(websearch.New(cfg.Tools.WebSearch, zap.NewNop())); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	h := New(reg, cfg, cfgPath, zap.NewNop())
+
+	// Only update limit; everything else should stay.
+	body := strings.NewReader(`{"config":{"limit":42}}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/tools/web_search", body)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if cfg.Tools.WebSearch.APIKey != "keep" {
+		t.Errorf("api_key clobbered: %q", cfg.Tools.WebSearch.APIKey)
+	}
+	if cfg.Tools.WebSearch.Limit != 42 {
+		t.Errorf("limit not updated: %d", cfg.Tools.WebSearch.Limit)
+	}
+	if !cfg.Tools.WebSearch.Enabled {
+		t.Error("enabled flipped from omitted body field")
+	}
+}
+
+func TestPatch_RejectsBadJSON(t *testing.T) {
+	cfg := &config.Config{Tools: config.ToolsConfig{}}
+	reg := tool.NewRegistry()
+	if err := reg.Register(websearch.New(cfg.Tools.WebSearch, zap.NewNop())); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	tmp := t.TempDir()
+	h := New(reg, cfg, filepath.Join(tmp, "config.yaml"), zap.NewNop())
+
+	body := strings.NewReader(`{not json`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/tools/web_search", body)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d", rec.Code)
 	}
 }
