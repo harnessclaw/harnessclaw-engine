@@ -19,6 +19,7 @@
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| **0.6.1** | 2026-05-16 | **`SystemPayload` 增加 `topic` 字段（向前兼容增量）**：稳定的机器可读分类，前端可按 topic 接入业务逻辑（deeplink、telemetry、条件渲染），不依赖文案匹配。首个值 `search_capability_gap`。未识别 topic 应继续按通用 system 卡渲染。详见 §10.9 已知 topic 清单。 |
 | **0.6.0** | 2026-05-16 | **新增 `card_kind=system`（向前兼容增量）**：框架级系统提示通用通道（配置缺失、能力降级、密钥过期等场景共用），不再为每条系统通知单独开 card_kind。首个使用场景：`web_search` + `tavily_search` 全部 disabled 时，受影响 TierSubAgent 首次 spawn 弹一张 `card.add(kind=system)`，title=`"搜索能力不可用"`、`hint.icon=warning`、`payload.action_hint` 给出 yaml 配置启用步骤。session 级去重（同 session 不重复弹）。老客户端按 `LookupCardMeta` 默认 fallback 渲染为通用 system 卡，不崩。详见 §5 表 + §10.9。 |
 | **0.5.0** | 2026-05-09 | **失败决定门 + 拓扑/Watchdog 调整（向前兼容增量）**：1) 新增 `prompt.user(kind=step_decision)` —— Scheduler / PlanCoordinator 在 step 重试用尽 / re-plans 用尽 / planner 错误时不再静默 fallback，而是弹给用户决定 `continue` / `retry` / `cancel`，详见 §7.1 kind=step_decision；2) `prompt.user_response.decision` 增加合法取值 `continue` / `retry` / `cancel`（仅对 `step_decision` 生效，其它 kind 仍用 `approved` / `denied`），详见 §7.3；3) plan / orchestrate 派出来的 `agent` 卡现在 `parent_card_id` 指向对应 `step` 卡（之前指 tool / message / turn）—— 按 `parent_card_id` 自动布局的客户端无需改动；硬编码 step 与 agent 同级的需要支持嵌套；4) `prompt.user` 期间所有祖先 tracked 卡片的 orphan watchdog 暂停，用户思考再久也不会出现 `orphan_timeout` 关闭——客户端无变化，纯改善。 |
 | **0.4.0** | 2026-05-08 | **plan 审阅与 question 行为对齐**：`prompt.user(kind=plan_review)` 阶段服务端**不**开 plan card、不启 watchdog、等待无上限——与 `kind=question` 完全同构。`card.add(plan)` 只在用户 approve 之后才发出。客户端必须基于 `prompt.user.payload.inner.steps` 直接渲染审阅视图，**不要**等 `card.add(plan)`。详见 §7.1 kind=plan_review 渲染规则。 |
@@ -730,20 +731,29 @@ plan 模式下渲染层级因此是 `turn → message → plan → step → agen
 
 ```json
 {
+  "topic":       "search_capability_gap",
   "summary":     "本次任务派到的 sub-agent (researcher) 依赖网络搜索，但配置中 web_search 和 tavily_search 均未启用，结果可能依赖训练知识、缺乏时效性和来源核查。",
-  "action_hint": "如何启用（任一即可）:\n  • config.yaml: tools.web_search.enabled = true ...\n  • config.yaml: tools.tavily_search.enabled = true ..."
+  "action_hint": "去设置页，搜索配置，配置相关服务"
 }
 ```
 
-通用系统提示载荷。**没有**机器可读子类型字段（如 `notice_kind`）—— 各场景靠 `hint.title` / `hint.icon` 区分内容，后端日志由发出端的 zap 记录区分。
+通用系统提示载荷。`topic` 是稳定的机器可读分类，前端可基于此挂业务逻辑（deeplink、telemetry、条件渲染等），不依赖 `summary` 中文文案匹配。
 
-适用场景（持续扩充）：
-- **搜索能力缺失**：`hint.icon=warning` / `hint.title="搜索能力不可用"`，由 `internal/engine/capability_gap_detector.go` 的 `SearchGapDetector` 在受影响 TierSubAgent 首次 spawn 时发出，session 级去重。
-- (未来可扩) 配置缺失、密钥过期、限流降级等同类框架级通知。
+**已知 `topic` 清单：**
+| topic | 触发条件 | 默认 hint.icon |
+|---|---|---|
+| `search_capability_gap` | TierSubAgent declared 含 `WebSearch` / `TavilySearch` 但 runtime 一个都没注册（yaml 都关掉） | `warning` |
+| (未来) `bash_disabled` / `skill_missing` / `model_degraded` / ... | (按需扩展) | — |
+
+新增 topic 时：
+1. 在发出端起一个稳定 snake_case 标识；
+2. 更新本表（同 PR）；
+3. 前端按 topic 接入业务逻辑前确保后端已 deploy。
 
 **渲染契约：**
-- `hint.title` 必有 —— 标识具体通知类别。
+- `hint.title` 必有 —— 用于无 topic 识别能力的老客户端 fallback。
 - `hint.icon` 为 `warning` 时按警告样式渲染；其它值（含空）走 registry 默认 `info` 视觉。
+- `payload.topic` 优先于 `hint.title` 作为业务路由 key。前端遇未知 topic 应**继续渲染**通用 system 卡（向前兼容），不要硬阻断。
 - `payload.action_hint` 若有，应展示为可读的修复指引（保留换行/项目符号）。
 - card lifecycle `untracked` —— 无 `card.close`，不进入 orphan watchdog。
 
