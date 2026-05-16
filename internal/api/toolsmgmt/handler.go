@@ -1,0 +1,194 @@
+// Package toolsmgmt serves the runtime tools-management API.
+//
+// Scope: search-tool credentials (web_search, tavily_search). The
+// design generalises to any tool whose runtime config is a flat
+// credential map plus enabled flag, but this package currently
+// only registers the two search backends.
+//
+// Routes:
+//
+//	GET    /api/v1/tools                # list manageable tools
+//	GET    /api/v1/tools/{name}         # current state
+//	PATCH  /api/v1/tools/{name}         # update enabled + config; hot-reload + yaml rewrite
+//
+// Mutations are dual-write: the live tool.Registry instance is
+// swapped first (via Replace, atomic under registry mu), and the yaml
+// is rewritten on success. If yaml persistence fails we restore the
+// previous tool instance — the in-mem registry never desyncs from yaml.
+package toolsmgmt
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+
+	"go.uber.org/zap"
+
+	"harnessclaw-go/internal/config"
+	"harnessclaw-go/internal/tool"
+)
+
+// Handler implements http.Handler for the tools management API.
+type Handler struct {
+	registry *tool.Registry
+	cfg      *config.Config
+	cfgPath  string
+	logger   *zap.Logger
+}
+
+// New constructs a handler. cfg is the live config struct so PATCH
+// can merge partial updates into it. cfgPath is the absolute yaml
+// path viper actually loaded.
+func New(registry *tool.Registry, cfg *config.Config, cfgPath string, logger *zap.Logger) *Handler {
+	return &Handler{registry: registry, cfg: cfg, cfgPath: cfgPath, logger: logger}
+}
+
+// ToolEntry is the wire-shape returned by GET endpoints.
+type ToolEntry struct {
+	Name             string         `json:"name"`              // yaml key, e.g. "web_search"
+	RegisteredName   string         `json:"registered_name"`   // LLM-facing tool name, e.g. "WebSearch"
+	Enabled          bool           `json:"enabled"`           // raw enabled flag
+	Effective        bool           `json:"effective"`         // tool.IsEnabled() — true only when enabled AND credentials complete
+	Config           map[string]any `json:"config"`            // current cfg fields (api_key plaintext, per design A/A/A/A/A)
+	CredentialFields []string       `json:"credential_fields"` // which Config keys are credentials (UI hint)
+}
+
+// factory describes how to read the current cfg + build a new instance
+// when PATCHing. One entry per manageable tool. Adding a new tool is:
+// (1) add an entry here, (2) extend cfg.Tools, (3) cover with tests.
+type factory struct {
+	// registeredName is the tool.Name() returned by the constructed tool.
+	registeredName string
+	// credentialFields is which raw config keys count as credentials.
+	credentialFields []string
+	// snapshot reads the current cfg into the wire-shape map.
+	snapshot func(*config.Config) map[string]any
+	// apply takes the wire-shape map, validates required fields when
+	// enabled, builds a fresh tool instance, and returns it (or error).
+	// It does NOT mutate cfg — the caller does that after apply succeeds.
+	apply func(raw map[string]any, logger *zap.Logger) (tool.Tool, config.ToolsConfig, error)
+}
+
+// factories is the per-yaml-key registry. Iterate in name order for
+// stable list responses (sortedNames helper).
+var factories = map[string]*factory{} // populated in init() — see factories.go
+
+// snapshotEntry builds a ToolEntry for the current state of name.
+func (h *Handler) snapshotEntry(name string) (ToolEntry, bool) {
+	f, ok := factories[name]
+	if !ok {
+		return ToolEntry{}, false
+	}
+	cur := h.registry.Get(f.registeredName)
+	enabled := false
+	effective := false
+	if cur != nil {
+		enabled = enabledFromCfg(name, h.cfg)
+		effective = cur.IsEnabled()
+	}
+	return ToolEntry{
+		Name:             name,
+		RegisteredName:   f.registeredName,
+		Enabled:          enabled,
+		Effective:        effective,
+		Config:           f.snapshot(h.cfg),
+		CredentialFields: f.credentialFields,
+	}, true
+}
+
+// enabledFromCfg is the raw cfg.Tools.<X>.Enabled flag (NOT IsEnabled —
+// the API caller wants to see what they wrote, not what the tool's
+// IsEnabled gate decided after credential check).
+func enabledFromCfg(name string, cfg *config.Config) bool {
+	switch name {
+	case "web_search":
+		return cfg.Tools.WebSearch.Enabled
+	case "tavily_search":
+		return cfg.Tools.TavilySearch.Enabled
+	}
+	return false
+}
+
+// sortedNames returns the manageable tool names in stable order for list responses.
+func sortedNames() []string {
+	out := make([]string, 0, len(factories))
+	for k := range factories {
+		out = append(out, k)
+	}
+	// 2-element slice; manual sort is fine and avoids a "sort" import dependency.
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[i] > out[j] {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out
+}
+
+// ServeHTTP dispatches GET/PATCH on the tools API surface.
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// /api/v1/tools             → list
+	// /api/v1/tools/{name}      → get / patch
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/tools")
+	trimmed = strings.TrimPrefix(trimmed, "/")
+	trimmed = strings.TrimSuffix(trimmed, "/")
+
+	if trimmed == "" {
+		// Collection endpoint.
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+				"only GET supported on /api/v1/tools")
+			return
+		}
+		out := make([]ToolEntry, 0, len(factories))
+		for _, name := range sortedNames() {
+			if entry, ok := h.snapshotEntry(name); ok {
+				out = append(out, entry)
+			}
+		}
+		writeSuccess(w, http.StatusOK, map[string]any{"tools": out})
+		return
+	}
+
+	// Single-tool endpoint.
+	name := trimmed
+	if _, ok := factories[name]; !ok {
+		writeError(w, http.StatusNotFound, "not_found", "unknown tool: "+name)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		entry, _ := h.snapshotEntry(name)
+		writeSuccess(w, http.StatusOK, entry)
+	case http.MethodPatch:
+		// PATCH implementation lands in Task 5 — for now, 501.
+		writeError(w, http.StatusNotImplemented, "not_implemented",
+			"PATCH lands in a follow-up task; GET works")
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+			"only GET/PATCH supported")
+	}
+}
+
+// ---------- response helpers ----------
+
+type apiResponse struct {
+	Code    string `json:"code"`
+	Message string `json:"message,omitempty"`
+	Data    any    `json:"data,omitempty"`
+}
+
+func writeJSON(w http.ResponseWriter, status int, resp apiResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func writeSuccess(w http.ResponseWriter, status int, data any) {
+	writeJSON(w, status, apiResponse{Code: "OK", Data: data})
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, apiResponse{Code: code, Message: message})
+}
