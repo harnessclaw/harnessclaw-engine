@@ -96,6 +96,12 @@ var cardMeta = map[CardKind]CardMeta{
 		// work.
 		OrphanTimeoutMs: 300_000, // 5 min
 	},
+	CardSystem: {
+		DefaultIcon: "info",
+		DefaultRole: RoleSystem,
+		TitleTpl:    "系统提示",
+		Lifecycle:   LifecycleUntracked,
+	},
 	CardTeam: {
 		DefaultIcon: "team",
 		DefaultRole: RoleSystem,

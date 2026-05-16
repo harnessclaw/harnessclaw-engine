@@ -268,6 +268,30 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		em.Card(emitv2.CardMessage, s.messageCardID).Close(emitv2.StatusOK, opts...)
 		s.messageCardID = ""
 
+	// ----- System notices -----
+	case types.EngineEventSystemNotice:
+		if ev.SystemNotice == nil {
+			return
+		}
+		sn := ev.SystemNotice
+		severity := emitv2.SeverityInfo
+		if sn.Icon == "warning" {
+			severity = emitv2.SeverityWarn
+		}
+		hint := emitv2.Hint{Title: sn.Title, Summary: sn.Summary}
+		if sn.Icon != "" {
+			hint.Icon = sn.Icon
+		}
+		cardID := emitv2.NewCardID(emitv2.CardSystem)
+		em.Card(emitv2.CardSystem, cardID).Add(
+			emitv2.SystemPayload{
+				Summary:    sn.Summary,
+				ActionHint: sn.ActionHint,
+			},
+			emitv2.WithHint(hint),
+			emitv2.WithSeverity(severity),
+		)
+
 	// ----- Tool lifecycle -----
 	case types.EngineEventToolStart:
 		t.openTurnIfNeeded(s, em)

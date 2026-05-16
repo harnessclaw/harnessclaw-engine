@@ -145,6 +145,16 @@ type TeamPayload struct {
 	Members  []string `json:"members,omitempty"`
 }
 
+// SystemPayload describes a framework-emitted system-level notice
+// (capability gap, configuration warning, etc.). The notice is
+// identified by its Title — there is no machine-readable sub-kind
+// field; downstream consumers route on title or on the v1
+// EngineEvent.SystemNotice.Topic before translation.
+type SystemPayload struct {
+	Summary    string `json:"summary,omitempty"`
+	ActionHint string `json:"action_hint,omitempty"`
+}
+
 // ----- card.close payload extension -----
 
 // ClosePayload is what card.close events carry: a status, plus optional

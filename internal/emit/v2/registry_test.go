@@ -131,3 +131,19 @@ func TestSeverityForClose(t *testing.T) {
 		}
 	}
 }
+
+func TestLookupCardMeta_System(t *testing.T) {
+	meta := LookupCardMeta(CardSystem)
+	if meta.DefaultIcon != "info" {
+		t.Errorf("CardSystem default icon: got %q, want %q", meta.DefaultIcon, "info")
+	}
+	if meta.DefaultRole != RoleSystem {
+		t.Errorf("CardSystem default role: got %q, want %q", meta.DefaultRole, RoleSystem)
+	}
+	if meta.TitleTpl != "系统提示" {
+		t.Errorf("CardSystem title template: got %q, want %q", meta.TitleTpl, "系统提示")
+	}
+	if meta.Lifecycle != LifecycleUntracked {
+		t.Errorf("CardSystem lifecycle: got %q, want %q", meta.Lifecycle, LifecycleUntracked)
+	}
+}
