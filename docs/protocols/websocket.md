@@ -19,6 +19,7 @@
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| **0.6.0** | 2026-05-16 | **新增 `card_kind=system`（向前兼容增量）**：框架级系统提示通用通道（配置缺失、能力降级、密钥过期等场景共用），不再为每条系统通知单独开 card_kind。首个使用场景：`web_search` + `tavily_search` 全部 disabled 时，受影响 TierSubAgent 首次 spawn 弹一张 `card.add(kind=system)`，title=`"搜索能力不可用"`、`hint.icon=warning`、`payload.action_hint` 给出 yaml 配置启用步骤。session 级去重（同 session 不重复弹）。老客户端按 `LookupCardMeta` 默认 fallback 渲染为通用 system 卡，不崩。详见 §5 表 + §10.9。 |
 | **0.5.0** | 2026-05-09 | **失败决定门 + 拓扑/Watchdog 调整（向前兼容增量）**：1) 新增 `prompt.user(kind=step_decision)` —— Scheduler / PlanCoordinator 在 step 重试用尽 / re-plans 用尽 / planner 错误时不再静默 fallback，而是弹给用户决定 `continue` / `retry` / `cancel`，详见 §7.1 kind=step_decision；2) `prompt.user_response.decision` 增加合法取值 `continue` / `retry` / `cancel`（仅对 `step_decision` 生效，其它 kind 仍用 `approved` / `denied`），详见 §7.3；3) plan / orchestrate 派出来的 `agent` 卡现在 `parent_card_id` 指向对应 `step` 卡（之前指 tool / message / turn）—— 按 `parent_card_id` 自动布局的客户端无需改动；硬编码 step 与 agent 同级的需要支持嵌套；4) `prompt.user` 期间所有祖先 tracked 卡片的 orphan watchdog 暂停，用户思考再久也不会出现 `orphan_timeout` 关闭——客户端无变化，纯改善。 |
 | **0.4.0** | 2026-05-08 | **plan 审阅与 question 行为对齐**：`prompt.user(kind=plan_review)` 阶段服务端**不**开 plan card、不启 watchdog、等待无上限——与 `kind=question` 完全同构。`card.add(plan)` 只在用户 approve 之后才发出。客户端必须基于 `prompt.user.payload.inner.steps` 直接渲染审阅视图，**不要**等 `card.add(plan)`。详见 §7.1 kind=plan_review 渲染规则。 |
 | **0.3.0** | 2026-05-07 | **故障恢复（新 capability）**：服务端重启后未答 prompt（permission/question/plan_review）会按同 `request_id` 自动重发到重连客户端；客户端必须按 `request_id` 去重 UI（同一 ID 不弹两次模态）。新增 `session.event(opened).capabilities.recovery` 能力位。详见 §2.4.2 / §2.4.4。 |
@@ -40,7 +41,7 @@
 
 ### 1.2 单一协议 / 单一 endpoint
 
-内测期间不维护多版本并存。本协议是当前**唯一**对外暴露的 WebSocket 协议，挂在 `/v1/ws`（"v1" 是产品版本号，不是协议代号）。原 47 个事件类型完全合并为 8 个动作 × 12 个 card_kind 的矩阵：
+内测期间不维护多版本并存。本协议是当前**唯一**对外暴露的 WebSocket 协议，挂在 `/v1/ws`（"v1" 是产品版本号，不是协议代号）。原 47 个事件类型完全合并为 8 个动作 × 13 个 card_kind 的矩阵：
 
 | v1 | v2 |
 |---|---|
@@ -192,7 +193,7 @@ WS  scheme:  ws://host:port/v1/ws
   "trace_id":       "tr_<24hex>",
   "card_id":        "<id>",                  // card.* 事件必填，prompt./session. 留空
   "parent_card_id": "<id>",                  // 可选
-  "card_kind":      "turn|message|tool|agent|plan|step|artifact|thinking|memory_op|budget|todo|team",
+  "card_kind":      "turn|message|tool|agent|plan|step|artifact|thinking|memory_op|budget|todo|team|system",
   "seq":            42,                      // 全 trace 单调递增，从 1 开始
   "timestamp":      "2026-05-07T10:00:00.000Z",
   "agent_id":       "main|sub_e5|...",       // 该事件归属哪个 agent
@@ -252,7 +253,7 @@ UI 渲染建议，**不是协议契约**——客户端可覆盖。
 
 ---
 
-## 5. Card Kinds（12 种）
+## 5. Card Kinds（13 种）
 
 | CardKind | 描述 | 父类型典型值 | 默认渲染建议 |
 |---|---|---|---|
@@ -268,6 +269,7 @@ UI 渲染建议，**不是协议契约**——客户端可覆盖。
 | `budget`   | 预算告警 | turn / plan | 横幅警告 |
 | `todo`     | TodoList 项 | turn / agent | TodoList 控件项 |
 | `team`     | 团队组 | turn | 团队面板 |
+| `system`   | 框架级系统提示（配置/能力缺失等） | (无 / 根) | 顶部通知条；`hint.icon=warning` 时按警告样式 |
 
 ---
 
@@ -724,6 +726,27 @@ plan 模式下渲染层级因此是 `turn → message → plan → step → agen
 
 参见 `internal/emit/v2/payload.go` 的 ThinkingPayload / MemoryOpPayload / BudgetPayload / TodoPayload / TeamPayload。
 
+### 10.9 system
+
+```json
+{
+  "summary":     "本次任务派到的 sub-agent (researcher) 依赖网络搜索，但配置中 web_search 和 tavily_search 均未启用，结果可能依赖训练知识、缺乏时效性和来源核查。",
+  "action_hint": "如何启用（任一即可）:\n  • config.yaml: tools.web_search.enabled = true ...\n  • config.yaml: tools.tavily_search.enabled = true ..."
+}
+```
+
+通用系统提示载荷。**没有**机器可读子类型字段（如 `notice_kind`）—— 各场景靠 `hint.title` / `hint.icon` 区分内容，后端日志由发出端的 zap 记录区分。
+
+适用场景（持续扩充）：
+- **搜索能力缺失**：`hint.icon=warning` / `hint.title="搜索能力不可用"`，由 `internal/engine/capability_gap_detector.go` 的 `SearchGapDetector` 在受影响 TierSubAgent 首次 spawn 时发出，session 级去重。
+- (未来可扩) 配置缺失、密钥过期、限流降级等同类框架级通知。
+
+**渲染契约：**
+- `hint.title` 必有 —— 标识具体通知类别。
+- `hint.icon` 为 `warning` 时按警告样式渲染；其它值（含空）走 registry 默认 `info` 视觉。
+- `payload.action_hint` 若有，应展示为可读的修复指引（保留换行/项目符号）。
+- card lifecycle `untracked` —— 无 `card.close`，不进入 orphan watchdog。
+
 ---
 
 ## 11. card.tick Inner Payloads（按 kind）
@@ -1019,6 +1042,7 @@ function onEvent(ev: Event) {
 | plan      | `<PlanAccordion>` |
 | step      | `<PlanStepRow>` |
 | artifact  | `<ArtifactChip>` |
+| system    | `<SystemNotice>`（顶部通知条；`hint.icon=warning` 走警告变体；body=payload.summary + payload.action_hint） |
 | ...       | ... |
 
 ### 15.4 Markdown 中的 artifact:// URI
@@ -1074,7 +1098,7 @@ session.event
 ### 17.2 CardKind
 ```
 turn | message | tool | agent | plan | step | artifact | thinking |
-memory_op | budget | todo | team
+memory_op | budget | todo | team | system
 ```
 
 ### 17.3 TickKind
