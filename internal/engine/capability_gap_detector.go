@@ -14,12 +14,14 @@ import (
 // "any-of-two backends" semantics. Future detectors for other capability
 // classes can sit alongside, but THIS spec adds search only.
 
-// EmitFunc is the channel-emit closure passed in by callers. Returning
-// an error tells the detector that the seen-marker must be rolled back
-// so the next spawn can retry. We keep the function abstract instead of
-// hard-binding to chan<- types.EngineEvent so unit tests can inject a
-// fake without channel plumbing.
-type EmitFunc func(ev types.EngineEvent) error
+// EmitFunc is the channel-emit closure passed in by callers. The ctx
+// argument propagates the spawn-call context so the emit step can be
+// cancelled cleanly (e.g. select on a channel send vs ctx.Done()).
+// Returning an error tells the detector that the seen-marker must be
+// rolled back so the next spawn can retry. We keep the function
+// abstract instead of hard-binding to chan<- types.EngineEvent so unit
+// tests can inject a fake without channel plumbing.
+type EmitFunc func(ctx context.Context, ev types.EngineEvent) error
 
 // SearchGapDetector emits at most one CardSystem notice per session
 // when a TierSubAgent spawns with WebSearch or TavilySearch in its
@@ -76,12 +78,16 @@ func (d *SearchGapDetector) CheckAndEmit(
 			Icon:       "warning",
 		},
 	}
-	if err := emit(ev); err != nil {
+	if err := emit(ctx, ev); err != nil {
 		d.log.Warn("emit system card (search gap) failed",
 			zap.String("session_id", sessionID),
 			zap.String("agent", agentName),
 			zap.Error(err))
-		d.seen.Delete(sessionID) // roll back so next spawn retries
+		// Rollback. There's a small TOCTOU window: a concurrent CheckAndEmit
+		// landing between LoadOrStore and Delete will skip (loaded=true) and
+		// then this Delete fires, leaving neither call emitting. Acceptable
+		// because the same session retries on the next spawn.
+		d.seen.Delete(sessionID)
 		return
 	}
 	d.log.Info("search capability gap detected",

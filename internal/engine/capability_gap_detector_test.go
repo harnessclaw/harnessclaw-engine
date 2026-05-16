@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -62,7 +61,6 @@ func TestShouldWarn(t *testing.T) {
 // detector via its EmitFunc closure. Lets unit tests skip channel
 // plumbing entirely.
 type fakeEmitter struct {
-	mu    sync.Mutex
 	calls int32
 	out   chan types.EngineEvent
 }
@@ -71,7 +69,7 @@ func newFakeEmitter() *fakeEmitter {
 	return &fakeEmitter{out: make(chan types.EngineEvent, 16)}
 }
 
-func (f *fakeEmitter) Emit(ev types.EngineEvent) error {
+func (f *fakeEmitter) Emit(ctx context.Context, ev types.EngineEvent) error {
 	atomic.AddInt32(&f.calls, 1)
 	f.out <- ev
 	return nil
@@ -162,7 +160,7 @@ func TestSearchGapDetector_NilReceiverSafe(t *testing.T) {
 	var d *SearchGapDetector
 	// Should not panic.
 	d.CheckAndEmit(context.Background(), "s1", "researcher",
-		[]string{"WebSearch", "TavilySearch"}, nil, func(ev types.EngineEvent) error { return nil })
+		[]string{"WebSearch", "TavilySearch"}, nil, func(_ context.Context, ev types.EngineEvent) error { return nil })
 	d.Forget("s1")
 }
 
@@ -180,7 +178,7 @@ func TestSearchGapDetector_EmitFailureRollsBack(t *testing.T) {
 	d := NewSearchGapDetector(zap.NewNop())
 	failOnce := true
 	var callCount int
-	emit := func(ev types.EngineEvent) error {
+	emit := func(_ context.Context, ev types.EngineEvent) error {
 		callCount++
 		if failOnce {
 			failOnce = false
