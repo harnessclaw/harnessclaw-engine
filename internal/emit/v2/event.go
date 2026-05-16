@@ -84,6 +84,12 @@ const (
 	CardBudget   CardKind = "budget"
 	CardTodo     CardKind = "todo"
 	CardTeam     CardKind = "team"
+	// CardSystem is the generic system-level notification card — used
+	// for framework-emitted notices (capability gaps, configuration
+	// warnings, key expirations, etc.). Renderer keys off Hint.Title /
+	// Hint.Icon / SystemPayload.Summary so individual notices don't
+	// each need their own CardKind.
+	CardSystem CardKind = "system"
 )
 
 // AgentRole classifies the responsibility of the producing agent. Mirrors

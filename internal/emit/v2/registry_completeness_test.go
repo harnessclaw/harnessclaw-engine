@@ -11,9 +11,10 @@ func TestRegistry_AllCardKindsDeclared(t *testing.T) {
 		CardTurn, CardMessage, CardTool, CardAgent,
 		CardPlan, CardStep, CardArtifact, CardThinking,
 		CardMemoryOp, CardBudget, CardTodo, CardTeam,
+		CardSystem,
 	}
-	if len(allKinds) != 12 {
-		t.Errorf("v2.2 spec mandates 12 card_kinds; got %d in this guard", len(allKinds))
+	if len(allKinds) != 13 {
+		t.Errorf("v2.2 spec mandates 13 card_kinds; got %d in this guard", len(allKinds))
 	}
 	for _, kind := range allKinds {
 		if _, ok := cardMeta[kind]; !ok {
