@@ -36,7 +36,10 @@ type Server struct {
 // /api/v1/agent for runtime provider / agent-routing management.
 // Only non-nil when the server runs in multi-provider mode —
 // single-provider deployments don't expose runtime mutation.
-func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler http.Handler, modelsHandler http.Handler, providersHandler http.Handler, logger *zap.Logger) *Server {
+//
+// toolsHandler, if non-nil, is mounted at /api/v1/tools for per-tool
+// credential management with hot-reload + yaml persistence.
+func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler http.Handler, modelsHandler http.Handler, providersHandler http.Handler, toolsHandler http.Handler, logger *zap.Logger) *Server {
 	mux := http.NewServeMux()
 
 	// Register agent management routes
@@ -63,6 +66,13 @@ func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler ht
 		mux.Handle("/api/v1/providers/", providersHandler)
 		mux.Handle("/api/v1/agent", providersHandler)
 		mux.Handle("/api/v1/agent/", providersHandler)
+	}
+
+	// Tools management API: GET/PATCH per-tool credentials with
+	// hot-reload + yaml persistence. Mounted at /api/v1/tools.
+	if toolsHandler != nil {
+		mux.Handle("/api/v1/tools", toolsHandler)
+		mux.Handle("/api/v1/tools/", toolsHandler)
 	}
 
 	// Health check

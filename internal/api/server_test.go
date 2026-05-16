@@ -15,7 +15,7 @@ func TestNewServer_MountsModelsHandler(t *testing.T) {
 		w.WriteHeader(http.StatusTeapot)
 	})
 
-	s := NewServer(ServerConfig{Host: "127.0.0.1", Port: 0}, nil, nil, modelsHandler, nil, zap.NewNop())
+	s := NewServer(ServerConfig{Host: "127.0.0.1", Port: 0}, nil, nil, modelsHandler, nil, nil /* toolsHandler — tests don't need it */, zap.NewNop())
 	srv := httptest.NewServer(s.httpServer.Handler)
 	defer srv.Close()
 

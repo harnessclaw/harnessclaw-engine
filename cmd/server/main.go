@@ -47,6 +47,7 @@ import (
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/api/providersmgmt"
+	"harnessclaw-go/internal/api/toolsmgmt"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/bifrost"
 	"harnessclaw-go/internal/provider/failover"
@@ -594,13 +595,17 @@ func main() {
 			zap.String("config_source", cfg.SourcePath),
 		)
 	}
+	toolsHandler := toolsmgmt.New(registry, cfg, cfg.SourcePath, logger)
+	logger.Info("toolsmgmt API mounted",
+		zap.String("config_source", cfg.SourcePath),
+	)
 
 	var consoleServer *api.Server
 	if cfg.Console.Enabled {
 		consoleServer = api.NewServer(api.ServerConfig{
 			Host: cfg.Console.Host,
 			Port: cfg.Console.Port,
-		}, agentSvc, metricsHandler, modelsHandler, providersHandler, logger)
+		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, logger)
 		go func() {
 			if err := consoleServer.Start(); err != nil {
 				logger.Error("console API server exited", zap.Error(err))
