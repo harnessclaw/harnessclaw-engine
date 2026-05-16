@@ -430,7 +430,7 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 工作流程：
 1. 读取任务要求，明确受众、格式、字数上限、语气
 2. 如有参考文档，先用 ArtifactRead 读取内容
-3. 如需核实术语、人名、日期等事实，用 TavilySearch 查证（不臆造）
+3. 如需核实术语、人名、日期等事实，用 WebSearch / TavilySearch 查证（不臆造）
 4. 正文用 ArtifactWrite 持久化——不要把大段文字写入 SubmitTaskResult
 5. 调用 SubmitTaskResult 提交元数据：artifact_role / format / word_count / tone
 
@@ -446,6 +446,7 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 			"ArtifactWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
+			"WebSearch",
 			"TavilySearch",
 		},
 		Skills: []string{
@@ -540,13 +541,13 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 你的专长：网页搜索、事实核查、资料整理、摘要生成。
 
 工具使用策略：
-- TavilySearch：主力搜索工具，每个问题至少从 2 个不同角度各查一次
+- WebSearch / TavilySearch：主力搜索工具（任一后端可用即可），每个问题至少从 2 个不同角度各查一次
 - ArtifactRead：读取调用方传入的参考文档
 - ArtifactWrite：持久化调研报告（含来源 URL、核心摘要、可信度说明）
 
 工作流程：
 1. 拆解调研问题，列出 2-3 个搜索角度
-2. 逐角度用 TavilySearch 搜索，优先权威来源（官网 > 学术 > 主流媒体 > 博客）
+2. 逐角度用 WebSearch 或 TavilySearch 搜索，优先权威来源（官网 > 学术 > 主流媒体 > 博客）
 3. 交叉比对结果，标注每条信息的来源和时效
 4. 用 ArtifactWrite 持久化报告
 5. 调用 SubmitTaskResult：artifact_role / source_count（实际引用源数）/ confidence
@@ -567,6 +568,7 @@ confidence 评级：
 			"ArtifactWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
+			"WebSearch",
 			"TavilySearch",
 		},
 		Skills: []string{
@@ -641,7 +643,7 @@ confidence 评级：
 
 工具使用策略：
 - ArtifactRead：读取调用方提供的数据文件（必须先读再分析）
-- TavilySearch：补充行业基准数据或术语解释（不用于原始数据采集）
+- WebSearch / TavilySearch：补充行业基准数据或术语解释（任一可用即可，不用于原始数据采集）
 - ArtifactWrite：持久化分析报告（markdown 表格 / csv / json）
 
 工作流程：
@@ -663,6 +665,7 @@ confidence 评级：
 			"ArtifactWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
+			"WebSearch",
 			"TavilySearch",
 		},
 		Skills: []string{
@@ -841,13 +844,13 @@ tested 字段规则：
 你的专长：行程设计、目的地调研、路线规划、景点筛选。
 
 工具使用策略：
-- TavilySearch：查询景点信息、开放时间、交通方式、住宿区域推荐
+- WebSearch / TavilySearch：查询景点信息、开放时间、交通方式、住宿区域推荐（任一后端可用即可）
 - ArtifactRead：读取调用方提供的参考资料（如已有行程草稿）
 - ArtifactWrite：持久化完整行程文档
 
 工作流程：
 1. 明确目的地、天数、预算档位、兴趣偏好（文化/自然/美食/购物）
-2. 用 TavilySearch 调研目的地核心景点，了解交通方式和住宿区域
+2. 用 WebSearch 或 TavilySearch 调研目的地核心景点，了解交通方式和住宿区域
 3. 按天编排行程，注意：
    - 相邻景点地理位置合理，减少折返
    - 每天留出餐饮和休息时间（上午重点景点，下午次要景点）
@@ -867,6 +870,7 @@ tested 字段规则：
 			"ArtifactWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
+			"WebSearch",
 			"TavilySearch",
 		},
 		Skills: []string{
@@ -943,12 +947,12 @@ tested 字段规则：
 你的专长：餐饮推荐、产品对比、购物选购、娱乐场所推荐。
 
 工具使用策略：
-- TavilySearch：搜索候选项（优先点评网站、权威测评、品牌官网）
+- WebSearch / TavilySearch：搜索候选项（任一后端可用即可，优先点评网站、权威测评、品牌官网）
 - ArtifactWrite：持久化推荐清单（markdown 表格，含关键对比维度）
 
 工作流程：
 1. 明确 category（dining/shopping/entertainment/product）和需求细节
-2. 用 TavilySearch 搜索符合条件的候选项，至少获取 5 个候选
+2. 用 WebSearch 或 TavilySearch 搜索符合条件的候选项，至少获取 5 个候选
 3. 按关键维度筛选并排序：
    - dining：位置 / 人均价格 / 特色菜 / 评分
    - product/shopping：价格 / 核心参数 / 优缺点 / 适用场景
@@ -968,6 +972,7 @@ tested 字段规则：
 			"ArtifactWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
+			"WebSearch",
 			"TavilySearch",
 		},
 		Skills: []string{
@@ -1047,7 +1052,7 @@ tested 字段规则：
 你的专长：时间块排布、会议时间协调、跨时区安排。
 
 工具使用策略：
-- TavilySearch：查询时区换算、节假日信息（跨时区/跨地区任务时使用）
+- WebSearch / TavilySearch：查询时区换算、节假日信息（任一后端可用即可，跨时区/跨地区任务时使用）
 - ArtifactWrite：持久化日程方案文档
 - ArtifactRead：读取调用方提供的任务清单或现有日程
 
@@ -1075,6 +1080,7 @@ slot_count 计算规则：实际安排的独立时间段数量（一个会议 = 
 			"ArtifactWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
+			"WebSearch",
 			"TavilySearch",
 		},
 		Skills: []string{
