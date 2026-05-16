@@ -11,6 +11,7 @@ import (
 
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
 )
@@ -114,8 +115,15 @@ func (c *PlanCoordinator) Run(
 
 	// Build the parent SpawnConfig that step dispatches inherit from
 	// (session lineage, parent event channel, etc.).
+	rootSID, _ := sessionstats.RootSessionIDFromCtx(ctx)
+	if rootSID == "" {
+		// Defensive: if no root in ctx, treat sess.ID's parent (from session metadata)
+		// as best-effort root. In practice ctx always carries root after SpawnSync.
+		rootSID = sess.ID
+	}
 	parentCfg := &agent.SpawnConfig{
 		ParentSessionID: sess.ID,
+		RootSessionID:   rootSID,
 		ParentOut:       out,
 	}
 

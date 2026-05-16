@@ -236,6 +236,100 @@ func TestStatsProvider_WrapperExitsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestStatsProvider_DualWritesToRootWhenRootDiffersFromSession(t *testing.T) {
+	const (
+		specialistsSubID = "sess_emma_001_sub_spec01"
+		emmaSessionID    = "sess_emma_001"
+		writerRunID      = "agent_writer_001"
+	)
+
+	reg := sessionstats.NewRegistry()
+
+	// Pre-create both trackers. The dual-write uses GetOrCreate for the root
+	// tracker, so it will create on first write — but we pre-open the SubAgent
+	// rows so RecordLLMCall can attribute them, matching SpawnSync's sequence.
+	specTracker := reg.GetOrCreate(specialistsSubID)
+	emmaTracker := reg.GetOrCreate(emmaSessionID)
+	specTracker.StartSubAgent(writerRunID, writerRunID, "writer", "")
+	emmaTracker.StartSubAgent(writerRunID, writerRunID, "writer", "")
+
+	inner := &fakeProvider{events: []types.StreamEvent{{
+		Type:  types.StreamEventMessageEnd,
+		Usage: &types.Usage{InputTokens: 300, OutputTokens: 60},
+		Model: "sonnet-3-7",
+	}}}
+	sp := New(inner, reg)
+
+	ctx := sessionstats.WithSessionID(context.Background(), specialistsSubID)
+	ctx = sessionstats.WithRootSessionID(ctx, emmaSessionID)
+	ctx = sessionstats.WithAgentRunID(ctx, writerRunID)
+
+	stream, err := sp.Chat(ctx, &provider.ChatRequest{MaxTokens: 256})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	for range stream.Events {
+	}
+
+	// Specialists (immediate parent) tracker must have the writer sub-agent row.
+	specSnap := specTracker.Snapshot()
+	if len(specSnap.SubAgents) != 1 || specSnap.SubAgents[0].InputTokens != 300 {
+		t.Errorf("specialists tracker SubAgents: %+v, want 1 row with InputTokens=300", specSnap.SubAgents)
+	}
+	if specSnap.SubAgents[0].AgentRunID != writerRunID {
+		t.Errorf("specialists tracker row AgentRunID = %q, want %q", specSnap.SubAgents[0].AgentRunID, writerRunID)
+	}
+
+	// Emma (root) tracker must ALSO have the writer sub-agent row with the same data.
+	emmaSnap := emmaTracker.Snapshot()
+	if len(emmaSnap.SubAgents) != 1 {
+		t.Fatalf("emma tracker SubAgents len = %d, want 1 (dual-write)", len(emmaSnap.SubAgents))
+	}
+	emmaRow := emmaSnap.SubAgents[0]
+	if emmaRow.InputTokens != 300 {
+		t.Errorf("emma tracker: InputTokens = %d, want 300", emmaRow.InputTokens)
+	}
+	if emmaRow.AgentRunID != writerRunID {
+		t.Errorf("emma tracker: AgentRunID = %q, want %q", emmaRow.AgentRunID, writerRunID)
+	}
+}
+
+func TestStatsProvider_SingleWriteWhenRootEqualsSession(t *testing.T) {
+	const sessionID = "sess_x"
+
+	reg := sessionstats.NewRegistry()
+	inner := &fakeProvider{events: []types.StreamEvent{{
+		Type:  types.StreamEventMessageEnd,
+		Usage: &types.Usage{InputTokens: 300, OutputTokens: 50},
+		Model: "sonnet",
+	}}}
+	sp := New(inner, reg)
+
+	// Root == Session — must NOT double-count.
+	ctx := sessionstats.WithSessionID(context.Background(), sessionID)
+	ctx = sessionstats.WithRootSessionID(ctx, sessionID)
+
+	stream, err := sp.Chat(ctx, &provider.ChatRequest{MaxTokens: 256})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	for range stream.Events {
+	}
+
+	tr := reg.Get(sessionID)
+	if tr == nil {
+		t.Fatalf("tracker not created")
+	}
+	s := tr.Snapshot()
+	// Must be exactly 300, not 600 (no double-count).
+	if s.InputTokens != 300 {
+		t.Errorf("InputTokens = %d, want 300 (single write, not doubled)", s.InputTokens)
+	}
+	if s.LLMCalls != 1 {
+		t.Errorf("LLMCalls = %d, want 1", s.LLMCalls)
+	}
+}
+
 func TestStatsProvider_PrefersStreamReportedModelOverRequestModel(t *testing.T) {
 	reg := sessionstats.NewRegistry()
 	// Provider reports a different model in MessageEnd than what (if anything)

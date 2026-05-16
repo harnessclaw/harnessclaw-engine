@@ -32,8 +32,17 @@ func (p *StatsProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*p
 	if !hasSession {
 		return p.inner.Chat(ctx, req)
 	}
+	rootSessionID, _ := sessionstats.RootSessionIDFromCtx(ctx)
 	agentRunID, _ := sessionstats.AgentRunIDFromCtx(ctx)
-	tracker := p.registry.GetOrCreate(sessionID)
+
+	primaryTracker := p.registry.GetOrCreate(sessionID)
+	// Root tracker: only created when root differs from the immediate parent
+	// session, i.e. this is an L3+ sub-agent. When they are equal we already
+	// write to primaryTracker and there is nothing to dual-write.
+	var rootTracker *sessionstats.Tracker
+	if rootSessionID != "" && rootSessionID != sessionID {
+		rootTracker = p.registry.GetOrCreate(rootSessionID)
+	}
 
 	used, limit, history, toolResults, system := classifyContext(req)
 	started := time.Now()
@@ -42,8 +51,14 @@ func (p *StatsProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*p
 	if err != nil {
 		// Even on dial failure record a call attempt with nil usage so
 		// the LLMCalls counter reflects reality.
-		tracker.RecordLLMCall(req.Model, agentRunID, nil, time.Since(started).Milliseconds())
-		tracker.UpdateContextWindow(used, limit, history, toolResults, system)
+		primaryTracker.RecordLLMCall(req.Model, agentRunID, nil, time.Since(started).Milliseconds())
+		primaryTracker.UpdateContextWindow(used, limit, history, toolResults, system)
+		if rootTracker != nil {
+			rootTracker.RecordLLMCall(req.Model, agentRunID, nil, time.Since(started).Milliseconds())
+			// No UpdateContextWindow on root — context budget is a per-session
+			// concept (each session has its own composition); aggregating
+			// multiple sessions' contexts into one limit would mislead.
+		}
 		return nil, err
 	}
 
@@ -59,7 +74,7 @@ func (p *StatsProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*p
 		if effectiveModel == "" {
 			effectiveModel = req.Model
 		}
-		tracker.RecordLLMCall(effectiveModel, agentRunID, usage, latencyMs)
+		primaryTracker.RecordLLMCall(effectiveModel, agentRunID, usage, latencyMs)
 
 		// Prefer the model's reported input token count when present so
 		// "used" is exact. The cheap estimate is kept only for the
@@ -69,7 +84,12 @@ func (p *StatsProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*p
 		if usage != nil && usage.InputTokens > 0 {
 			actualUsed = int64(usage.InputTokens)
 		}
-		tracker.UpdateContextWindow(actualUsed, limit, history, toolResults, system)
+		primaryTracker.UpdateContextWindow(actualUsed, limit, history, toolResults, system)
+
+		if rootTracker != nil {
+			rootTracker.RecordLLMCall(effectiveModel, agentRunID, usage, latencyMs)
+			// Skip UpdateContextWindow on root (see error path comment above).
+		}
 	}), nil
 }
 

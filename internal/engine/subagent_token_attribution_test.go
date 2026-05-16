@@ -10,6 +10,97 @@ import (
 	ptypes "harnessclaw-go/pkg/types"
 )
 
+// TestSubAgentTokenAttribution_L3DualWrite asserts Plan B: an L3 sub-agent
+// (writer/researcher) whose immediate parent is the specialists sub_session
+// writes its token data into BOTH the specialists tracker AND emma's root
+// tracker.
+//
+// Setup mirrors production:
+//   emma session          → root tracker
+//   specialists sub_session → parent (immediate) tracker
+//   L3 writer agent       → agentRunID = "agent_writer_xyz"
+//
+// After one Chat() call the root (emma) tracker must contain the same L3
+// SubAgent row data as the parent (specialists) tracker.
+func TestSubAgentTokenAttribution_L3DualWrite(t *testing.T) {
+	const (
+		emmaSession         = "sess_emma_dual_001"
+		specialistsSub      = "sess_emma_dual_001_sub_spec01"
+		l3RunID             = "agent_writer_xyz"
+	)
+
+	reg := sessionstats.NewRegistry()
+
+	// Create both trackers ahead of time (SpawnSync's StartSubAgent dual-write
+	// requires the root tracker to already exist — it uses Get, not GetOrCreate).
+	emmaTracker := reg.GetOrCreate(emmaSession)
+	specTracker := reg.GetOrCreate(specialistsSub)
+
+	// Simulate SpawnSync opening a row on the parent tracker AND the root tracker
+	// (the dual-write block added to subagent.go).
+	specTracker.StartSubAgent(l3RunID, l3RunID, "writer", "")
+	emmaTracker.StartSubAgent(l3RunID, l3RunID, "writer", "")
+
+	// Stats-decorated provider with one MessageEnd event.
+	inner := &engineFakeProv{events: []ptypes.StreamEvent{{
+		Type: ptypes.StreamEventMessageEnd,
+		Usage: &ptypes.Usage{
+			InputTokens:  300,
+			OutputTokens: 90,
+			CacheRead:    20,
+		},
+		Model: "sonnet-3-7",
+	}}}
+	sp := stats.New(inner, reg)
+
+	// ctx carries: specialists sub_session as SessionID + emma as RootSessionID.
+	ctx := sessionstats.WithSessionID(context.Background(), specialistsSub)
+	ctx = sessionstats.WithRootSessionID(ctx, emmaSession)
+	ctx = sessionstats.WithAgentRunID(ctx, l3RunID)
+
+	stream, err := sp.Chat(ctx, &provider.ChatRequest{MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	for range stream.Events {
+	}
+
+	// --- Assertions on the specialists (immediate parent) tracker ---
+	specSnap := specTracker.Snapshot()
+	if len(specSnap.SubAgents) != 1 {
+		t.Fatalf("specialists tracker: SubAgents len = %d, want 1", len(specSnap.SubAgents))
+	}
+	specRow := specSnap.SubAgents[0]
+	if specRow.InputTokens != 300 {
+		t.Errorf("specialists tracker: InputTokens = %d, want 300", specRow.InputTokens)
+	}
+	if specRow.OutputTokens != 90 {
+		t.Errorf("specialists tracker: OutputTokens = %d, want 90", specRow.OutputTokens)
+	}
+	if specRow.LLMCalls != 1 {
+		t.Errorf("specialists tracker: LLMCalls = %d, want 1", specRow.LLMCalls)
+	}
+
+	// --- Assertions on the emma (root) tracker ---
+	emmaSnap := emmaTracker.Snapshot()
+	if len(emmaSnap.SubAgents) != 1 {
+		t.Fatalf("emma tracker: SubAgents len = %d, want 1 (dual-write must open L3 row)", len(emmaSnap.SubAgents))
+	}
+	emmaRow := emmaSnap.SubAgents[0]
+	if emmaRow.AgentRunID != l3RunID {
+		t.Errorf("emma tracker: AgentRunID = %q, want %q", emmaRow.AgentRunID, l3RunID)
+	}
+	if emmaRow.InputTokens != 300 {
+		t.Errorf("emma tracker: InputTokens = %d, want 300 (same as parent row)", emmaRow.InputTokens)
+	}
+	if emmaRow.OutputTokens != 90 {
+		t.Errorf("emma tracker: OutputTokens = %d, want 90 (same as parent row)", emmaRow.OutputTokens)
+	}
+	if emmaRow.LLMCalls != 1 {
+		t.Errorf("emma tracker: LLMCalls = %d, want 1", emmaRow.LLMCalls)
+	}
+}
+
 // TestSubAgentTokenAttribution_EndToEnd asserts the full attribution chain:
 //  1. parent tracker exists for "sess_emma_001"
 //  2. StartSubAgent opens a row keyed by agentRunID

@@ -70,6 +70,17 @@ type SpawnConfig struct {
 	// and context inheritance in fork mode.
 	ParentSessionID string
 
+	// RootSessionID is the top-level user-facing session id (emma's main
+	// session). Sub-agents propagate this through their own spawns so the
+	// root session's metrics tracker sees every descendant's token spend
+	// — solves the "GET /sessions/{emma_session_id}/metrics shows only
+	// immediate children" gap when L2 dispatches to L3 via plan-mode
+	// (which uses sess.ID as ParentSessionID, hiding L3 from emma's view).
+	//
+	// Empty defaults to ParentSessionID (the L2 case where the immediate
+	// parent IS the root, e.g. Specialists spawned directly by emma).
+	RootSessionID string
+
 	// ParentMessages holds the parent's conversation history for fork mode.
 	// Only used when Fork is true. Callers must provide a deep copy.
 	ParentMessages []Message

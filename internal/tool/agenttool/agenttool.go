@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
 )
@@ -127,6 +128,15 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 	if tuc, ok := tool.GetToolUseContext(ctx); ok {
 		cfg.ParentSessionID = tuc.Core.SessionID
 	}
+
+	// Root session: prefer ctx's RootSessionID (propagated from SpawnSync when
+	// this Task tool runs inside a sub-agent), fall back to ParentSessionID
+	// (covers the L1→L2 case where the immediate parent is the root).
+	rootSID, _ := sessionstats.RootSessionIDFromCtx(ctx)
+	if rootSID == "" {
+		rootSID = cfg.ParentSessionID
+	}
+	cfg.RootSessionID = rootSID
 
 	// Extract the parent event output channel so subagent events reach the client.
 	if out, ok := tool.GetEventOut(ctx); ok {

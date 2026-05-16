@@ -121,6 +121,15 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	ctx = sessionstats.WithSessionID(ctx, cfg.ParentSessionID)
 	ctx = sessionstats.WithAgentRunID(ctx, agentID)
 
+	// Root session — empty cfg.RootSessionID means "I am at L2, my parent
+	// is the root". Propagating via ctx so dual-tracker writes in
+	// stats_provider see it without changing every cfg.X plumbing site.
+	rootSID := cfg.RootSessionID
+	if rootSID == "" {
+		rootSID = cfg.ParentSessionID
+	}
+	ctx = sessionstats.WithRootSessionID(ctx, rootSID)
+
 	// Step 2: Cap MaxTurns.
 	maxTurns := cfg.MaxTurns
 	if maxTurns <= 0 {
@@ -442,6 +451,19 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			tr.StartSubAgent(agentID, agentID, string(cfg.AgentType), "")
 		}
 	}
+	// Plan B dual-write: when root differs from immediate parent, open a
+	// row on the root tracker too so GET /sessions/{root_id}/metrics shows
+	// this sub-agent as one of its descendants — flat list of all L1/L2/L3
+	// agents, keyed by agentID. Skipped when root == parent (the L2 case).
+	if qe.statsRegistry != nil && rootSID != "" && rootSID != cfg.ParentSessionID {
+		if tr := qe.statsRegistry.Get(rootSID); tr != nil {
+			tr.StartSubAgent(agentID, agentID, string(cfg.AgentType), "")
+			logger.Debug("sub-agent row opened on root tracker too",
+				zap.String("root_session", rootSID),
+				zap.String("parent_session", cfg.ParentSessionID),
+			)
+		}
+	}
 	if qe.eventBus != nil {
 		qe.eventBus.Publish(event.Event{
 			Topic: event.TopicSubAgentStarted,
@@ -703,6 +725,13 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// StartSubAgent call above; same nil-guards apply.
 	if qe.statsRegistry != nil && cfg.ParentSessionID != "" {
 		if tr := qe.statsRegistry.Get(cfg.ParentSessionID); tr != nil {
+			tr.FinishSubAgent(agentID, agentStatus, elapsed.Milliseconds())
+		}
+	}
+	// Plan B dual-write: finish the root tracker row too when root differs
+	// from immediate parent — mirrors the StartSubAgent dual-write above.
+	if qe.statsRegistry != nil && rootSID != "" && rootSID != cfg.ParentSessionID {
+		if tr := qe.statsRegistry.Get(rootSID); tr != nil {
 			tr.FinishSubAgent(agentID, agentStatus, elapsed.Milliseconds())
 		}
 	}

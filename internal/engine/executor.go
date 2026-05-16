@@ -226,6 +226,16 @@ func (te *ToolExecutor) executeSingle(
 					tr.RecordToolCall()
 				}
 			}
+			// Plan B dual-write: also bump the root tracker when root differs
+			// from the immediate parent session so GET /sessions/{root}/metrics
+			// shows aggregate tool counts across all L2/L3 descendants.
+			if rootSID, ok := sessionstats.RootSessionIDFromCtx(ctx); ok {
+				if sidVal, _ := sessionstats.SessionIDFromCtx(ctx); rootSID != sidVal {
+					if tr := te.statsRegistry.Get(rootSID); tr != nil {
+						tr.RecordToolCall()
+					}
+				}
+			}
 		}
 		out <- evt
 

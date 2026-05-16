@@ -26,6 +26,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
 )
@@ -131,6 +132,14 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	// mode via tool.WithCoordinatorMode.
 	coordMode := tool.GetCoordinatorMode(ctx)
 
+	// Root session: prefer ctx's RootSessionID when present (future-proofs
+	// nested Specialists), fall back to parentSessionID (emma IS root at
+	// this layer in all current deployments).
+	rootSID, _ := sessionstats.RootSessionIDFromCtx(ctx)
+	if rootSID == "" {
+		rootSID = parentSessionID
+	}
+
 	// No wall-clock Timeout here: plan-mode L2 may run for tens of minutes
 	// (multi-step research+write plans, slow upstream gateways, retry
 	// backoffs). A coarse parent-ctx deadline propagates down the spawn
@@ -152,6 +161,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		Description:     defaultDescription(in.Description),
 		Name:            "specialists",
 		ParentSessionID: parentSessionID,
+		RootSessionID:   rootSID,
 		ParentOut:       parentOut,
 		CoordinatorMode: coordMode,
 	}

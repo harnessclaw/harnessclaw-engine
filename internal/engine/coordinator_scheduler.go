@@ -452,6 +452,7 @@ func (s *Scheduler) dispatchStep(
 		Description:      step.Description,
 		Name:             fmt.Sprintf("plan-step-%s", step.ID),
 		ParentSessionID:  pickStr(parentCfg, func(c *agent.SpawnConfig) string { return c.ParentSessionID }),
+		RootSessionID:    pickStr(parentCfg, func(c *agent.SpawnConfig) string { return c.RootSessionID }),
 		ParentOut:        pickOut(parentCfg),
 		// Timeout is intentionally omitted: the per-step 15-min wall clock
 		// killed legitimate long sub-agent runs mid-flight (token already

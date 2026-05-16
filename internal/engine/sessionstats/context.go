@@ -10,6 +10,7 @@ type ctxKey int
 const (
 	ctxKeySessionID ctxKey = iota
 	ctxKeyAgentRunID
+	ctxKeyRootSessionID
 )
 
 // WithSessionID attaches a session ID to ctx. The Provider decorator
@@ -43,4 +44,21 @@ func AgentRunIDFromCtx(ctx context.Context) (string, bool) {
 		return "", false
 	}
 	return v, true
+}
+
+// WithRootSessionID attaches the top-level user-facing session id so
+// stats_provider.Chat / RecordToolCall can dual-write into both the
+// immediate parent's tracker and the root tracker.
+func WithRootSessionID(ctx context.Context, rootID string) context.Context {
+	if rootID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyRootSessionID, rootID)
+}
+
+// RootSessionIDFromCtx returns the root session id, or ("", false) when
+// unset. Caller should fall back to SessionIDFromCtx in that case.
+func RootSessionIDFromCtx(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(ctxKeyRootSessionID).(string)
+	return v, ok && v != ""
 }
