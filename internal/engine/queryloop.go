@@ -217,6 +217,13 @@ type QueryEngine struct {
 	// connections to the same gateway share the same upstream health.
 	retryer *retry.Retryer
 
+	// searchGapDetector emits a one-shot per-session CardSystem notice
+	// when a TierSubAgent spawns with declared search capability but
+	// neither WebSearch nor TavilySearch is registered at runtime.
+	// Nil-safe — production wire-up always sets this; tests that
+	// don't need the feature can leave it nil.
+	searchGapDetector *SearchGapDetector
+
 	// Prompt builder for structured system prompt assembly.
 	promptBuilder *prompt.Builder
 	promptProfile *prompt.AgentProfile
@@ -389,6 +396,7 @@ func NewQueryEngine(
 		pendingPlans:         make(map[string]*pendingPlanReq),
 		pendingStepDecisions: make(map[string]*pendingStepDecisionReq),
 		retryer:              retry.New(retryConfigFromEngineCfg(cfg), logger),
+		searchGapDetector:    NewSearchGapDetector(logger),
 	}
 }
 
