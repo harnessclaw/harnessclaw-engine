@@ -285,6 +285,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		cardID := emitv2.NewCardID(emitv2.CardSystem)
 		em.Card(emitv2.CardSystem, cardID).Add(
 			emitv2.SystemPayload{
+				Topic:      sn.Topic,
 				Summary:    sn.Summary,
 				ActionHint: sn.ActionHint,
 			},

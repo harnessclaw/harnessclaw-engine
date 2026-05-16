@@ -434,6 +434,9 @@ func TestTranslator_SystemNotice(t *testing.T) {
 	if payload.Summary == "" || payload.ActionHint == "" {
 		t.Errorf("payload missing fields: %+v", payload)
 	}
+	if payload.Topic != "search_capability_gap" {
+		t.Errorf("payload topic: got %q, want %q", payload.Topic, "search_capability_gap")
+	}
 }
 
 // silence unused import when no wait references; needed to keep parity

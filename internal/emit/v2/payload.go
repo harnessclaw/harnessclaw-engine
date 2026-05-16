@@ -146,11 +146,13 @@ type TeamPayload struct {
 }
 
 // SystemPayload describes a framework-emitted system-level notice
-// (capability gap, configuration warning, etc.). The notice is
-// identified by its Title — there is no machine-readable sub-kind
-// field; downstream consumers route on title or on the v1
-// EngineEvent.SystemNotice.Topic before translation.
+// (capability gap, configuration warning, etc.). Title / Summary /
+// ActionHint render on the user-facing card; Topic is a stable
+// machine identifier the client can branch on for business logic
+// (deeplinks, telemetry, conditional UI). Known topic values are
+// documented in docs/protocols/websocket.md §10.9.
 type SystemPayload struct {
+	Topic      string `json:"topic,omitempty"`
 	Summary    string `json:"summary,omitempty"`
 	ActionHint string `json:"action_hint,omitempty"`
 }
