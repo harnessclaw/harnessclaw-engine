@@ -154,6 +154,13 @@ const (
 	// still alive. Clients that expect a started→finished pair within a
 	// time budget watch for missing heartbeats to surface stuck agents.
 	EngineEventAgentHeartbeat EngineEventType = "agent_heartbeat"
+
+	// EngineEventSystemNotice fires when the framework wants to surface
+	// a non-error system-level notification to the user (e.g. a
+	// configuration gap such as "all search tool backends are
+	// disabled, sub-agent quality may suffer"). Translator maps it to
+	// a CardSystem card with Hint.Icon controlling severity styling.
+	EngineEventSystemNotice EngineEventType = "system_notice"
 )
 
 // EngineEvent is a single event emitted from the engine to a channel.
@@ -246,6 +253,11 @@ type EngineEvent struct {
 	// retry loop just before backoff sleep. Set on EngineEventLLMRetry;
 	// nil on every other event type.
 	LLMRetry *LLMRetryInfo `json:"llm_retry,omitempty"`
+
+	// SystemNotice carries a framework-emitted system-level notification
+	// payload. Set on EngineEventSystemNotice events; nil on every
+	// other event type. Translator routes to CardSystem.
+	SystemNotice *SystemNotice `json:"system_notice,omitempty"`
 }
 
 // LLMRetryInfo describes one retry decision inside the LLM Retryer. The
@@ -278,6 +290,18 @@ type LLMRetryInfo struct {
 	// Message is a short human-readable summary, suitable to render in
 	// a note card on the wire.
 	Message string `json:"message,omitempty"`
+}
+
+// SystemNotice carries the payload for EngineEventSystemNotice events.
+// Topic is a short machine identifier for log/audit ("search_capability_gap");
+// Title / Summary / ActionHint render on the user-facing card.
+// Icon controls the front-end styling (empty defaults to registry "info").
+type SystemNotice struct {
+	Topic      string `json:"topic"`
+	Title      string `json:"title"`
+	Summary    string `json:"summary,omitempty"`
+	ActionHint string `json:"action_hint,omitempty"`
+	Icon       string `json:"icon,omitempty"`
 }
 
 // PlanProposal is the structured plan a coordinator presents to the user
