@@ -341,6 +341,32 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		pool = pool.WithoutDangerousUnless(keepList)
 	}
 
+	// Search-tool capability gap — emit a one-shot CardSystem notice
+	// to the user when this sub-agent declares search capability but
+	// neither WebSearch nor TavilySearch is registered at runtime.
+	// nil-safe on detector or ParentOut.
+	if isSubAgent && qe.searchGapDetector != nil {
+		var declared []string
+		if agentDef != nil {
+			declared = agentDef.AllowedTools
+		}
+		qe.searchGapDetector.CheckAndEmit(
+			ctx, cfg.ParentSessionID, cfg.SubagentType,
+			declared, pool.Names(),
+			func(ctx context.Context, ev types.EngineEvent) error {
+				if cfg.ParentOut == nil {
+					return fmt.Errorf("parent out channel is nil")
+				}
+				select {
+				case cfg.ParentOut <- ev:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			},
+		)
+	}
+
 	// Step 7: Resolve prompt profile.
 	// Priority: AgentDefinition.Profile > subagentType string mapping > WorkerProfile.
 	var profile *prompt.AgentProfile
