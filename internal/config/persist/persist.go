@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 
@@ -147,6 +148,112 @@ func (f *File) SetAgent(cfg config.AgentConfig) error {
 		appendScalar(agent, "thinking_intensity", cfg.ThinkingIntensity)
 	}
 	return nil
+}
+
+// SetToolConfig writes or replaces tools.<name>.* keys from raw.
+// raw is the canonical wire-shape map for the tool (e.g. for
+// web_search: enabled / api_key / api_secret / app_id / host / path
+// / limit). Keys absent from raw are deleted from yaml so the file
+// always reflects the API caller's full intent — partial updates are
+// the caller's responsibility (e.g. handler.go merges new values into
+// the existing config struct before calling here).
+//
+// Creates the top-level `tools:` mapping and the `<name>:` child
+// mapping if missing. Returns an error if name is empty or raw is
+// nil. Unrelated tools (e.g. tools.bash.enabled) are not touched.
+func (f *File) SetToolConfig(name string, raw map[string]any) error {
+	if name == "" {
+		return fmt.Errorf("persist.SetToolConfig: empty name")
+	}
+	if raw == nil {
+		return fmt.Errorf("persist.SetToolConfig: nil config for %q", name)
+	}
+	tools, err := f.toolsNode(true /*create*/)
+	if err != nil {
+		return err
+	}
+	child, _ := findValue(tools, name)
+	if child == nil || child.Kind != yaml.MappingNode {
+		child = &yaml.Node{Kind: yaml.MappingNode}
+		setKey(tools, name, child)
+	}
+	// Wipe existing keys; we always emit the caller's complete view.
+	child.Content = child.Content[:0]
+	emitToolField(child, "enabled", raw["enabled"])
+	// Stable key order for review hygiene: enabled first, then the
+	// remaining keys sorted by name.
+	sorted := make([]string, 0, len(raw))
+	for k := range raw {
+		if k == "enabled" {
+			continue
+		}
+		sorted = append(sorted, k)
+	}
+	sort.Strings(sorted)
+	for _, k := range sorted {
+		emitToolField(child, k, raw[k])
+	}
+	forceBlockStyle(child)
+	return nil
+}
+
+// toolsNode returns (or optionally creates) the top-level `tools:` mapping.
+func (f *File) toolsNode(create bool) (*yaml.Node, error) {
+	root := f.root.Content[0]
+	tools, _ := findValue(root, "tools")
+	if tools == nil {
+		if !create {
+			return nil, fmt.Errorf("tools block missing")
+		}
+		tools = &yaml.Node{Kind: yaml.MappingNode}
+		setKey(root, "tools", tools)
+	}
+	if tools.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("tools is not a mapping")
+	}
+	return tools, nil
+}
+
+// emitToolField writes one key/value into the tool's mapping with a
+// type-appropriate scalar. Unsupported types (slices, nested maps) are
+// silently skipped — the current tool configs don't use them. Boolean
+// false / numeric zero / empty string are still emitted because
+// callers may legitimately want to clear a credential. String values
+// are written with double-quote style so credentials (api_key, etc.)
+// survive round-trips through other yaml parsers that treat bare
+// strings differently from quoted ones.
+func emitToolField(m *yaml.Node, key string, v any) {
+	switch val := v.(type) {
+	case nil:
+		// Skip — distinguish "field absent" from "field zeroed".
+	case bool:
+		appendBool(m, key, val)
+	case string:
+		appendToolScalar(m, key, val)
+	case int:
+		appendInt(m, key, val)
+	case int64:
+		appendInt(m, key, int(val))
+	case float64:
+		// JSON numbers decode as float64; check for integer values so
+		// we don't write "5.0" where yaml expects "5".
+		if val == float64(int(val)) {
+			appendInt(m, key, int(val))
+		} else {
+			appendFloat(m, key, val)
+		}
+	}
+}
+
+// appendToolScalar appends a key/value pair with a double-quoted string
+// scalar. Unlike appendScalar (which lets yaml.v3 choose the style),
+// this forces DoubleQuotedStyle so credential fields like api_key always
+// appear as  api_key: "value"  in the file — consistent and unambiguous.
+func appendToolScalar(m *yaml.Node, key, value string) {
+	m.Content = append(m.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value, Style: yaml.DoubleQuotedStyle},
+	)
 }
 
 // SetProviderCreds writes or replaces the credentials block at
