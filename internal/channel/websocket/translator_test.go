@@ -386,6 +386,56 @@ func TestPromoteToolMetadata_NilWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestTranslator_SystemNotice verifies that EngineEventSystemNotice is
+// translated to a CardSystem card.add with the correct hint fields,
+// severity, and SystemPayload content.
+func TestTranslator_SystemNotice(t *testing.T) {
+	em, rec := makeRecorderEmitter(t, "sess-system-1")
+	tr := NewTranslator()
+
+	tr.Translate(em, "sess-system-1", &types.EngineEvent{
+		Type: types.EngineEventSystemNotice,
+		SystemNotice: &types.SystemNotice{
+			Topic:      "search_capability_gap",
+			Title:      "搜索能力不可用",
+			Summary:    "本次任务派到的 sub-agent (researcher) 依赖网络搜索。",
+			ActionHint: "config.yaml: tools.web_search.enabled = true",
+			Icon:       "warning",
+		},
+	})
+
+	events := rec.Events()
+	if len(events) != 1 {
+		t.Fatalf("want 1 emitted event, got %d", len(events))
+	}
+	ev := events[0]
+	if ev.Envelope.CardKind != emitv2.CardSystem {
+		t.Errorf("card_kind: got %q, want %q", ev.Envelope.CardKind, emitv2.CardSystem)
+	}
+	if ev.Hint == nil {
+		t.Fatal("hint missing")
+	}
+	if ev.Hint.Title != "搜索能力不可用" {
+		t.Errorf("hint title: got %q", ev.Hint.Title)
+	}
+	if ev.Hint.Icon != "warning" {
+		t.Errorf("hint icon: got %q, want %q", ev.Hint.Icon, "warning")
+	}
+	// Note: AgentRole reflects the emitter binding (RolePersona in tests);
+	// the registry default (RoleSystem) only applies when the emitter has
+	// no bound role. We verify severity instead, which is translator-set.
+	if ev.Envelope.Severity != emitv2.SeverityWarn {
+		t.Errorf("severity: got %q, want %q", ev.Envelope.Severity, emitv2.SeverityWarn)
+	}
+	payload, ok := ev.Payload.(emitv2.SystemPayload)
+	if !ok {
+		t.Fatalf("payload type: got %T, want emitv2.SystemPayload", ev.Payload)
+	}
+	if payload.Summary == "" || payload.ActionHint == "" {
+		t.Errorf("payload missing fields: %+v", payload)
+	}
+}
+
 // silence unused import when no wait references; needed to keep parity
 // with the existing translator package layout.
 var _ = context.Background
