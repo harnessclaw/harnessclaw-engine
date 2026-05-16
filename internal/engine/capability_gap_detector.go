@@ -74,7 +74,7 @@ func (d *SearchGapDetector) CheckAndEmit(
 				"本次任务派到的 sub-agent (%s) 依赖网络搜索，但配置中 web_search 和 tavily_search 均未启用，结果可能依赖训练知识、缺乏时效性和来源核查。",
 				agentName,
 			),
-			ActionHint: "如何启用（任一即可）:\n  • config.yaml: tools.web_search.enabled = true   并填 host/path/credential\n  • config.yaml: tools.tavily_search.enabled = true 并填 api_key",
+			ActionHint: "去设置页，搜索配置，配置相关服务",
 			Icon:       "warning",
 		},
 	}

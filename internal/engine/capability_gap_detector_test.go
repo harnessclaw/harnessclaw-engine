@@ -104,7 +104,7 @@ func TestSearchGapDetector_BasicEmit(t *testing.T) {
 	if !strings.Contains(ev.SystemNotice.Summary, "researcher") {
 		t.Errorf("summary missing agent name: %q", ev.SystemNotice.Summary)
 	}
-	if !strings.Contains(ev.SystemNotice.ActionHint, "tools.web_search.enabled") {
+	if !strings.Contains(ev.SystemNotice.ActionHint, "设置页") {
 		t.Errorf("action hint missing remediation: %q", ev.SystemNotice.ActionHint)
 	}
 }
