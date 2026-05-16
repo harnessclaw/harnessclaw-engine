@@ -683,7 +683,8 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 				types.EngineEventStepSkipped,
 				types.EngineEventStepDecisionRequested,
 				types.EngineEventLLMHeartbeat,
-				types.EngineEventLLMRetry:
+				types.EngineEventLLMRetry,
+				types.EngineEventSystemNotice:
 				// Pass through unchanged — the deeper layer already stamped
 				// the correct AgentID/AgentName, and re-wrapping would lose
 				// that attribution. ParentAgentID stitches the chain back
@@ -699,6 +700,13 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 				// L2 worker (PlanCoordinator runs there). Without this
 				// pass-through the prompt never reaches the WebSocket and
 				// the engine's requestStepDecision blocks forever.
+				//
+				// system_notice is emitted by SearchGapDetector when an L3
+				// is spawned with declared search capability but no search
+				// tool registered. The detector writes directly into
+				// cfg.ParentOut, so when the L3 sits under an L2 dispatcher
+				// the event must travel up two layers; without this case
+				// the system card never reaches the WebSocket.
 				cfg.ParentOut <- evt
 			}
 		}
