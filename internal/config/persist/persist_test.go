@@ -375,3 +375,106 @@ func TestAtomicSave_FailureLeavesOriginalIntact(t *testing.T) {
 		t.Fatalf("original file mutated after failed save")
 	}
 }
+
+func TestSetToolConfig_WebSearch_RoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(path, []byte(`tools:
+  web_search:
+    enabled: false
+    api_key: "old"
+    api_secret: "old"
+    app_id: "old"
+    limit: 5
+`), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	f, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := map[string]any{
+		"enabled":    true,
+		"api_key":    "new-key",
+		"api_secret": "new-secret",
+		"app_id":     "new-app",
+		"host":       "search-api.example.com",
+		"path":       "/biz/search",
+		"limit":      10,
+	}
+	if err := f.SetToolConfig("web_search", want); err != nil {
+		t.Fatalf("SetToolConfig: %v", err)
+	}
+	if err := f.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("readback: %v", err)
+	}
+	for _, fragment := range []string{
+		"enabled: true",
+		`api_key: "new-key"`,
+		`api_secret: "new-secret"`,
+		`app_id: "new-app"`,
+		`host: "search-api.example.com"`,
+		`path: "/biz/search"`,
+		"limit: 10",
+	} {
+		if !strings.Contains(string(got), fragment) {
+			t.Errorf("expected fragment %q in written file, got:\n%s", fragment, got)
+		}
+	}
+}
+
+func TestSetToolConfig_CreatesMissingToolsBlock(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(path, []byte("agent:\n  primary: foo:bar\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	f, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := f.SetToolConfig("tavily_search", map[string]any{
+		"enabled":     true,
+		"api_key":     "tvly-xyz",
+		"max_results": 5,
+	}); err != nil {
+		t.Fatalf("SetToolConfig: %v", err)
+	}
+	if err := f.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, _ := os.ReadFile(path)
+	for _, fragment := range []string{
+		"tools:",
+		"tavily_search:",
+		"enabled: true",
+		`api_key: "tvly-xyz"`,
+		"max_results: 5",
+	} {
+		if !strings.Contains(string(got), fragment) {
+			t.Errorf("expected fragment %q, got:\n%s", fragment, got)
+		}
+	}
+}
+
+func TestSetToolConfig_RejectsEmptyName(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(path, []byte("tools: {}\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	f, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := f.SetToolConfig("", map[string]any{"enabled": true}); err == nil {
+		t.Fatal("expected error for empty name, got nil")
+	}
+}

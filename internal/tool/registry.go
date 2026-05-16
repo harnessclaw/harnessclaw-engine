@@ -44,6 +44,47 @@ func (r *Registry) Register(t Tool) error {
 	return nil
 }
 
+// Replace atomically swaps the registered tool for name with newTool.
+// Both name and newTool.Name() must match (so callers can't accidentally
+// rename via Replace). Returns an error if the name isn't registered or
+// newTool is nil. If the existing tool exposed aliases (via AliasedTool),
+// they're refreshed from newTool's aliases — old-only aliases are dropped
+// and new-only aliases are added.
+//
+// Use case: runtime config update via the tools management API rebuilds
+// a tool instance from new credentials, and we hot-swap it under the
+// same registered name. ToolPool snapshots taken before Replace keep
+// pointing at the old instance, so in-flight spawns finish on the old
+// credentials — the next spawn picks up the new tool from registry.
+func (r *Registry) Replace(name string, newTool Tool) error {
+	if newTool == nil {
+		return fmt.Errorf("tool.Registry.Replace: nil tool for %q", name)
+	}
+	if newTool.Name() != name {
+		return fmt.Errorf("tool.Registry.Replace: name mismatch (registered %q, new %q)", name, newTool.Name())
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.tools[name]; !exists {
+		return fmt.Errorf("tool.Registry.Replace: %q not registered", name)
+	}
+
+	// Strip aliases pointing at the old tool, then re-register from newTool.
+	for alias, canonical := range r.aliases {
+		if canonical == name {
+			delete(r.aliases, alias)
+		}
+	}
+	r.tools[name] = newTool
+	if at, ok := newTool.(AliasedTool); ok {
+		for _, alias := range at.Aliases() {
+			r.aliases[alias] = name
+		}
+	}
+	return nil
+}
+
 // Get retrieves a tool by name or alias. Returns nil if not found.
 func (r *Registry) Get(name string) Tool {
 	r.mu.RLock()
