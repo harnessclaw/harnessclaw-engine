@@ -198,3 +198,35 @@ func TestSearchGapDetector_EmitFailureRollsBack(t *testing.T) {
 type errStub string
 
 func (e errStub) Error() string { return string(e) }
+
+// TestSearchGapDetector_NamesMatchToolFactory guards searchToolNames
+// against drift from the canonical tool names. If you renamed the
+// WebSearch / TavilySearch tools, update searchToolNames to match —
+// otherwise the detector will silently stop firing.
+func TestSearchGapDetector_NamesMatchToolFactory(t *testing.T) {
+	// The actual cross-check against the live registry happens in the
+	// integration test (Task 8). This test pins the strings to known
+	// values so a typo in one place fails immediately rather than at
+	// integration time.
+	wantSorted := []string{"TavilySearch", "WebSearch"}
+	gotSorted := append([]string{}, searchToolNames...)
+	sortStrings(gotSorted)
+	if len(wantSorted) != len(gotSorted) {
+		t.Fatalf("searchToolNames length: got %d, want %d", len(gotSorted), len(wantSorted))
+	}
+	for i := range wantSorted {
+		if gotSorted[i] != wantSorted[i] {
+			t.Errorf("searchToolNames[%d]: got %q, want %q", i, gotSorted[i], wantSorted[i])
+		}
+	}
+}
+
+func sortStrings(s []string) {
+	for i := 0; i < len(s); i++ {
+		for j := i + 1; j < len(s); j++ {
+			if s[i] > s[j] {
+				s[i], s[j] = s[j], s[i]
+			}
+		}
+	}
+}
