@@ -19,8 +19,10 @@ package toolsmgmt
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+	"sync"
 
 	"go.uber.org/zap"
 
@@ -31,6 +33,7 @@ import (
 
 // Handler implements http.Handler for the tools management API.
 type Handler struct {
+	mu       sync.Mutex // serialises handlePatch's read-merge-apply-persist sequence
 	registry *tool.Registry
 	cfg      *config.Config
 	cfgPath  string
@@ -188,6 +191,14 @@ func (h *Handler) handlePatch(w http.ResponseWriter, r *http.Request, name strin
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
 		return
 	}
+
+	// Serialise the entire read-merge-apply-persist sequence so concurrent
+	// PATCH requests can't race on cfg.Tools. The registry.Replace itself
+	// is already atomic under Registry.mu, but the cfg snapshot + the
+	// in-memory swap + yaml write must be one logical unit.
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	f := factories[name]
 	// Start from current cfg, overlay body.
 	merged := f.snapshot(h.cfg)
@@ -226,7 +237,13 @@ func (h *Handler) handlePatch(w http.ResponseWriter, r *http.Request, name strin
 
 	// Persist yaml. On failure, roll back both registry and in-mem cfg.
 	if err := h.persist(name, merged); err != nil {
-		_ = h.registry.Replace(f.registeredName, prevTool)
+		if rbErr := h.registry.Replace(f.registeredName, prevTool); rbErr != nil {
+			h.logger.Error("registry rollback failed after persist error",
+				zap.String("name", name),
+				zap.Error(rbErr),
+				zap.NamedError("original_error", err),
+			)
+		}
 		h.cfg.Tools = prevCfgChunk
 		writeError(w, http.StatusInternalServerError, "persist_failed",
 			"hot-swap rolled back: "+err.Error())
@@ -258,7 +275,7 @@ func applyToolsChunk(cfg *config.Config, name string, chunk config.ToolsConfig) 
 // Pure helper — handler.go owns rollback semantics around this call.
 func (h *Handler) persist(name string, raw map[string]any) error {
 	if h.cfgPath == "" {
-		return nil // tests can opt out by passing empty cfgPath
+		return errors.New("cfg path not configured")
 	}
 	return mutateYAML(h.cfgPath, func(f *persistFile) error {
 		return f.SetToolConfig(name, raw)
