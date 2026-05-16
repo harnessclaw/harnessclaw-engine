@@ -229,7 +229,7 @@ func emitToolField(m *yaml.Node, key string, v any) {
 	case bool:
 		appendBool(m, key, val)
 	case string:
-		appendToolScalar(m, key, val)
+		appendQuotedScalar(m, key, val)
 	case int:
 		appendInt(m, key, val)
 	case int64:
@@ -245,11 +245,13 @@ func emitToolField(m *yaml.Node, key string, v any) {
 	}
 }
 
-// appendToolScalar appends a key/value pair with a double-quoted string
-// scalar. Unlike appendScalar (which lets yaml.v3 choose the style),
-// this forces DoubleQuotedStyle so credential fields like api_key always
-// appear as  api_key: "value"  in the file — consistent and unambiguous.
-func appendToolScalar(m *yaml.Node, key, value string) {
+// appendQuotedScalar appends a key/value pair with a double-quoted
+// string scalar. Unlike appendScalar (which lets yaml.v3 choose the
+// style), this forces DoubleQuotedStyle so values like credentials
+// always appear as  key: "value"  in the file — consistent and
+// unambiguous. Not tool-specific — usable wherever deterministic
+// quoting is desired.
+func appendQuotedScalar(m *yaml.Node, key, value string) {
 	m.Content = append(m.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value, Style: yaml.DoubleQuotedStyle},
