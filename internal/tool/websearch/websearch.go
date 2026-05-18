@@ -1,17 +1,14 @@
-// Package websearch implements the WebSearch tool using the iFly search API.
+// Package websearch implements the WebSearch tool using the iFlytek
+// Spark Search v2 API (https://www.xfyun.cn/doc/spark/Search_API/search_API.html).
 package websearch
 
 import (
+	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/tls"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -25,6 +22,14 @@ import (
 const (
 	toolName     = "WebSearch"
 	fetchTimeout = 30 * time.Second
+
+	// v2/search is a single fixed endpoint — no per-deployment routing,
+	// so it's hardcoded rather than configurable. If iFly ever publishes
+	// a regional alternate we can lift this back into config.
+	searchEndpoint = "https://search-api-open.cn-huabei-1.xf-yun.com/v2/search"
+
+	// queryMaxLen mirrors the documented upper bound on search_params.query.
+	queryMaxLen = 512
 )
 
 // searchInput is the JSON structure the LLM sends to invoke the tool.
@@ -32,7 +37,7 @@ type searchInput struct {
 	Query string `json:"query"`
 }
 
-// WebSearchTool performs web searches via the iFly search API.
+// WebSearchTool performs web searches via the iFly v2/search API.
 type WebSearchTool struct {
 	tool.BaseTool
 	cfg    config.WebSearchConfig
@@ -49,22 +54,19 @@ func New(cfg config.WebSearchConfig, logger *zap.Logger) *WebSearchTool {
 		cfg: cfg,
 		client: &http.Client{
 			Timeout: fetchTimeout,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
 		},
 		logger: logger.Named("websearch"),
 	}
 }
 
-func (t *WebSearchTool) Name() string            { return toolName }
-func (t *WebSearchTool) Description() string     { return webSearchDescription }
-func (t *WebSearchTool) IsReadOnly() bool                  { return true }
+func (t *WebSearchTool) Name() string                  { return toolName }
+func (t *WebSearchTool) Description() string           { return webSearchDescription }
+func (t *WebSearchTool) IsReadOnly() bool              { return true }
 func (t *WebSearchTool) SafetyLevel() tool.SafetyLevel { return tool.SafetySafe }
-func (t *WebSearchTool) IsConcurrencySafe() bool  { return true }
+func (t *WebSearchTool) IsConcurrencySafe() bool       { return true }
 
 func (t *WebSearchTool) IsEnabled() bool {
-	return t.cfg.Enabled && t.cfg.APIKey != "" && t.cfg.APISecret != "" && t.cfg.AppID != ""
+	return t.cfg.Enabled && t.cfg.APIKey != ""
 }
 
 func (t *WebSearchTool) InputSchema() map[string]any {
@@ -99,30 +101,34 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 	}
 
 	query := strings.TrimSpace(si.Query)
+	if n := len([]rune(query)); n > queryMaxLen {
+		query = string([]rune(query)[:queryMaxLen])
+	}
 	t.logger.Info("web search", zap.String("query", query))
 
 	start := time.Now()
 
-	// Build signed URL.
-	signedURL := t.buildSignedURL()
-
-	// Build request body.
 	limit := t.cfg.Limit
 	if limit <= 0 {
 		limit = 5
 	}
+	if limit > 20 {
+		limit = 20
+	}
+
+	// v2/search body shape (search_params is required, enhance toggles
+	// optional features). open_full_text=false keeps responses small —
+	// the LLM only needs title/url/summary; if it wants full text it
+	// follows up with WebFetch (see two-stage retrieval design below).
 	body := map[string]any{
-		"disable_crawler":    false,
-		"pipeline_name":      "pl_map_agg_search_biz",
-		"sid":                "",
-		"uId":                "",
-		"appId":              t.cfg.AppID,
-		"limit":              limit,
-		"business":           "bot1.0",
-		"name":               query,
-		"disable_highlight":  true,
-		"open_rerank":        true,
-		"full_text":          false,
+		"search_params": map[string]any{
+			"query": query,
+			"limit": limit,
+			"enhance": map[string]any{
+				"open_rerank":    true,
+				"open_full_text": false,
+			},
+		},
 	}
 
 	bodyJSON, err := json.Marshal(body)
@@ -130,11 +136,12 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 		return &types.ToolResult{Content: "error encoding request: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInternal}, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, signedURL, strings.NewReader(string(bodyJSON)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, searchEndpoint, bytes.NewReader(bodyJSON))
 	if err != nil {
 		return &types.ToolResult{Content: "error creating request: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInternal}, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+t.cfg.APIKey)
 
 	resp, err := t.client.Do(req)
 	elapsed := time.Since(start)
@@ -178,11 +185,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 			ErrorType: errType,
 		}, nil
 	}
-	if err != nil {
-		return &types.ToolResult{Content: "error reading response: " + err.Error(), IsError: true, ErrorType: types.ToolErrorModelError}, nil
-	}
 
-	// Parse the response and extract search results.
 	t.logger.Debug("web search raw response",
 		zap.String("query", query),
 		zap.Int("body_len", len(respBody)),
@@ -195,8 +198,18 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 			zap.String("query", query),
 			zap.Error(err),
 		)
-		// Upstream returned something we can't parse — treat as transient model_error.
-		return &types.ToolResult{Content: "error parsing search results: " + err.Error(), IsError: true, ErrorType: types.ToolErrorModelError}, nil
+		errType := types.ToolErrorModelError
+		// 11200 / 21009 / similar codes map to a credential/permission
+		// problem — surface as permission_denied so the UI's "待配置"
+		// path lights up instead of a generic retry-me message.
+		if e, ok := err.(*apiError); ok {
+			if e.code == "11200" || e.code == "21009" {
+				errType = types.ToolErrorPermissionDenied
+			} else if e.code == "11201" || e.code == "11202" || e.code == "11203" {
+				errType = types.ToolErrorRateLimit
+			}
+		}
+		return &types.ToolResult{Content: "error parsing search results: " + err.Error(), IsError: true, ErrorType: errType}, nil
 	}
 
 	t.logger.Info("web search success",
@@ -219,10 +232,6 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 	//     summary = ~1.5 KB, vs. 5 × 3 KB full text = 15 KB)
 	//   - Lets the LLM be selective — only fetch what's actually useful
 	//     instead of paying for everything upfront
-	//
-	// Build Content for LLM: title + URL + summary per result, plus a
-	// trailing hint about the WebFetch follow-up.
-	// Build Metadata for the WebSocket client: URLs for display.
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Search results for %q:\n\n", query))
 
@@ -238,9 +247,9 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 		sb.WriteString(fmt.Sprintf("URL: %s\n", r.URL))
 
 		// Summary preference order:
-		//   1. Snippet from the search API (preferred — already curated)
-		//   2. First MaxSummaryChars of FullText (defensive fallback when
-		//      the API only returned full text and no abstract)
+		//   1. Snippet (v2 documents[].summary — already curated, ≤ ~300 chars)
+		//   2. First MaxSummaryChars of FullText (defensive fallback for
+		//      the rare case where open_full_text was on and summary empty)
 		summary := r.Snippet
 		if summary == "" && r.FullText != "" {
 			summary = truncate(r.FullText, MaxSummaryChars)
@@ -253,9 +262,6 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 		urlEntries = append(urlEntries, urlEntry{URL: r.URL, Title: r.Title})
 	}
 
-	// Footer: explicitly cue the next step. Without this prompt the LLM
-	// often answers from summaries alone even when the user clearly needs
-	// detail — it doesn't know fetching is cheap and on-policy.
 	sb.WriteString("---\n")
 	sb.WriteString("Note: only summaries are shown above. If a result looks relevant ")
 	sb.WriteString("but the summary is not enough to answer, call the WebFetch tool ")
@@ -272,127 +278,86 @@ func (t *WebSearchTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 	}, nil
 }
 
-// MaxSummaryChars caps the per-result summary length. Snippets from the
-// iFly search API are usually 100-300 chars and won't be touched; the cap
-// only fires on the defensive FullText fallback when no snippet exists.
+// MaxSummaryChars caps the per-result summary length. v2 documents[].summary
+// is usually 100-300 chars and won't be touched; the cap only fires on the
+// defensive FullText fallback when open_full_text was on and summary empty.
 const MaxSummaryChars = 500
-
-// buildSignedURL constructs the authorization-signed URL for the iFly search API.
-func (t *WebSearchTool) buildSignedURL() string {
-	host := t.cfg.Host
-	path := t.cfg.Path
-
-	// RFC 1123 UTC time.
-	date := time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
-
-	// Signature: HMAC-SHA256(api_secret, "host: {host}\ndate: {date}\nPOST {path} HTTP/1.1")
-	signatureOrigin := fmt.Sprintf("host: %s\ndate: %s\nPOST %s HTTP/1.1", host, date, path)
-	mac := hmac.New(sha256.New, []byte(t.cfg.APISecret))
-	mac.Write([]byte(signatureOrigin))
-	signature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	// Authorization token.
-	authToken := fmt.Sprintf(`api_key="%s", algorithm="hmac-sha256", headers="host date request-line", signature="%s"`,
-		t.cfg.APIKey, signature)
-	authorization := base64.StdEncoding.EncodeToString([]byte(authToken))
-
-	return fmt.Sprintf("https://%s%s?%s",
-		host, path, url.Values{
-			"authorization": {authorization},
-			"date":          {date},
-			"host":          {host},
-		}.Encode())
-}
 
 // searchResult holds a single search result with title, snippet, and URL.
 type searchResult struct {
 	Title    string
 	Snippet  string
 	URL      string
-	FullText string // original page content from search API
+	FullText string
 }
 
-// extractResults parses the iFly search API response and returns structured results.
-func extractResults(data []byte) ([]searchResult, error) {
-	var resp struct {
-		Code int             `json:"code"`
-		Msg  string          `json:"msg"`
-		Data json.RawMessage `json:"data"`
+// apiError carries the v2 err_code so callers can distinguish auth vs.
+// quota vs. generic failure. err_code is a string in the documented
+// response (e.g. "11200" = quota / auth).
+type apiError struct {
+	code string
+	msg  string
+}
+
+func (e *apiError) Error() string {
+	if e.msg == "" {
+		return fmt.Sprintf("API error %s", e.code)
 	}
+	return fmt.Sprintf("API error %s: %s", e.code, e.msg)
+}
+
+// v2Response mirrors the documented v2/search response. Only the fields
+// we actually read are typed; everything else is ignored.
+type v2Response struct {
+	Success bool   `json:"success"`
+	ErrCode string `json:"err_code"`
+	Message string `json:"message"`
+	SID     string `json:"sid"`
+	Data    struct {
+		SearchResults struct {
+			Documents []v2Document `json:"documents"`
+		} `json:"search_results"`
+	} `json:"data"`
+}
+
+type v2Document struct {
+	Name          string `json:"name"`
+	Summary       string `json:"summary"`
+	URL           string `json:"url"`
+	Content       string `json:"content"`
+	PublishedDate string `json:"published_date"`
+}
+
+// extractResults parses a v2/search response and returns structured results.
+func extractResults(data []byte) ([]searchResult, error) {
+	var resp v2Response
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("invalid JSON response: %w", err)
 	}
-	if resp.Code != 0 {
-		return nil, fmt.Errorf("API error code %d: %s", resp.Code, resp.Msg)
+	// v2 success criterion: err_code == "0". `success` is also returned
+	// but treating err_code as authoritative matches the doc.
+	if resp.ErrCode != "" && resp.ErrCode != "0" {
+		return nil, &apiError{code: resp.ErrCode, msg: resp.Message}
 	}
 
-	// Try to find the results array from various response structures:
-	// 1. {"data": {"results": [...]}}
-	// 2. {"data": [...]}}
-	// 3. {"data": {"items": [...]}}
-
-	// Try object with known array keys.
-	var dataObj map[string]json.RawMessage
-	if err := json.Unmarshal(resp.Data, &dataObj); err == nil {
-		for _, key := range []string{"results", "items", "list", "records"} {
-			if raw, ok := dataObj[key]; ok {
-				if r := extractResultsFromArray(raw); len(r) > 0 {
-					return r, nil
-				}
-			}
-		}
-		// Try all values.
-		for _, raw := range dataObj {
-			if r := extractResultsFromArray(raw); len(r) > 0 {
-				return r, nil
-			}
-		}
-	}
-
-	// Try data as direct array.
-	if r := extractResultsFromArray(resp.Data); len(r) > 0 {
-		return r, nil
-	}
-
-	return nil, nil
-}
-
-// extractResultsFromArray extracts searchResult entries from a JSON array.
-func extractResultsFromArray(data json.RawMessage) []searchResult {
-	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil {
-		return nil
-	}
-	var results []searchResult
-	for _, item := range items {
-		u := getString(item, "url", "URL", "link", "href")
-		if u == "" {
+	docs := resp.Data.SearchResults.Documents
+	out := make([]searchResult, 0, len(docs))
+	for _, d := range docs {
+		if d.URL == "" {
 			continue
 		}
-		r := searchResult{
-			URL:      u,
-			Title:    getString(item, "title", "Title", "name", "Name"),
-			Snippet:  getString(item, "snippet", "abstract", "description", "desc", "summary"),
-			FullText: getString(item, "content", "text", "body", "full_text", "rawText", "raw_text", "pageContent"),
+		title := d.Name
+		if title == "" {
+			title = d.URL
 		}
-		if r.Title == "" {
-			r.Title = u
-		}
-		results = append(results, r)
+		out = append(out, searchResult{
+			Title:    title,
+			URL:      d.URL,
+			Snippet:  d.Summary,
+			FullText: d.Content,
+		})
 	}
-	return results
-}
-
-// getString returns the first non-empty string value found for any of the given keys.
-func getString(m map[string]any, keys ...string) string {
-	for _, k := range keys {
-		if v, ok := m[k]; ok {
-			if s, ok := v.(string); ok && s != "" {
-				return s
-			}
-		}
-	}
-	return ""
+	return out, nil
 }
 
 // truncate returns the first n bytes of s, appending "..." if truncated.

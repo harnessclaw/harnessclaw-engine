@@ -152,11 +152,11 @@ func (f *File) SetAgent(cfg config.AgentConfig) error {
 
 // SetToolConfig writes or replaces tools.<name>.* keys from raw.
 // raw is the canonical wire-shape map for the tool (e.g. for
-// web_search: enabled / api_key / api_secret / app_id / host / path
-// / limit). Keys absent from raw are deleted from yaml so the file
-// always reflects the API caller's full intent — partial updates are
-// the caller's responsibility (e.g. handler.go merges new values into
-// the existing config struct before calling here).
+// web_search: enabled / api_key / limit). Keys absent from raw are
+// deleted from yaml so the file always reflects the API caller's full
+// intent — partial updates are the caller's responsibility (e.g.
+// handler.go merges new values into the existing config struct before
+// calling here).
 //
 // Creates the top-level `tools:` mapping and the `<name>:` child
 // mapping if missing. Returns an error if name is empty or raw is

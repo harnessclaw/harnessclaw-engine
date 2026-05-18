@@ -14,43 +14,23 @@ import (
 func init() {
 	factories["web_search"] = &factory{
 		registeredName:   "WebSearch",
-		credentialFields: []string{"api_key", "api_secret", "app_id"},
+		credentialFields: []string{"api_key"},
 		snapshot: func(c *config.Config) map[string]any {
 			ws := c.Tools.WebSearch
 			return map[string]any{
-				"enabled":    ws.Enabled,
-				"api_key":    ws.APIKey,
-				"api_secret": ws.APISecret,
-				"app_id":     ws.AppID,
-				"host":       ws.Host,
-				"path":       ws.Path,
-				"limit":      ws.Limit,
+				"enabled": ws.Enabled,
+				"api_key": ws.APIKey,
+				"limit":   ws.Limit,
 			}
 		},
 		apply: func(raw map[string]any, logger *zap.Logger) (tool.Tool, config.ToolsConfig, error) {
 			cfg := config.WebSearchConfig{
-				Enabled:   asBool(raw["enabled"]),
-				APIKey:    asString(raw["api_key"]),
-				APISecret: asString(raw["api_secret"]),
-				AppID:     asString(raw["app_id"]),
-				Host:      asString(raw["host"]),
-				Path:      asString(raw["path"]),
-				Limit:     asInt(raw["limit"]),
+				Enabled: asBool(raw["enabled"]),
+				APIKey:  asString(raw["api_key"]),
+				Limit:   asInt(raw["limit"]),
 			}
-			if cfg.Enabled {
-				missing := []string{}
-				if cfg.APIKey == "" {
-					missing = append(missing, "api_key")
-				}
-				if cfg.APISecret == "" {
-					missing = append(missing, "api_secret")
-				}
-				if cfg.AppID == "" {
-					missing = append(missing, "app_id")
-				}
-				if len(missing) > 0 {
-					return nil, config.ToolsConfig{}, fmt.Errorf("web_search enabled but missing credentials: %v", missing)
-				}
+			if cfg.Enabled && cfg.APIKey == "" {
+				return nil, config.ToolsConfig{}, fmt.Errorf("web_search enabled but missing credentials: [api_key]")
 			}
 			// Return a fresh config.ToolsConfig the handler will assign back to cfg.Tools.
 			return websearch.New(cfg, logger), config.ToolsConfig{WebSearch: cfg}, nil

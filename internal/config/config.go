@@ -587,15 +587,14 @@ type ToolConfig struct {
 	Sandbox     bool          `mapstructure:"sandbox"`
 }
 
-// WebSearchConfig holds settings for the iFly web search tool.
+// WebSearchConfig holds settings for the iFlytek Spark v2/search tool.
+// APIKey is the APIPassword issued by the iFly console (used verbatim
+// in the `Authorization: Bearer <APIPassword>` header); the v2 endpoint
+// is hardcoded in the tool implementation.
 type WebSearchConfig struct {
-	Enabled   bool   `mapstructure:"enabled"`
-	APIKey    string `mapstructure:"api_key"`
-	APISecret string `mapstructure:"api_secret"`
-	AppID     string `mapstructure:"app_id"`
-	Host      string `mapstructure:"host"`
-	Path      string `mapstructure:"path"`
-	Limit     int    `mapstructure:"limit"`
+	Enabled bool   `mapstructure:"enabled"`
+	APIKey  string `mapstructure:"api_key"`
+	Limit   int    `mapstructure:"limit"`
 }
 
 // TavilySearchConfig holds settings for the Tavily Search API tool.
@@ -673,8 +672,6 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("tools::glob::enabled", true)
 	v.SetDefault("tools::web_fetch::enabled", true)
 	v.SetDefault("tools::web_search::enabled", false)
-	v.SetDefault("tools::web_search::host", "cbm-search-api.cn-huabei-1.xf-yun.com")
-	v.SetDefault("tools::web_search::path", "/biz/search")
 	v.SetDefault("tools::web_search::limit", 5)
 	v.SetDefault("tools::tavily_search::enabled", false)
 	v.SetDefault("tools::tavily_search::max_results", 5)

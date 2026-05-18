@@ -5,19 +5,34 @@ import (
 	"testing"
 )
 
-// TestExtractResults_FromArrayPicksKnownKeys verifies the parser recognises
-// the field aliases iFly's response uses — without this, the format-flip
-// from "Content" to "Summary" silently drops data.
-func TestExtractResults_FromArrayPicksKnownKeys(t *testing.T) {
+// TestExtractResults_V2DocumentShape verifies the parser reads the
+// documented v2/search response: err_code "0" + data.search_results.documents[].
+// Regression guard: if the response shape ever drifts back to the legacy
+// {code:int, data.results:[...]} format the parser will return zero
+// results and this test will fail loudly.
+func TestExtractResults_V2DocumentShape(t *testing.T) {
 	raw := []byte(`{
-		"code": 0,
+		"success": true,
+		"err_code": "0",
+		"sid": "abc",
 		"data": {
-			"results": [
-				{"title": "Go 1.22 release notes", "url": "https://go.dev/doc/go1.22",
-					"snippet": "Go 1.22 enhances loop variable scoping and introduces ranges over integers."},
-				{"name": "Range over int (proposal)", "link": "https://github.com/golang/go/issues/61405",
-					"abstract": "A proposal to allow ranging over integer values in Go 1.22."}
-			]
+			"meta": {"query": "Go 1.22"},
+			"search_results": {
+				"documents": [
+					{
+						"name": "Go 1.22 release notes",
+						"url": "https://go.dev/doc/go1.22",
+						"summary": "Go 1.22 enhances loop variable scoping.",
+						"content": ""
+					},
+					{
+						"name": "Range over int",
+						"url": "https://github.com/golang/go/issues/61405",
+						"summary": "Proposal to range over integers.",
+						"content": "full body here"
+					}
+				]
+			}
 		}
 	}`)
 	got, err := extractResults(raw)
@@ -27,11 +42,50 @@ func TestExtractResults_FromArrayPicksKnownKeys(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("want 2 results, got %d", len(got))
 	}
-	if got[0].Title == "" || got[0].URL == "" || got[0].Snippet == "" {
+	if got[0].Title != "Go 1.22 release notes" || got[0].URL == "" || got[0].Snippet == "" {
 		t.Errorf("result 0 missing fields: %+v", got[0])
 	}
-	if got[1].Title == "" || got[1].URL == "" || got[1].Snippet == "" {
-		t.Errorf("result 1 missing fields (alias keys): %+v", got[1])
+	if got[1].FullText != "full body here" {
+		t.Errorf("result 1 content not captured: %+v", got[1])
+	}
+}
+
+// TestExtractResults_ErrCodeNonZero surfaces err_code != "0" as an
+// apiError so Execute() can map it to the right ToolErrorType (auth vs.
+// rate-limit). Without this the caller would silently get an empty
+// result set and treat it as "no matches".
+func TestExtractResults_ErrCodeNonZero(t *testing.T) {
+	raw := []byte(`{"success":false,"err_code":"11200","message":"unauthorized"}`)
+	_, err := extractResults(raw)
+	if err == nil {
+		t.Fatal("expected apiError for err_code 11200")
+	}
+	apiErr, ok := err.(*apiError)
+	if !ok {
+		t.Fatalf("expected *apiError, got %T", err)
+	}
+	if apiErr.code != "11200" {
+		t.Errorf("code: %q", apiErr.code)
+	}
+}
+
+// TestExtractResults_SkipsEmptyURL: defensive — documents without a URL
+// are unusable for the two-stage retrieval flow (WebFetch needs a URL),
+// so we drop them rather than emit zero-URL rows.
+func TestExtractResults_SkipsEmptyURL(t *testing.T) {
+	raw := []byte(`{
+		"err_code": "0",
+		"data": {"search_results": {"documents": [
+			{"name": "no url", "summary": "x"},
+			{"name": "has url", "url": "https://x", "summary": "y"}
+		]}}
+	}`)
+	got, err := extractResults(raw)
+	if err != nil {
+		t.Fatalf("extractResults: %v", err)
+	}
+	if len(got) != 1 || got[0].URL != "https://x" {
+		t.Errorf("expected 1 result with URL, got %+v", got)
 	}
 }
 

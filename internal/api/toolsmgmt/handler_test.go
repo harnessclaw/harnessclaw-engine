@@ -71,13 +71,9 @@ func TestList_ReturnsBothTools(t *testing.T) {
 func TestGet_WebSearch_ReturnsCredentials(t *testing.T) {
 	cfg := &config.Config{Tools: config.ToolsConfig{
 		WebSearch: config.WebSearchConfig{
-			Enabled:   true,
-			APIKey:    "key-1",
-			APISecret: "secret-1",
-			AppID:     "app-1",
-			Host:      "search.example.com",
-			Path:      "/biz/search",
-			Limit:     5,
+			Enabled: true,
+			APIKey:  "key-1",
+			Limit:   5,
 		},
 	}}
 	h := newTestHandler(t, cfg)
@@ -111,7 +107,7 @@ func TestGet_WebSearch_ReturnsCredentials(t *testing.T) {
 	if got := resp.Data.Config["api_key"]; got != "key-1" {
 		t.Errorf("api_key: %v", got)
 	}
-	if len(resp.Data.CredentialFields) != 3 {
+	if len(resp.Data.CredentialFields) != 1 {
 		t.Errorf("credential_fields count: %d", len(resp.Data.CredentialFields))
 	}
 }
@@ -149,18 +145,14 @@ func TestPatch_WebSearch_HotSwapAndPersist(t *testing.T) {
   web_search:
     enabled: false
     api_key: "old"
-    api_secret: "old"
-    app_id: "old"
 `), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
 	cfg := &config.Config{Tools: config.ToolsConfig{
 		WebSearch: config.WebSearchConfig{
-			Enabled:   false,
-			APIKey:    "old",
-			APISecret: "old",
-			AppID:     "old",
+			Enabled: false,
+			APIKey:  "old",
 		},
 	}}
 	reg := tool.NewRegistry()
@@ -169,7 +161,7 @@ func TestPatch_WebSearch_HotSwapAndPersist(t *testing.T) {
 	}
 	h := New(reg, cfg, cfgPath, zap.NewNop())
 
-	body := strings.NewReader(`{"enabled":true,"config":{"api_key":"new","api_secret":"new","app_id":"new","host":"search.example.com","path":"/biz/search","limit":7}}`)
+	body := strings.NewReader(`{"enabled":true,"config":{"api_key":"new","limit":7}}`)
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/tools/web_search", body)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -191,7 +183,7 @@ func TestPatch_WebSearch_HotSwapAndPersist(t *testing.T) {
 	}
 	// YAML rewritten on disk.
 	contents, _ := os.ReadFile(cfgPath)
-	for _, frag := range []string{`api_key: "new"`, "enabled: true", `host: "search.example.com"`, "limit: 7"} {
+	for _, frag := range []string{`api_key: "new"`, "enabled: true", "limit: 7"} {
 		if !strings.Contains(string(contents), frag) {
 			t.Errorf("yaml missing %q, got:\n%s", frag, contents)
 		}
@@ -232,17 +224,13 @@ func TestPatch_PartialUpdate_PreservesUnsetFields(t *testing.T) {
   web_search:
     enabled: true
     api_key: "keep"
-    api_secret: "keep-secret"
-    app_id: "keep-app"
 `), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	cfg := &config.Config{Tools: config.ToolsConfig{
 		WebSearch: config.WebSearchConfig{
-			Enabled:   true,
-			APIKey:    "keep",
-			APISecret: "keep-secret",
-			AppID:     "keep-app",
+			Enabled: true,
+			APIKey:  "keep",
 		},
 	}}
 	reg := tool.NewRegistry()

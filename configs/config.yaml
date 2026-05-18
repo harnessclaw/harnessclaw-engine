@@ -250,11 +250,7 @@ tools:
     enabled: true
   web_search:
     # enabled: true
-    # api_key:
-    # api_secret:
-    # app_id:
-    # host: "cbm-search-api.cn-huabei-1.xf-yun.com"
-    # path: "/biz/search"
+    # api_key: ""    # iFly v2/search APIPassword — get from https://console.xfyun.cn/services/aggSearch
     # limit: 5
 
   tavily_search:
