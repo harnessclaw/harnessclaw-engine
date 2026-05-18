@@ -33,16 +33,26 @@ func (p *StatsProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*p
 		return p.inner.Chat(ctx, req)
 	}
 	rootSessionID, _ := sessionstats.RootSessionIDFromCtx(ctx)
+	immediateParentID, _ := sessionstats.ImmediateParentSessionIDFromCtx(ctx)
 	agentRunID, _ := sessionstats.AgentRunIDFromCtx(ctx)
 
-	primaryTracker := p.registry.GetOrCreate(sessionID)
-	// Root tracker: only created when root differs from the immediate parent
-	// session, i.e. this is an L3+ sub-agent. When they are equal we already
-	// write to primaryTracker and there is nothing to dual-write.
-	var rootTracker *sessionstats.Tracker
-	if rootSessionID != "" && rootSessionID != sessionID {
-		rootTracker = p.registry.GetOrCreate(rootSessionID)
+	// Three-layer write targets:
+	//   - primary:         this agent's own tracker (always created)
+	//   - immediate parent: the layer directly above (L2 for an L3 call)
+	//   - root:            the user-facing emma session
+	// We deduplicate so a layer that coincides with another doesn't get
+	// the same call counted twice (e.g. an L2 where parent == root).
+	trackers := []*sessionstats.Tracker{p.registry.GetOrCreate(sessionID)}
+	seen := map[string]bool{sessionID: true}
+	if immediateParentID != "" && !seen[immediateParentID] {
+		trackers = append(trackers, p.registry.GetOrCreate(immediateParentID))
+		seen[immediateParentID] = true
 	}
+	if rootSessionID != "" && !seen[rootSessionID] {
+		trackers = append(trackers, p.registry.GetOrCreate(rootSessionID))
+		seen[rootSessionID] = true
+	}
+	primaryTracker := trackers[0]
 
 	used, limit, history, toolResults, system := classifyContext(req)
 	started := time.Now()
@@ -50,15 +60,15 @@ func (p *StatsProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*p
 	stream, err := p.inner.Chat(ctx, req)
 	if err != nil {
 		// Even on dial failure record a call attempt with nil usage so
-		// the LLMCalls counter reflects reality.
-		primaryTracker.RecordLLMCall(req.Model, agentRunID, nil, time.Since(started).Milliseconds())
-		primaryTracker.UpdateContextWindow(used, limit, history, toolResults, system)
-		if rootTracker != nil {
-			rootTracker.RecordLLMCall(req.Model, agentRunID, nil, time.Since(started).Milliseconds())
-			// No UpdateContextWindow on root — context budget is a per-session
-			// concept (each session has its own composition); aggregating
-			// multiple sessions' contexts into one limit would mislead.
+		// the LLMCalls counter reflects reality. Update context window
+		// only on the primary tracker — context budget is a per-session
+		// concept (each session has its own composition); aggregating
+		// multiple sessions' contexts into one limit would mislead.
+		latencyMs := time.Since(started).Milliseconds()
+		for _, tr := range trackers {
+			tr.RecordLLMCall(req.Model, agentRunID, nil, latencyMs)
 		}
+		primaryTracker.UpdateContextWindow(used, limit, history, toolResults, system)
 		return nil, err
 	}
 
@@ -74,22 +84,19 @@ func (p *StatsProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*p
 		if effectiveModel == "" {
 			effectiveModel = req.Model
 		}
-		primaryTracker.RecordLLMCall(effectiveModel, agentRunID, usage, latencyMs)
+		for _, tr := range trackers {
+			tr.RecordLLMCall(effectiveModel, agentRunID, usage, latencyMs)
+		}
 
 		// Prefer the model's reported input token count when present so
 		// "used" is exact. The cheap estimate is kept only for the
 		// history/tool_results/system split, which the model doesn't
-		// give us.
+		// give us. Only the primary tracker carries context-window data.
 		actualUsed := used
 		if usage != nil && usage.InputTokens > 0 {
 			actualUsed = int64(usage.InputTokens)
 		}
 		primaryTracker.UpdateContextWindow(actualUsed, limit, history, toolResults, system)
-
-		if rootTracker != nil {
-			rootTracker.RecordLLMCall(effectiveModel, agentRunID, usage, latencyMs)
-			// Skip UpdateContextWindow on root (see error path comment above).
-		}
 	}), nil
 }
 

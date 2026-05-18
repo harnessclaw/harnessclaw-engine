@@ -266,6 +266,9 @@ func (qe *QueryEngine) runSubAgentDriver(
 		if lc.allowedSkills != nil {
 			execCtx = tool.WithAllowedSkills(execCtx, lc.allowedSkills)
 		}
+		if lc.skillTracker != nil {
+			execCtx = tool.WithSkillTrackerValue(execCtx, lc.skillTracker)
+		}
 
 		results := qe.dispatchToolBatch(execCtx, executor, pool, toolCalls, out)
 

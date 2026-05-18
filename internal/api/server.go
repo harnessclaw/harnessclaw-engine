@@ -39,7 +39,11 @@ type Server struct {
 //
 // toolsHandler, if non-nil, is mounted at /api/v1/tools for per-tool
 // credential management with hot-reload + yaml persistence.
-func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler http.Handler, modelsHandler http.Handler, providersHandler http.Handler, toolsHandler http.Handler, logger *zap.Logger) *Server {
+//
+// artifactsHandler, if non-nil, is mounted at /api/v1/artifacts/ so the
+// Electron client can fetch raw binary artifact bytes for preview /
+// download without going through the LLM tool path.
+func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler http.Handler, modelsHandler http.Handler, providersHandler http.Handler, toolsHandler http.Handler, artifactsHandler http.Handler, logger *zap.Logger) *Server {
 	mux := http.NewServeMux()
 
 	// Register agent management routes
@@ -73,6 +77,14 @@ func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler ht
 	if toolsHandler != nil {
 		mux.Handle("/api/v1/tools", toolsHandler)
 		mux.Handle("/api/v1/tools/", toolsHandler)
+	}
+
+	// Artifact content streaming: GET /api/v1/artifacts/{id}/content
+	// Returns the raw bytes (post hybrid-store hydration) so the client
+	// can save to a temp file and reuse the existing files:read +
+	// mammoth/pdf-parse rich-preview pipeline.
+	if artifactsHandler != nil {
+		mux.Handle("/api/v1/artifacts/", artifactsHandler)
 	}
 
 	// Health check

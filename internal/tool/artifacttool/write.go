@@ -15,6 +15,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -36,9 +38,24 @@ type writeInput struct {
 	Description string          `json:"description,omitempty"`
 	MIMEType    string          `json:"mime_type,omitempty"`
 	Encoding    string          `json:"encoding,omitempty"`
-	Content     string          `json:"content"`
-	Schema      json.RawMessage `json:"schema,omitempty"`
-	Tags        []string        `json:"tags,omitempty"`
+	Content     string          `json:"content,omitempty"`
+	// blobBytes is internal — populated by resolveSourcePath after reading
+	// the source file, then handed off to artifact.SaveInput.BlobBytes.
+	// Not exposed in the LLM-facing JSON schema; it's purely a carrier
+	// between the path-validation step and the store-call step.
+	blobBytes []byte `json:"-"`
+	// SourcePath is the alternative to Content for binaries: the server
+	// reads the file (subject to an allow-list, see source_path.go) and
+	// fills Content / Encoding / MIMEType itself. This bypasses the LLM
+	// having to base64-copy binary data through tool_call JSON, which it
+	// historically corrupts on any non-trivial payload.
+	//
+	// When both Content and SourcePath are set, the call is rejected at
+	// ValidateInput — we don't want a future LLM to "helpfully" set both
+	// and have an ambiguous winner.
+	SourcePath       string          `json:"source_path,omitempty"`
+	Schema           json.RawMessage `json:"schema,omitempty"`
+	Tags             []string        `json:"tags,omitempty"`
 	// ParentArtifactID requests a versioned write derived from an existing
 	// artifact. Optional. The store auto-bumps Version.
 	ParentArtifactID string `json:"parent_artifact_id,omitempty"`
@@ -51,11 +68,21 @@ type writeInput struct {
 // WriteTool persists data and returns a Ref the LLM can pass to other agents.
 type WriteTool struct {
 	tool.BaseTool
+	// allowedReadDirs is the canonicalised allow-list for source_path.
+	// Empty disables source_path entirely (legacy behaviour: content-only
+	// writes still work).
+	allowedReadDirs []string
 }
 
-// NewWriteTool returns the registered tool instance.
-func NewWriteTool() *WriteTool {
-	return &WriteTool{}
+// NewWriteTool returns the registered tool instance. Pass cfg.Workspace
+// and cfg.Skills.Dirs (or whatever roots are safe for the server to read
+// on the LLM's behalf) as allowedReadDirs. Pass nil/empty to keep the
+// legacy content-only behaviour — source_path will be rejected with a
+// "not configured" error in that case.
+func NewWriteTool(allowedReadDirs ...string) *WriteTool {
+	return &WriteTool{
+		allowedReadDirs: canonicaliseAllowedDirs(allowedReadDirs),
+	}
 }
 
 func (*WriteTool) Name() string             { return WriteToolName }
@@ -91,7 +118,18 @@ func (*WriteTool) InputSchema() map[string]any {
 			},
 			"content": map[string]any{
 				"type":        "string",
-				"description": "artifact 的实际内容（内联）。二进制内容请 base64 编码并设 encoding='base64'。",
+				"description": "artifact 的实际内容（内联）。**仅用于文本** —— markdown / csv / 源码 / JSON 等。二进制（docx / pdf / xlsx / image）请改用 source_path 让服务端读文件，不要在 LLM 里 base64 复述。",
+			},
+			"source_path": map[string]any{
+				"type": "string",
+				"description": "可选。二进制 artifact 的源文件**绝对路径**——服务端直接读文件并自动 base64 编码存储，避免 LLM 复述 base64 时损坏字节。" +
+					"\n\n使用场景：你在 Bash 里用脚本生成了 docx / pdf / xlsx / image 文件，想把它持久化为 artifact。" +
+					"\n\n限制：" +
+					"\n- 必须是绝对路径" +
+					"\n- 必须在服务端允许的目录下（workspace / skills dirs）" +
+					"\n- 单文件 ≤ 50MB" +
+					"\n- 不可与 content 同时给（互斥）" +
+					"\n\n示例：source_path=\"/Users/xxx/.harnessclaw/workspace/report.docx\"，type=\"blob\"，mime_type 与 name 可省（服务端会从扩展名推断）。",
 			},
 			"schema": map[string]any{
 				"type":        "object",
@@ -116,7 +154,11 @@ func (*WriteTool) InputSchema() map[string]any {
 				"description": "可见范围。'trace'（默认，最安全）：只有本次用户请求能读。'session'：后续轮次可读。'user'：需要用户明确「留存」意图。",
 			},
 		},
-		"required": []string{"type", "content"},
+		// content is no longer strictly required at the schema layer
+		// because source_path is a valid alternative. ValidateInput
+		// enforces "exactly one of content / source_path" with a clearer
+		// error message than json-schema's oneOf could provide.
+		"required": []string{"type"},
 	}
 }
 
@@ -149,9 +191,17 @@ func (*WriteTool) ValidateInput(raw json.RawMessage) error {
 			in.Type,
 		)
 	}
-	if in.Content == "" {
-		return fmt.Errorf("content is required — pass the actual data as a non-empty string. " +
-			"For structured types, JSON-encode the value before passing")
+	// Either content (inline) or source_path (server-read) must be set,
+	// but never both. Without this guard a future caller could specify
+	// both and we'd silently pick a winner.
+	if in.Content == "" && in.SourcePath == "" {
+		return fmt.Errorf("either content or source_path is required. " +
+			"For text artifacts pass content (markdown / json / source). " +
+			"For binary artifacts (docx / pdf / image) pass source_path with the absolute path " +
+			"to a file the server can read — do not base64-copy binary data into content.")
+	}
+	if in.Content != "" && in.SourcePath != "" {
+		return fmt.Errorf("content and source_path are mutually exclusive — set exactly one")
 	}
 	if in.Scope != "" {
 		switch artifact.Scope(in.Scope) {
@@ -168,10 +218,20 @@ func (*WriteTool) ValidateInput(raw json.RawMessage) error {
 
 // Execute persists the artifact and returns a Ref-shaped JSON the LLM can
 // pass downstream.
-func (*WriteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
+func (w *WriteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
 	var in writeInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResultTyped("invalid input: "+err.Error(), types.ToolErrorInvalidInput), nil
+	}
+
+	// source_path branch: read the file server-side and synthesise the
+	// Content / Encoding / MIMEType / Name fields the rest of the
+	// pipeline expects. Doing this BEFORE getStore so the path-validation
+	// error message reaches the LLM even if the store isn't wired.
+	if in.SourcePath != "" {
+		if err := w.resolveSourcePath(&in); err != nil {
+			return errResultTyped(err.Error(), types.ToolErrorInvalidInput), nil
+		}
 	}
 
 	store, ok := getStore(ctx)
@@ -187,6 +247,7 @@ func (*WriteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.Tool
 		Name:             in.Name,
 		Description:      in.Description,
 		Content:          in.Content,
+		BlobBytes:        in.blobBytes, // empty unless source_path branch populated it
 		Schema:           in.Schema,
 		Tags:             in.Tags,
 		ParentArtifactID: in.ParentArtifactID,
@@ -248,6 +309,59 @@ func (*WriteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.Tool
 	}, nil
 }
 
+// resolveSourcePath reads in.SourcePath under the WriteTool's allow-list
+// and fills in.blobBytes / in.Content / in.MIMEType / in.Name as needed.
+// After this returns nil, downstream code (SaveInput build, store.Save)
+// handles the bytes via either SaveInput.BlobBytes (binary, server keeps
+// the file external) or SaveInput.Content (text, stays inline).
+//
+// Behaviour:
+//   - Reads bytes via readFromAllowedPath (handles abs/symlink/allow-list/size).
+//   - For type="blob": bytes flow through SaveInput.BlobBytes — the
+//     SQLiteStore writes them to its companion blob directory and the
+//     metadata row only carries a path reference. No base64 inflation
+//     of the DB. Get(...) hydrates back to base64-encoded Content
+//     transparently when callers read.
+//   - For type="file" / "structured": bytes go inline as UTF-8 content
+//     (text was the original design; this branch is unchanged).
+//   - Name defaults to filepath.Base(SourcePath) if the LLM didn't supply one.
+//   - MIME defaults to extension-based detection if not supplied.
+func (w *WriteTool) resolveSourcePath(in *writeInput) error {
+	data, _, err := readFromAllowedPath(in.SourcePath, w.allowedReadDirs)
+	if err != nil {
+		return err
+	}
+
+	// Default name to the file's base name. The LLM almost always omits
+	// this because it's redundant with the path, but the artifact store
+	// requires a non-empty name for the UI.
+	if in.Name == "" {
+		in.Name = filepath.Base(in.SourcePath)
+	}
+
+	// MIME default from file extension.
+	if in.MIMEType == "" {
+		if ct := mime.TypeByExtension(filepath.Ext(in.SourcePath)); ct != "" {
+			in.MIMEType = ct
+		}
+	}
+
+	// Storage route:
+	//   - type=blob → hand bytes to SaveInput.BlobBytes (external file)
+	//   - type=file / structured → inline UTF-8 as before
+	switch {
+	case in.Type == string(artifact.TypeBlob):
+		in.blobBytes = data
+		// Encoding stays empty here — the wire encoding is meaningful
+		// only for downstream Get callers, who'll see "base64" after
+		// hydration. Recording it now would be misleading because the
+		// DB row's content column is empty.
+	default:
+		in.Content = string(data)
+	}
+	return nil
+}
+
 const writeDescription = `把数据持久化为 artifact，返回一个 ID 供其他 agent 引用。
 
 何时使用：
@@ -258,5 +372,28 @@ const writeDescription = `把数据持久化为 artifact，返回一个 ID 供�
 不要用于：
 - 只有你自己下一轮会消费的临时中间值——直接写在 prompt 里。
 - 极小的常量（一个数字、一个是/否答案）。
+
+## 内容来源：两种模式，二选一
+
+**A. 文本（推荐 ≤200 KB）** — 直接传 ` + "`content`" + ` 字段：
+- markdown / json / 源码 / csv / 日志 等文本内容
+- 类型设 ` + "`type=\"file\"`" + ` 或 ` + "`type=\"structured\"`" + `
+
+**B. 二进制 / 大文件 — 必须用 ` + "`source_path`" + `**：
+- 任何 .docx / .pdf / .xlsx / .pptx / .png / .jpg / .zip / 编译产物 等二进制
+- 任何 > 200 KB 的文件，无论是不是文本
+- 调用形式：` + "`ArtifactWrite(type=\"blob\", source_path=\"/绝对路径\", description=\"...\")`" + `
+- 服务端读文件后自动做 base64 编码 + MIME 检测 + 字节级完整性
+- 路径必须在 server 允许的目录（workspace / skills dirs）下
+
+**⚠️ 绝对禁止给二进制走 A 路径**：
+不要 ` + "`cat file.docx | base64`" + ` 把字节当字符串塞进 ` + "`content`" + `。LLM 在长 base64 串里
+会插字符 / 漏字符 / 把 ` + "`+/`" + ` 当 markdown，下游解码后字节偏移错乱，docx/pdf 打开乱码。
+这是已知失败模式——任何二进制 artifact 必须走 ` + "`source_path`" + `。
+
+如果你的二进制还没在磁盘上：先用 Bash / 脚本把它写到 ` + "`~/.harnessclaw/workspace/`" + ` 下的
+某个文件，再用 source_path 引用。**先落盘、后引用**，不要试图把生成和编码合并到一步。
+
+## 其他约定
 
 artifact_id 由 store 分配，绝对不要自己编。每次都要写清楚 description，让下游 agent 能判断要不要 read。`

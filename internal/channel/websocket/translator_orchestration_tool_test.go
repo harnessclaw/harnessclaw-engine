@@ -211,6 +211,65 @@ func TestTranslator_TaskToolCardCallPathIsLifecycleExempt(t *testing.T) {
 	}
 }
 
+// TestTranslator_TaskToolCardViaSubAgentEventIsLifecycleExempt covers the
+// nested-dispatch path: Specialists (itself a sub-agent) calls Task. Its
+// tool_start arrives wrapped in EngineEventSubAgentEvent, which historically
+// did NOT route through isOrchestrationTool() — so the Task card got the
+// default 120 s CardTool timeout and was killed mid-run while plan-coord
+// kept working for 6+ minutes. The fix appends WithoutLifecycle() in
+// translateSubAgentEvent's tool_start branch.
+func TestTranslator_TaskToolCardViaSubAgentEventIsLifecycleExempt(t *testing.T) {
+	clk := newTestClock()
+	em, rec, tk := makeTrackedEmitterWithClock(t, "sess_subevt", clk)
+	tr := NewTranslator()
+
+	// Open a turn + a sub-agent so SubAgentEvent has a registered child emitter.
+	tr.Translate(em, "sess_subevt", &types.EngineEvent{
+		Type:      types.EngineEventMessageStart,
+		MessageID: "msg_subevt",
+	})
+	tr.Translate(em, "sess_subevt", &types.EngineEvent{
+		Type:      types.EngineEventSubAgentStart,
+		AgentID:   "agent_specialists",
+		AgentName: "specialists",
+		AgentType: "sync",
+	})
+
+	// Specialists (sub-agent) dispatches Task — the event arrives wrapped.
+	tr.Translate(em, "sess_subevt", &types.EngineEvent{
+		Type:    types.EngineEventSubAgentEvent,
+		AgentID: "agent_specialists",
+		SubAgentEvent: &types.SubAgentEventData{
+			EventType: "tool_start",
+			ToolName:  "Task",
+			ToolUseID: "toolu_nested_task",
+			ToolInput: `{"subagent_type":"general-purpose","prompt":"..."}`,
+		},
+	})
+
+	if tk.OpenCount() < 1 {
+		t.Fatalf("expected tracker to have the nested Task card open, OpenCount=%d", tk.OpenCount())
+	}
+
+	// Advance well past 120 s — if opt-out is broken, sweep will synthesise
+	// a failed close on the Task card here.
+	clk.advance(5 * time.Minute)
+	tk.SweepNow()
+
+	for _, ev := range rec.FilterByCard("toolu_nested_task") {
+		if ev.Type != emitv2.EventCardClose {
+			continue
+		}
+		pl, ok := ev.Payload.(emitv2.ClosePayload)
+		if !ok {
+			continue
+		}
+		if pl.Error != nil && pl.Error.Type == emitv2.ErrorTypeOrphanTimeout {
+			t.Errorf("nested Task tool card (via SubAgentEvent) received orphan_timeout close — opt-out missing on translateSubAgentEvent tool_start branch")
+		}
+	}
+}
+
 // TestTranslator_RegularToolCardOrphansAfterTimeout is the control:
 // wires Bash tool, advances past 120 s, sweeps, asserts orphan close fired.
 func TestTranslator_RegularToolCardOrphansAfterTimeout(t *testing.T) {

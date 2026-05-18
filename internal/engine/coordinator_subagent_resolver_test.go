@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/pkg/types"
 )
@@ -303,5 +304,21 @@ func TestLLMSubagentResolver_HandlesNoToolCall(t *testing.T) {
 	}
 	if !strings.Contains(reason, "did not call") {
 		t.Errorf("reason should explain missing tool call; got %q", reason)
+	}
+}
+
+func TestLLMSubagentResolver_FreelancerInEnum(t *testing.T) {
+	reg := agent.NewAgentDefinitionRegistry()
+	reg.RegisterBuiltins()
+	listings := reg.ListForPlanner()
+	found := false
+	for _, l := range listings {
+		if l.Name == "freelancer" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("freelancer should appear in ListForPlanner so the resolver enum sees it")
 	}
 }

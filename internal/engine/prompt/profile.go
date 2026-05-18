@@ -107,6 +107,7 @@ var (
 			"currentdate",
 			"role",
 			"team", // Specialists needs to see the L3 roster to dispatch correctly
+			"skills", // user-installed skills: Specialists picks candidate_skills for freelancer
 			"principles",
 			"tools",
 			"artifacts", // L2 must understand artifacts to integrate L3 outputs

@@ -284,3 +284,66 @@ func TestListForPlanner_ExcludesCoordinators(t *testing.T) {
 		t.Errorf("ListForPlanner = %+v, want only worker", listing)
 	}
 }
+
+func TestFreelancer_BuiltinRegistration(t *testing.T) {
+	reg := NewAgentDefinitionRegistry()
+	reg.RegisterBuiltins()
+	def := reg.Get("freelancer")
+	if def == nil {
+		t.Fatal("freelancer builtin not registered")
+	}
+	if def.EffectiveTier() != TierSubAgent {
+		t.Errorf("Tier = %s, want sub_agent", def.EffectiveTier())
+	}
+	if len(def.OutputSchema) == 0 {
+		t.Error("OutputSchema must be set for TierSubAgent")
+	}
+	if def.IsTeamMember {
+		t.Error("freelancer must NOT be a team member (emma should not see it)")
+	}
+	// AllowedTools must contain the four skill self-management tools
+	wantTools := []string{"SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills"}
+	for _, w := range wantTools {
+		found := false
+		for _, a := range def.AllowedTools {
+			if a == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("AllowedTools missing %q", w)
+		}
+	}
+	// Must NOT contain "Skill" tool — spec calls this out explicitly
+	for _, a := range def.AllowedTools {
+		if a == "Skill" {
+			t.Error("freelancer AllowedTools should NOT contain Skill tool (use LoadSkill)")
+		}
+	}
+
+	// Regression: InputSchema must NOT require `task` because Task tool
+	// puts the task description in cfg.Prompt, not cfg.Inputs. Requiring
+	// it here would break every freelancer dispatch that includes
+	// candidate_skills (cfg.Inputs becomes non-empty → schema validates →
+	// finds no `task` → fails). See bug "input schema validation failed
+	// for freelancer: required field task is missing".
+	if req, ok := def.InputSchema["required"]; ok {
+		if arr, ok := req.([]string); ok {
+			for _, r := range arr {
+				if r == "task" {
+					t.Errorf("InputSchema.required must NOT contain %q — task text "+
+						"flows through cfg.Prompt not cfg.Inputs; this would break "+
+						"every dispatch with candidate_skills", r)
+				}
+			}
+		}
+	}
+	// Properties should still describe candidate_skills (for L2 to know
+	// the maxItems constraint).
+	if props, ok := def.InputSchema["properties"].(map[string]any); ok {
+		if _, hasCS := props["candidate_skills"]; !hasCS {
+			t.Error("InputSchema.properties should describe candidate_skills")
+		}
+	}
+}

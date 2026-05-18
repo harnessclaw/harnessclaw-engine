@@ -138,6 +138,27 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 	}
 	cfg.RootSessionID = rootSID
 
+	// candidate_skills is freelancer-only. Stash into cfg.Inputs for SpawnSync
+	// hydration. Non-freelancer dispatches that mistakenly include this field
+	// get a Warn so the operator notices the misconfiguration.
+	if len(input.CandidateSkills) > 0 {
+		if input.SubagentType == "freelancer" {
+			if cfg.Inputs == nil {
+				cfg.Inputs = map[string]any{}
+			}
+			arr := make([]any, len(input.CandidateSkills))
+			for i, s := range input.CandidateSkills {
+				arr[i] = s
+			}
+			cfg.Inputs["candidate_skills"] = arr
+		} else {
+			t.logger.Warn("Task: candidate_skills ignored for non-freelancer subagent_type",
+				zap.String("subagent_type", input.SubagentType),
+				zap.Int("count", len(input.CandidateSkills)),
+			)
+		}
+	}
+
 	// Extract the parent event output channel so subagent events reach the client.
 	if out, ok := tool.GetEventOut(ctx); ok {
 		cfg.ParentOut = out

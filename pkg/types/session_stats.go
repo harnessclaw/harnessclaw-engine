@@ -61,8 +61,14 @@ type ModelStats struct {
 type SubAgentStats struct {
 	AgentRunID string `json:"agent_run_id"`
 	AgentID    string `json:"agent_id"`
-	AgentType  string `json:"agent_type"`
-	Model      string `json:"model"`
+	AgentType  string `json:"agent_type"` // sync | coordinator — runtime execution shape
+	// SubagentType is the LLM-facing dispatch label (writer / researcher
+	// / freelancer / etc.). Distinct from AgentType — leaf workers all
+	// return "sync" for AgentType, which is useless for dashboard
+	// disambiguation. Dashboards should prefer SubagentType when set.
+	// Empty for legacy rows.
+	SubagentType string `json:"subagent_type,omitempty"`
+	Model        string `json:"model"`
 
 	InputTokens      int64 `json:"input_tokens"`
 	OutputTokens     int64 `json:"output_tokens"`

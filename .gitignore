@@ -17,6 +17,8 @@
 cmd/ask_e2e/
 cmd/emit_e2e/
 cmd/l3_e2e/
+!cmd/l3_e2e/freelancer/
+!cmd/l3_e2e/freelancer/**
 cmd/subagent_e2e/
 
 # Build output

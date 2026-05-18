@@ -48,8 +48,18 @@ type SaveInput struct {
 	Name        string
 	Description string
 	Content     string
-	Schema      json.RawMessage
-	Tags        []string
+	// BlobBytes is the binary alternative to Content. When non-empty
+	// (typically alongside Type=="blob"), the SQLiteStore writes these
+	// raw bytes to an external file via BlobStore and keeps only the
+	// path reference inside sqlite. Callers MUST set exactly one of
+	// Content / BlobBytes — Save returns an error if both are present.
+	//
+	// The in-memory store treats BlobBytes the same as Content (encoded
+	// as base64 string), keeping its semantics simple since tests don't
+	// care about DB bloat.
+	BlobBytes []byte
+	Schema    json.RawMessage
+	Tags      []string
 
 	Producer  Producer
 	TraceID   string
@@ -161,6 +171,28 @@ func resolveSaveInput(in *SaveInput, cfg Config, parent *Artifact, now time.Time
 		}
 	}
 
+	// Compute size / checksum / preview from whichever payload field is
+	// populated. Exactly one of Content / BlobBytes is expected — callers
+	// should validate this before invoking resolveSaveInput, but we
+	// degrade gracefully if both arrive (prefer BlobBytes for binaries).
+	var (
+		size     = len(in.Content)
+		checksum = Checksum(in.Content)
+		preview  = MakePreview(in.Content, previewBytes)
+		inlined  = in.Content
+	)
+	if len(in.BlobBytes) > 0 {
+		size = len(in.BlobBytes)
+		// Checksum over raw bytes — same hash regardless of whether the
+		// bytes are stored inline or externally.
+		checksum = Checksum(string(in.BlobBytes))
+		// Preview for binaries: omit. The wire-side ArtifactRef preview
+		// is meant for the LLM to glance at; a base64 blob prefix is
+		// useless to the model and just burns tokens.
+		preview = ""
+		inlined = "" // SaveInput.Content stays empty for blob path
+	}
+
 	a := &Artifact{
 		ID:               NewID(),
 		TraceID:          in.TraceID,
@@ -170,9 +202,9 @@ func resolveSaveInput(in *SaveInput, cfg Config, parent *Artifact, now time.Time
 		Encoding:         in.Encoding,
 		Name:             in.Name,
 		Description:      in.Description,
-		Size:             len(in.Content),
-		Checksum:         Checksum(in.Content),
-		Preview:          MakePreview(in.Content, previewBytes),
+		Size:             size,
+		Checksum:         checksum,
+		Preview:          preview,
 		Schema:           in.Schema,
 		Producer:         in.Producer,
 		CreatedAt:        now,
@@ -180,7 +212,7 @@ func resolveSaveInput(in *SaveInput, cfg Config, parent *Artifact, now time.Time
 		ParentArtifactID: parentID,
 		Access:           access,
 		Tags:             append([]string(nil), in.Tags...),
-		Content:          in.Content,
+		Content:          inlined,
 	}
 	if ttl > 0 {
 		a.ExpiresAt = now.Add(ttl)

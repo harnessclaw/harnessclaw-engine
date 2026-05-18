@@ -24,6 +24,7 @@ import (
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
+	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/skilltool"
 	"harnessclaw-go/pkg/types"
@@ -258,6 +259,10 @@ type QueryEngine struct {
 	messageBroker  *agent.MessageBroker
 	defRegistry    *agent.AgentDefinitionRegistry
 	mentionParser  *MentionParser
+
+	// skillReader provides runtime skill discovery for SearchSkill / LoadSkill
+	// tools (used by freelancer L3). nil disables those tools at runtime.
+	skillReader *skill.Reader
 
 	// TaskRegistry stores completed sub-agent results by agentID.
 	// Full output is kept here; emma only receives summaries via tool_result.
@@ -706,6 +711,12 @@ func (qe *QueryEngine) SetDefRegistry(reg *agent.AgentDefinitionRegistry) {
 // tool layer).
 func (qe *QueryEngine) SetArtifactStore(store any) {
 	qe.artifactStore = store
+}
+
+// SetSkillReader configures the runtime skill reader for SearchSkill /
+// LoadSkill tools. nil disables them.
+func (qe *QueryEngine) SetSkillReader(r *skill.Reader) {
+	qe.skillReader = r
 }
 
 // SetStatsRegistry wires the session-metrics registry so the engine

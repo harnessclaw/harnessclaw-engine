@@ -448,6 +448,10 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 			"EscalateToPlanner",
 			"WebSearch",
 			"TavilySearch",
+			// Skill enhancement: writer can SearchSkill for format helpers
+			// (email-template, document-style etc.) and LoadSkill them when
+			// useful. Configured by spec §"派 freelancer 的补充约定".
+			"SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills",
 		},
 		Skills: []string{
 			"writing",
@@ -570,6 +574,9 @@ confidence 评级：
 			"EscalateToPlanner",
 			"WebSearch",
 			"TavilySearch",
+			// Skill enhancement: researcher can SearchSkill for domain-specific
+			// research workflows (e.g., academic-citation, market-analysis skill).
+			"SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills",
 		},
 		Skills: []string{
 			"research",
@@ -667,6 +674,9 @@ confidence 评级：
 			"EscalateToPlanner",
 			"WebSearch",
 			"TavilySearch",
+			// Skill enhancement: analyst can SearchSkill for analytical
+			// workflows / chart conventions (e.g., financial-reporting skill).
+			"SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills",
 		},
 		Skills: []string{
 			"data_analysis",
@@ -733,19 +743,35 @@ confidence 评级：
 	r.MustRegister(&AgentDefinition{
 		Name:        "developer",
 		DisplayName: "小程",
-		Description: "代码编写、调试、技术文档、工具脚本开发",
+		Description: "代码开发与命令执行——写代码、调试、跑脚本、单元测试",
 		AgentType:   tool.AgentTypeSync,
 		Profile:     "worker",
 		IsTeamMember: true,
 		SystemPrompt: `你是代码开发执行者。
-你的专长：代码编写、调试、单元测试、技术文档。
 
-工具使用策略：
+# 任务边界（严格遵守）
+
+你**只接**以下类型任务：
+- 编写、修改、调试源代码（Go / Python / TypeScript / Shell 等）
+- 跑命令/脚本做验证、编译、运行测试
+- 写**技术性**文档（API 文档、代码注释、README）
+
+你**不接**以下任务（即使派活方说"用 Python 实现"）：
+- **文档/格式生成类**（生成 docx / pdf / xlsx / pptx 等办公文档）→ 应走 user skill（freelancer），不要你跑 python-docx / reportlab 临时脚本
+- **数据分析、图表**→ analyst 的活
+- **业务文案、邮件、报告写作**→ writer 的活
+- **网页搜索、信息调研**→ researcher 的活
+
+遇到上述任务，**立即 EscalateToPlanner** 说明"此任务应走 skill / 其他搭档"，**不要硬接**。
+
+# 工具使用策略
+
 - ArtifactRead：读取已有代码或需求文档（调试/重写任务必须先读）
 - ArtifactWrite：持久化代码文件（每个逻辑单元一个 artifact）
 - Bash：运行代码做验证——仅限执行测试/编译，不做系统操作或外部 API 调用
 
-工作流程：
+# 工作流程
+
 1. 如有已有代码，先用 ArtifactRead 读取，理解上下文
 2. 明确任务：语言、功能要求、接口约定、是否需要运行验证
 3. 编写代码
@@ -756,10 +782,10 @@ tested 字段规则：
 - true：实际用 Bash 运行过或有测试用例覆盖并通过
 - false：纯静态检查或无法运行的场景（需在 summary 说明原因）
 
-约束：
+# 约束
+
 - Bash 只执行代码验证，不做文件删除、网络请求、系统配置变更
-- 单任务代码量超过 500 行时，调 EscalateToPlanner 请求拆分
-- 不做 UI/UX 设计，不做数据分析，不写非技术性文档`,
+- 单任务代码量超过 500 行时，调 EscalateToPlanner 请求拆分`,
 
 		Tier: TierSubAgent,
 		// Bash is included because developer must be able to run and verify code.
@@ -770,6 +796,10 @@ tested 字段规则：
 			"SubmitTaskResult",
 			"EscalateToPlanner",
 			"Bash",
+			// Skill enhancement: developer can SearchSkill for testing
+			// frameworks, language tooling, lint conventions, etc. NOT for
+			// document generation (docx/pdf) — that should be freelancer.
+			"SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills",
 		},
 		Skills: []string{
 			"code_generation",
@@ -816,6 +846,7 @@ tested 字段规则：
 			},
 		},
 		Limitations: []string{
+			"严格不接 docx / pdf / xlsx / pptx 等办公文档生成任务——这类应走 user skill (freelancer)",
 			"不做 UI/UX 设计——只写逻辑层代码",
 			"不做非技术性写作——交给 writer",
 			"不做数据分析——交给 analyst",
@@ -1164,7 +1195,7 @@ slot_count 计算规则：实际安排的独立时间段数量（一个会议 = 
 		// tools that are on by default for unrestricted L3 workers. Without
 		// these two, L2 cannot persist its integrated output or read back
 		// what its L3 children produced, breaking the doc §6.A loop.
-		AllowedTools: []string{"Task", "WebSearch", "TavilySearch", "ArtifactWrite", "ArtifactRead"},
+		AllowedTools: []string{"Task", "WebSearch", "TavilySearch", "ArtifactWrite", "ArtifactRead", "SearchSkill", "Skill"},
 	})
 	r.MustRegister(&AgentDefinition{
 		Name:        "general-purpose",
@@ -1186,6 +1217,72 @@ slot_count 计算规则：实际安排的独立时间段数量（一个会议 = 
 		Description: "方案设计 agent，需求分析、架构设计、方案对比",
 		AgentType:   tool.AgentTypeSync,
 		Profile:     "plan",
+	})
+	// --- Freelancer ---------------------------------------------------
+	// User-skill-driven L3. Capability comes from runtime-loaded skills;
+	// AllowedTools are statically declared by the project — skill files
+	// CANNOT extend this list. High-risk tools (Bash / FileWrite) remain
+	// gated by PermissionManager regardless of skill content.
+	r.MustRegister(&AgentDefinition{
+		Name:         "freelancer",
+		DisplayName:  "外援",
+		Description:  "通用执行体，能力由装载的 user skill 决定（来自本地 skills/ 目录）",
+		Tier:         TierSubAgent,
+		Profile:      "worker",
+		AgentType:    tool.AgentTypeSync,
+		IsTeamMember: false,
+		AllowedTools: []string{
+			// Generic file + shell, gated by PermissionManager
+			"FileRead", "FileEdit", "FileWrite", "Glob", "Bash",
+			// Web + artifact
+			"WebFetch", "WebSearch", "TavilySearch",
+			"ArtifactRead", "ArtifactWrite",
+			// Skill self-management — the four tools introduced by this design
+			"SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills",
+			// Terminal tools (also auto-augmented by MaybeAugmentForSubAgent;
+			// listed here explicitly for legibility)
+			"SubmitTaskResult", "EscalateToPlanner",
+		},
+		// InputSchema validates the structured cfg.Inputs only. The actual
+		// task description flows through Task tool's `prompt` → cfg.Prompt
+		// (NOT cfg.Inputs), so we don't list/require `task` here — doing so
+		// would fail validation whenever cfg.Inputs is non-empty (e.g. when
+		// Specialists includes candidate_skills) since the task text never
+		// lands in cfg.Inputs. The only thing this schema needs to enforce
+		// is the shape of candidate_skills.
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"candidate_skills": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"maxItems":    3,
+					"description": "L2 预选的 skill 名字列表。spawn 时框架会预加载它们的 SKILL.md body 到 freelancer 上下文。",
+				},
+			},
+		},
+		OutputSchema: map[string]any{
+			"type":     "object",
+			"required": []string{"artifact_role", "skills_used"},
+			"properties": map[string]any{
+				"artifact_role": map[string]any{
+					"type":        "string",
+					"description": "本次产出的角色标签（由 skill 上下文决定具体语义）。",
+				},
+				"skills_used": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "实际影响本次产出的 skill 名字（不一定等于所有加载的 skill）。",
+				},
+			},
+		},
+		CostTier: CostMedium,
+		Limitations: []string{
+			"能力完全取决于装载的 skill",
+			"上下文中并存 skill body 数量上限 3（含 L2 预分配）",
+			"高危操作（Bash / FileWrite 等）每次需用户授权",
+			"skill 行为偏离不应硬走，应 EscalateToPlanner",
+		},
 	})
 	// Coordinator definition removed — orchestration logic moved to application code (Phase 2).
 }

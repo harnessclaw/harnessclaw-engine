@@ -21,6 +21,11 @@ type agentInput struct {
 	// Specialists) declares what artifacts the L3 must submit; the
 	// framework enforces it via SubmitTaskResult.
 	ExpectedOutputs []types.ExpectedOutput `json:"expected_outputs,omitempty"`
+	// CandidateSkills, when subagent_type=="freelancer", is forwarded to
+	// SpawnConfig.Inputs so SpawnSync can preload the named skills' SKILL.md
+	// bodies into the freelancer's first user message. Ignored for any
+	// other subagent_type (with a Warn log).
+	CandidateSkills []string `json:"candidate_skills,omitempty"`
 }
 
 // parseInput unmarshals raw JSON into agentInput.
@@ -86,6 +91,12 @@ var inputSchema = map[string]any{
 		"run_in_background": map[string]any{
 			"type":        "boolean",
 			"description": "为 true 时异步运行，立刻返回 agent ID。",
+		},
+		"candidate_skills": map[string]any{
+			"type":        "array",
+			"description": "仅 subagent_type=\"freelancer\" 时生效。L2 预选的 skill 名字列表（最多 3 个）；spawn 时框架会预加载它们的 SKILL.md body 到 freelancer 的首条 user message。其它 subagent_type 设此字段会被忽略。",
+			"items":       map[string]any{"type": "string"},
+			"maxItems":    3,
 		},
 		"expected_outputs": map[string]any{
 			"type":        "array",

@@ -157,7 +157,13 @@ func (t *Tracker) snapshotLocked() types.SessionStats {
 // row already exists for runID the call is a no-op (idempotent) — re-
 // dispatch of the same agent_run_id only ever happens on retry paths,
 // where we want to keep the original identity.
-func (t *Tracker) StartSubAgent(runID, agentID, agentType, model string) {
+//
+// subagentType is the LLM-facing dispatch label (writer / researcher /
+// freelancer / etc.) so the dashboard can render meaningful per-worker
+// rows; agentType alone returns "sync" for every leaf and is useless
+// for that. Empty subagentType is acceptable for callers that don't
+// have it (legacy paths) — the dashboard falls back to agentType.
+func (t *Tracker) StartSubAgent(runID, agentID, agentType, subagentType, model string) {
 	if runID == "" {
 		return
 	}
@@ -167,11 +173,12 @@ func (t *Tracker) StartSubAgent(runID, agentID, agentType, model string) {
 		return
 	}
 	t.subAgents[runID] = &types.SubAgentStats{
-		AgentRunID: runID,
-		AgentID:    agentID,
-		AgentType:  agentType,
-		Model:      model,
-		Status:     "running",
+		AgentRunID:   runID,
+		AgentID:      agentID,
+		AgentType:    agentType,
+		SubagentType: subagentType,
+		Model:        model,
+		Status:       "running",
 	}
 	t.subOrder = append(t.subOrder, runID)
 	t.stats.UpdatedAt = time.Now().UTC()

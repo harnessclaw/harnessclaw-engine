@@ -200,6 +200,25 @@ type EngineEvent struct {
 	AgentStatus   string   `json:"agent_status,omitempty"` // for subagent_end: "completed", "error", "max_turns"
 	DeniedTools   []string `json:"denied_tools,omitempty"` // tools denied during sub-agent execution
 
+	// SubagentType is the LLM-facing dispatch label — writer / researcher
+	// / analyst / developer / freelancer / etc. Distinct from AgentType
+	// (sync / coordinator), which only describes the runtime execution
+	// shape. Front-ends rendering "which sub-agent ran this" need
+	// SubagentType to actually distinguish workers; AgentType is mostly
+	// noise to end users (every leaf worker is "sync").
+	// Set on subagent_start; carried through subagent_end for symmetry.
+	SubagentType string `json:"subagent_type,omitempty"`
+
+	// LoadedSkills surfaces user-installed skills hydrated into a
+	// sub-agent's spawn context. Populated on subagent_start for any
+	// agent whose definition opts into skill self-management
+	// (freelancer always; fixed L3s when they declare SearchSkill etc.
+	// in AllowedTools). Empty when the agent doesn't carry any.
+	// Front-ends render these as chips on the agent card so the user
+	// can see "this freelancer started with docx skill preloaded"
+	// without diving into server logs.
+	LoadedSkills []LoadedSkillInfo `json:"loaded_skills,omitempty"`
+
 	// Task event fields (Phase 2+)
 	TaskEvent     *TaskEvent         `json:"task_event,omitempty"`
 	// Agent message fields (Phase 3+)
@@ -541,6 +560,21 @@ type TaskEvent struct {
 //   - "message_start" / "message_delta" / "message_stop" — LLM call lifecycle;
 //     intentionally suppressed because tokens / stop_reason are technical
 //     metrics, not task-level information
+// LoadedSkillInfo is the wire shape of one entry in EngineEvent.LoadedSkills.
+// Kept narrow on purpose — name + version is what front-ends need to
+// render a "loaded: docx@0.3" chip; the full SkillCard with description
+// / when_to_use stays server-internal.
+type LoadedSkillInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+	// Source is "candidate" when the L2 dispatcher predeclared this
+	// skill in candidate_skills, or "runtime" when the L3 itself called
+	// LoadSkill mid-loop. The front-end shows them with different
+	// visual treatment so the user can spot "L2 hand-fed this" vs
+	// "the agent fetched it itself".
+	Source string `json:"source,omitempty"`
+}
+
 //   - "error"        — sub-agent internal failures (TODO: surface these so
 //                      LLM stream errors stop being invisible)
 //   - "text"         — emma owns user-facing prose

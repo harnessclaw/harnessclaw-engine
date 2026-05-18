@@ -47,13 +47,34 @@ type ToolPayload struct {
 // AgentPayload describes a sub-agent session.
 type AgentPayload struct {
 	Name          string `json:"name,omitempty"`
-	AgentType     string `json:"agent_type,omitempty"` // sync | async
+	AgentType     string `json:"agent_type,omitempty"` // sync | async — runtime execution shape
+	// SubagentType is the LLM-facing dispatch label (writer / researcher
+	// / analyst / freelancer / etc.). Front-ends render this on the
+	// agent card / metrics row so users can tell which worker did what;
+	// AgentType alone returns "sync" for every leaf and is useless for
+	// disambiguation in dashboards.
+	SubagentType  string `json:"subagent_type,omitempty"`
 	ParentAgentID string `json:"parent_agent_id,omitempty"`
 	TaskPrompt    string `json:"task_prompt,omitempty"` // full prompt the parent dispatched
 	OutputSummary string `json:"output_summary,omitempty"`
 	NumTurns      int    `json:"num_turns,omitempty"`
 	DeniedTools   []string      `json:"denied_tools,omitempty"`
 	Artifacts     []ArtifactRef `json:"artifacts,omitempty"`
+	// LoadedSkills is set on subagent_start for skill-aware agents
+	// (freelancer, or any fixed L3 enhanced with SearchSkill / LoadSkill
+	// in AllowedTools). Empty for plain workers. Each entry is name +
+	// version + source so the UI can render "loaded: docx@0.3 (preloaded)"
+	// chips.
+	LoadedSkills []LoadedSkillInfo `json:"loaded_skills,omitempty"`
+}
+
+// LoadedSkillInfo is the wire-side view of one preloaded skill on an
+// agent card. Mirrors pkg/types/event.go's LoadedSkillInfo so the
+// translator can pass through verbatim without a transform.
+type LoadedSkillInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+	Source  string `json:"source,omitempty"` // "candidate" | "runtime"
 }
 
 // PlanPayload describes the orchestrator-produced task graph.

@@ -38,8 +38,8 @@ func TestSubAgentTokenAttribution_L3DualWrite(t *testing.T) {
 
 	// Simulate SpawnSync opening a row on the parent tracker AND the root tracker
 	// (the dual-write block added to subagent.go).
-	specTracker.StartSubAgent(l3RunID, l3RunID, "writer", "")
-	emmaTracker.StartSubAgent(l3RunID, l3RunID, "writer", "")
+	specTracker.StartSubAgent(l3RunID, l3RunID, "writer", "", "")
+	emmaTracker.StartSubAgent(l3RunID, l3RunID, "writer", "", "")
 
 	// Stats-decorated provider with one MessageEnd event.
 	inner := &engineFakeProv{events: []ptypes.StreamEvent{{
@@ -101,6 +101,101 @@ func TestSubAgentTokenAttribution_L3DualWrite(t *testing.T) {
 	}
 }
 
+// TestSubAgentTokenAttribution_L3TripleWrite asserts the post-2026-05 fix:
+// an L3 sub-agent's LLM call must write its tokens into THREE trackers —
+// its own sub_session, the immediate parent (L2), and the root (emma) —
+// so each layer's metrics include its own subtree.
+//
+// Production ctx layout (set up by subagent.go SpawnSync after the fix):
+//   SessionID              = L3's own sub_session
+//   ImmediateParentSession = L2 specialists sub_session
+//   RootSessionID          = emma's user-facing session
+func TestSubAgentTokenAttribution_L3TripleWrite(t *testing.T) {
+	const (
+		emmaSession    = "sess_emma_triple_001"
+		specialistsSub = "sess_emma_triple_001_sub_spec01"
+		l3SubSession   = "sess_emma_triple_001_sub_spec01_sub_l301"
+		l3RunID        = "agent_writer_xyz"
+	)
+
+	reg := sessionstats.NewRegistry()
+
+	// All three layers' trackers exist before the L3 LLM call. The
+	// production engine creates them lazily on first write, but the test
+	// pre-creates them so we can assert order-of-operations precisely.
+	emmaTracker := reg.GetOrCreate(emmaSession)
+	specTracker := reg.GetOrCreate(specialistsSub)
+	l3Tracker := reg.GetOrCreate(l3SubSession)
+
+	// Open the L3 row on its immediate parent (specialists) AND on root
+	// (emma) — mirrors subagent.go's dual-write StartSubAgent block.
+	specTracker.StartSubAgent(l3RunID, l3RunID, "writer", "", "")
+	emmaTracker.StartSubAgent(l3RunID, l3RunID, "writer", "", "")
+
+	inner := &engineFakeProv{events: []ptypes.StreamEvent{{
+		Type: ptypes.StreamEventMessageEnd,
+		Usage: &ptypes.Usage{
+			InputTokens:  500,
+			OutputTokens: 120,
+			CacheRead:    40,
+		},
+		Model: "sonnet-3-7",
+	}}}
+	sp := stats.New(inner, reg)
+
+	// Build the ctx the way the fixed SpawnSync does for an L3 dispatch.
+	ctx := sessionstats.WithSessionID(context.Background(), l3SubSession)
+	ctx = sessionstats.WithRootSessionID(ctx, emmaSession)
+	ctx = sessionstats.WithImmediateParentSessionID(ctx, specialistsSub)
+	ctx = sessionstats.WithAgentRunID(ctx, l3RunID)
+
+	stream, err := sp.Chat(ctx, &provider.ChatRequest{MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	for range stream.Events {
+	}
+
+	// L3's own tracker — top-level totals (no SubAgents row since L3 is
+	// a leaf in this scenario).
+	l3Snap := l3Tracker.Snapshot()
+	if l3Snap.InputTokens != 500 {
+		t.Errorf("L3 self tracker: InputTokens = %d, want 500", l3Snap.InputTokens)
+	}
+	if l3Snap.OutputTokens != 120 {
+		t.Errorf("L3 self tracker: OutputTokens = %d, want 120", l3Snap.OutputTokens)
+	}
+	if l3Snap.LLMCalls != 1 {
+		t.Errorf("L3 self tracker: LLMCalls = %d, want 1", l3Snap.LLMCalls)
+	}
+
+	// Immediate parent (specialists) tracker — the L3 SubAgents row gets
+	// the call's tokens.
+	specSnap := specTracker.Snapshot()
+	if len(specSnap.SubAgents) != 1 {
+		t.Fatalf("specialists tracker: SubAgents len = %d, want 1", len(specSnap.SubAgents))
+	}
+	if specSnap.SubAgents[0].InputTokens != 500 {
+		t.Errorf("specialists tracker L3 row: InputTokens = %d, want 500", specSnap.SubAgents[0].InputTokens)
+	}
+	if specSnap.SubAgents[0].LLMCalls != 1 {
+		t.Errorf("specialists tracker L3 row: LLMCalls = %d, want 1", specSnap.SubAgents[0].LLMCalls)
+	}
+
+	// Root (emma) tracker — flat list also gets the L3 row (Plan B
+	// dual-write so root-side dashboards see every descendant).
+	emmaSnap := emmaTracker.Snapshot()
+	if len(emmaSnap.SubAgents) != 1 {
+		t.Fatalf("emma tracker: SubAgents len = %d, want 1", len(emmaSnap.SubAgents))
+	}
+	if emmaSnap.SubAgents[0].InputTokens != 500 {
+		t.Errorf("emma tracker L3 row: InputTokens = %d, want 500", emmaSnap.SubAgents[0].InputTokens)
+	}
+	if emmaSnap.SubAgents[0].LLMCalls != 1 {
+		t.Errorf("emma tracker L3 row: LLMCalls = %d, want 1", emmaSnap.SubAgents[0].LLMCalls)
+	}
+}
+
 // TestSubAgentTokenAttribution_EndToEnd asserts the full attribution chain:
 //  1. parent tracker exists for "sess_emma_001"
 //  2. StartSubAgent opens a row keyed by agentRunID
@@ -123,7 +218,7 @@ func TestSubAgentTokenAttribution_EndToEnd(t *testing.T) {
 	tracker := reg.GetOrCreate(parentSession)
 
 	// 2. Open a sub-agent row — mimics what subagent.go does after SpawnSync.
-	tracker.StartSubAgent(subRunID, subRunID, "specialists", "")
+	tracker.StartSubAgent(subRunID, subRunID, "specialists", "", "")
 
 	// Verify the row exists but is empty before the Chat call.
 	snap0 := tracker.Snapshot()

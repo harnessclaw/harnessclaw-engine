@@ -435,11 +435,27 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		agentCardID := nonEmpty(ev.AgentID, emitv2.NewCardID(emitv2.CardAgent))
 		s.subAgentCard[ev.AgentID] = agentCardID
 		parent := parentForSubAgent(s, ev.ParentAgentID, ev.ParentStepID)
+		// LoadedSkills passthrough: convert from pkg/types shape to the
+		// emitv2 wire shape. Field-for-field copy; we keep them as two
+		// types so pkg/types doesn't import emitv2 (one-way dependency).
+		var skillsWire []emitv2.LoadedSkillInfo
+		if len(ev.LoadedSkills) > 0 {
+			skillsWire = make([]emitv2.LoadedSkillInfo, 0, len(ev.LoadedSkills))
+			for _, s := range ev.LoadedSkills {
+				skillsWire = append(skillsWire, emitv2.LoadedSkillInfo{
+					Name:    s.Name,
+					Version: s.Version,
+					Source:  s.Source,
+				})
+			}
+		}
 		child.Card(emitv2.CardAgent, agentCardID).Add(emitv2.AgentPayload{
 			Name:          ev.AgentName,
 			AgentType:     ev.AgentType,
+			SubagentType:  ev.SubagentType,
 			ParentAgentID: ev.ParentAgentID,
 			TaskPrompt:    ev.AgentTask,
+			LoadedSkills:  skillsWire,
 		}, emitv2.WithParent(parent))
 
 	case types.EngineEventSubAgentEvent:
@@ -471,9 +487,14 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		}
 		opts := []emitv2.EmitOpt{
 			emitv2.WithInner(emitv2.AgentPayload{
-				NumTurns:    safeTurnCount(ev),
-				DeniedTools: ev.DeniedTools,
-				Artifacts:   refs,
+				// SubagentType repeated here so the close payload also
+				// carries the worker label — front-ends that read close
+				// frames in isolation (e.g. metrics dashboards aggregating
+				// finished agents) don't need to remember what add said.
+				SubagentType: ev.SubagentType,
+				NumTurns:     safeTurnCount(ev),
+				DeniedTools:  ev.DeniedTools,
+				Artifacts:    refs,
 			}),
 		}
 		if metrics != nil {
@@ -821,11 +842,23 @@ func (t *Translator) translateSubAgentEvent(s *sessionState, ev *types.EngineEve
 		toolCardID := nonEmpty(inner.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
 		s.tools[inner.ToolUseID] = toolCardID
 		input := parseJSONObject(inner.ToolInput)
+		opts := []emitv2.EmitOpt{emitv2.WithParent(s.subAgentCard[ev.AgentID])}
+		// Symmetry with EngineEventToolStart (line 312) and EngineEventToolCall
+		// (line 402): orchestration tools (Specialists / Task) wrap multi-minute
+		// sub-agent runs that legitimately outlast the CardTool 120s orphan
+		// watchdog. Without this, when a sub-agent (e.g. Specialists) dispatches
+		// Task, the inner tool_start arrives wrapped in SubAgentEvent and hits
+		// this path — previously skipping the opt-out, so the Task card got
+		// killed at 120s while its inner plan-coord was still running for 8 min,
+		// surfacing as "执行超时了，我得放弃这步" mid-task.
+		if isOrchestrationTool(inner.ToolName) {
+			opts = append(opts, emitv2.WithoutLifecycle())
+		}
 		child.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
 			Name:   inner.ToolName,
 			Target: "server",
 			Input:  input,
-		}, emitv2.WithParent(s.subAgentCard[ev.AgentID]))
+		}, opts...)
 	case "tool_end":
 		toolCardID, ok := s.tools[inner.ToolUseID]
 		if !ok {

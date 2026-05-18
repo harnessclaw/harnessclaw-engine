@@ -120,7 +120,7 @@ func TestTracker_SnapshotIsDeepCopy(t *testing.T) {
 
 func TestTracker_StartFinishSubAgent_TableLifecycle(t *testing.T) {
 	tr := NewTracker("sess_abc")
-	tr.StartSubAgent("run_e5", "sub_e5", "researcher", "sonnet")
+	tr.StartSubAgent("run_e5", "sub_e5", "researcher", "", "sonnet")
 	tr.RecordLLMCall("sonnet", "run_e5", &types.Usage{InputTokens: 40, OutputTokens: 10}, 100)
 	tr.FinishSubAgent("run_e5", "completed", 1200)
 
@@ -148,9 +148,9 @@ func TestTracker_StartFinishSubAgent_TableLifecycle(t *testing.T) {
 
 func TestTracker_StartSubAgent_OrderPreserved(t *testing.T) {
 	tr := NewTracker("sess_abc")
-	tr.StartSubAgent("r1", "a1", "t", "m")
-	tr.StartSubAgent("r2", "a2", "t", "m")
-	tr.StartSubAgent("r3", "a3", "t", "m")
+	tr.StartSubAgent("r1", "a1", "t", "", "m")
+	tr.StartSubAgent("r2", "a2", "t", "", "m")
+	tr.StartSubAgent("r3", "a3", "t", "", "m")
 	s := tr.Snapshot()
 	if len(s.SubAgents) != 3 {
 		t.Fatalf("len = %d", len(s.SubAgents))
@@ -165,8 +165,8 @@ func TestTracker_StartSubAgent_OrderPreserved(t *testing.T) {
 
 func TestTracker_StartSubAgent_IdempotentOnSameRunID(t *testing.T) {
 	tr := NewTracker("sess_abc")
-	tr.StartSubAgent("r1", "a1", "t", "m1")
-	tr.StartSubAgent("r1", "a1", "t", "m2") // second call should not duplicate or overwrite
+	tr.StartSubAgent("r1", "a1", "t", "", "m1")
+	tr.StartSubAgent("r1", "a1", "t", "", "m2") // second call should not duplicate or overwrite
 	s := tr.Snapshot()
 	if len(s.SubAgents) != 1 {
 		t.Errorf("duplicate StartSubAgent created %d rows", len(s.SubAgents))
@@ -207,7 +207,7 @@ func TestTracker_UpdateContextWindow_OverwritesSnapshot(t *testing.T) {
 
 func TestTracker_RecordLLMCall_CrossModelSubAgentMarksMixed(t *testing.T) {
 	tr := NewTracker("sess_abc")
-	tr.StartSubAgent("run_e5", "sub_e5", "researcher", "")
+	tr.StartSubAgent("run_e5", "sub_e5", "researcher", "", "")
 	tr.RecordLLMCall("opus", "run_e5", &types.Usage{InputTokens: 10}, 0)
 	tr.RecordLLMCall("sonnet", "run_e5", &types.Usage{InputTokens: 10}, 0)
 	s := tr.Snapshot()

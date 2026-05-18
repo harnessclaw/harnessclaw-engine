@@ -72,7 +72,11 @@ import (
 	"harnessclaw-go/internal/tool/filewrite"
 	"harnessclaw-go/internal/tool/glob"
 	"harnessclaw-go/internal/tool/grep"
+	"harnessclaw-go/internal/tool/listloadedskills"
+	"harnessclaw-go/internal/tool/loadskill"
+	"harnessclaw-go/internal/tool/searchskill"
 	"harnessclaw-go/internal/tool/skilltool"
+	"harnessclaw-go/internal/tool/unloadskill"
 	"harnessclaw-go/internal/tool/tasktool"
 	"harnessclaw-go/internal/tool/teamtool"
 	"harnessclaw-go/internal/tool/webfetch"
@@ -141,6 +145,19 @@ func main() {
 	// --- Step 5: Register tools ---
 	registry := tool.NewRegistry()
 
+	// artifactSourceDirs is the allow-list for ArtifactWrite's source_path
+	// field — the server reads files only under these roots so the LLM
+	// cannot ask us to ingest arbitrary system paths. Includes the
+	// well-known workspace root (~/.harnessclaw/workspace) so generated
+	// docx/pdf land there, plus the configured skills dirs so a skill's
+	// own assets/references can also be ingested as artifacts.
+	var artifactSourceDirs []string
+	if home, err := os.UserHomeDir(); err == nil {
+		artifactSourceDirs = append(artifactSourceDirs,
+			filepath.Join(home, ".harnessclaw", "workspace"))
+	}
+	artifactSourceDirs = append(artifactSourceDirs, cfg.Skills.Dirs...)
+
 	// Register built-in tools based on config.
 	builtInTools := []struct {
 		enabled bool
@@ -153,15 +170,20 @@ func main() {
 		{cfg.Tools.Grep.Enabled, func() tool.Tool { return grep.New(cfg.Tools.Grep) }},
 		{cfg.Tools.Glob.Enabled, func() tool.Tool { return glob.New(cfg.Tools.Glob) }},
 		{cfg.Tools.WebFetch.Enabled, func() tool.Tool { return webfetch.New(cfg.Tools.WebFetch, logger) }},
-		{cfg.Tools.WebSearch.Enabled, func() tool.Tool { return websearch.New(cfg.Tools.WebSearch, logger) }},
-		{cfg.Tools.TavilySearch.Enabled, func() tool.Tool { return tavilysearch.New(cfg.Tools.TavilySearch, logger) }},
+		// WebSearch / TavilySearch are always registered so the toolsmgmt
+		// PATCH API can hot-enable them without a restart. Their IsEnabled()
+		// returns false when disabled or under-credentialed, so the pool's
+		// EnabledTools() filter keeps them invisible to the LLM until the
+		// API flips them on with full credentials.
+		{true, func() tool.Tool { return websearch.New(cfg.Tools.WebSearch, logger) }},
+		{true, func() tool.Tool { return tavilysearch.New(cfg.Tools.TavilySearch, logger) }},
 		// AskUserQuestion is L1's clarification mechanism. Always enabled
 		// (no config — it's a passthrough to the WebSocket client).
 		{true, func() tool.Tool { return askuserquestion.New(logger) }},
 		// ArtifactWrite / ArtifactRead are the cross-agent shared-data
 		// channel (doc §5). Always on — agents are expected to use them
 		// instead of pasting large outputs back into the prompt.
-		{true, func() tool.Tool { return artifacttool.NewWriteTool() }},
+		{true, func() tool.Tool { return artifacttool.NewWriteTool(artifactSourceDirs...) }},
 		{true, func() tool.Tool { return artifacttool.NewReadTool() }},
 		// SubmitTaskResult is the L3 task-completion declaration
 		// (doc §3 M3+M4). Always on; only fires when the dispatcher
@@ -236,6 +258,23 @@ func main() {
 	cmdRegistry.LoadAll(skillCommands)
 	if err := registry.Register(skilltool.New(cmdRegistry, logger)); err != nil {
 		logger.Fatal("failed to register skill tool", zap.Error(err))
+	}
+
+	// Build a runtime skill Reader (independent of startup Loader) so
+	// SearchSkill / LoadSkill / freelancer hydration can pick up newly
+	// downloaded skills without restarting the server.
+	skillReader := skill.NewReader(cfg.Skills.Dirs, logger)
+	if err := registry.Register(searchskill.New(skillReader, logger)); err != nil {
+		logger.Fatal("failed to register SearchSkill tool", zap.Error(err))
+	}
+	if err := registry.Register(loadskill.New(skillReader, logger)); err != nil {
+		logger.Fatal("failed to register LoadSkill tool", zap.Error(err))
+	}
+	if err := registry.Register(unloadskill.New(logger)); err != nil {
+		logger.Fatal("failed to register UnloadSkill tool", zap.Error(err))
+	}
+	if err := registry.Register(listloadedskills.New(logger)); err != nil {
+		logger.Fatal("failed to register ListLoadedSkills tool", zap.Error(err))
 	}
 
 	logger.Info("tool registry initialized",
@@ -477,6 +516,7 @@ func main() {
 	// transitions instead of waiting for the debounce.
 	eng.SetStatsRegistry(statsRegistry)
 	eng.SetSessionManager(sessionMgr)
+	eng.SetSkillReader(skillReader)
 
 	// Register task tools (scoped to a default scope for now).
 	defaultScope := "default"
@@ -602,10 +642,18 @@ func main() {
 
 	var consoleServer *api.Server
 	if cfg.Console.Enabled {
+		// Artifact content endpoint: lets the Electron client GET raw
+		// binary bytes of a stored artifact via HTTP, used for rich
+		// preview (docx/pdf/etc.) and download. Wired off the same
+		// artifactStore the engine already runs on.
+		artifactsHandler := api.NewArtifactContentHandler(artifactStore, logger)
+		artifactsMux := http.NewServeMux()
+		artifactsHandler.RegisterRoutes(artifactsMux)
+
 		consoleServer = api.NewServer(api.ServerConfig{
 			Host: cfg.Console.Host,
 			Port: cfg.Console.Port,
-		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, logger)
+		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, artifactsMux, logger)
 		go func() {
 			if err := consoleServer.Start(); err != nil {
 				logger.Error("console API server exited", zap.Error(err))

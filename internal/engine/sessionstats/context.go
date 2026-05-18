@@ -11,6 +11,7 @@ const (
 	ctxKeySessionID ctxKey = iota
 	ctxKeyAgentRunID
 	ctxKeyRootSessionID
+	ctxKeyImmediateParentSessionID
 )
 
 // WithSessionID attaches a session ID to ctx. The Provider decorator
@@ -60,5 +61,24 @@ func WithRootSessionID(ctx context.Context, rootID string) context.Context {
 // unset. Caller should fall back to SessionIDFromCtx in that case.
 func RootSessionIDFromCtx(ctx context.Context) (string, bool) {
 	v, ok := ctx.Value(ctxKeyRootSessionID).(string)
+	return v, ok && v != ""
+}
+
+// WithImmediateParentSessionID attaches the immediate parent's session id.
+// Distinct from RootSessionID: for an L3 agent root is the user-facing
+// emma session while immediate parent is the L2 (specialists) sub_session.
+// stats_provider writes token usage into all three trackers (self, immediate
+// parent, root) so each layer's metrics include its own subtree.
+func WithImmediateParentSessionID(ctx context.Context, parentID string) context.Context {
+	if parentID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyImmediateParentSessionID, parentID)
+}
+
+// ImmediateParentSessionIDFromCtx returns the immediate parent session id,
+// or ("", false) when unset (i.e. the call is happening at the root layer).
+func ImmediateParentSessionIDFromCtx(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(ctxKeyImmediateParentSessionID).(string)
 	return v, ok && v != ""
 }

@@ -20,6 +20,7 @@ import (
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
+	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/pkg/types"
@@ -115,10 +116,11 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 
 	// Stats ctx keys: every LLM call this sub-agent makes routes its
 	// usage through StatsProvider, which reads session_id + agent_run_id
-	// from ctx. Override the parent's agent_run_id with THIS sub-agent's
-	// agentID so per-sub-agent token rows attribute correctly. session_id
-	// stays the parent's — the dashboard aggregates by parent session.
-	ctx = sessionstats.WithSessionID(ctx, cfg.ParentSessionID)
+	// + immediate_parent + root from ctx. session_id is THIS sub-agent's
+	// own sub_session — that lets stats_provider keep a per-layer tracker
+	// so an L2 agent's metrics include its L3 children's tokens (the L2
+	// tracker is the L3's immediate-parent write target).
+	ctx = sessionstats.WithSessionID(ctx, sessionID)
 	ctx = sessionstats.WithAgentRunID(ctx, agentID)
 
 	// Root session — empty cfg.RootSessionID means "I am at L2, my parent
@@ -129,6 +131,11 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		rootSID = cfg.ParentSessionID
 	}
 	ctx = sessionstats.WithRootSessionID(ctx, rootSID)
+	// Immediate parent: the L2 sub_session for an L3 agent, or the emma
+	// session for an L2 agent. stats_provider uses this to dual-write into
+	// the layer directly above so each non-root tracker accumulates its
+	// own subtree.
+	ctx = sessionstats.WithImmediateParentSessionID(ctx, cfg.ParentSessionID)
 
 	// Step 2: Cap MaxTurns.
 	maxTurns := cfg.MaxTurns
@@ -175,6 +182,46 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			return nil, fmt.Errorf("input schema validation failed for %q: %s",
 				cfg.SubagentType, strings.Join(fails, "; "))
 		}
+	}
+
+	// Skill-aware hydration: any L3 that declares the skill self-mgmt
+	// tools (SearchSkill / LoadSkill / UnloadSkill / ListLoadedSkills)
+	// gets a SkillTracker so those tools have somewhere to store state.
+	//
+	// freelancer additionally accepts `candidate_skills` from L2 — those
+	// get preloaded into the tracker and prepended to cfg.Prompt as a
+	// <loaded-skills> block. Fixed L3 agents (writer / developer / ...)
+	// that have been enhanced with skill tools just receive an empty
+	// tracker and use SearchSkill / LoadSkill at runtime themselves.
+	var freelancerTracker *SkillTracker
+	if agentDef != nil && defHasSkillSelfMgmtTool(agentDef.AllowedTools) {
+		candidates := parseCandidateSkills(cfg.Inputs)
+		tracker, newPrompt, err := hydrateFreelancer(qe.skillReader, candidates, cfg.Prompt)
+		if err != nil {
+			return nil, fmt.Errorf("skill hydration failed for %q: %w", cfg.SubagentType, err)
+		}
+		freelancerTracker = tracker
+		cfg.Prompt = newPrompt
+
+		// Observability: structured log captures which skills got preloaded
+		// (if any) and which agent type is running. Operators can answer
+		// "did my agent pick up the skill I just installed?" without
+		// enabling provider-level request dumps.
+		active, _ := tracker.List()
+		loaded := make([]map[string]string, 0, len(active))
+		for _, r := range active {
+			loaded = append(loaded, map[string]string{
+				"name":    r.Name,
+				"version": r.Version,
+				"source":  string(r.Source),
+			})
+		}
+		logger.Info("skill-aware agent spawn",
+			zap.String("agent_id", agentID),
+			zap.String("subagent_type", cfg.SubagentType),
+			zap.Int("candidate_count", len(candidates)),
+			zap.Any("loaded_skills", loaded),
+		)
 	}
 
 	// Step 5a: Compose available-artifacts preamble. Doc §6 mode A —
@@ -445,6 +492,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		temperature:          temperature,
 		outputSchema:         outputSchema,
 		originalPrompt:       cfg.Prompt,
+		skillTracker:         freelancerTracker, // nil for non-freelancer spawns
 	}
 
 	// Step 10: Emit subagent.start event.
@@ -457,6 +505,23 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// preamble doesn't bloat the wire payload; the sub-agent's own loop
 	// still receives the full prompt.
 	if cfg.ParentOut != nil {
+		// Build LoadedSkills snapshot from the tracker so the wire event
+		// carries "this spawn started with X skills preloaded". Empty
+		// when the agent isn't skill-aware (non-freelancer + no skill
+		// tools in AllowedTools) so the field naturally disappears from
+		// the JSON for unrelated workers.
+		var loaded []types.LoadedSkillInfo
+		if freelancerTracker != nil {
+			active, _ := freelancerTracker.List()
+			loaded = make([]types.LoadedSkillInfo, 0, len(active))
+			for _, r := range active {
+				loaded = append(loaded, types.LoadedSkillInfo{
+					Name:    r.Name,
+					Version: r.Version,
+					Source:  string(r.Source),
+				})
+			}
+		}
 		cfg.ParentOut <- types.EngineEvent{
 			Type:          types.EngineEventSubAgentStart,
 			AgentID:       agentID,
@@ -464,6 +529,8 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			AgentDesc:     cfg.Description,
 			AgentTask:     truncateRunes(cfg.Prompt, 800),
 			AgentType:     string(cfg.AgentType),
+			SubagentType:  cfg.SubagentType, // writer / researcher / freelancer / ...
+			LoadedSkills:  loaded,
 			ParentAgentID: cfg.ParentSessionID,
 			ParentStepID:  cfg.ParentStepID,
 		}
@@ -474,7 +541,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// wired in (tests) or when the parent session id is missing.
 	if qe.statsRegistry != nil && cfg.ParentSessionID != "" {
 		if tr := qe.statsRegistry.Get(cfg.ParentSessionID); tr != nil {
-			tr.StartSubAgent(agentID, agentID, string(cfg.AgentType), "")
+			tr.StartSubAgent(agentID, agentID, string(cfg.AgentType), cfg.SubagentType, "")
 		}
 	}
 	// Plan B dual-write: when root differs from immediate parent, open a
@@ -483,7 +550,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// agents, keyed by agentID. Skipped when root == parent (the L2 case).
 	if qe.statsRegistry != nil && rootSID != "" && rootSID != cfg.ParentSessionID {
 		if tr := qe.statsRegistry.Get(rootSID); tr != nil {
-			tr.StartSubAgent(agentID, agentID, string(cfg.AgentType), "")
+			tr.StartSubAgent(agentID, agentID, string(cfg.AgentType), cfg.SubagentType, "")
 			logger.Debug("sub-agent row opened on root tracker too",
 				zap.String("root_session", rootSID),
 				zap.String("parent_session", cfg.ParentSessionID),
@@ -737,12 +804,13 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	}
 	if cfg.ParentOut != nil {
 		cfg.ParentOut <- types.EngineEvent{
-			Type:        types.EngineEventSubAgentEnd,
-			AgentID:     agentID,
-			AgentName:   cfg.Name,
-			AgentStatus: agentStatus,
-			Duration:    elapsed.Milliseconds(),
-			Usage:       &cumulativeUsage,
+			Type:         types.EngineEventSubAgentEnd,
+			AgentID:      agentID,
+			AgentName:    cfg.Name,
+			AgentStatus:  agentStatus,
+			SubagentType: cfg.SubagentType, // mirror SubAgentStart so end-card has the worker label too
+			Duration:     elapsed.Milliseconds(),
+			Usage:        &cumulativeUsage,
 			Terminal: &types.Terminal{
 				Reason: terminal.Reason,
 				Turn:   terminal.Turn,
@@ -1001,6 +1069,11 @@ type loopConfig struct {
 	// first user message; PlanCoordinator reads it back here to feed
 	// the Planner without re-deriving from session state.
 	originalPrompt string
+	// skillTracker is non-nil only when this loop is running the freelancer
+	// AgentDefinition. The four skill self-management tools (LoadSkill /
+	// UnloadSkill / ListLoadedSkills) pick it up via ctx. nil = not a
+	// freelancer spawn; those tools refuse to run.
+	skillTracker *SkillTracker
 }
 
 // runSubAgentLoop is a variant of runQueryLoop parameterized by loopConfig.
@@ -1714,4 +1787,82 @@ func parseSummaryTag(text string) string {
 		}
 	}
 	return ""
+}
+
+// parseCandidateSkills extracts the candidate_skills array from
+// SpawnConfig.Inputs. Returns empty slice for nil / wrong-type input.
+// Strings only — non-string elements are skipped (defensive against
+// loose JSON unmarshalling).
+// defHasSkillSelfMgmtTool reports whether an agent definition's AllowedTools
+// includes any of the skill self-management tools (SearchSkill / LoadSkill /
+// UnloadSkill / ListLoadedSkills). When true, SpawnSync creates a SkillTracker
+// so those tools have somewhere to store state — regardless of whether the
+// agent is `freelancer` or one of the fixed L3 partners that's been enhanced
+// with skill access.
+func defHasSkillSelfMgmtTool(allowed []string) bool {
+	for _, t := range allowed {
+		switch t {
+		case "SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills":
+			return true
+		}
+	}
+	return false
+}
+
+func parseCandidateSkills(inputs map[string]any) []string {
+	if inputs == nil {
+		return nil
+	}
+	raw, ok := inputs["candidate_skills"]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, item := range arr {
+		if s, ok := item.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// hydrateFreelancer prepares a SkillTracker + augmented prompt for the
+// freelancer agent. Returns (tracker, newPrompt, err).
+//
+// When candidates is empty, returns a fresh empty tracker and the prompt
+// unchanged — freelancer can still SearchSkill at runtime.
+//
+// On error (missing skill, too many candidates) returns (nil, "", err) so
+// SpawnSync can fail fast before any LLM call.
+func hydrateFreelancer(reader *skill.Reader, candidates []string, prompt string) (*SkillTracker, string, error) {
+	tracker := NewSkillTracker(3)
+
+	if len(candidates) == 0 {
+		return tracker, prompt, nil
+	}
+	if len(candidates) > 3 {
+		return nil, "", fmt.Errorf("candidate_skills limit is 3, got %d", len(candidates))
+	}
+	if reader == nil {
+		return nil, "", fmt.Errorf("skill reader not configured; cannot resolve candidate_skills")
+	}
+
+	fulls := make([]*skill.SkillFull, 0, len(candidates))
+	for _, name := range candidates {
+		full, err := reader.Load(name)
+		if err != nil {
+			return nil, "", fmt.Errorf("candidate skill %q: %w", name, err)
+		}
+		fulls = append(fulls, full)
+	}
+	if err := tracker.Preload(fulls); err != nil {
+		return nil, "", err
+	}
+	block := buildLoadedSkillsBlock(fulls)
+	newPrompt := block + "\n\n" + prompt
+	return tracker, newPrompt, nil
 }

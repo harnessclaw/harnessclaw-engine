@@ -34,7 +34,7 @@ func TestMetricsAPI_ReturnsSubAgentRows(t *testing.T) {
 	// Build an in-memory tracker with a populated sub-agent row.
 	reg := sessionstats.NewRegistry()
 	tr := reg.GetOrCreate(sessionID)
-	tr.StartSubAgent(subRunID, subRunID, "specialists", "")
+	tr.StartSubAgent(subRunID, subRunID, "specialists", "", "")
 
 	// Simulate a Chat call: RecordLLMCall with agentRunID routes tokens to
 	// the sub-agent row opened above.

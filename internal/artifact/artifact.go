@@ -104,6 +104,14 @@ type Artifact struct {
 	// Content is the inline payload. Required on Save; backends may strip
 	// it when returning metadata-only views.
 	Content string `json:"content,omitempty"`
+
+	// BlobPath, when non-empty, is the absolute path to an externally-stored
+	// binary payload (managed by BlobStore). The SQLiteStore sets this for
+	// type=blob artifacts to avoid bloating sqlite with multi-MB binaries.
+	// Internal field — not exposed on the wire / to LLMs. Get(ModeFull)
+	// transparently loads the bytes back into Content (base64-encoded)
+	// so callers see a uniform shape.
+	BlobPath string `json:"-"`
 }
 
 // Ref is the lightweight handle agents pass to each other. Carries enough

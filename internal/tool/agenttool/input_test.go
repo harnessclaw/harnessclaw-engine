@@ -1,6 +1,9 @@
 package agenttool
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // TestValidate_AcceptsTeamMemberSubAgentTypes confirms validate does NOT
 // reject sub-agent types declared in agentToolDescription (writer /
@@ -27,5 +30,20 @@ func TestValidate_StillRejectsEmptyPrompt(t *testing.T) {
 	in := &agentInput{Prompt: "", SubagentType: "general-purpose"}
 	if err := in.validate(); err == nil {
 		t.Error("validate must still reject empty prompt")
+	}
+}
+
+func TestParseInput_CandidateSkills(t *testing.T) {
+	raw := json.RawMessage(`{
+		"prompt": "do x",
+		"subagent_type": "freelancer",
+		"candidate_skills": ["a", "b"]
+	}`)
+	in, err := parseInput(raw)
+	if err != nil {
+		t.Fatalf("parseInput: %v", err)
+	}
+	if len(in.CandidateSkills) != 2 || in.CandidateSkills[0] != "a" {
+		t.Errorf("CandidateSkills = %v", in.CandidateSkills)
 	}
 }

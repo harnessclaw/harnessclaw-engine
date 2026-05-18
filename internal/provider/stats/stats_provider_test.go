@@ -99,7 +99,7 @@ func TestStatsProvider_AttributesToSubAgentRow(t *testing.T) {
 	sp := New(inner, reg)
 
 	tr := reg.GetOrCreate("sess_abc")
-	tr.StartSubAgent("run_e5", "sub_e5", "researcher", "")
+	tr.StartSubAgent("run_e5", "sub_e5", "researcher", "", "")
 
 	ctx := sessionstats.WithSessionID(context.Background(), "sess_abc")
 	ctx = sessionstats.WithAgentRunID(ctx, "run_e5")
@@ -250,8 +250,8 @@ func TestStatsProvider_DualWritesToRootWhenRootDiffersFromSession(t *testing.T) 
 	// rows so RecordLLMCall can attribute them, matching SpawnSync's sequence.
 	specTracker := reg.GetOrCreate(specialistsSubID)
 	emmaTracker := reg.GetOrCreate(emmaSessionID)
-	specTracker.StartSubAgent(writerRunID, writerRunID, "writer", "")
-	emmaTracker.StartSubAgent(writerRunID, writerRunID, "writer", "")
+	specTracker.StartSubAgent(writerRunID, writerRunID, "writer", "", "")
+	emmaTracker.StartSubAgent(writerRunID, writerRunID, "writer", "", "")
 
 	inner := &fakeProvider{events: []types.StreamEvent{{
 		Type:  types.StreamEventMessageEnd,

@@ -2,6 +2,7 @@ package artifact
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -30,6 +31,9 @@ func NewMemoryStore(cfg Config) *MemoryStore {
 
 // Save implements Store.Save.
 func (m *MemoryStore) Save(_ context.Context, in *SaveInput) (*Artifact, error) {
+	if len(in.Content) > 0 && len(in.BlobBytes) > 0 {
+		return nil, fmt.Errorf("artifact: SaveInput.Content and SaveInput.BlobBytes are mutually exclusive — set exactly one")
+	}
 	now := time.Now().UTC()
 
 	var parent *Artifact
@@ -43,6 +47,15 @@ func (m *MemoryStore) Save(_ context.Context, in *SaveInput) (*Artifact, error) 
 	}
 
 	a := resolveSaveInput(in, m.cfg, parent, now)
+	// MemoryStore has no external filesystem — fold BlobBytes into
+	// Content (base64-encoded) so Get returns the bytes the same way
+	// SQLiteStore.Get does after hydrating from the blob file.
+	if len(in.BlobBytes) > 0 {
+		a.Content = blobBase64.EncodeToString(in.BlobBytes)
+		if a.Encoding == "" {
+			a.Encoding = "base64"
+		}
+	}
 
 	m.mu.Lock()
 	m.artifacts[a.ID] = a
