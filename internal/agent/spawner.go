@@ -83,6 +83,19 @@ type SpawnConfig struct {
 
 	// ParentMessages holds the parent's conversation history for fork mode.
 	// Only used when Fork is true. Callers must provide a deep copy.
+	//
+	// Multimodal note: agent.Message is text-only (Content string).
+	// Images / PDFs from the user's original message do NOT propagate
+	// into sub-agents through this path — subagent.go wraps each
+	// entry in a single ContentTypeText block. The router-level
+	// multimodal Gate runs against the parent's active model, so the
+	// modality check is correct as long as this invariant holds.
+	//
+	// If you ever extend Message to carry typed content blocks (e.g.
+	// to let sub-agents see images), re-run multimodal.Gate against
+	// the sub-agent's resolved model inside SpawnSync — otherwise a
+	// sub-agent pinned to a text-only model will silently receive
+	// image data and fail at the provider.
 	ParentMessages []Message
 
 	// SystemPromptOverride replaces the sub-agent's generated system prompt.

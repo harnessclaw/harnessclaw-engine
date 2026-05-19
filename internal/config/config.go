@@ -434,6 +434,16 @@ type EndpointConfig struct {
 	// temporarily parking a model without removing it from yaml.
 	// Default false. yaml-omitted = enabled.
 	Disabled bool `mapstructure:"disabled"`
+
+	// ModelType is an optional capability declaration that overrides
+	// the manifest's SupportsFlags for this endpoint. Each token maps
+	// to one SupportsFlags field (see registry.SupportsFromTokens).
+	// Unset / empty → fall back to the manifest baseline.
+	//
+	// Valid tokens: vision / pdf / audio / video / reasoning / tools / search.
+	// Unknown tokens are dropped with a warn on startup; the PATCH
+	// endpoint rejects them with 400.
+	ModelType []string `mapstructure:"model_type" yaml:"model_type,omitempty"`
 }
 
 // ParseChainEntry splits a fallback_chain string into (provider,

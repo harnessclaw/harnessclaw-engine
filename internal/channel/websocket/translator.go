@@ -754,7 +754,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		s.steps = make(map[string]string)
 
 	case types.EngineEventError:
-		errInfo := emitv2.NewError(emitv2.ErrorTypeInternal, errMsg(ev.Error))
+		errInfo := buildEngineErrorInfo(ev)
 		em.SessionEvent("error", map[string]any{"error": errInfo})
 
 	default:
@@ -1051,6 +1051,50 @@ func errorFromTaskDispatch(td *types.TaskDispatch, ev *types.EngineEvent) *emitv
 		e = e.WithRetryable(true)
 	}
 	return e
+}
+
+// buildEngineErrorInfo derives the wire-level ErrorInfo from an
+// EngineEventError. The router can attach a Terminal.Reason
+// (multimodal Gate uses TerminalUnsupportedModality) plus an
+// ErrorDetails map carrying the rich payload. This helper inspects
+// both and lifts the typed fields onto ErrorInfo so the client gets
+// `error.type` / `error.user_message` / `error.details` in one shot
+// instead of always falling back to ErrorTypeInternal.
+func buildEngineErrorInfo(ev *types.EngineEvent) *emitv2.ErrorInfo {
+	typ := emitv2.ErrorTypeInternal
+	if ev.Terminal != nil {
+		switch ev.Terminal.Reason {
+		case types.TerminalUnsupportedModality:
+			typ = emitv2.ErrorTypeUnsupportedModality
+		case types.TerminalModelError:
+			typ = emitv2.ErrorTypeModelError
+		case types.TerminalImageError:
+			typ = emitv2.ErrorTypeInvalidInput
+		}
+	}
+	info := emitv2.NewError(typ, errMsg(ev.Error))
+
+	if ev.ErrorDetails != nil {
+		if um, ok := ev.ErrorDetails["user_message"].(string); ok && um != "" {
+			info = info.WithUserMessage(um)
+		}
+		if code, ok := ev.ErrorDetails["error_code"].(string); ok && code != "" {
+			info = info.WithCode(code)
+		}
+		// Surface the remaining structured keys (model /
+		// rejected_modalities / etc.) as opaque details. The keys we
+		// already lifted above are kept inside Details too so the
+		// renderer has a single map to scan.
+		details := make(map[string]any, len(ev.ErrorDetails))
+		for k, v := range ev.ErrorDetails {
+			if k == "user_message" || k == "error_code" {
+				continue
+			}
+			details[k] = v
+		}
+		info = info.WithDetails(details)
+	}
+	return info
 }
 
 // artifactRefFromV1 converts the v1 ArtifactRef shape into v2.

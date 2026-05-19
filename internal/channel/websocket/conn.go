@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"nhooyr.io/websocket"
 
 	emitv2 "harnessclaw-go/internal/emit/v2"
+	"harnessclaw-go/internal/engine/multimodal"
 	"harnessclaw-go/internal/engine/wait"
 	"harnessclaw-go/pkg/types"
 )
@@ -357,6 +359,13 @@ func (c *Conn) handleUserMessage(ctx context.Context, raw []byte) {
 	}
 	if err := json.Unmarshal(raw, &f); err != nil {
 		c.sendError("invalid_input", "user.message parse: "+err.Error())
+		return
+	}
+	// Defense-in-depth size cap. multimodal.Build runs the same check
+	// downstream, but rejecting at the wire layer cuts the work and
+	// stops oversized payloads from polluting engine logs / metrics.
+	if rejection := checkInlineSizeCaps(f.Content); rejection != "" {
+		c.sendError("payload_too_large", rejection)
 		return
 	}
 	in := &types.IncomingMessage{
@@ -758,3 +767,25 @@ type contentSource struct {
 }
 
 var errBackpressure = errors.New("ws: backpressure")
+
+// checkInlineSizeCaps enforces the per-block and aggregate base64 limits
+// from internal/engine/multimodal so oversized payloads are rejected at
+// the WebSocket layer (before they reach engine.ProcessMessage or the
+// LLM adapter). Returns "" when within limits, or a developer-facing
+// rejection message that the caller relays as `error.type=payload_too_large`.
+func checkInlineSizeCaps(content []userContentBlock) string {
+	total := 0
+	for i, b := range content {
+		if b.Source == nil {
+			continue
+		}
+		if len(b.Source.Data) > multimodal.MaxBase64BlockBytes {
+			return fmt.Sprintf("content[%d] base64 data exceeds %d bytes", i, multimodal.MaxBase64BlockBytes)
+		}
+		total += len(b.Source.Data)
+	}
+	if total > multimodal.MaxTotalBytesPerMessage {
+		return fmt.Sprintf("total inline payload exceeds %d bytes", multimodal.MaxTotalBytesPerMessage)
+	}
+	return ""
+}

@@ -243,6 +243,10 @@ func (m *Manager) ProvidersSnapshot() []ProviderSnapshot {
 	for name, p := range m.cfg.Providers {
 		eps := make([]EndpointSnapshot, 0, len(p.Endpoints))
 		for epName, ep := range p.Endpoints {
+			var mt []string
+			if len(ep.ModelType) > 0 {
+				mt = append(mt, ep.ModelType...)
+			}
 			eps = append(eps, EndpointSnapshot{
 				Name:           epName,
 				Model:          ep.Model,
@@ -252,6 +256,7 @@ func (m *Manager) ProvidersSnapshot() []ProviderSnapshot {
 				ContextWindow:  ep.ContextWindow,
 				Disabled:       ep.Disabled,
 				InChain:        containsString(chain, config.FormatChainEntry(name, epName)),
+				ModelType:      mt,
 			})
 		}
 		sort.Slice(eps, func(i, j int) bool { return eps[i].Name < eps[j].Name })
@@ -300,6 +305,126 @@ func (m *Manager) CurrentAgent() config.AgentConfig {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return cloneAgentConfig(m.agent)
+}
+
+// ActiveModelKey returns the engine-active provider:endpoint reference,
+// matching the manifest key shape (e.g. "anthropic:claude-opus-4-7").
+// Returns "" when no primary is configured. Mirrors CurrentAgent's
+// locking discipline.
+func (m *Manager) ActiveModelKey() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.agent.Primary
+}
+
+// ChainSupports returns the AND-intersection of SupportsFlags across
+// the primary + every fallback entry. Used by the multimodal gate to
+// reject inputs that would fail mid-chain on fail-over.
+//
+// Conservative semantics: if ANY chain member can't handle a
+// modality, the gate rejects the user message upfront — even when the
+// primary alone could process it. The trade-off is correctness over
+// availability: a user dropping an image and seeing "switch model"
+// is better than the request succeeding on primary, throwing on
+// fallback hop, and surfacing as an opaque 400 from the upstream
+// provider.
+//
+// `lookup` is a SupportsFlags resolver; callers wire it to a registry
+// lookup. Returning a zero SupportsFlags for an unknown key (which
+// is what LookupModel does for missing entries) intersects to
+// all-false — that's the safe default for unmapped models.
+//
+// Returns a zero SupportsFlags when no primary is configured.
+func (m *Manager) ChainSupports(lookup func(modelKey string) modelregistry.SupportsFlags) modelregistry.SupportsFlags {
+	m.mu.Lock()
+	chain := make([]string, 0, 1+len(m.agent.FallbackChain))
+	if m.agent.Primary != "" {
+		chain = append(chain, m.agent.Primary)
+	}
+	chain = append(chain, m.agent.FallbackChain...)
+	m.mu.Unlock()
+
+	if len(chain) == 0 {
+		return modelregistry.SupportsFlags{}
+	}
+
+	first := true
+	var acc modelregistry.SupportsFlags
+	for _, key := range chain {
+		if key == "" {
+			continue
+		}
+		s := lookup(key)
+		if first {
+			acc = s
+			first = false
+			continue
+		}
+		acc = intersectSupports(acc, s)
+	}
+	if first {
+		// Chain had only empty entries — fail-closed.
+		return modelregistry.SupportsFlags{}
+	}
+	return acc
+}
+
+// LookupEndpointModelType returns the configured model_type tokens
+// for a chain-ref key ("provider:endpoint"). Returns (nil, false)
+// when the endpoint isn't configured OR when ModelType is empty —
+// both cases mean "no override; fall back to manifest baseline".
+//
+// Unknown tokens have already been filtered at config-load time
+// (see cmd/server.warnAndDropUnknownTokens); this method returns
+// the canonical, validated list.
+func (m *Manager) LookupEndpointModelType(key string) ([]string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prov, ep, err := config.ParseChainEntry(key)
+	if err != nil {
+		return nil, false
+	}
+	pc, ok := m.cfg.Providers[prov]
+	if !ok {
+		return nil, false
+	}
+	ec, ok := pc.Endpoints[ep]
+	if !ok {
+		return nil, false
+	}
+	if len(ec.ModelType) == 0 {
+		return nil, false
+	}
+	// Defensive copy so callers can't mutate manager state.
+	out := make([]string, len(ec.ModelType))
+	copy(out, ec.ModelType)
+	return out, true
+}
+
+// intersectSupports applies field-wise AND to every bool flag in
+// SupportsFlags. Slice / structured fields are not intersected; the
+// router's gate doesn't consult them.
+func intersectSupports(a, b modelregistry.SupportsFlags) modelregistry.SupportsFlags {
+	return modelregistry.SupportsFlags{
+		Vision:                  a.Vision && b.Vision,
+		PDFInput:                a.PDFInput && b.PDFInput,
+		AudioInput:              a.AudioInput && b.AudioInput,
+		VideoInput:              a.VideoInput && b.VideoInput,
+		AudioOutput:             a.AudioOutput && b.AudioOutput,
+		ImageGeneration:         a.ImageGeneration && b.ImageGeneration,
+		Streaming:               a.Streaming && b.Streaming,
+		SystemMessages:          a.SystemMessages && b.SystemMessages,
+		StructuredOutput:        a.StructuredOutput && b.StructuredOutput,
+		FunctionCalling:         a.FunctionCalling && b.FunctionCalling,
+		ParallelFunctionCalling: a.ParallelFunctionCalling && b.ParallelFunctionCalling,
+		ToolChoice:              a.ToolChoice && b.ToolChoice,
+		ComputerUse:             a.ComputerUse && b.ComputerUse,
+		WebSearch:               a.WebSearch && b.WebSearch,
+		Reasoning:               a.Reasoning && b.Reasoning,
+		ReasoningCanDisable:     a.ReasoningCanDisable && b.ReasoningCanDisable,
+		PromptCaching:           a.PromptCaching && b.PromptCaching,
+		ExplicitCacheControl:    a.ExplicitCacheControl && b.ExplicitCacheControl,
+	}
 }
 
 // CurrentConfig returns a deep copy of the live LLM config (used by
@@ -489,19 +614,23 @@ func (m *Manager) AddProvider(name string, cfg config.ProviderConfig) error {
 // ---------- Mutations: endpoint CRUD ----------
 
 // EndpointPatch is the partial update accepted by UpdateEndpoint.
-// nil fields mean "leave unchanged".
+// nil fields mean "leave unchanged". ModelType is a *[]string so
+// callers can distinguish "omitted" (nil) from "explicitly cleared"
+// (non-nil pointer to empty slice — clears the override and reverts
+// the endpoint to manifest baseline).
 type EndpointPatch struct {
 	Model          *string
 	MaxTokens      *int
 	Temperature    *float64
 	EnableThinking *bool
 	Disabled       *bool
+	ModelType      *[]string
 }
 
 // IsEmpty reports whether the patch would change anything.
 func (p EndpointPatch) IsEmpty() bool {
 	return p.Model == nil && p.MaxTokens == nil && p.Temperature == nil &&
-		p.EnableThinking == nil && p.Disabled == nil
+		p.EnableThinking == nil && p.Disabled == nil && p.ModelType == nil
 }
 
 // AddEndpoint inserts a new endpoint under the named provider.
@@ -587,6 +716,13 @@ func (m *Manager) UpdateEndpoint(provName, epName string, patch EndpointPatch) e
 	}
 	if patch.Disabled != nil {
 		ep.Disabled = *patch.Disabled
+	}
+	if patch.ModelType != nil {
+		if len(*patch.ModelType) == 0 {
+			ep.ModelType = nil
+		} else {
+			ep.ModelType = append([]string(nil), (*patch.ModelType)...)
+		}
 	}
 
 	newAdapter, err := m.adapterBuilder(provName, provCfg, epName, ep, m.agent)

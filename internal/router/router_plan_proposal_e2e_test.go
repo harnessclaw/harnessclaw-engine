@@ -99,7 +99,7 @@ func TestE2E_PlanProposedReachesClient(t *testing.T) {
 
 	eng := &planProposingEngine{}
 	channels := map[string]channel.Channel{"websocket": ch}
-	r := New(eng, channels, nil, logger)
+	r := New(eng, channels, nil, nil, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

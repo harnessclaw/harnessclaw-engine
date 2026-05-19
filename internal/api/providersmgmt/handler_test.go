@@ -231,6 +231,42 @@ func TestGet_EndpointsList(t *testing.T) {
 	}
 }
 
+func TestGet_Endpoints_IncludesModelType(t *testing.T) {
+	h, _ := setupTest(t)
+	// Apply a model_type via PATCH first so we know it's reflected in GET.
+	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"model_type":["vision","tools"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("seed PATCH status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	rec = doRequest(t, h, "GET", "/api/v1/providers/alpha/endpoints", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			Endpoints []struct {
+				Name      string   `json:"name"`
+				ModelType []string `json:"model_type"`
+			} `json:"endpoints"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, ep := range resp.Data.Endpoints {
+		if ep.Name == "claude-46" {
+			got = ep.ModelType
+			break
+		}
+	}
+	want := []string{"vision", "tools"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("model_type: got %v want %v", got, want)
+	}
+}
+
 func TestPost_Endpoint_AddsAndPersists(t *testing.T) {
 	h, cfgPath := setupTest(t)
 	rec := doRequest(t, h, "POST", "/api/v1/providers/alpha/endpoints",
@@ -296,6 +332,77 @@ func TestPatch_Endpoint_UpdatesAndPersists(t *testing.T) {
 	ep := cfg.LLM.Providers["alpha"].Endpoints["claude-46"]
 	if ep.Model != "claude-sonnet-4-6-v2" || ep.MaxTokens != 32768 {
 		t.Fatalf("not updated: %+v", ep)
+	}
+}
+
+func TestPatch_Endpoint_AcceptsKnownModelType(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"model_type":["vision","tools"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, _ := config.Load(cfgPath)
+	ep := cfg.LLM.Providers["alpha"].Endpoints["claude-46"]
+	if len(ep.ModelType) != 2 || ep.ModelType[0] != "vision" || ep.ModelType[1] != "tools" {
+		t.Errorf("model_type not persisted: %v", ep.ModelType)
+	}
+}
+
+func TestPatch_Endpoint_RejectsUnknownModelType(t *testing.T) {
+	h, _ := setupTest(t)
+	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"model_type":["rainbow"]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid_model_type") {
+		t.Errorf("error code should mention invalid_model_type: %s", rec.Body.String())
+	}
+}
+
+func TestPatch_Endpoint_EmptyModelTypeClearsField(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	// Seed with a value
+	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"model_type":["vision"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("seed status = %d", rec.Code)
+	}
+	// Now clear
+	rec = doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"model_type":[]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, _ := config.Load(cfgPath)
+	ep := cfg.LLM.Providers["alpha"].Endpoints["claude-46"]
+	if len(ep.ModelType) != 0 {
+		t.Errorf("model_type should be cleared, got %v", ep.ModelType)
+	}
+}
+
+func TestPatch_Endpoint_OmittedModelTypeUnchanged(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	// Seed
+	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"model_type":["vision"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("seed status = %d", rec.Code)
+	}
+	// Patch a different field
+	rec = doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"max_tokens":2048}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second patch status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, _ := config.Load(cfgPath)
+	ep := cfg.LLM.Providers["alpha"].Endpoints["claude-46"]
+	if len(ep.ModelType) != 1 || ep.ModelType[0] != "vision" {
+		t.Errorf("model_type should be preserved, got %v", ep.ModelType)
+	}
+	if ep.MaxTokens != 2048 {
+		t.Errorf("max_tokens should be updated, got %d", ep.MaxTokens)
 	}
 }
 

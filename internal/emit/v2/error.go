@@ -30,6 +30,11 @@ const (
 	// LLM
 	ErrorTypeModelError ErrorType = "model_error"
 
+	// Multimodal — request carried a content block whose modality the
+	// active model can't process (image to a text-only model, etc.).
+	// Not retryable; user must switch models or remove the attachment.
+	ErrorTypeUnsupportedModality ErrorType = "unsupported_modality"
+
 	// Catch-all
 	ErrorTypeInternal ErrorType = "internal"
 )
@@ -42,13 +47,18 @@ const (
 // errorTypeMeta registry provides a default UserMessage when callers
 // don't supply one.
 type ErrorInfo struct {
-	Type         ErrorType `json:"type"`
-	Code         string    `json:"code,omitempty"`
-	Message      string    `json:"message"`
-	UserMessage  string    `json:"user_message,omitempty"`
-	Retryable    bool      `json:"retryable,omitempty"`
-	RetryAfterMs int       `json:"retry_after_ms,omitempty"`
-	Recovery     *Recovery `json:"recovery,omitempty"`
+	Type         ErrorType      `json:"type"`
+	Code         string         `json:"code,omitempty"`
+	Message      string         `json:"message"`
+	UserMessage  string         `json:"user_message,omitempty"`
+	Retryable    bool           `json:"retryable,omitempty"`
+	RetryAfterMs int            `json:"retry_after_ms,omitempty"`
+	Recovery     *Recovery      `json:"recovery,omitempty"`
+	// Details carries error-type-specific structured context the
+	// client can use for richer rendering (e.g. unsupported_modality
+	// includes `model` + `rejected_modalities`). Treat as opaque on
+	// the consumer side unless you know the schema for the given Type.
+	Details map[string]any `json:"details,omitempty"`
 }
 
 // Recovery describes what the framework decided to do about a failure.
@@ -98,5 +108,16 @@ func (e *ErrorInfo) WithRetryAfter(ms int) *ErrorInfo {
 // WithRecovery attaches a Recovery action.
 func (e *ErrorInfo) WithRecovery(action, nextCardID string) *ErrorInfo {
 	e.Recovery = &Recovery{Action: action, NextCardID: nextCardID}
+	return e
+}
+
+// WithDetails attaches type-specific structured context to the error
+// frame. Replaces any existing details — callers wanting to merge
+// should compose the map themselves.
+func (e *ErrorInfo) WithDetails(details map[string]any) *ErrorInfo {
+	if len(details) == 0 {
+		return e
+	}
+	e.Details = details
 	return e
 }

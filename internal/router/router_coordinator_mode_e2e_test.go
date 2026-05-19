@@ -93,7 +93,7 @@ func TestE2E_WebSocketCoordinatorModeWiring(t *testing.T) {
 
 	eng := &modeCapturingEngine{}
 	channels := map[string]channel.Channel{"websocket": ch}
-	r := New(eng, channels, nil, logger)
+	r := New(eng, channels, nil, nil, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

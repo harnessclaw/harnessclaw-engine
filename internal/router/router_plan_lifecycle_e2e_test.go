@@ -98,7 +98,7 @@ func TestE2E_PlanLifecycleReachesClient(t *testing.T) {
 		logger,
 	)
 	channels := map[string]channel.Channel{"websocket": ch}
-	r := New(planLifecycleEngine{}, channels, nil, logger)
+	r := New(planLifecycleEngine{}, channels, nil, nil, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

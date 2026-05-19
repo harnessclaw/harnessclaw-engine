@@ -175,6 +175,14 @@ type EngineEvent struct {
 	Error             error              `json:"-"`
 	Usage             *Usage             `json:"usage,omitempty"`
 	Terminal          *Terminal          `json:"terminal,omitempty"`     // set on EngineEventDone
+
+	// ErrorDetails carries provider/router-specific structured context
+	// for EngineEventError frames. The channel translator pulls keys it
+	// knows (user_message / error_code / model / rejected_modalities)
+	// into typed wire fields and ignores the rest. Used by the
+	// multimodal gate to forward the rich UnsupportedModalityError
+	// payload to the client.
+	ErrorDetails      map[string]any     `json:"error_details,omitempty"`
 	MessageID         string             `json:"message_id,omitempty"`  // set on message_start
 	Model             string             `json:"model,omitempty"`       // set on message_start
 	StopReason        string             `json:"stop_reason,omitempty"` // set on message_delta
@@ -676,6 +684,7 @@ const (
 	TerminalImageError         TerminalReason = "image_error"          // image processing failure
 	TerminalStopHookPrevented  TerminalReason = "stop_hook_prevented"  // post-tool hook vetoed the stop
 	TerminalHookStopped        TerminalReason = "hook_stopped"         // hook forced an early stop
+	TerminalUnsupportedModality TerminalReason = "unsupported_modality" // model can't accept a content block's modality
 )
 
 // Terminal carries the reason and optional metadata for why a query ended.

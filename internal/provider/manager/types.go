@@ -36,6 +36,10 @@ type EndpointSnapshot struct {
 	// in the current fallback_chain. Endpoints can exist without
 	// being routed (staged for later).
 	InChain bool `json:"in_chain"`
+	// ModelType is the endpoint's capability override token list.
+	// Empty/nil means the endpoint inherits the manifest's
+	// SupportsFlags baseline.
+	ModelType []string `json:"model_type,omitempty"`
 }
 
 // AgentSnapshotPayload is the API-facing view of the agent-level

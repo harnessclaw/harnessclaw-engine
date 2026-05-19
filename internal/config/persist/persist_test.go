@@ -146,6 +146,46 @@ func TestSetProviderCreds_UpdatesExisting(t *testing.T) {
 	}
 }
 
+func TestSetEndpoint_ModelTypeRoundTrip(t *testing.T) {
+	path := writeTemp(t, sampleYAML)
+	f, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := f.SetEndpoint("alpha", "claude-46", config.EndpointConfig{
+		Model:     "claude-sonnet-4-6",
+		ModelType: []string{"vision", "tools"},
+	}); err != nil {
+		t.Fatalf("SetEndpoint: %v", err)
+	}
+	if err := f.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "model_type") {
+		t.Errorf("model_type not persisted, yaml:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "vision") || !strings.Contains(string(raw), "tools") {
+		t.Errorf("tokens missing, yaml:\n%s", raw)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load reread: %v", err)
+	}
+	ep := cfg.LLM.Providers["alpha"].Endpoints["claude-46"]
+	want := []string{"vision", "tools"}
+	if len(ep.ModelType) != len(want) {
+		t.Fatalf("model_type: got %v want %v", ep.ModelType, want)
+	}
+	for i, tok := range want {
+		if ep.ModelType[i] != tok {
+			t.Errorf("[%d]: got %q want %q", i, ep.ModelType[i], tok)
+		}
+	}
+}
+
 func TestSetEndpoint_AddsAndUpdates(t *testing.T) {
 	path := writeTemp(t, sampleYAML)
 	f, _ := Load(path)

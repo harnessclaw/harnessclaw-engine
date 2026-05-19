@@ -207,6 +207,16 @@ func (c *Channel) upgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Lift the per-frame read limit so multimodal user.message frames
+	// (base64-encoded images up to 20 MB aggregate, see
+	// multimodal.MaxTotalBytesPerMessage) aren't truncated at the
+	// nhooyr default of 32 KB. 32 MB leaves headroom over the
+	// engine-side cap for envelope + tool-result frames; the engine's
+	// own conn.checkInlineSizeCaps still rejects anything past
+	// MaxTotalBytesPerMessage, so this is a transport ceiling only,
+	// not a policy change.
+	ws.SetReadLimit(32 * 1024 * 1024)
+
 	connID := uuid.New().String()
 	conn := &Conn{
 		id:     connID,

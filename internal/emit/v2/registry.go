@@ -224,6 +224,10 @@ var errorTypeMeta = map[ErrorType]ErrorTypeMeta{
 		DefaultUserMessage: "输入有问题，无法继续",
 		DefaultRetryable:   false,
 	},
+	ErrorTypeUnsupportedModality: {
+		DefaultUserMessage: "当前模型不支持该输入类型，请切换模型后重试",
+		DefaultRetryable:   false,
+	},
 	ErrorTypeInternal: {
 		DefaultUserMessage: "出了点意外情况",
 		DefaultRetryable:   false,

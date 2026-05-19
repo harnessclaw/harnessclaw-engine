@@ -47,21 +47,37 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// modelEntry is the wire shape returned by /api/v1/models. Embeds
+// ModelSpec so all manifest fields surface verbatim; adds a derived
+// `capabilities` array (multimodal/tools/reasoning/search) for
+// ergonomic UI consumption. The derived list is purely a presentation
+// hint — clients still receive the underlying supports.{vision,…}
+// flags and should use them for precise gating.
+type modelEntry struct {
+	ID           string   `json:"id"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	*registry.ModelSpec
+}
+
+func newModelEntry(key string, spec *registry.ModelSpec) modelEntry {
+	return modelEntry{
+		ID:           key,
+		Capabilities: registry.DeriveCapabilities(spec.Supports),
+		ModelSpec:    spec,
+	}
+}
+
 func (h *Handler) list(w http.ResponseWriter) {
 	keys := h.registry.ListModels()
-	type entry struct {
-		ID string `json:"id"`
-		*registry.ModelSpec
-	}
 	out := struct {
-		Data []entry `json:"data"`
-	}{Data: make([]entry, 0, len(keys))}
+		Data []modelEntry `json:"data"`
+	}{Data: make([]modelEntry, 0, len(keys))}
 	for _, k := range keys {
 		mod := h.registry.LookupModel(k)
 		if mod == nil {
 			continue
 		}
-		out.Data = append(out.Data, entry{ID: k, ModelSpec: mod})
+		out.Data = append(out.Data, newModelEntry(k, mod))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -72,11 +88,7 @@ func (h *Handler) get(w http.ResponseWriter, key string) {
 		writeError(w, http.StatusNotFound, "model_not_found", "")
 		return
 	}
-	type entry struct {
-		ID string `json:"id"`
-		*registry.ModelSpec
-	}
-	writeJSON(w, http.StatusOK, entry{ID: key, ModelSpec: mod})
+	writeJSON(w, http.StatusOK, newModelEntry(key, mod))
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

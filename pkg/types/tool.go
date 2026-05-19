@@ -33,6 +33,13 @@ const (
 	ToolErrorUserAborted      ToolErrorType = "user_aborted"
 	ToolErrorModelError       ToolErrorType = "model_error"
 	ToolErrorInternal         ToolErrorType = "internal"
+
+	// ToolErrorUnsupportedModality — request carried a content block
+	// whose modality the active model can't process (e.g. image to a
+	// text-only model). Not retryable; the user must switch models or
+	// remove the attachment. Surfaced as `error.type=unsupported_modality`
+	// on the wire.
+	ToolErrorUnsupportedModality ToolErrorType = "unsupported_modality"
 )
 
 // ToolResult is the output returned after tool execution.

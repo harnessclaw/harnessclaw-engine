@@ -31,6 +31,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/api"
+	"harnessclaw-go/internal/api/agentcapabilities"
 	"harnessclaw-go/internal/api/modelsregistry"
 	"harnessclaw-go/internal/api/sessionmetrics"
 	"harnessclaw-go/internal/artifact"
@@ -121,6 +122,30 @@ func main() {
 	// by Validate above; this pass only removes the parts that
 	// won't load cleanly, leaving the rest usable.
 	cfg.SanitizeLLM(logger)
+
+	// Sanity-check every endpoint's model_type. Unknown tokens are
+	// dropped with a warn so a typo doesn't fail engine startup — the
+	// gate quietly degrades to manifest fallback for that endpoint
+	// until the user fixes the config via the PATCH API or yaml edit.
+	for pName, prov := range cfg.LLM.Providers {
+		for epName, ep := range prov.Endpoints {
+			if len(ep.ModelType) == 0 {
+				continue
+			}
+			known, unknown := modelregistry.FilterKnownTokens(ep.ModelType)
+			if len(unknown) > 0 {
+				logger.Warn("dropping unknown model_type tokens",
+					zap.String("provider", pName),
+					zap.String("endpoint", epName),
+					zap.Strings("unknown", unknown),
+					zap.Strings("kept", known),
+				)
+				ep.ModelType = known
+				prov.Endpoints[epName] = ep
+			}
+		}
+		cfg.LLM.Providers[pName] = prov
+	}
 
 	logger.Info("starting harnessclaw-engine",
 		zap.String("host", cfg.Server.Host),
@@ -552,7 +577,16 @@ func main() {
 
 	// The router talks to L1 — that is the only user-facing engine.
 	// L2 sub-agents are reached only indirectly via Agent/Orchestrate tools.
-	rtr := router.New(l1, channels, middlewares, logger)
+	// modelInfoBridge adapts provider.Manager + registry into the
+	// router's ModelInfoProvider so the multimodal Gate can reject
+	// image/PDF inputs against a text-only active model. Nil-tolerant:
+	// if either dependency is missing the gate degrades to "trust the
+	// adapter" rather than crashing.
+	var modelInfo router.ModelInfoProvider
+	if providerMgr != nil && modelReg != nil {
+		modelInfo = &routerModelInfoBridge{mgr: providerMgr, reg: modelReg}
+	}
+	rtr := router.New(l1, channels, middlewares, modelInfo, logger)
 
 	// Register WebSocket channel if enabled.
 	//
@@ -640,6 +674,15 @@ func main() {
 		zap.String("config_source", cfg.SourcePath),
 	)
 
+	// Agent capabilities endpoint: serves the same SupportsFlags the
+	// router gate uses by reusing the bridge instance directly, so the
+	// client never disagrees with the server about what's allowed.
+	var capabilitiesHandler http.Handler
+	if modelInfo != nil {
+		capabilitiesHandler = agentcapabilities.New(modelInfo, logger)
+		logger.Info("agent capabilities API mounted")
+	}
+
 	var consoleServer *api.Server
 	if cfg.Console.Enabled {
 		// Artifact content endpoint: lets the Electron client GET raw
@@ -653,7 +696,7 @@ func main() {
 		consoleServer = api.NewServer(api.ServerConfig{
 			Host: cfg.Console.Host,
 			Port: cfg.Console.Port,
-		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, artifactsMux, logger)
+		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, artifactsMux, capabilitiesHandler, logger)
 		go func() {
 			if err := consoleServer.Start(); err != nil {
 				logger.Error("console API server exited", zap.Error(err))
@@ -1191,4 +1234,44 @@ func (r *agentDefRoster) ListForPlanner() []agent.PlannerListing {
 		return nil
 	}
 	return r.reg.ListForPlanner()
+}
+
+// routerModelInfoBridge adapts provider.Manager + model registry to the
+// router's ModelInfoProvider interface. ActiveSupports looks up the
+// primary endpoint's manifest entry to surface its capability matrix
+// for the multimodal Gate. Returns a zero SupportsFlags when the
+// active model isn't found in the registry — the gate then rejects
+// non-text content, which is the safe default for unmapped models.
+type routerModelInfoBridge struct {
+	mgr *manager.Manager
+	reg *modelregistry.Registry
+}
+
+func (b *routerModelInfoBridge) ActiveModelKey() string {
+	return b.mgr.ActiveModelKey()
+}
+
+func (b *routerModelInfoBridge) ActiveSupports() modelregistry.SupportsFlags {
+	// Intersection across the entire chain so the gate rejects inputs
+	// that would fail mid-chain on a fail-over hop. A user-visible
+	// "switch model" error is cheaper than a silent upstream 400.
+	return b.mgr.ChainSupports(func(key string) modelregistry.SupportsFlags {
+		if key == "" {
+			return modelregistry.SupportsFlags{}
+		}
+		// Manifest baseline — provides operational flags (Streaming,
+		// PromptCaching, …) and the default capability set.
+		var base modelregistry.SupportsFlags
+		if m := b.reg.LookupModel(key); m != nil {
+			base = m.Supports
+		}
+		// Endpoint override: only the 7 token-mapped capability fields
+		// are replaced; operational flags from the manifest survive.
+		// Returns false from LookupEndpointModelType when no model_type
+		// is configured → bridge transparently falls back to manifest.
+		if tokens, ok := b.mgr.LookupEndpointModelType(key); ok {
+			return modelregistry.MergeOverride(base, modelregistry.SupportsFromTokens(tokens))
+		}
+		return base
+	})
 }

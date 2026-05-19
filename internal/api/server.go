@@ -43,7 +43,12 @@ type Server struct {
 // artifactsHandler, if non-nil, is mounted at /api/v1/artifacts/ so the
 // Electron client can fetch raw binary artifact bytes for preview /
 // download without going through the LLM tool path.
-func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler http.Handler, modelsHandler http.Handler, providersHandler http.Handler, toolsHandler http.Handler, artifactsHandler http.Handler, logger *zap.Logger) *Server {
+//
+// capabilitiesHandler, if non-nil, is mounted at /api/v1/agent/capabilities
+// for the resolved active-model SupportsFlags + derived capability buckets.
+// Mounted ahead of /api/v1/agent so the more specific path wins in
+// http.ServeMux (longest pattern match).
+func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler http.Handler, modelsHandler http.Handler, providersHandler http.Handler, toolsHandler http.Handler, artifactsHandler http.Handler, capabilitiesHandler http.Handler, logger *zap.Logger) *Server {
 	mux := http.NewServeMux()
 
 	// Register agent management routes
@@ -59,6 +64,14 @@ func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler ht
 	if modelsHandler != nil {
 		mux.Handle("/api/v1/models", modelsHandler)
 		mux.Handle("/api/v1/models/", modelsHandler)
+	}
+
+	// Agent capabilities: GET /api/v1/agent/capabilities. Mounted
+	// BEFORE the providers handler's /api/v1/agent/ catch so the
+	// more-specific path wins in http.ServeMux. Computes the same
+	// SupportsFlags the multimodal Gate uses (override-aware).
+	if capabilitiesHandler != nil {
+		mux.Handle("/api/v1/agent/capabilities", capabilitiesHandler)
 	}
 
 	// Providers management API: nested under /api/v1/providers plus

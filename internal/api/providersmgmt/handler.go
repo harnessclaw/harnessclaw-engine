@@ -39,6 +39,7 @@ import (
 	"harnessclaw-go/internal/config/persist"
 	"harnessclaw-go/internal/provider/bifrost"
 	"harnessclaw-go/internal/provider/manager"
+	modelregistry "harnessclaw-go/internal/provider/registry"
 )
 
 // Handler implements http.Handler for the providers management API.
@@ -335,12 +336,17 @@ func (h *Handler) routeEndpoint(w http.ResponseWriter, r *http.Request, provName
 }
 
 // PatchEndpointRequest is the body for PATCH /providers/{p}/endpoints/{e}.
+//
+// ModelType uses *[]string so callers can distinguish "field omitted —
+// leave alone" (nil) from "set to []  — explicitly clear the override
+// and revert to manifest baseline" (non-nil pointer to empty slice).
 type PatchEndpointRequest struct {
-	Model          *string  `json:"model,omitempty"`
-	MaxTokens      *int     `json:"max_tokens,omitempty"`
-	Temperature    *float64 `json:"temperature,omitempty"`
-	EnableThinking *bool    `json:"enable_thinking,omitempty"`
-	Disabled       *bool    `json:"disabled,omitempty"`
+	Model          *string   `json:"model,omitempty"`
+	MaxTokens      *int      `json:"max_tokens,omitempty"`
+	Temperature    *float64  `json:"temperature,omitempty"`
+	EnableThinking *bool     `json:"enable_thinking,omitempty"`
+	Disabled       *bool     `json:"disabled,omitempty"`
+	ModelType      *[]string `json:"model_type,omitempty"`
 }
 
 func (h *Handler) patchEndpoint(w http.ResponseWriter, r *http.Request, provName, epName string) {
@@ -349,16 +355,32 @@ func (h *Handler) patchEndpoint(w http.ResponseWriter, r *http.Request, provName
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON: "+err.Error())
 		return
 	}
+	var filteredModelType *[]string
+	if body.ModelType != nil {
+		known, unknown := modelregistry.FilterKnownTokens(*body.ModelType)
+		if len(unknown) > 0 {
+			writeError(w, http.StatusBadRequest, "invalid_model_type",
+				fmt.Sprintf("unknown tokens: %v; allowed: vision/pdf/audio/video/reasoning/tools/search", unknown))
+			return
+		}
+		// known may be nil when caller sent []  — preserve that distinction
+		// (nil-but-non-nil-pointer means "clear override").
+		if known == nil {
+			known = []string{}
+		}
+		filteredModelType = &known
+	}
 	patch := manager.EndpointPatch{
 		Model:          body.Model,
 		MaxTokens:      body.MaxTokens,
 		Temperature:    body.Temperature,
 		EnableThinking: body.EnableThinking,
 		Disabled:       body.Disabled,
+		ModelType:      filteredModelType,
 	}
 	if patch.IsEmpty() {
 		writeError(w, http.StatusBadRequest, "bad_request",
-			"empty patch; supply at least one of model/max_tokens/temperature/enable_thinking/disabled")
+			"empty patch; supply at least one of model/max_tokens/temperature/enable_thinking/disabled/model_type")
 		return
 	}
 	if err := h.mgr.UpdateEndpoint(provName, epName, patch); err != nil {

@@ -107,7 +107,7 @@ func TestE2E_ModelError_RouterToWebSocket(t *testing.T) {
 	eng := &mockEngine{modelErr: modelErr}
 
 	channels := map[string]channel.Channel{"websocket": ch}
-	r := New(eng, channels, nil, logger)
+	r := New(eng, channels, nil, nil, logger)
 
 	// 3. Start the channel with the router's Handle as the message handler.
 	ctx, cancel := context.WithCancel(context.Background())

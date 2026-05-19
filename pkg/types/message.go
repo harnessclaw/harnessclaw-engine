@@ -24,6 +24,12 @@ const (
 )
 
 // ContentBlock is a single piece of content within a message.
+//
+// Multimodal fields (MediaType / Data / URL / Path / Filename / Size) are
+// populated only for Type == ContentTypeImage or ContentTypeFile. They
+// remain zero-valued for text and tool blocks and are stripped from JSON
+// via omitempty, so existing text-only payloads stay byte-identical on
+// the wire.
 type ContentBlock struct {
 	Type       ContentType `json:"type"`
 	Text       string      `json:"text,omitempty"`
@@ -32,6 +38,14 @@ type ContentBlock struct {
 	ToolInput  string      `json:"tool_input,omitempty"`  // JSON string
 	ToolResult string      `json:"tool_result,omitempty"` // JSON string
 	IsError    bool        `json:"is_error,omitempty"`
+
+	// Multimodal source descriptors — populated for image / file blocks.
+	MediaType string `json:"media_type,omitempty"` // e.g. "image/png", "application/pdf"
+	Data      string `json:"data,omitempty"`       // base64 payload (no data: prefix)
+	URL       string `json:"url,omitempty"`        // remote URL alternative to Data
+	Path      string `json:"path,omitempty"`       // server-local file path (engine-internal)
+	Filename  string `json:"filename,omitempty"`
+	Size      int64  `json:"size,omitempty"`
 }
 
 // Message represents a single message in a conversation.

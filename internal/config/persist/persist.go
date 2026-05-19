@@ -421,6 +421,17 @@ func endpointToNode(ep config.EndpointConfig) *yaml.Node {
 	if ep.Disabled {
 		appendBool(n, "disabled", true)
 	}
+	if len(ep.ModelType) > 0 {
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
+		for _, t := range ep.ModelType {
+			seq.Content = append(seq.Content, &yaml.Node{
+				Kind:  yaml.ScalarNode,
+				Tag:   "!!str",
+				Value: t,
+			})
+		}
+		setKey(n, "model_type", seq)
+	}
 	return n
 }
 

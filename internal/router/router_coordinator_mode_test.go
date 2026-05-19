@@ -53,7 +53,7 @@ func (noopChannel) Health() error                                               
 
 func TestRouter_AttachesCoordinatorModeToCtx(t *testing.T) {
 	eng := &modeRecordingEngine{}
-	r := New(eng, map[string]channel.Channel{"noop": noopChannel{}}, nil, zap.NewNop())
+	r := New(eng, map[string]channel.Channel{"noop": noopChannel{}}, nil, nil, zap.NewNop())
 
 	msg := &types.IncomingMessage{
 		ChannelName:     "noop",
@@ -71,7 +71,7 @@ func TestRouter_AttachesCoordinatorModeToCtx(t *testing.T) {
 
 func TestRouter_NoModeWhenIncomingHasNone(t *testing.T) {
 	eng := &modeRecordingEngine{}
-	r := New(eng, map[string]channel.Channel{"noop": noopChannel{}}, nil, zap.NewNop())
+	r := New(eng, map[string]channel.Channel{"noop": noopChannel{}}, nil, nil, zap.NewNop())
 
 	msg := &types.IncomingMessage{
 		ChannelName: "noop",
@@ -93,7 +93,7 @@ func TestRouter_ModePassesThroughUnchanged(t *testing.T) {
 	for _, mode := range []string{"react", "plan", "garbage", "Plan"} {
 		t.Run(mode, func(t *testing.T) {
 			eng := &modeRecordingEngine{}
-			r := New(eng, map[string]channel.Channel{"noop": noopChannel{}}, nil, zap.NewNop())
+			r := New(eng, map[string]channel.Channel{"noop": noopChannel{}}, nil, nil, zap.NewNop())
 			msg := &types.IncomingMessage{
 				ChannelName:     "noop",
 				SessionID:       "s",

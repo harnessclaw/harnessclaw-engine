@@ -796,7 +796,54 @@ func convertMessages(msgs []types.Message, systemPrompt string, includeReasoning
 			result = append(result, *bfMsg)
 		}
 	}
+	// Trim cache_control breakpoints to Anthropic's per-request limit.
+	// Per-block cache_control is added eagerly in convertSingleMessage;
+	// this is a post-conversion clamp so a long multi-image
+	// conversation doesn't blow the 4-breakpoint cap and 400 from
+	// upstream.
+	capImageCacheBreakpoints(result)
 	return result
+}
+
+// maxCacheControlBreakpoints is Anthropic's per-request hard limit on
+// cache_control entries. Exceeding it returns a 400 from the API.
+// Other providers (OpenAI, Gemini) ignore cache_control entirely, so
+// the cap is purely an Anthropic concern but applied universally —
+// the field is dropped quietly downstream when not honored.
+const maxCacheControlBreakpoints = 4
+
+// capImageCacheBreakpoints enforces the per-request breakpoint limit
+// by stripping cache_control from the OLDEST excess image / file
+// blocks first. The most recent N stay cached (those are most likely
+// to be referenced in follow-up turns and worth the cache_write).
+//
+// Mutates the slice in place via pointer chasing into the underlying
+// ContentBlock arrays. Safe because we don't grow / re-slice anything;
+// only flip the CacheControl pointer to nil.
+func capImageCacheBreakpoints(msgs []schemas.ChatMessage) {
+	type ref struct {
+		mi int
+		bi int
+	}
+	var refs []ref
+	for mi := range msgs {
+		c := msgs[mi].Content
+		if c == nil || c.ContentBlocks == nil {
+			continue
+		}
+		for bi := range c.ContentBlocks {
+			if c.ContentBlocks[bi].CacheControl != nil {
+				refs = append(refs, ref{mi: mi, bi: bi})
+			}
+		}
+	}
+	if len(refs) <= maxCacheControlBreakpoints {
+		return
+	}
+	drop := len(refs) - maxCacheControlBreakpoints
+	for i := 0; i < drop; i++ {
+		msgs[refs[i].mi].Content.ContentBlocks[refs[i].bi].CacheControl = nil
+	}
 }
 
 func convertSingleMessage(msg types.Message, includeReasoning bool) *schemas.ChatMessage {
@@ -840,6 +887,66 @@ func convertSingleMessage(msg types.Message, includeReasoning bool) *schemas.Cha
 				},
 			}
 			toolCalls = append(toolCalls, tc)
+		case types.ContentTypeImage:
+			// Bifrost's anthropic provider (utils.go:1077
+			// ConvertToAnthropicImageBlock) handles both inline base64
+			// data URLs and remote URLs. OpenAI's provider accepts the
+			// same shape via the OpenAI Vision spec. We hand the SDK a
+			// fully-formed URL: either the caller's https:// URL or a
+			// data: URL synthesized from base64 + media_type. The SDK
+			// then re-extracts media_type via the data: prefix when
+			// the target provider needs it (Anthropic does).
+			url := cb.URL
+			if url == "" && cb.Data != "" {
+				url = "data:" + cb.MediaType + ";base64," + cb.Data
+			}
+			if url == "" {
+				// No data + no URL ⇒ drop silently. Builder + Gate
+				// should have caught this upstream; defense-in-depth
+				// for legacy callers or future bugs.
+				continue
+			}
+			blocks = append(blocks, schemas.ChatContentBlock{
+				Type:           schemas.ChatContentBlockTypeImage,
+				ImageURLStruct: &schemas.ChatInputImage{URL: url},
+				// Anthropic prompt-cache breakpoint. Images are the
+				// largest stable token chunks in multimodal turns
+				// (~1500-1600 tokens per image); without this, every
+				// follow-up turn re-pays the full image tokens.
+				// Bifrost's anthropic provider serializes this to
+				// cache_control:{"type":"ephemeral"}; other providers
+				// ignore the field (it's an Anthropic-only extension).
+				// capImageCacheBreakpoints below clamps to Anthropic's
+				// 4-breakpoint limit if a conversation accumulates >4
+				// image/file blocks.
+				CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+			})
+		case types.ContentTypeFile:
+			file := &schemas.ChatInputFile{}
+			if cb.Data != "" {
+				file.FileData = schemas.Ptr(cb.Data)
+			}
+			if cb.URL != "" {
+				file.FileURL = schemas.Ptr(cb.URL)
+			}
+			if cb.Filename != "" {
+				file.Filename = schemas.Ptr(cb.Filename)
+			}
+			if cb.MediaType != "" {
+				file.FileType = schemas.Ptr(cb.MediaType)
+			}
+			// Empty file struct (no data, no url) ⇒ drop.
+			if file.FileData == nil && file.FileURL == nil {
+				continue
+			}
+			blocks = append(blocks, schemas.ChatContentBlock{
+				Type: schemas.ChatContentBlockTypeFile,
+				File: file,
+				// Same prompt-cache rationale as image blocks; PDFs are
+				// even larger (page-count token cost) so caching gives
+				// proportionally bigger wins on multi-turn document Q&A.
+				CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+			})
 		}
 	}
 

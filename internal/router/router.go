@@ -5,30 +5,52 @@ import (
 	"context"
 
 	"go.uber.org/zap"
+
 	"harnessclaw-go/internal/channel"
 	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/multimodal"
+	"harnessclaw-go/internal/provider/registry"
 	"harnessclaw-go/internal/router/middleware"
 	"harnessclaw-go/internal/tool"
 	pkgerr "harnessclaw-go/pkg/errors"
 	"harnessclaw-go/pkg/types"
 )
 
-// Router receives standardized messages, runs them through the middleware
-// chain, dispatches to the engine, and forwards streaming events back to
-// the originating channel.
-type Router struct {
-	engine   engine.Engine
-	channels map[string]channel.Channel // channel registry keyed by name
-	handler  middleware.Handler
-	logger   *zap.Logger
+// ModelInfoProvider exposes the active model + its SupportsFlags so the
+// router can run the multimodal Gate before dispatching to the engine.
+//
+// The interface is intentionally tiny so tests can fake it with a
+// struct literal. Production wires a bridge in cmd/server that pulls
+// from provider.Manager.ActiveModelKey + registry.LookupModel.
+//
+// nil ModelInfoProvider disables gating — used by older tests and
+// channels that don't have a model registry handy. Production builds
+// MUST wire one.
+type ModelInfoProvider interface {
+	ActiveModelKey() string
+	ActiveSupports() registry.SupportsFlags
 }
 
-// New creates a router with the given engine, channel registry, and middleware chain.
-func New(eng engine.Engine, channels map[string]channel.Channel, middlewares []middleware.Middleware, logger *zap.Logger) *Router {
+// Router receives standardized messages, runs them through the
+// middleware chain, dispatches to the engine, and forwards streaming
+// events back to the originating channel.
+type Router struct {
+	engine    engine.Engine
+	channels  map[string]channel.Channel // channel registry keyed by name
+	modelInfo ModelInfoProvider          // optional; nil disables gating
+	handler   middleware.Handler
+	logger    *zap.Logger
+}
+
+// New creates a router with the given engine, channel registry,
+// middleware chain, and optional model-info provider for capability
+// gating. Pass nil for modelInfo when gating isn't desired (tests).
+func New(eng engine.Engine, channels map[string]channel.Channel, middlewares []middleware.Middleware, modelInfo ModelInfoProvider, logger *zap.Logger) *Router {
 	r := &Router{
-		engine:   eng,
-		channels: channels,
-		logger:   logger,
+		engine:    eng,
+		channels:  channels,
+		modelInfo: modelInfo,
+		logger:    logger,
 	}
 
 	// Build the middleware chain around the core handler.
@@ -75,11 +97,35 @@ func (r *Router) coreHandler(ctx context.Context, msg *types.IncomingMessage) er
 		return r.engine.SubmitStepDecision(ctx, msg.SessionID, msg.StepDecisionResponse)
 	}
 
+	// Normalize wire content blocks into engine-internal ContentBlock[].
+	// Falls back to the legacy text-only path when msg.Content is empty.
+	blocks, err := multimodal.Build(msg.Text, msg.Content)
+	if err != nil {
+		r.logger.Warn("router: multimodal build failed",
+			zap.String("session_id", msg.SessionID),
+			zap.Error(err),
+		)
+		r.emitInvalidInput(ctx, msg, err)
+		return err
+	}
+
+	// Capability gate. Only runs when a ModelInfoProvider is wired in;
+	// nil means "trust whatever the adapter receives" (used by tests
+	// that don't care about gating).
+	if r.modelInfo != nil {
+		if gateErr := multimodal.Gate(r.modelInfo.ActiveModelKey(), r.modelInfo.ActiveSupports(), blocks); gateErr != nil {
+			r.logger.Info("router: multimodal gate rejected message",
+				zap.String("session_id", msg.SessionID),
+				zap.Error(gateErr),
+			)
+			r.emitUnsupportedModality(ctx, msg, gateErr)
+			return gateErr
+		}
+	}
+
 	userMsg := &types.Message{
-		Role: types.RoleUser,
-		Content: []types.ContentBlock{
-			{Type: types.ContentTypeText, Text: msg.Text},
-		},
+		Role:    types.RoleUser,
+		Content: blocks,
 	}
 
 	// L2 coordinator mode override (per-turn). Empty string means
@@ -142,4 +188,52 @@ func (r *Router) coreHandler(ctx context.Context, msg *types.IncomingMessage) er
 	}()
 
 	return nil
+}
+
+// emitInvalidInput sends a single-shot error frame to the originating
+// channel when multimodal.Build rejects the incoming content (malformed
+// block, oversize, unknown type). No engine round-trip happens.
+func (r *Router) emitInvalidInput(ctx context.Context, msg *types.IncomingMessage, cause error) {
+	ch, ok := r.channels[msg.ChannelName]
+	if !ok {
+		return
+	}
+	ev := &types.EngineEvent{
+		Type:  types.EngineEventError,
+		Error: cause,
+		Terminal: &types.Terminal{
+			Reason:  types.TerminalModelError,
+			Message: cause.Error(),
+		},
+	}
+	_ = ch.SendEvent(ctx, msg.SessionID, ev)
+}
+
+// emitUnsupportedModality sends an error frame carrying the rich
+// UnsupportedModalityError payload (user-facing message, rejected
+// modality list, model key). Channel translator turns the
+// ErrorDetails map into typed wire fields (user_message / code /
+// details).
+func (r *Router) emitUnsupportedModality(ctx context.Context, msg *types.IncomingMessage, cause error) {
+	ch, ok := r.channels[msg.ChannelName]
+	if !ok {
+		return
+	}
+	ev := &types.EngineEvent{
+		Type:  types.EngineEventError,
+		Error: cause,
+		Terminal: &types.Terminal{
+			Reason:  types.TerminalUnsupportedModality,
+			Message: cause.Error(),
+		},
+	}
+	if u, ok := cause.(*multimodal.UnsupportedModalityError); ok {
+		ev.ErrorDetails = map[string]any{
+			"model":               u.Model,
+			"rejected_modalities": u.RejectedModalities,
+			"user_message":        u.UserMessage(),
+			"error_code":          "model_lacks_modality",
+		}
+	}
+	_ = ch.SendEvent(ctx, msg.SessionID, ev)
 }

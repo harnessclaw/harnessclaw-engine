@@ -53,6 +53,7 @@ vendor/
 docs/*
 !docs/api/console-api.md
 !docs/protocols/websocket.md
+!docs/protocols/multimodal-input.md
 !docs/release-rules.md
 
 # Debug
