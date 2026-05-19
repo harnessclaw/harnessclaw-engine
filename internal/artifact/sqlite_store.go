@@ -61,7 +61,23 @@ func NewSQLiteStore(dbPath string, cfg Config) (*SQLiteStore, error) {
 			return nil, fmt.Errorf("create db directory: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", dbPath)
+	// Match the sessions store's pragma set:
+	//   - busy_timeout(5000) — SQLite has a single writer lock regardless
+	//     of journal mode. Without busy_timeout, the second concurrent
+	//     writer gets SQLITE_BUSY immediately (sub-agents dispatched in
+	//     parallel hit this routinely). 5s lets retries serialize.
+	//   - journal_mode(WAL) — readers don't block writers; written here
+	//     in the DSN AND via Exec below so it sticks for legacy DBs that
+	//     started in DELETE mode (DSN PRAGMA only sets connection state;
+	//     WAL is database-wide).
+	//   - synchronous(NORMAL) — same trade-off the sessions store accepts:
+	//     fsync at WAL checkpoint, not every commit. Artifacts can replay
+	//     on restart from upstream tool calls if anything is lost.
+	dsn := dbPath +
+		"?_pragma=busy_timeout(5000)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
