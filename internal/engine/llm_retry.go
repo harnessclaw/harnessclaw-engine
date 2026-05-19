@@ -475,7 +475,13 @@ func doSingleLLMCall(
 				age := time.Since(lastChunkAt)
 				lastChunkMu.Unlock()
 				if age > 30*time.Second {
-					logger.Warn("llm.call.stream_stuck",
+					// Informational heartbeat — upstream stalls aren't
+					// a server-side defect on our side, just slowness
+					// the retry budget will reap on its own. Keeping
+					// at WARN inflated alerts; downgrade to INFO so
+					// it still appears in default-level logs but
+					// doesn't trip monitoring.
+					logger.Info("llm.call.stream_stuck",
 						zap.Duration("since_last_chunk", age),
 					)
 				}
