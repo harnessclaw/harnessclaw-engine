@@ -3,6 +3,43 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
+## [0.0.14] - 2026-05-19
+
+### Added
+- Multimodal user input (image + PDF) end-to-end (`internal/engine/multimodal`): typed `IncomingContentBlock` parser + size-capped builder (per-block / per-message base64 limits, see `MaxBase64BlockBytes` / `MaxTotalBytesPerMessage`), capability `Gate` enforced at the router before engine dispatch, deterministic `UnsupportedModalityError` with user-facing message + rejected-modality list, redactor for log-safe payload previews
+- Per-endpoint capability override: `endpoint.model_type` yaml field (`vision` / `pdf` / `audio` / `video` / `reasoning` / `tools` / `search`) overrides the manifest baseline `SupportsFlags`; unknown tokens warn-and-drop at startup, rejected with 400 on `PATCH /api/v1/providers/{p}/endpoints/{e}` (`*[]string` semantics: omitted = leave alone, `[]` = clear override and revert to manifest)
+- Fallback-chain capability intersection: `Manager.ChainSupports` AND-intersects `SupportsFlags` across primary + every fallback entry so the multimodal gate rejects inputs that would fail mid-chain on fail-over (correctness over availability — "switch model" upfront beats an opaque 400 from a fallback hop)
+- `GET /api/v1/agent/capabilities` endpoint: serves the resolved active-model `SupportsFlags` + derived capability buckets (`multimodal` / `tools` / `reasoning` / `search`) using the same bridge the gate uses, so the client can never disagree with the server about what's allowed
+- `capabilities` array on `/api/v1/models` responses: collapsed bucket list derived from `SupportsFlags` for ergonomic UI chip rendering (granular flags remain authoritative for per-feature gating)
+- Bifrost adapter image / file block conversion: typed `ContentTypeImage` / `ContentTypeFile` blocks rendered as Anthropic / OpenAI Vision payloads via `data:` URL synthesis from base64 + media_type, or pass-through for remote URLs; Anthropic ephemeral `cache_control` breakpoints added to image / PDF blocks with post-conversion `capImageCacheBreakpoints` clamp to the 4-breakpoint per-request limit (oldest dropped first)
+- L3 freelancer execution mode: skill lifecycle tools (`loadskill` / `unloadskill` / `searchskill` / `listloadedskills`) with per-session `skill_tracker` context propagation, `skill_block` engine event surfacing loaded-skills state to UI, freelancer hydration of agent definition + prompt sections (skills section + principles text)
+- Artifact blob store: filesystem half at `~/.harnessclaw/artifact-blobs` backing large binary artifacts alongside sqlite metadata; new `/api/v1/artifacts` HTTP handler for client download
+- `ArtifactWrite` source_path allow-list: pinned reads to `~/.harnessclaw/workspace` + configured `skills.dirs` (no arbitrary filesystem ingest by the LLM)
+- Sub-agent token attribution: `sessionstats` distinguishes immediate parent vs root session buckets so multi-agent dispatches roll up to the right conversation; L3+ sub-agents dual-write LLM and tool stats to the root session tracker
+- Tools management API (`/api/v1/tools`): GET (list + per-tool config) + PATCH (per-tool config hot-swap with yaml rollback) backed by `tool.Registry.Replace` for atomic adapter swap; `config/persist.SetToolConfig` writes `tools.<name>.*` yaml blocks while preserving comments / key order
+- `CardSystem` card kind in `emit/v2` (icon=info, role=system, untracked) + `SystemPayload.topic` field for framework-level notices independent of card lifecycle; `EngineEventSystemNotice` event + `SystemNotice` payload type
+- `SearchGapDetector` (`internal/engine/capability_gap_detector.go`): detects when a user asks for web search but no search tool is enabled, emits a session-deduped `card_kind=system` notice pointing at the settings page; wired into `QueryEngine` and sub-agent spawn step 6
+- iFlyTek Spark v2/search Bearer-token API: WebSearch tool migrated to the new Spark search v2 endpoint with Bearer auth
+- `error.unsupported_modality` error type + structured `details` map on `ErrorInfo` so the wire format can carry `model` / `rejected_modalities` / `user_message` / `error_code` to the client in a single error frame
+- WebSocket per-frame read limit raised to 32 MB to accommodate multimodal `user.message` frames; wire-layer size-cap check rejects oversized payloads with `payload_too_large` before they reach the engine
+
+### Changed
+- `pkg/types.ContentBlock` extended with multimodal fields (`MediaType` / `Data` / `URL` / `Path` / `Filename` / `Size`); zero-valued + `omitempty` keeps text-only payloads byte-identical on the wire
+- `router.New` signature now takes a `ModelInfoProvider` for capability gating; `nil` disables gating (used by older tests); production wires a bridge from `provider.Manager.ActiveModelKey` + registry `LookupModel` + endpoint-override merge
+- `Emma` principles tightened: long user requirements must be passed verbatim to Specialists — task field can't shrink N-item lists to one item, can't add reverse constraints the user didn't state, can't pre-split into "first read, then implement" steps
+- `internal/artifact/sqlite_store` applies the same pragmas as the sessions store (`busy_timeout=5000` / `journal_mode=WAL` / `synchronous=NORMAL`) so concurrent sub-agent writes no longer hit `SQLITE_BUSY`
+- `llm.call.stream_stuck` log line downgraded from WARN to INFO (upstream slowness is not a server-side defect; the retry budget handles it on its own — WARN was inflating monitoring alerts)
+- `agent.Message.ParentMessages` semantics documented: text-only by design; if extended to carry typed content blocks, callers MUST re-run `multimodal.Gate` against the sub-agent's resolved model (else a text-only sub-agent silently receives image data and fails at the provider)
+- Bifrost adapter `convertMessages` applies `capImageCacheBreakpoints` post-conversion clamp (per-block `cache_control` is added eagerly; the global cap is enforced once at the end)
+
+### Fixed
+- L2 sub-agent loop swallowed `EngineEventSystemNotice`: the L2 forward-switch whitelist in `subagent.go` was missing the type, so any system notice (e.g. `SearchGapDetector` firing) emitted under an L2 dispatcher never reached the WS translator — added to the pass-through case list
+- Team sub-agents lost web search when `TavilySearch` was disabled: `AllowedTools` now lists `WebSearch` as a fallback so the agent doesn't silently lose the capability when credentials are missing for the primary search provider
+- `/api/v1/tools` PATCH could race on concurrent updates: mutex now guards `cfg` mutation; empty-cfgPath errors surface to the caller instead of silently no-op'ing; rollback failures get logged
+
+### Removed
+- N/A
+
 ## [0.0.13] - 2026-05-15
 
 ### Added
