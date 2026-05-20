@@ -82,7 +82,7 @@ type LLMPlanner struct {
 
 	// retryer, timeouts, logger are the optional engine-level
 	// transport-retry layer. When set (via WithRetry), callOnce dispatches
-	// through retryLLMCall so the planner inherits the same network-retry
+	// through callLLM so the planner inherits the same network-retry
 	// + heartbeat + retry-visibility behaviour as L1 emma / L3 sub-agents.
 	// When nil, callOnce falls back to the legacy direct provider.Chat
 	// path — preserved so existing test fakes that don't wire a retryer
@@ -133,7 +133,7 @@ func (p *LLMPlanner) WithMaxSteps(n int) *LLMPlanner {
 }
 
 // WithRetry attaches the engine's shared Retryer + per-call timeouts +
-// logger. Once set, planner LLM calls go through retryLLMCall and pick
+// logger. Once set, planner LLM calls go through callLLM and pick
 // up: exponential backoff for transient errors (429, 5xx, network
 // blips), the FirstByte / API timeouts, the 30s heartbeat that keeps
 // the surrounding agent card alive during long planner thinks, and the
@@ -210,7 +210,7 @@ func (p *LLMPlanner) Plan(ctx context.Context, in PlannerInput) (*PlannerOutput,
 // retryable errors handled by Plan.
 //
 // When p.retryer is set (production path), the LLM call goes through
-// retryLLMCall — same code path L1 emma and L3 sub-agents use — so the
+// callLLM — same code path L1 emma and L3 sub-agents use — so the
 // planner inherits transport-level retry + backoff, heartbeats keeping
 // the L2 specialists card alive, and "重试中" wire events. When nil
 // (tests / minimal setups), the legacy direct-stream path is used.
@@ -233,7 +233,7 @@ func (p *LLMPlanner) callOnce(ctx context.Context, in PlannerInput, feedback str
 	return p.callOnceLegacy(ctx, req)
 }
 
-// callOnceWithRetry routes through retryLLMCall to get the full
+// callOnceWithRetry routes through callLLM to get the full
 // retry/heartbeat/visibility stack. AgentID and out are pulled from ctx
 // (set by PlanCoordinator before invoking the planner) so heartbeats
 // land on the L2 specialists agent card rather than nowhere.
@@ -244,7 +244,7 @@ func (p *LLMPlanner) callOnceWithRetry(ctx context.Context, req *provider.ChatRe
 		logger = zap.NewNop()
 	}
 
-	result := retryLLMCall(ctx, p.provider, req, logger, p.retryer, p.timeouts, agentID, out)
+	result := callLLM(ctx, p.provider, req, logger, p.retryer, p.timeouts, agentID, out)
 	if result == nil {
 		return nil, "", fmt.Errorf("planner: nil retry result")
 	}

@@ -14,7 +14,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// retryMockProvider drives retryLLMCall with a programmable failure
+// retryMockProvider drives callLLM with a programmable failure
 // sequence. Each Chat call returns either failErr (typed or string,
 // caller picks) or a successful one-text-event stream.
 type retryMockProvider struct {
@@ -62,7 +62,7 @@ func fastRetryer(maxRetries int) *retry.Retryer {
 
 func TestRetryLLMCall_SuccessOnFirstAttempt(t *testing.T) {
 	prov := &retryMockProvider{}
-	result := retryLLMCall(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(3), llmCallTimeouts{}, "", nil)
+	result := callLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(3), llmCallTimeouts{}, "", nil)
 
 	if result.streamErr != nil {
 		t.Fatalf("unexpected error: %v", result.streamErr)
@@ -82,7 +82,7 @@ func TestRetryLLMCall_SuccessAfterRetry(t *testing.T) {
 		failUntil: 2,
 		failErr:   fmt.Errorf("read tcp: i/o timeout"),
 	}
-	result := retryLLMCall(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(3), llmCallTimeouts{}, "", nil)
+	result := callLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(3), llmCallTimeouts{}, "", nil)
 
 	if result.streamErr != nil {
 		t.Fatalf("unexpected error: %v", result.streamErr)
@@ -102,7 +102,7 @@ func TestRetryLLMCall_ExhaustsRetries(t *testing.T) {
 		failUntil: 100,
 		failErr:   fmt.Errorf("read tcp: i/o timeout"),
 	}
-	result := retryLLMCall(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(maxRetries), llmCallTimeouts{}, "", nil)
+	result := callLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(maxRetries), llmCallTimeouts{}, "", nil)
 
 	if result.streamErr == nil {
 		t.Fatal("expected error after exhausting retries")
@@ -124,7 +124,7 @@ func TestRetryLLMCall_NonRetryable_StatusCode(t *testing.T) {
 		failUntil: 100,
 		failErr:   apiErr,
 	}
-	result := retryLLMCall(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(5), llmCallTimeouts{}, "", nil)
+	result := callLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(5), llmCallTimeouts{}, "", nil)
 
 	if result.streamErr == nil {
 		t.Fatal("expected error for non-retryable failure")
@@ -145,7 +145,7 @@ func TestRetryLLMCall_RetryableHTTP_RetriesAndExhausts(t *testing.T) {
 		failUntil: 100,
 		failErr:   apiErr,
 	}
-	result := retryLLMCall(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(maxRetries), llmCallTimeouts{}, "", nil)
+	result := callLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(maxRetries), llmCallTimeouts{}, "", nil)
 
 	if result.streamErr == nil {
 		t.Fatal("expected error after exhausting retries on persistent 503")
@@ -164,7 +164,7 @@ func TestRetryLLMCall_Consecutive529TriggersFallback(t *testing.T) {
 		failUntil: 100,
 		failErr:   apiErr,
 	}
-	result := retryLLMCall(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(10), llmCallTimeouts{}, "", nil)
+	result := callLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(10), llmCallTimeouts{}, "", nil)
 
 	if result.streamErr == nil {
 		t.Fatal("expected error after 529 fallback trigger")
@@ -191,7 +191,7 @@ func TestRetryLLMCall_ContextCancelled(t *testing.T) {
 		failUntil: 100,
 		failErr:   fmt.Errorf("read tcp: i/o timeout"),
 	}
-	result := retryLLMCall(ctx, prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(5), llmCallTimeouts{}, "", nil)
+	result := callLLM(ctx, prov, &provider.ChatRequest{}, zap.NewNop(), fastRetryer(5), llmCallTimeouts{}, "", nil)
 
 	if result.streamErr == nil {
 		t.Fatal("expected error for cancelled context")
@@ -206,7 +206,7 @@ func TestRetryLLMCall_NilRetryer_SingleAttempt(t *testing.T) {
 		failUntil: 100,
 		failErr:   fmt.Errorf("transient"),
 	}
-	result := retryLLMCall(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), nil, llmCallTimeouts{}, "", nil)
+	result := callLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(), nil, llmCallTimeouts{}, "", nil)
 
 	if result.streamErr == nil {
 		t.Fatal("expected error to surface")
@@ -254,7 +254,7 @@ func TestRetryLLMCall_FirstByteTimeoutCancelsHungCall(t *testing.T) {
 	timeouts := llmCallTimeouts{firstByte: 30 * time.Millisecond}
 
 	start := time.Now()
-	result := retryLLMCall(
+	result := callLLM(
 		context.Background(),
 		prov,
 		&provider.ChatRequest{},
@@ -289,7 +289,7 @@ func TestRetryLLMCall_FirstByteWatchdogDisarmsAfterFirstChunk(t *testing.T) {
 	prov := &slowAfterFirstByteProvider{}
 	timeouts := llmCallTimeouts{firstByte: 30 * time.Millisecond}
 
-	result := retryLLMCall(
+	result := callLLM(
 		context.Background(),
 		prov,
 		&provider.ChatRequest{},
@@ -335,7 +335,7 @@ func TestRetryLLMCall_APITimeoutCutsLongStream(t *testing.T) {
 	timeouts := llmCallTimeouts{api: 50 * time.Millisecond}
 
 	start := time.Now()
-	result := retryLLMCall(
+	result := callLLM(
 		context.Background(),
 		prov,
 		&provider.ChatRequest{},
@@ -437,7 +437,7 @@ func TestRetryLLMCall_EmitsHeartbeatsDuringSilentWait(t *testing.T) {
 	prov := &slowFirstByteProvider{silentFor: 80 * time.Millisecond}
 	out := make(chan types.EngineEvent, 16)
 
-	result := retryLLMCall(
+	result := callLLM(
 		context.Background(),
 		prov,
 		&provider.ChatRequest{},
@@ -483,7 +483,7 @@ func TestRetryLLMCall_HeartbeatsStopAfterCompletion(t *testing.T) {
 	prov := &retryMockProvider{} // first attempt succeeds immediately
 	out := make(chan types.EngineEvent, 16)
 
-	result := retryLLMCall(
+	result := callLLM(
 		context.Background(),
 		prov,
 		&provider.ChatRequest{},
@@ -552,7 +552,7 @@ func (p *twoChunkProvider) Chat(_ context.Context, _ *provider.ChatRequest) (*pr
 func TestRetryLLMCall_ReplaysBufferedContentOnSuccess(t *testing.T) {
 	out := make(chan types.EngineEvent, 16)
 
-	result := retryLLMCall(
+	result := callLLM(
 		context.Background(),
 		&twoChunkProvider{},
 		&provider.ChatRequest{},
@@ -608,7 +608,7 @@ func TestRetryLLMCall_ReplaysBufferedContentOnSuccess(t *testing.T) {
 // contract: when retries are exhausted, NO text/tool_use events fire
 // onto out at all. The caller (subagent_driver / queryloop) is
 // responsible for emitting Error / MessageDelta(stop=error) /
-// MessageStop frames. retryLLMCall stays out of the way.
+// MessageStop frames. callLLM stays out of the way.
 func TestRetryLLMCall_NoEmissionOnFailure(t *testing.T) {
 	const maxRetries = 2
 	prov := &retryMockProvider{
@@ -616,7 +616,7 @@ func TestRetryLLMCall_NoEmissionOnFailure(t *testing.T) {
 		failErr:   fmt.Errorf("read tcp: i/o timeout"),
 	}
 	out := make(chan types.EngineEvent, 16)
-	result := retryLLMCall(
+	result := callLLM(
 		context.Background(),
 		prov,
 		&provider.ChatRequest{},
@@ -636,7 +636,7 @@ func TestRetryLLMCall_NoEmissionOnFailure(t *testing.T) {
 	}
 
 	// Only status ticks (heartbeats / retry notes) should appear on
-	// out — never text / tool_use / error frames from retryLLMCall
+	// out — never text / tool_use / error frames from callLLM
 	// itself. The caller emits its own error envelope after we return.
 	for ev := range out {
 		switch ev.Type {
@@ -648,7 +648,7 @@ func TestRetryLLMCall_NoEmissionOnFailure(t *testing.T) {
 			// "we're retrying" wire signal the front-end needs to
 			// distinguish backoff from a slow upstream.
 		case types.EngineEventText, types.EngineEventToolUse, types.EngineEventError:
-			t.Errorf("retryLLMCall must not emit %s on failure path", ev.Type)
+			t.Errorf("callLLM must not emit %s on failure path", ev.Type)
 		default:
 			t.Errorf("unexpected wire event: %s", ev.Type)
 		}

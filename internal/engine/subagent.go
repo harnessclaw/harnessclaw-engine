@@ -1204,7 +1204,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 			Model:     qe.provider.Name(),
 		}
 
-		llmResult := retryLLMCall(ctx, qe.provider, req, logger, qe.retryer, qe.llmTimeouts(), lc.agentID, out)
+		llmResult := callLLM(ctx, qe.provider, req, logger, qe.retryer, qe.llmTimeouts(), lc.agentID, out)
 
 		if llmResult.streamErr != nil {
 			llmErr := llmResult.streamErr
@@ -1219,7 +1219,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 			return subAgentLoopResult{Terminal: types.Terminal{Reason: types.TerminalModelError, Message: llmErr.Error(), Turn: ls.turn}, ContractFailures: contractFailures}
 		}
 
-		// Events were already streamed in real-time by retryLLMCall.
+		// Events were already streamed in real-time by callLLM.
 		textBuf := llmResult.textBuf
 		toolCalls := llmResult.toolCalls
 

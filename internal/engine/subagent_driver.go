@@ -45,7 +45,7 @@ var dispatchToolNames = []string{"Task", "Specialists", "Orchestrate"}
 //
 // The 5-phase shape (preprocess / LLM / error / tool / continuation) is
 // the same as runSubAgentLoop — what changes is the termination policy
-// and the post-tool result inspection. Helpers retryLLMCall,
+// and the post-tool result inspection. Helpers callLLM,
 // dispatchToolBatch, buildAssistantMessage are reused unchanged.
 func (qe *QueryEngine) runSubAgentDriver(
 	ctx context.Context,
@@ -164,7 +164,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 			Model:     qe.provider.Name(),
 		}
 
-		llmResult := retryLLMCall(ctx, qe.provider, req, logger, qe.retryer, qe.llmTimeouts(), lc.agentID, out)
+		llmResult := callLLM(ctx, qe.provider, req, logger, qe.retryer, qe.llmTimeouts(), lc.agentID, out)
 
 		if llmResult.streamErr != nil {
 			llmErr := llmResult.streamErr

@@ -41,13 +41,13 @@ func TestLLMCallOk_LogsTokenBreakdown(t *testing.T) {
 	}
 
 	out := make(chan types.EngineEvent, 16)
-	// Drain the output channel in a goroutine so retryLLMCall never blocks.
+	// Drain the output channel in a goroutine so callLLM never blocks.
 	go func() {
 		for range out {
 		}
 	}()
 
-	result := retryLLMCall(
+	result := callLLM(
 		context.Background(),
 		prov,
 		&provider.ChatRequest{},
@@ -60,7 +60,7 @@ func TestLLMCallOk_LogsTokenBreakdown(t *testing.T) {
 	close(out)
 
 	if result.streamErr != nil {
-		t.Fatalf("retryLLMCall returned unexpected error: %v", result.streamErr)
+		t.Fatalf("callLLM returned unexpected error: %v", result.streamErr)
 	}
 
 	// Find the single "llm.call ok" log entry.

@@ -145,7 +145,7 @@ type LLMSubagentResolver struct {
 	maxTokens int
 
 	// retryer + timeouts: when set (via WithRetry), the LLM call goes
-	// through retryLLMCall and picks up backoff retry, heartbeats, and
+	// through callLLM and picks up backoff retry, heartbeats, and
 	// retry-status wire events. When nil, falls back to direct
 	// provider.Chat. Kept optional so test setups that pass only
 	// (provider, model, registry, fallback, logger) still work.
@@ -216,7 +216,7 @@ func (r *LLMSubagentResolver) Resolve(ctx context.Context, goal string, availabl
 		return available[0], "only one sub-agent available", nil
 	}
 
-	pick, rationale, err := r.callLLM(ctx, goal, available)
+	pick, rationale, err := r.callOnce(ctx, goal, available)
 	if err != nil {
 		r.logger.Warn("LLM subagent resolver: call failed; falling back",
 			zap.String("goal_preview", truncForLog(goal, 120)),
@@ -247,13 +247,13 @@ func (r *LLMSubagentResolver) fallbackWith(ctx context.Context, goal string, ava
 	return pick, why + "; fallback: " + reason, nil
 }
 
-// callLLM sends the structured-output prompt and parses the result.
+// callOnce sends the structured-output prompt and parses the result.
 // Returns (pick, rationale, nil) on a clean tool call, error otherwise.
 //
 // When r.retryer is set (production path), dispatch goes through
-// retryLLMCall for transport-level retry + heartbeat + visibility.
+// callLLM for transport-level retry + heartbeat + visibility.
 // Otherwise the legacy direct-Chat path runs (tests / minimal setups).
-func (r *LLMSubagentResolver) callLLM(ctx context.Context, goal string, available []string) (string, string, error) {
+func (r *LLMSubagentResolver) callOnce(ctx context.Context, goal string, available []string) (string, string, error) {
 	listings := r.lookupListings(available)
 	system := buildResolverSystemPrompt()
 	user := buildResolverUserMessage(goal, listings)
@@ -272,11 +272,11 @@ func (r *LLMSubagentResolver) callLLM(ctx context.Context, goal string, availabl
 
 	var toolInput string
 	if r.retryer != nil {
-		// Production: retryLLMCall buffers tool_use into result.toolCalls;
+		// Production: callLLM buffers tool_use into result.toolCalls;
 		// we scan for select_subagent and pick the last one. agentID + out
 		// come from ctx (set by the Scheduler before dispatch).
 		agentID, out := retryRoutingFromCtx(ctx)
-		result := retryLLMCall(ctx, r.provider, req, r.logger, r.retryer, r.timeouts, agentID, out)
+		result := callLLM(ctx, r.provider, req, r.logger, r.retryer, r.timeouts, agentID, out)
 		if result == nil {
 			return "", "", fmt.Errorf("resolver: nil retry result")
 		}

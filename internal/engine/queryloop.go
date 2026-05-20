@@ -1422,7 +1422,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		// envelope.agent_id stamp on every emitter the main session
 		// produces, so heartbeats route to the active turn / message
 		// card.
-		llmResult := retryLLMCall(ctx, qe.provider, req, qe.logger, qe.retryer, qe.llmTimeouts(), "main", out)
+		llmResult := callLLM(ctx, qe.provider, req, qe.logger, qe.retryer, qe.llmTimeouts(), "main", out)
 
 		if llmResult.streamErr != nil {
 			// ---- Phase 3: Error Recovery (all retries exhausted) ----
@@ -1442,7 +1442,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 			return types.Terminal{Reason: types.TerminalModelError, Message: llmErr.Error(), Turn: ls.turn}
 		}
 
-		// Events were already streamed in real-time by retryLLMCall.
+		// Events were already streamed in real-time by callLLM.
 		// Extract collected results for session state.
 		textBuf := llmResult.textBuf
 		toolCalls := llmResult.toolCalls

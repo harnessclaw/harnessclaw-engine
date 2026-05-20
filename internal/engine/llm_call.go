@@ -14,7 +14,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// llmHeartbeatInterval is how often retryLLMCall pings the parent
+// llmHeartbeatInterval is how often callLLM pings the parent
 // `out` channel with a card-tick keep-alive while the LLM call is
 // in flight. Picked so that the surrounding step (5 min default
 // OrphanTimeoutMs) and agent (10 min) cards see ~10× margin — even
@@ -58,7 +58,7 @@ var errFirstByteTimeout = errors.New("LLM call: no first byte within budget (ups
 
 // llmTimeouts pulls the per-call deadlines off the QueryEngine's
 // config. Centralised so callers don't repeat the field plumbing —
-// every retryLLMCall call site is `qe.llmTimeouts()`.
+// every callLLM call site is `qe.llmTimeouts()`.
 func (qe *QueryEngine) llmTimeouts() llmCallTimeouts {
 	if qe == nil {
 		return llmCallTimeouts{}
@@ -82,7 +82,7 @@ type llmCallResult struct {
 	reasoning string
 	streamErr error // non-nil if the call or stream failed
 
-	// Timing breakdown captured by doSingleLLMCall. All durations are
+	// Timing breakdown captured by callLLMOnce. All durations are
 	// from the moment Chat() was invoked. Zero means "never observed".
 	// Used to diagnose "elapsed is huge but frontend got the answer
 	// quickly" — distinguishes gateway hangs (large endDelta), extended
@@ -93,7 +93,7 @@ type llmCallResult struct {
 	endAt       time.Duration // MessageEnd arrived
 }
 
-// retryLLMCall attempts to call provider.Chat and consume the stream,
+// callLLM attempts to call provider.Chat and consume the stream,
 // driving the retry loop through retry.Retryer. The Retryer owns the
 // backoff schedule, jitter, status-code-based retryability, and the
 // consecutive-529 fallback signal — this function only handles the
@@ -112,12 +112,12 @@ type llmCallResult struct {
 // attempt with streamErr populated. The wire-level error type
 // (*retry.APIError or *retry.FallbackTriggeredError) is preserved on
 // streamErr so callers / tests can inspect it.
-// retryLLMCall: see file-level doc. agentID, if non-empty, lands on
+// callLLM: see file-level doc. agentID, if non-empty, lands on
 // every per-attempt heartbeat event so the channel translator can
 // route it to the correct sub-agent card. Empty agentID = L1 main
 // loop; heartbeats then target whatever card is the most-specific
 // open card on the session.
-func retryLLMCall(
+func callLLM(
 	ctx context.Context,
 	prov provider.Provider,
 	req *provider.ChatRequest,
@@ -175,7 +175,7 @@ func retryLLMCall(
 		// Ordered shutdown: hbDone signals the goroutine to stop;
 		// hbExited blocks the deferred close until the goroutine
 		// has actually returned. Without the wait, a caller that
-		// closes `out` immediately after retryLLMCall returns could
+		// closes `out` immediately after callLLM returns could
 		// panic the heartbeat goroutine on a mid-tick send. In
 		// production the wait is microseconds (the next select
 		// iteration sees hbDone closed and returns); the safety
@@ -205,7 +205,7 @@ func retryLLMCall(
 		)
 		// Pass nil — every attempt is buffered, never streamed live.
 		// See the comment block above for the rationale.
-		attemptResult := doSingleLLMCall(ctx, prov, req, nil, timeouts, logger)
+		attemptResult := callLLMOnce(ctx, prov, req, nil, timeouts, logger)
 		elapsed := time.Since(startedAt)
 
 		if attemptResult.streamErr == nil {
@@ -386,7 +386,7 @@ func logSubmissionShape(_ *zap.Logger, _ *provider.ChatRequest) {
 	// loop.
 }
 
-// doSingleLLMCall performs one Chat call and fully consumes the stream,
+// callLLMOnce performs one Chat call and fully consumes the stream,
 // collecting text, tool calls, and usage. When out is non-nil, events
 // are also emitted in real-time for streaming to the client.
 //
@@ -405,7 +405,7 @@ func logSubmissionShape(_ *zap.Logger, _ *provider.ChatRequest) {
 // byte". Without firstByte, the prior incident (10-min orphan_timeout
 // on a step that never produced any event) would surface only as a
 // watchdog kill, not as a typed retryable error.
-func doSingleLLMCall(
+func callLLMOnce(
 	ctx context.Context,
 	prov provider.Provider,
 	req *provider.ChatRequest,
