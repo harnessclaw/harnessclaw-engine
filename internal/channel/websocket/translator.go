@@ -419,9 +419,29 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 
 	case types.EngineEventToolStart:
 		t.openTurnIfNeeded(s, em)
+		input := parseJSONObject(ev.ToolInput)
+		if existing, ok := s.tools[ev.ToolUseID]; ok {
+			// Planning 早开过 — 升级而非重开
+			em.Card(emitv2.CardTool, existing).Set(map[string]any{
+				"phase":      emitv2.PhaseExecuting,
+				"phase_hint": t.pickCopy(s, ev.ToolName, emitv2.PhaseExecuting, 0, nil),
+				"input":      input,
+			})
+			// 摘除 planning 标记 — 这卡已转正，retract 不应再关它
+			delete(s.toolsFromPlanning, ev.ToolUseID)
+			// 缓存 toolName（如果之前 Planning 没设过的话）
+			if _, ok := s.toolNames[ev.ToolUseID]; !ok {
+				s.toolNames[ev.ToolUseID] = ev.ToolName
+			}
+			// 注：当前 WithoutLifecycle 设置之后无法"反取消" — 这是 emit/v2 已知
+			// 的一个 limitation。Phase 4 接受这种 trade-off；后续 emit/v2 加 API
+			// 可以再补。
+			return
+		}
+		// Fresh open 路径（无 planning 早开 — 客户端工具 / 异步 / planning 出错的兜底）
 		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
 		s.tools[ev.ToolUseID] = toolCardID
-		input := parseJSONObject(ev.ToolInput)
+		s.toolNames[ev.ToolUseID] = ev.ToolName
 		opts := []emitv2.EmitOpt{emitv2.WithParent(parentForTool(s))}
 		// Agent-spawning tools (Specialists / Task) wrap entire sub-agent
 		// runs that legitimately last tens of minutes. The 120s tool-card
@@ -436,10 +456,12 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			opts = append(opts, emitv2.WithoutLifecycle())
 		}
 		em.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
-			Name:   ev.ToolName,
-			Target: "server",
-			Intent: ev.Intent,
-			Input:  input,
+			Name:      ev.ToolName,
+			Target:    "server",
+			Intent:    ev.Intent,
+			Input:     input,
+			Phase:     emitv2.PhaseExecuting,
+			PhaseHint: t.pickCopy(s, ev.ToolName, emitv2.PhaseExecuting, 0, nil),
 		}, opts...)
 
 	case types.EngineEventToolEnd:

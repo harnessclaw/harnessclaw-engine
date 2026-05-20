@@ -197,8 +197,6 @@ func TestTranslator_Retract_ClosesPlanningCards(t *testing.T) {
 }
 
 func TestTranslator_Retract_DoesNotCloseUpgradedTools(t *testing.T) {
-	// Un-skip after Task 17 wires the ToolStart idempotent upgrade that deletes from s.toolsFromPlanning.
-	t.Skip("requires Task 17 idempotent ToolStart upgrade")
 
 	em, rec := makeRecorderEmitter(t, "sess_upg")
 	tr := NewTranslator(fixedPicker(4))
@@ -255,6 +253,63 @@ func TestTranslator_NextRoundThinking_PreOpensMessageCard(t *testing.T) {
 	}
 	if lastSummary == "" {
 		t.Error("expected Hint.Summary on the M4 message card")
+	}
+}
+
+func TestTranslator_ToolStart_UpgradesPlanningCard(t *testing.T) {
+	em, rec := makeRecorderEmitter(t, "sess_up")
+	tr := NewTranslator(fixedPicker(6))
+
+	tr.Translate(em, "sess_up", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
+	tr.Translate(em, "sess_up", &types.EngineEvent{
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_u", ToolName: "Bash",
+	})
+	tr.Translate(em, "sess_up", &types.EngineEvent{
+		Type: types.EngineEventToolStart, ToolUseID: "toolu_u", ToolName: "Bash", ToolInput: `{"command":"ls"}`,
+	})
+
+	// 应该只有 1 个 card.add(tool)，1 个或多个 card.set 带 phase=executing
+	adds := 0
+	sawExecuting := false
+	for _, ev := range rec.Events() {
+		if ev.Envelope.CardKind != emitv2.CardTool {
+			continue
+		}
+		if ev.Type == emitv2.EventCardAdd {
+			adds++
+		}
+		if ev.Type == emitv2.EventCardSet {
+			patch, _ := ev.Payload.(map[string]any)
+			if patch["phase"] == emitv2.PhaseExecuting {
+				sawExecuting = true
+			}
+		}
+	}
+	if adds != 1 {
+		t.Errorf("expected 1 tool add, got %d", adds)
+	}
+	if !sawExecuting {
+		t.Error("expected card.set with phase=executing")
+	}
+}
+
+func TestTranslator_ToolStart_OpensFreshCardIfNoPlanning(t *testing.T) {
+	em, rec := makeRecorderEmitter(t, "sess_fresh")
+	tr := NewTranslator(fixedPicker(6))
+
+	tr.Translate(em, "sess_fresh", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
+	tr.Translate(em, "sess_fresh", &types.EngineEvent{
+		Type: types.EngineEventToolStart, ToolUseID: "toolu_f", ToolName: "Read", ToolInput: `{"path":"/x"}`,
+	})
+
+	adds := 0
+	for _, ev := range rec.Events() {
+		if ev.Type == emitv2.EventCardAdd && ev.Envelope.CardKind == emitv2.CardTool {
+			adds++
+		}
+	}
+	if adds != 1 {
+		t.Errorf("expected 1 tool add (no planning), got %d", adds)
 	}
 }
 
