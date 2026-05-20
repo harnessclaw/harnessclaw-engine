@@ -134,3 +134,30 @@ func TestTranslator_ToolPlanningProgress_NoOpWhenCardMissing(t *testing.T) {
 		}
 	}
 }
+
+func TestTranslator_ToolQueued_SetsPhaseQueued(t *testing.T) {
+	em, rec := makeRecorderEmitter(t, "sess_q")
+	tr := NewTranslator(fixedPicker(3))
+
+	tr.Translate(em, "sess_q", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
+	tr.Translate(em, "sess_q", &types.EngineEvent{
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_q1", ToolName: "Bash",
+	})
+	tr.Translate(em, "sess_q", &types.EngineEvent{
+		Type: types.EngineEventToolQueued, ToolUseID: "toolu_q1", ToolName: "Bash",
+	})
+
+	found := false
+	for _, ev := range rec.Events() {
+		if ev.Type != emitv2.EventCardSet {
+			continue
+		}
+		patch, _ := ev.Payload.(map[string]any)
+		if patch["phase"] == emitv2.PhaseQueued {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected card.set with phase=queued")
+	}
+}

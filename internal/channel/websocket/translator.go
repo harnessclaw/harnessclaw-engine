@@ -362,6 +362,20 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			"phase_bytes": ev.Bytes,
 		})
 
+	case types.EngineEventToolQueued:
+		toolCardID, ok := s.tools[ev.ToolUseID]
+		if !ok {
+			return
+		}
+		toolName := s.toolNames[ev.ToolUseID]
+		if toolName == "" {
+			toolName = ev.ToolName
+		}
+		em.Card(emitv2.CardTool, toolCardID).Set(map[string]any{
+			"phase":      emitv2.PhaseQueued,
+			"phase_hint": t.pickCopy(s, toolName, emitv2.PhaseQueued, 0, nil),
+		})
+
 	case types.EngineEventToolStart:
 		t.openTurnIfNeeded(s, em)
 		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
