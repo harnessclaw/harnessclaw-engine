@@ -328,6 +328,25 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		)
 
 	// ----- Tool lifecycle -----
+	case types.EngineEventToolPlanning:
+		// SSE 拿到 tool_use block 的 name；早开 CardTool（WithoutLifecycle
+		// 避免 LLM 流式期间被孤儿守护狗误杀），后续 progress/queued 通过
+		// Set 更新；ToolStart 到达时 Set(phase=executing) + 注册 watchdog。
+		t.openTurnIfNeeded(s, em)
+		if _, exists := s.tools[ev.ToolUseID]; exists {
+			return // 幂等：可能是 main out replay 后到达的 ToolUse 已开过
+		}
+		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
+		s.tools[ev.ToolUseID] = toolCardID
+		s.toolsFromPlanning[ev.ToolUseID] = true
+		s.toolNames[ev.ToolUseID] = ev.ToolName
+		em.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
+			Name:      ev.ToolName,
+			Target:    "server",
+			Phase:     emitv2.PhasePlanning,
+			PhaseHint: t.pickCopy(s, ev.ToolName, emitv2.PhasePlanning, 0, nil),
+		}, emitv2.WithParent(parentForTool(s)), emitv2.WithoutLifecycle())
+
 	case types.EngineEventToolStart:
 		t.openTurnIfNeeded(s, em)
 		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
