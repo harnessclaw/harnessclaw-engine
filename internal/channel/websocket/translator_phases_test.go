@@ -84,3 +84,53 @@ func TestTranslator_ToolPlanning_Idempotent(t *testing.T) {
 		t.Errorf("expected 1 tool card add, got %d", count)
 	}
 }
+
+func TestTranslator_ToolPlanningProgress_SetsPhaseAndBytes(t *testing.T) {
+	em, rec := makeRecorderEmitter(t, "sess_prog")
+	tr := NewTranslator(fixedPicker(2))
+
+	tr.Translate(em, "sess_prog", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
+	tr.Translate(em, "sess_prog", &types.EngineEvent{
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_w", ToolName: "Write",
+	})
+
+	tr.Translate(em, "sess_prog", &types.EngineEvent{
+		Type: types.EngineEventToolPlanningProgress, ToolUseID: "toolu_w", ToolName: "Write", Bytes: 1234,
+	})
+
+	found := false
+	// RecorderSink method: use the same method already used in TestTranslator_ToolPlanning_OpensCardEarly
+	for _, ev := range rec.Events() {
+		if ev.Type != emitv2.EventCardSet {
+			continue
+		}
+		patch, ok := ev.Payload.(map[string]any)
+		if !ok {
+			continue
+		}
+		if patch["phase"] == emitv2.PhasePlanningArgs && patch["phase_bytes"] == 1234 {
+			found = true
+			if hint, _ := patch["phase_hint"].(string); hint == "" {
+				t.Error("phase_hint should be resolved")
+			}
+		}
+	}
+	if !found {
+		t.Error("expected card.set with phase=planning_args + bytes=1234")
+	}
+}
+
+func TestTranslator_ToolPlanningProgress_NoOpWhenCardMissing(t *testing.T) {
+	em, rec := makeRecorderEmitter(t, "sess_orphan")
+	tr := NewTranslator(fixedPicker(2))
+
+	// 没有 ToolPlanning 直接发 Progress — 应该被忽略
+	tr.Translate(em, "sess_orphan", &types.EngineEvent{
+		Type: types.EngineEventToolPlanningProgress, ToolUseID: "toolu_x", Bytes: 500,
+	})
+	for _, ev := range rec.Events() {
+		if ev.Type == emitv2.EventCardSet {
+			t.Errorf("unexpected card.set without preceding Planning: %+v", ev)
+		}
+	}
+}
