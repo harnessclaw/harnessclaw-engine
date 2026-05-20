@@ -8,6 +8,25 @@ package emitv2
 // CardBuilder.Add / Set / Close. The builder marshals them as JSON in the
 // Event.Payload field.
 
+// ToolPhase classifies the runtime phase of a tool card before it
+// reaches the terminal status carried on card.close. Phase transitions
+// flow through card.set events on the tool card.
+type ToolPhase string
+
+const (
+	PhasePlanning       ToolPhase = "planning"        // model 在拼 args
+	PhasePlanningArgs   ToolPhase = "planning_args"   // args 已超 200B，发 progress
+	PhaseQueued         ToolPhase = "queued"          // LLM stream 完成等调度
+	PhasePermissionWait ToolPhase = "permission_wait" // 等用户授权
+	PhaseExecuting      ToolPhase = "executing"       // executor 真正在跑
+	// 终态走 ClosePayload.Status
+
+	// PhaseNextRound 不是 tool card 上的 phase — 仅作为 CopyPicker 查询 key
+	// 使用，文案落到 message card 的 Hint.Summary 上。声明在这里保持 picker
+	// 接口一致。
+	PhaseNextRound ToolPhase = "next_round_thinking"
+)
+
 // ----- card.add / card.set / card.close payloads (per card_kind) -----
 
 // TurnPayload describes a single user-input → assistant-reply round.
