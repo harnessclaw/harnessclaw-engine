@@ -161,6 +161,36 @@ const (
 	// disabled, sub-agent quality may suffer"). Translator maps it to
 	// a CardSystem card with Hint.Icon controlling severity styling.
 	EngineEventSystemNotice EngineEventType = "system_notice"
+
+	// EngineEventToolPlanning fires when SSE stream first surfaces a
+	// tool_use block with a known name. Translator opens the CardTool
+	// early (with WithoutLifecycle) so the user sees the card during
+	// args streaming, not only after executor dispatch.
+	EngineEventToolPlanning EngineEventType = "tool_planning"
+
+	// EngineEventToolPlanningProgress fires throttled (50ms) while
+	// tool_input args accumulate beyond 200 bytes. Translator emits
+	// card.set with Phase=planning_args + PhaseBytes counter.
+	EngineEventToolPlanningProgress EngineEventType = "tool_planning_progress"
+
+	// EngineEventToolQueued fires when LLM MessageEnd arrives, before
+	// dispatchToolBatch hands off to executor. Translator sets
+	// Phase=queued on the tool card.
+	EngineEventToolQueued EngineEventType = "tool_queued"
+
+	// EngineEventToolPlanningRetract fires when callLLM enters retry
+	// (onRetry callback). Translator closes all CardTools that were
+	// opened by planning but not yet upgraded to executing — typical
+	// path is card.close(status=cancelled) with a "model retry — superseded"
+	// error message.
+	EngineEventToolPlanningRetract EngineEventType = "tool_planning_retract"
+
+	// EngineEventNextRoundThinking fires after all tool results have
+	// been appended to the session, just before the next callLLM kicks
+	// off. Translator pre-opens a new message card with Hint.Summary
+	// populated by the copy library ("正在解读结果"). When the LLM
+	// stream's first byte lands, the hint gives way to streaming text.
+	EngineEventNextRoundThinking EngineEventType = "next_round_thinking"
 )
 
 // EngineEvent is a single event emitted from the engine to a channel.
@@ -190,6 +220,10 @@ type EngineEvent struct {
 	// Intent is the model-supplied progress sentence on agent_intent events
 	// ("正在搜 vLLM 论文"). Stays empty for other event types.
 	Intent string `json:"intent,omitempty"`
+
+	// Bytes carries the cumulative tool_input byte count on
+	// EngineEventToolPlanningProgress events. Zero for all other types.
+	Bytes int `json:"bytes,omitempty"`
 
 	// Sub-agent fields (set on subagent_start / subagent_end)
 	AgentID       string   `json:"agent_id,omitempty"`
