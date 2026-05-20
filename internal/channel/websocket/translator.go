@@ -749,6 +749,22 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		s.pendingPerm[reqID] = ev.PermissionRequest.RequestID
 		t.suspendForPrompt(s, em, ev.AgentID, reqID)
 
+		// Phase=permission_wait on the tool card if open. This complements
+		// the prompt.user(permission) frame above — the card visually
+		// transitions from "executing" to "waiting for authorization".
+		if reqInfo := ev.PermissionRequest; reqInfo != nil && reqInfo.ToolUseID != "" {
+			if toolCardID, ok := s.tools[reqInfo.ToolUseID]; ok {
+				toolName := s.toolNames[reqInfo.ToolUseID]
+				if toolName == "" {
+					toolName = reqInfo.ToolName
+				}
+				em.Card(emitv2.CardTool, toolCardID).Set(map[string]any{
+					"phase":      emitv2.PhasePermissionWait,
+					"phase_hint": t.pickCopy(s, toolName, emitv2.PhasePermissionWait, 0, nil),
+				})
+			}
+		}
+
 	case types.EngineEventPlanProposed:
 		if ev.PlanProposal == nil {
 			return

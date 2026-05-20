@@ -385,6 +385,7 @@ func (te *ToolExecutor) executeSingle(
 
 		req := &types.PermissionRequest{
 			RequestID:     "perm_" + uuid.New().String()[:8],
+			ToolUseID:     tc.ID,
 			ToolName:      tc.Name,
 			ToolInput:     tc.Input,
 			Message:       permMessage,

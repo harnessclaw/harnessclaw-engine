@@ -337,3 +337,46 @@ func TestTranslator_MessageStart_AfterNextRound_DoesNotDoubleAdd(t *testing.T) {
 		t.Errorf("expected 2 message adds, got %d", msgAdds)
 	}
 }
+
+func TestTranslator_PermissionRequest_SetsPhaseWait(t *testing.T) {
+	em, rec := makeRecorderEmitter(t, "sess_perm")
+	tr := NewTranslator(fixedPicker(7))
+
+	tr.Translate(em, "sess_perm", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
+	tr.Translate(em, "sess_perm", &types.EngineEvent{
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_pp", ToolName: "Bash",
+	})
+	tr.Translate(em, "sess_perm", &types.EngineEvent{
+		Type: types.EngineEventToolStart, ToolUseID: "toolu_pp", ToolName: "Bash", ToolInput: `{}`,
+	})
+
+	tr.Translate(em, "sess_perm", &types.EngineEvent{
+		Type: types.EngineEventPermissionRequest,
+		PermissionRequest: &types.PermissionRequest{
+			RequestID: "perm_x",
+			ToolUseID: "toolu_pp",
+			ToolName:  "Bash",
+			Message:   "Allow git?",
+			Options: []types.PermissionOption{
+				{Label: "Allow once", Scope: types.PermissionScopeOnce, Allow: true},
+			},
+		},
+	})
+
+	sawWait := false
+	for _, ev := range rec.Events() {
+		if ev.Envelope.CardKind != emitv2.CardTool {
+			continue
+		}
+		if ev.Type != emitv2.EventCardSet {
+			continue
+		}
+		patch, _ := ev.Payload.(map[string]any)
+		if patch["phase"] == emitv2.PhasePermissionWait {
+			sawWait = true
+		}
+	}
+	if !sawWait {
+		t.Error("expected card.set with phase=permission_wait")
+	}
+}

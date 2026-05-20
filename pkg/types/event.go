@@ -669,6 +669,7 @@ type TeamEvent struct {
 // PermissionRequest is sent to the client when a tool execution needs approval.
 type PermissionRequest struct {
 	RequestID     string             `json:"request_id"`      // unique ID for correlating the response
+	ToolUseID     string             `json:"tool_use_id"`     // correlate with the open tool card
 	ToolName      string             `json:"tool_name"`
 	ToolInput     string             `json:"tool_input"`
 	Message       string             `json:"message"`         // human-readable description of what's being asked
