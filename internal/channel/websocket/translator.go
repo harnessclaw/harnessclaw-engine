@@ -255,6 +255,13 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 	// ----- Message lifecycle -----
 	case types.EngineEventMessageStart:
 		t.openTurnIfNeeded(s, em)
+		if s.messageCardID != "" {
+			// M4 已经预开了，只补 model 字段
+			em.Card(emitv2.CardMessage, s.messageCardID).Set(map[string]any{
+				"model": ev.Model,
+			})
+			return
+		}
 		mid := nonEmpty(ev.MessageID, "msg_"+emitv2.NewCardID(emitv2.CardMessage))
 		s.messageCardID = mid
 		em.Card(emitv2.CardMessage, mid).Add(emitv2.MessagePayload{
@@ -393,6 +400,22 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			delete(s.toolNames, id)
 		}
 		s.toolsFromPlanning = map[string]bool{}
+
+	case types.EngineEventNextRoundThinking:
+		if s.turnCardID == "" {
+			return // 没有 turn — 无父，跳过
+		}
+		if s.messageCardID != "" {
+			return // 当前还有未关闭的 message card — 不重复开
+		}
+		// 提前开新 message card，挂 hint summary
+		mid := "msg_" + emitv2.NewCardID(emitv2.CardMessage)
+		s.messageCardID = mid
+		em.Card(emitv2.CardMessage, mid).Add(emitv2.MessagePayload{Role: "assistant"},
+			emitv2.WithParent(s.turnCardID),
+			emitv2.WithHint(emitv2.Hint{
+				Summary: t.pickCopy(s, "", emitv2.PhaseNextRound, 0, nil),
+			}))
 
 	case types.EngineEventToolStart:
 		t.openTurnIfNeeded(s, em)

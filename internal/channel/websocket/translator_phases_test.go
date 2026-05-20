@@ -221,3 +221,64 @@ func TestTranslator_Retract_DoesNotCloseUpgradedTools(t *testing.T) {
 		}
 	}
 }
+
+func TestTranslator_NextRoundThinking_PreOpensMessageCard(t *testing.T) {
+	em, rec := makeRecorderEmitter(t, "sess_m4")
+	tr := NewTranslator(fixedPicker(5))
+
+	// 走完一轮：MessageStart → ToolStart → ToolEnd → MessageStop
+	tr.Translate(em, "sess_m4", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
+	tr.Translate(em, "sess_m4", &types.EngineEvent{Type: types.EngineEventToolStart, ToolUseID: "toolu_1", ToolName: "Read", ToolInput: `{"path":"/x"}`})
+	tr.Translate(em, "sess_m4", &types.EngineEvent{Type: types.EngineEventToolEnd, ToolUseID: "toolu_1", ToolName: "Read", ToolResult: &types.ToolResult{Content: "ok"}})
+	tr.Translate(em, "sess_m4", &types.EngineEvent{Type: types.EngineEventMessageStop})
+
+	// 现在发 NextRoundThinking — 应该开新 message card 带 hint
+	tr.Translate(em, "sess_m4", &types.EngineEvent{Type: types.EngineEventNextRoundThinking})
+
+	// 2 个 card.add(message)；第二个带 Hint.Summary
+	msgAdds := 0
+	var lastSummary string
+	for _, ev := range rec.Events() {
+		if ev.Type != emitv2.EventCardAdd {
+			continue
+		}
+		if ev.Envelope.CardKind != emitv2.CardMessage {
+			continue
+		}
+		msgAdds++
+		if ev.Hint != nil {
+			lastSummary = ev.Hint.Summary
+		}
+	}
+	if msgAdds != 2 {
+		t.Errorf("expected 2 message adds, got %d", msgAdds)
+	}
+	if lastSummary == "" {
+		t.Error("expected Hint.Summary on the M4 message card")
+	}
+}
+
+func TestTranslator_MessageStart_AfterNextRound_DoesNotDoubleAdd(t *testing.T) {
+	em, rec := makeRecorderEmitter(t, "sess_m4b")
+	tr := NewTranslator(fixedPicker(5))
+
+	tr.Translate(em, "sess_m4b", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
+	tr.Translate(em, "sess_m4b", &types.EngineEvent{Type: types.EngineEventMessageStop})
+
+	// 先 NextRoundThinking 预开
+	tr.Translate(em, "sess_m4b", &types.EngineEvent{Type: types.EngineEventNextRoundThinking})
+
+	// 然后下一轮 MessageStart 到达 — 不应再开
+	tr.Translate(em, "sess_m4b", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_2", Model: "claude"})
+
+	// 应该 2 个 message add，不是 3 个
+	msgAdds := 0
+	for _, ev := range rec.Events() {
+		if ev.Type == emitv2.EventCardAdd && ev.Envelope.CardKind == emitv2.CardMessage {
+			msgAdds++
+		}
+	}
+	if msgAdds != 2 {
+		t.Errorf("expected 2 message adds, got %d", msgAdds)
+	}
+}
