@@ -205,7 +205,8 @@ func callLLM(
 		)
 		// Pass nil — every attempt is buffered, never streamed live.
 		// See the comment block above for the rationale.
-		attemptResult := callLLMOnce(ctx, prov, req, nil, timeouts, logger)
+		// planningOut is nil here; Task 8 will plumb it through.
+		attemptResult := callLLMOnce(ctx, prov, req, nil, nil, timeouts, logger)
 		elapsed := time.Since(startedAt)
 
 		if attemptResult.streamErr == nil {
@@ -388,7 +389,11 @@ func logSubmissionShape(_ *zap.Logger, _ *provider.ChatRequest) {
 
 // callLLMOnce performs one Chat call and fully consumes the stream,
 // collecting text, tool calls, and usage. When out is non-nil, events
-// are also emitted in real-time for streaming to the client.
+// are also emitted in real-time for streaming to the client (today
+// callLLM always passes nil — see buffer-then-replay rationale). When
+// planningOut is non-nil, the stream-aware tracker emits ToolPlanning
+// / ToolPlanningProgress events live, even when out is nil — these are
+// observation-only signals that may be retracted on retry.
 //
 // Timeouts (both optional, zero = disabled):
 //   - timeouts.api       — total wall-clock cap on this attempt;
@@ -410,6 +415,7 @@ func callLLMOnce(
 	prov provider.Provider,
 	req *provider.ChatRequest,
 	out chan<- types.EngineEvent,
+	planningOut chan<- types.EngineEvent,
 	timeouts llmCallTimeouts,
 	logger *zap.Logger,
 ) *llmCallResult {
@@ -454,6 +460,16 @@ func callLLMOnce(
 	}
 
 	result := &llmCallResult{}
+
+	// toolPlanningTracker memoizes per-ToolUseID first-seen state and
+	// throttle timestamps so we don't spam planningOut on every chunk.
+	type planningState struct {
+		nameSent bool
+		lastEmit time.Time
+	}
+	tracker := map[string]*planningState{}
+	const planningThresholdBytes = 200
+	const planningThrottle = 50 * time.Millisecond
 
 	// Stream-stuck watchdog: WARN every 30s if no new chunk has arrived.
 	// Observability only — does NOT cancel; firstByteTimeout / apiTimeout
@@ -521,6 +537,44 @@ func callLLMOnce(
 						ToolUseID: evt.ToolCall.ID,
 						ToolName:  evt.ToolCall.Name,
 						ToolInput: evt.ToolCall.Input,
+					}
+				}
+				// ----- Phase A: stream-time planning observation -----
+				// These events go to planningOut (NOT out / result.toolCalls), so
+				// they reach the translator live while the main stream is still
+				// buffered. Buffer-then-replay logic unchanged.
+				if planningOut != nil && evt.ToolCall.Name != "" {
+					id := evt.ToolCall.ID
+					st, ok := tracker[id]
+					if !ok {
+						st = &planningState{}
+						tracker[id] = st
+					}
+					if !st.nameSent {
+						// T1 PLANNING — first time we see this tool_use ID with a name
+						select {
+						case planningOut <- types.EngineEvent{
+							Type:      types.EngineEventToolPlanning,
+							ToolUseID: id,
+							ToolName:  evt.ToolCall.Name,
+						}:
+						default:
+						}
+						st.nameSent = true
+					}
+					// T2 PLANNING_ARGS — accumulated args ≥ threshold, throttled
+					accumulated := len(evt.ToolCall.Input)
+					if accumulated >= planningThresholdBytes && time.Since(st.lastEmit) >= planningThrottle {
+						select {
+						case planningOut <- types.EngineEvent{
+							Type:      types.EngineEventToolPlanningProgress,
+							ToolUseID: id,
+							ToolName:  evt.ToolCall.Name,
+							Bytes:     accumulated,
+						}:
+						default:
+						}
+						st.lastEmit = time.Now()
 					}
 				}
 			}
