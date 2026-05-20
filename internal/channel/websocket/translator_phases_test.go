@@ -161,3 +161,63 @@ func TestTranslator_ToolQueued_SetsPhaseQueued(t *testing.T) {
 		t.Error("expected card.set with phase=queued")
 	}
 }
+
+func TestTranslator_Retract_ClosesPlanningCards(t *testing.T) {
+	em, rec := makeRecorderEmitter(t, "sess_retract")
+	tr := NewTranslator(fixedPicker(4))
+
+	tr.Translate(em, "sess_retract", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
+	tr.Translate(em, "sess_retract", &types.EngineEvent{
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_a", ToolName: "Bash",
+	})
+	tr.Translate(em, "sess_retract", &types.EngineEvent{
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_b", ToolName: "Read",
+	})
+
+	tr.Translate(em, "sess_retract", &types.EngineEvent{
+		Type: types.EngineEventToolPlanningRetract,
+	})
+
+	closedCount := 0
+	for _, ev := range rec.Events() {
+		if ev.Type != emitv2.EventCardClose {
+			continue
+		}
+		if ev.Envelope.CardKind != emitv2.CardTool {
+			continue
+		}
+		pl, _ := ev.Payload.(emitv2.ClosePayload)
+		if pl.Status == emitv2.StatusCancelled {
+			closedCount++
+		}
+	}
+	if closedCount != 2 {
+		t.Errorf("expected 2 cancelled closes, got %d", closedCount)
+	}
+}
+
+func TestTranslator_Retract_DoesNotCloseUpgradedTools(t *testing.T) {
+	// Un-skip after Task 17 wires the ToolStart idempotent upgrade that deletes from s.toolsFromPlanning.
+	t.Skip("requires Task 17 idempotent ToolStart upgrade")
+
+	em, rec := makeRecorderEmitter(t, "sess_upg")
+	tr := NewTranslator(fixedPicker(4))
+
+	tr.Translate(em, "sess_upg", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
+	tr.Translate(em, "sess_upg", &types.EngineEvent{
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_a", ToolName: "Bash",
+	})
+	// ToolStart 把 toolu_a 转正
+	tr.Translate(em, "sess_upg", &types.EngineEvent{
+		Type: types.EngineEventToolStart, ToolUseID: "toolu_a", ToolName: "Bash", ToolInput: `{"command":"ls"}`,
+	})
+
+	// 现在发 Retract — 不应关掉 toolu_a
+	tr.Translate(em, "sess_upg", &types.EngineEvent{Type: types.EngineEventToolPlanningRetract})
+
+	for _, ev := range rec.Events() {
+		if ev.Type == emitv2.EventCardClose && ev.Envelope.CardKind == emitv2.CardTool {
+			t.Errorf("upgraded tool should not be closed by retract: %+v", ev)
+		}
+	}
+}

@@ -376,6 +376,24 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			"phase_hint": t.pickCopy(s, toolName, emitv2.PhaseQueued, 0, nil),
 		})
 
+	case types.EngineEventToolPlanningRetract:
+		// callLLM.onRetry 触发 — 关闭所有 planning 早开且尚未由 ToolStart
+		// 转正的 tool card。已转正（toolsFromPlanning 已 delete）的不动。
+		for id := range s.toolsFromPlanning {
+			cardID, ok := s.tools[id]
+			if !ok {
+				continue
+			}
+			em.Card(emitv2.CardTool, cardID).Close(emitv2.StatusCancelled,
+				emitv2.WithError(&emitv2.ErrorInfo{
+					Type:    emitv2.ErrorTypeUserAborted,
+					Message: "model retry — superseded",
+				}))
+			delete(s.tools, id)
+			delete(s.toolNames, id)
+		}
+		s.toolsFromPlanning = map[string]bool{}
+
 	case types.EngineEventToolStart:
 		t.openTurnIfNeeded(s, em)
 		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
