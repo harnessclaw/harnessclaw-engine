@@ -17,7 +17,7 @@ import (
 // plus the user-facing message and rejected-modality list under details.
 func TestTranslator_UnsupportedModalityFrame(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_um")
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 
 	tr.Translate(em, "sess_um", &types.EngineEvent{
 		Type:  types.EngineEventError,
@@ -90,7 +90,7 @@ func TestTranslator_UnsupportedModalityFrame(t *testing.T) {
 // becomes ErrorTypeInternal with the default user message.
 func TestTranslator_GenericErrorFallsBackToInternal(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_g")
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 
 	tr.Translate(em, "sess_g", &types.EngineEvent{
 		Type:  types.EngineEventError,

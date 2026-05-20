@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"harnessclaw-go/internal/copy"
 	emitv2 "harnessclaw-go/internal/emit/v2"
 	"harnessclaw-go/internal/engine/wait"
 	"harnessclaw-go/pkg/types"
@@ -33,6 +34,12 @@ type Translator struct {
 	// disables persistence (the in-memory askQuestion/pendingPlan/
 	// pendingPerm maps are still authoritative for live answers).
 	prompter promptIssuer
+
+	// copyPicker resolves localized strings for tool card phase hints
+	// and the M4 message card hint. Injected; nil = degraded mode where
+	// PhaseHint stays empty and front-end falls back to phase-enum
+	// defaults.
+	copyPicker *copy.CopyPicker
 }
 
 // promptIssuer is the minimal slice of prompter.Prompter the translator
@@ -42,9 +49,14 @@ type promptIssuer interface {
 	IssueWait(ctx context.Context, w wait.PendingWait) error
 }
 
-// NewTranslator constructs an empty Translator.
-func NewTranslator() *Translator {
-	return &Translator{sessions: make(map[string]*sessionState)}
+// NewTranslator constructs a Translator. picker may be nil for
+// degraded mode (PhaseHint stays empty; front-end uses Phase enum
+// defaults).
+func NewTranslator(picker *copy.CopyPicker) *Translator {
+	return &Translator{
+		sessions:   make(map[string]*sessionState),
+		copyPicker: picker,
+	}
 }
 
 // SetIssuer wires recovery persistence. When set, the translator saves
@@ -106,6 +118,22 @@ type sessionState struct {
 	// fire orphan_timeout. We pause their watchdogs on emit and resume
 	// on response — design intent: prompt.user has no time limit.
 	pausedCards map[string][]string // prompt request_id → list of paused card_ids
+
+	// toolsFromPlanning tracks which tool cards in `tools` were opened
+	// by EngineEventToolPlanning (stream-time early-open) and have not
+	// yet been upgraded to Phase=executing by EngineEventToolStart.
+	// These are the cards eligible for cancellation on Retract.
+	toolsFromPlanning map[string]bool
+
+	// toolNames is a ToolUseID → ToolName cache. ToolPlanning fills
+	// it; Progress / Queued / Permission lookups read it back so they
+	// don't need the front-end to re-send the name on every state
+	// change.
+	toolNames map[string]string
+
+	// sessionID is captured on first Translate so picker.Forget can be
+	// wired through the channel layer's session lifecycle.
+	sessionID string
 }
 
 func newSessionState() *sessionState {
@@ -120,6 +148,8 @@ func newSessionState() *sessionState {
 		pendingPlan:         make(map[string]string),
 		pendingStepDecision: make(map[string]string),
 		pausedCards:         make(map[string][]string),
+		toolsFromPlanning:   make(map[string]bool),
+		toolNames:           make(map[string]string),
 	}
 }
 
@@ -187,6 +217,7 @@ func (t *Translator) get(sessionID string) *sessionState {
 		return s
 	}
 	s = newSessionState()
+	s.sessionID = sessionID
 	t.sessions[sessionID] = s
 	return s
 }
@@ -197,6 +228,9 @@ func (t *Translator) Drop(sessionID string) {
 	t.mu.Lock()
 	delete(t.sessions, sessionID)
 	t.mu.Unlock()
+	if t.copyPicker != nil {
+		t.copyPicker.Forget(sessionID)
+	}
 }
 
 // Translate converts one EngineEvent into Builder calls on em (the
@@ -1351,6 +1385,15 @@ func formatRetryNote(info *types.LLMRetryInfo) string {
 	default:
 		return header
 	}
+}
+
+// pickCopy is a thin wrapper around t.copyPicker.Pick with nil-safety.
+// Returns "" when the picker is not configured.
+func (t *Translator) pickCopy(s *sessionState, toolName string, phase emitv2.ToolPhase, bytes int, retry *copy.RetryInfo) string {
+	if t.copyPicker == nil {
+		return ""
+	}
+	return t.copyPicker.Pick(s.sessionID, toolName, phase, bytes, retry)
 }
 
 // decodeAskQuestionInput pulls fields out of an AskUserQuestion tool

@@ -65,7 +65,7 @@ func findClosePayload(t *testing.T, rec *emitv2.RecorderSink, cardID string) emi
 // via ToolPayload.Metadata, not be silently dropped.
 func TestTranslator_ToolEnd_PassesSearchMetadataThrough(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_x")
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 
 	// Open a tool first so EngineEventToolEnd has a card to close.
 	tr.Translate(em, "sess_x", &types.EngineEvent{
@@ -127,7 +127,7 @@ func TestTranslator_ToolEnd_PassesSearchMetadataThrough(t *testing.T) {
 // counterpart for the tavily-specific has_raw flag.
 func TestTranslator_ToolEnd_PassesTavilyHasRawThrough(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_t")
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 	tr.Translate(em, "sess_t", &types.EngineEvent{
 		Type: types.EngineEventToolStart, ToolName: "TavilySearch", ToolUseID: "toolu_tv",
 		ToolInput: `{"query":"x"}`,
@@ -154,7 +154,7 @@ func TestTranslator_ToolEnd_PassesTavilyHasRawThrough(t *testing.T) {
 // known keys.
 func TestTranslator_ToolEnd_PromotesAllKnownKeys(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_p")
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 	tr.Translate(em, "sess_p", &types.EngineEvent{
 		Type: types.EngineEventToolStart, ToolName: "Bash", ToolUseID: "toolu_p",
 		ToolInput: `{}`,
@@ -186,7 +186,7 @@ func TestTranslator_ToolEnd_PromotesAllKnownKeys(t *testing.T) {
 // frame omits the field rather than carrying an empty object).
 func TestTranslator_ToolEnd_NoMetadataNoMap(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_n")
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 	tr.Translate(em, "sess_n", &types.EngineEvent{
 		Type: types.EngineEventToolStart, ToolName: "X", ToolUseID: "tu_n",
 	})
@@ -207,7 +207,7 @@ func TestTranslator_ToolEnd_NoMetadataNoMap(t *testing.T) {
 // watchdog kicks back in once the response has been routed.
 func TestTranslator_PlanReview_PausesAgentCardWatchdog(t *testing.T) {
 	em, rec, tk := makeTrackedEmitter(t, "sess_pr")
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 
 	// Stage the lineage the way a real plan-mode worker would: turn →
 	// message → SubAgentStart opens an agent card.
@@ -277,7 +277,7 @@ func TestTranslator_PlanReview_PausesAgentCardWatchdog(t *testing.T) {
 // heartbeat path through the dispatched sub-agent's inner activity.
 func TestTranslator_StepDispatchAttachesAgentUnderStep(t *testing.T) {
 	em, rec, tk := makeTrackedEmitter(t, "sess_step")
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 
 	// Open a plan card so step has somewhere natural to root, then
 	// dispatch the step itself.
@@ -337,7 +337,7 @@ func TestTranslator_StepDispatchAttachesAgentUnderStep(t *testing.T) {
 // orphan from its enclosing tool card.
 func TestTranslator_SubAgentStart_FallsBackWhenNoStepID(t *testing.T) {
 	em, rec, _ := makeTrackedEmitter(t, "sess_legacy")
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 
 	tr.Translate(em, "sess_legacy", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
 	tr.Translate(em, "sess_legacy", &types.EngineEvent{
@@ -391,7 +391,7 @@ func TestPromoteToolMetadata_NilWhenEmpty(t *testing.T) {
 // severity, and SystemPayload content.
 func TestTranslator_SystemNotice(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess-system-1")
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 
 	tr.Translate(em, "sess-system-1", &types.EngineEvent{
 		Type: types.EngineEventSystemNotice,

@@ -73,7 +73,7 @@ const cardToolOrphanTimeout = 120 * time.Second
 func TestTranslator_TaskToolCardIsLifecycleExempt(t *testing.T) {
 	clk := newTestClock()
 	em, rec, tk := makeTrackedEmitterWithClock(t, "sess_task", clk)
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 
 	// Open a message first so the tool has a natural parent.
 	tr.Translate(em, "sess_task", &types.EngineEvent{
@@ -129,7 +129,7 @@ func TestTranslator_TaskToolCardIsLifecycleExempt(t *testing.T) {
 func TestTranslator_SpecialistsToolCardIsLifecycleExempt(t *testing.T) {
 	clk := newTestClock()
 	em, rec, tk := makeTrackedEmitterWithClock(t, "sess_spec", clk)
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 
 	tr.Translate(em, "sess_spec", &types.EngineEvent{
 		Type:      types.EngineEventMessageStart,
@@ -171,7 +171,7 @@ func TestTranslator_SpecialistsToolCardIsLifecycleExempt(t *testing.T) {
 func TestTranslator_TaskToolCardCallPathIsLifecycleExempt(t *testing.T) {
 	clk := newTestClock()
 	em, rec, tk := makeTrackedEmitterWithClock(t, "sess_task_call", clk)
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 
 	// Open a message first so the tool has a natural parent.
 	tr.Translate(em, "sess_task_call", &types.EngineEvent{
@@ -221,7 +221,7 @@ func TestTranslator_TaskToolCardCallPathIsLifecycleExempt(t *testing.T) {
 func TestTranslator_TaskToolCardViaSubAgentEventIsLifecycleExempt(t *testing.T) {
 	clk := newTestClock()
 	em, rec, tk := makeTrackedEmitterWithClock(t, "sess_subevt", clk)
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 
 	// Open a turn + a sub-agent so SubAgentEvent has a registered child emitter.
 	tr.Translate(em, "sess_subevt", &types.EngineEvent{
@@ -275,7 +275,7 @@ func TestTranslator_TaskToolCardViaSubAgentEventIsLifecycleExempt(t *testing.T) 
 func TestTranslator_RegularToolCardOrphansAfterTimeout(t *testing.T) {
 	clk := newTestClock()
 	em, rec, tk := makeTrackedEmitterWithClock(t, "sess_ctrl", clk)
-	tr := NewTranslator()
+	tr := NewTranslator(nil)
 
 	tr.Translate(em, "sess_ctrl", &types.EngineEvent{
 		Type:      types.EngineEventMessageStart,

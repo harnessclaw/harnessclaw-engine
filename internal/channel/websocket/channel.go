@@ -72,7 +72,7 @@ func New(cfg config.WSChannelConfig, _ func(context.Context, string) error, logg
 		cfg:        cfg,
 		logger:     logger.Named("ws"),
 		registry:   newConnRegistry(),
-		translator: NewTranslator(),
+		translator: NewTranslator(nil),
 		sequencer:  emitv2.NewSequencer(),
 		tracker:    emitv2.NewTracker(emitv2.TrackerConfig{CheckEvery: time.Second}),
 	}
