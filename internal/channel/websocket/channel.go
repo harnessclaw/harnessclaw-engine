@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,7 @@ import (
 
 	"harnessclaw-go/internal/channel"
 	"harnessclaw-go/internal/config"
+	copypkg "harnessclaw-go/internal/copy"
 	emitv2 "harnessclaw-go/internal/emit/v2"
 	"harnessclaw-go/internal/engine/prompter"
 	"harnessclaw-go/internal/engine/wait"
@@ -68,11 +70,19 @@ func New(cfg config.WSChannelConfig, _ func(context.Context, string) error, logg
 	if cfg.Path == "" {
 		cfg.Path = "/v1/ws"
 	}
+	// CopyPicker resolves localized phase hints for tool cards and the M4
+	// inter-round thinking hint on message cards. Per-session randomness
+	// is seeded fresh on each new session via the rng factory below;
+	// production wants non-deterministic rotation, tests use a fixed seed
+	// via NewTranslator(picker) directly.
+	picker := copypkg.NewCopyPicker(func() *rand.Rand {
+		return rand.New(rand.NewSource(time.Now().UnixNano()))
+	})
 	return &Channel{
 		cfg:        cfg,
 		logger:     logger.Named("ws"),
 		registry:   newConnRegistry(),
-		translator: NewTranslator(nil),
+		translator: NewTranslator(picker),
 		sequencer:  emitv2.NewSequencer(),
 		tracker:    emitv2.NewTracker(emitv2.TrackerConfig{CheckEvery: time.Second}),
 	}
