@@ -61,6 +61,15 @@ type ToolPayload struct {
 	FilePath    string         `json:"file_path,omitempty"`
 	Artifacts   []ArtifactRef  `json:"artifacts,omitempty"`
 	Metadata    map[string]any `json:"metadata,omitempty"`
+
+	// Phase 系列字段在 tool card 进入终态前由 card.set 事件流式更新。
+	// Phase 是机器可读的枚举；PhaseHint 是引擎用文案库解析好的中文，
+	// 前端直接渲染；PhaseBytes 只在 PhasePlanningArgs 时有效，承载
+	// 流式累积的 tool_input 字节数（已经过 humanize 表达在 PhaseHint 里，
+	// 这里保留原始数字仅用于开发者面板 / 调试视图）。
+	Phase      ToolPhase `json:"phase,omitempty"`
+	PhaseHint  string    `json:"phase_hint,omitempty"`
+	PhaseBytes int       `json:"phase_bytes,omitempty"`
 }
 
 // AgentPayload describes a sub-agent session.
