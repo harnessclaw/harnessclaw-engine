@@ -126,6 +126,7 @@ func callLLM(
 	timeouts llmCallTimeouts,
 	agentID string,
 	out chan<- types.EngineEvent,
+	planningOut chan<- types.EngineEvent,
 ) *llmCallResult {
 	var result *llmCallResult
 	attempt := 0
@@ -203,10 +204,11 @@ func callLLM(
 			zap.Int("system_chars", len(req.System)),
 			zap.Int("max_tokens", req.MaxTokens),
 		)
-		// Pass nil — every attempt is buffered, never streamed live.
+		// Pass nil for out — every attempt is buffered, never streamed live.
 		// See the comment block above for the rationale.
-		// planningOut is nil here; Task 8 will plumb it through.
-		attemptResult := callLLMOnce(ctx, prov, req, nil, nil, timeouts, logger)
+		// planningOut is threaded through so planning events fire live
+		// even during retried attempts (and are retracted on each retry).
+		attemptResult := callLLMOnce(ctx, prov, req, nil, planningOut, timeouts, logger)
 		elapsed := time.Since(startedAt)
 
 		if attemptResult.streamErr == nil {
@@ -288,6 +290,23 @@ func callLLM(
 			// Buffer full — drop. The WARN log inside retry.Retryer
 			// still records the event for post-hoc analysis.
 		}
+
+		// Tell translator that any planning-only tool cards opened during
+		// the prior attempt's stream must be cancelled — the next attempt
+		// will re-emit fresh ToolPlanning events with possibly different
+		// tool identities.
+		if planningOut != nil {
+			select {
+			case planningOut <- types.EngineEvent{
+				Type:    types.EngineEventToolPlanningRetract,
+				AgentID: agentID,
+			}:
+			default:
+				// chan full — drop; the next attempt's planning events
+				// still flow, and ToolStart upgrade will clean up the
+				// toolsFromPlanning map even if Retract was missed.
+			}
+		}
 	}
 
 	var err error
@@ -352,6 +371,25 @@ func callLLM(
 				ToolUseID: tc.ID,
 				ToolName:  tc.Name,
 				ToolInput: tc.Input,
+			}
+		}
+	}
+
+	// After replay of buffered events, signal that the LLM stream is done
+	// and tool execution is about to be dispatched. Translator turns this
+	// into Phase=queued on each open tool card. Fires through planningOut
+	// (not out) so retries — which discard the main stream's events —
+	// still naturally retract these too if the next attempt fails before
+	// we get here.
+	if err == nil && planningOut != nil && result != nil {
+		for _, tc := range result.toolCalls {
+			select {
+			case planningOut <- types.EngineEvent{
+				Type:      types.EngineEventToolQueued,
+				ToolUseID: tc.ID,
+				ToolName:  tc.Name,
+			}:
+			default:
 			}
 		}
 	}

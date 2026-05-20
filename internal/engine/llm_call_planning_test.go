@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"go.uber.org/zap"
@@ -115,4 +116,72 @@ func makeStringLLMCall(n int) string {
 		b[i] = 'a'
 	}
 	return string(b)
+}
+
+func TestCallLLM_EmitsRetractOnRetry(t *testing.T) {
+	prov := &retryMockProvider{
+		failUntil: 1, // first attempt fails, second succeeds
+		failErr:   fmt.Errorf("read tcp: i/o timeout"),
+	}
+
+	out := make(chan types.EngineEvent, 32)
+	planningOut := make(chan types.EngineEvent, 32)
+
+	result := callLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(),
+		fastRetryer(3), llmCallTimeouts{}, "main", out, planningOut)
+
+	if result.streamErr != nil {
+		t.Fatalf("expected success on attempt 2, got %v", result.streamErr)
+	}
+
+	close(out)
+	close(planningOut)
+
+	var sawRetract bool
+	for ev := range planningOut {
+		if ev.Type == types.EngineEventToolPlanningRetract {
+			sawRetract = true
+		}
+	}
+	if !sawRetract {
+		t.Error("expected EngineEventToolPlanningRetract during retry")
+	}
+}
+
+func TestCallLLM_EmitsToolQueuedOnSuccess(t *testing.T) {
+	// Provider returns 1 tool_use + MessageEnd
+	prov := &streamPlanningProv{
+		chunks: []types.StreamEvent{
+			{
+				Type: types.StreamEventToolUse,
+				ToolCall: &types.ToolCall{ID: "toolu_q", Name: "Read", Input: `{"path":"/tmp/x"}`},
+			},
+		},
+	}
+	out := make(chan types.EngineEvent, 16)
+	planningOut := make(chan types.EngineEvent, 16)
+
+	result := callLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(),
+		nil /* no retry */, llmCallTimeouts{}, "main", out, planningOut)
+
+	if result.streamErr != nil {
+		t.Fatalf("unexpected stream err: %v", result.streamErr)
+	}
+	close(out)
+	close(planningOut)
+
+	var queuedCount int
+	var queuedToolName string
+	for ev := range planningOut {
+		if ev.Type == types.EngineEventToolQueued {
+			queuedCount++
+			queuedToolName = ev.ToolName
+		}
+	}
+	if queuedCount != 1 {
+		t.Errorf("queuedCount = %d, want 1", queuedCount)
+	}
+	if queuedToolName != "Read" {
+		t.Errorf("queuedToolName = %q, want Read", queuedToolName)
+	}
 }

@@ -56,6 +56,7 @@ func TestLLMCallOk_LogsTokenBreakdown(t *testing.T) {
 		llmCallTimeouts{},
 		"agent_test",
 		out,
+		nil,
 	)
 	close(out)
 

@@ -244,7 +244,7 @@ func (p *LLMPlanner) callOnceWithRetry(ctx context.Context, req *provider.ChatRe
 		logger = zap.NewNop()
 	}
 
-	result := callLLM(ctx, p.provider, req, logger, p.retryer, p.timeouts, agentID, out)
+	result := callLLM(ctx, p.provider, req, logger, p.retryer, p.timeouts, agentID, out, nil)
 	if result == nil {
 		return nil, "", fmt.Errorf("planner: nil retry result")
 	}
