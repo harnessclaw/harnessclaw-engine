@@ -1372,6 +1372,16 @@ func (qe *QueryEngine) runSubAgentLoop(
 			}
 		}
 
+		// M4 — emit NextRoundThinking so the channel layer can pre-open
+		// a new message card with "正在解读结果" hint. Fires only when we're
+		// actually doing another LLM round (tools were called).
+		if len(toolCalls) > 0 {
+			out <- types.EngineEvent{
+				Type:    types.EngineEventNextRoundThinking,
+				AgentID: lc.agentID,
+			}
+		}
+
 		// ---- Phase 5 (part B): Continue loop ----
 	}
 }

@@ -1550,6 +1550,18 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 			continue
 		}
 
+		// M4 — emit NextRoundThinking so the channel layer can pre-open
+		// a new message card with "正在解读结果" hint. The next callLLM
+		// iteration's MessageStart will Set into the same card; the hint
+		// gives way to streaming text once first byte lands. Fires only
+		// when we're actually doing another LLM round (tools were called).
+		if len(toolCalls) > 0 {
+			out <- types.EngineEvent{
+				Type:    types.EngineEventNextRoundThinking,
+				AgentID: "", // main loop
+			}
+		}
+
 		// Loop continues: the LLM needs to see tool results and respond again.
 	}
 }
