@@ -470,6 +470,8 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			toolCardID = nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
 		}
 		delete(s.tools, ev.ToolUseID)
+		delete(s.toolNames, ev.ToolUseID)
+		delete(s.toolsFromPlanning, ev.ToolUseID)
 		var inner emitv2.ToolPayload
 		var status = emitv2.StatusOK
 		var errInfo *emitv2.ErrorInfo
