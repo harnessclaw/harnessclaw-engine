@@ -276,7 +276,7 @@ func (r *LLMSubagentResolver) callOnce(ctx context.Context, goal string, availab
 		// we scan for select_subagent and pick the last one. agentID + out
 		// come from ctx (set by the Scheduler before dispatch).
 		agentID, out := retryRoutingFromCtx(ctx)
-		result := callLLM(ctx, r.provider, req, r.logger, r.retryer, r.timeouts, agentID, out, nil)
+		result := callLLM(ctx, r.provider, req, r.logger, r.retryer, r.timeouts, agentID, out, out)
 		if result == nil {
 			return "", "", fmt.Errorf("resolver: nil retry result")
 		}

@@ -1422,7 +1422,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		// envelope.agent_id stamp on every emitter the main session
 		// produces, so heartbeats route to the active turn / message
 		// card.
-		llmResult := callLLM(ctx, qe.provider, req, qe.logger, qe.retryer, qe.llmTimeouts(), "main", out, nil)
+		llmResult := callLLM(ctx, qe.provider, req, qe.logger, qe.retryer, qe.llmTimeouts(), "main", out, out)
 
 		if llmResult.streamErr != nil {
 			// ---- Phase 3: Error Recovery (all retries exhausted) ----

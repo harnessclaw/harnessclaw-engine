@@ -93,6 +93,14 @@ type llmCallResult struct {
 	endAt       time.Duration // MessageEnd arrived
 }
 
+// Note on planningOut sharing: production callers today pass the same
+// chan for both `out` and `planningOut`. The two parameters express
+// semantic intent (planningOut may carry retracted events) but
+// physically share one stream — the event TYPE is the discriminator.
+// Future work may split them into separate chans for back-pressure /
+// drop-policy isolation; today's translator handles both cases
+// uniformly via its EngineEventType switch.
+
 // callLLM attempts to call provider.Chat and consume the stream,
 // driving the retry loop through retry.Retryer. The Retryer owns the
 // backoff schedule, jitter, status-code-based retryability, and the
