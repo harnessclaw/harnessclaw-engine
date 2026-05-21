@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/artifacttool"
 	"harnessclaw-go/internal/tool/submittool"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -545,13 +548,12 @@ func TestBuildSubAgentSystemPrompt_WriterUsesSpecializedPrompt(t *testing.T) {
 	}
 }
 
-// TestSpawnSync_InjectsArtifactPreamble proves the doc §6.A loop end-to-end:
-// when the parent stored an artifact in the trace, SpawnSync prepends a
-// concise <available-artifacts> block to the L3's task message so L3 can
-// decide what to ArtifactRead. Without this, L3 has no way to discover
-// inputs short of L2 pasting them into the prompt — exactly the failure
-// mode the artifact design replaces.
-func TestSpawnSync_InjectsArtifactPreamble(t *testing.T) {
+// TestSpawnSync_InjectsTaskInputsPreamble replaces the legacy artifact-
+// preamble check: under the local-files-as-truth model, the framework
+// renders a <task-inputs> block listing upstream output paths (with
+// summaries pulled from each dep's meta.json) when cfg.InputPaths is set.
+// Empty InputPaths must yield no preamble.
+func TestSpawnSync_InjectsTaskInputsPreamble(t *testing.T) {
 	prov := &subagentMockProvider{
 		responses: []subagentMockResponse{
 			{text: "ok", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
@@ -559,78 +561,70 @@ func TestSpawnSync_InjectsArtifactPreamble(t *testing.T) {
 	}
 	eng := newSubagentTestEngine(prov)
 
-	store := artifact.NewMemoryStore(artifact.DefaultConfig())
-	eng.SetArtifactStore(store)
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // windows
+	root := filepath.Join(tmp, ".harnessclaw", "workspace")
 
-	const traceID = "tr_preamble_test"
-
-	// Seed: a "parent" artifact, scoped to the trace we'll spawn under.
-	if _, err := store.Save(context.Background(), &artifact.SaveInput{
-		Type:        artifact.TypeFile,
-		Name:        "input.md",
-		Description: "parent's findings",
-		Content:     "trace-scoped sample content for preamble check",
-		Producer:    artifact.Producer{AgentID: "agent_parent"},
-		TraceID:     traceID,
-	}); err != nil {
-		t.Fatalf("seed artifact: %v", err)
+	rootSID := "sess_inputs"
+	depID := "t_dep"
+	if err := workspace.EnsureSession(root, rootSID); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	if err := workspace.EnsureTaskDir(root, rootSID, depID); err != nil {
+		t.Fatalf("ensure task: %v", err)
+	}
+	depFile := filepath.Join(workspace.TaskDir(root, rootSID, depID), "input.md")
+	if err := os.WriteFile(depFile, []byte("hello world"), 0o644); err != nil {
+		t.Fatalf("write dep file: %v", err)
+	}
+	depMeta := &workspace.Meta{TaskID: depID, Agent: "researcher", Status: workspace.StatusDone, Summary: "parent's findings"}
+	mb, _ := json.MarshalIndent(depMeta, "", "  ")
+	if err := os.WriteFile(workspace.MetaPath(root, rootSID, depID), mb, 0o644); err != nil {
+		t.Fatalf("write meta: %v", err)
 	}
 
-	// Carry trace_id on ctx the same way the real query loop does.
-	ctx := emit.WithTrace(context.Background(), &emit.TraceContext{
-		TraceID:   traceID,
-		Sequencer: emit.NewSequencer(),
-	})
-
-	if _, err := eng.SpawnSync(ctx, &agent.SpawnConfig{
+	if _, err := eng.SpawnSync(context.Background(), &agent.SpawnConfig{
 		Prompt:          "整理 input.md 关键点",
 		AgentType:       tool.AgentTypeSync,
 		ParentSessionID: "parent_x",
+		RootSessionID:   rootSID,
+		InputPaths:      []string{depFile},
 	}); err != nil {
 		t.Fatalf("SpawnSync: %v", err)
 	}
 
 	got := prov.lastUserText()
 	mustContain := []string{
-		"<available-artifacts>",
-		"art_",                 // some ID was rendered
-		"input.md",             // name surfaced for read decision
-		"parent's findings",    // description surfaced
-		"<task>",               // task wrapper present so L3 can split context
-		"整理 input.md 关键点",      // original task body preserved verbatim
+		"<task-inputs>",
+		"tasks/" + depID + "/input.md",
+		"parent's findings",
+		"<task>",
+		"整理 input.md 关键点",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(got, want) {
 			t.Errorf("L3 user message missing %q\nfull text:\n%s", want, got)
 		}
 	}
-
-	// Order check: preamble must come BEFORE task — otherwise the LLM
-	// reads the question first and may answer before noticing it had inputs.
-	if pAt, tAt := strings.Index(got, "<available-artifacts>"), strings.Index(got, "<task>"); pAt > tAt {
+	if pAt, tAt := strings.Index(got, "<task-inputs>"), strings.Index(got, "<task>"); pAt > tAt {
 		t.Errorf("preamble must precede <task>; got preamble@%d task@%d", pAt, tAt)
 	}
 }
 
-// TestSpawnSync_NoPreambleWhenStoreEmpty guards the no-op path — when the
-// trace has zero artifacts, the L3 task message must come through verbatim.
-// Adding an empty <available-artifacts/> would teach the LLM that artifacts
-// exist when they don't, leading it to call ArtifactRead with hallucinated IDs.
-func TestSpawnSync_NoPreambleWhenStoreEmpty(t *testing.T) {
+// TestSpawnSync_NoPreambleWhenInputsEmpty guards the no-op path — when
+// the dispatcher didn't supply InputPaths, the L3 task message must come
+// through verbatim. An empty <task-inputs/> would teach the LLM that
+// inputs exist when they don't.
+func TestSpawnSync_NoPreambleWhenInputsEmpty(t *testing.T) {
 	prov := &subagentMockProvider{
 		responses: []subagentMockResponse{
 			{text: "ok", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
 		},
 	}
 	eng := newSubagentTestEngine(prov)
-	eng.SetArtifactStore(artifact.NewMemoryStore(artifact.DefaultConfig()))
 
-	ctx := emit.WithTrace(context.Background(), &emit.TraceContext{
-		TraceID:   "tr_empty",
-		Sequencer: emit.NewSequencer(),
-	})
-
-	if _, err := eng.SpawnSync(ctx, &agent.SpawnConfig{
+	if _, err := eng.SpawnSync(context.Background(), &agent.SpawnConfig{
 		Prompt:          "写一句问候",
 		AgentType:       tool.AgentTypeSync,
 		ParentSessionID: "parent_empty",
@@ -639,8 +633,8 @@ func TestSpawnSync_NoPreambleWhenStoreEmpty(t *testing.T) {
 	}
 
 	got := prov.lastUserText()
-	if strings.Contains(got, "<available-artifacts>") {
-		t.Errorf("empty store must produce no preamble; got:\n%s", got)
+	if strings.Contains(got, "<task-inputs>") {
+		t.Errorf("empty InputPaths must produce no preamble; got:\n%s", got)
 	}
 	if strings.TrimSpace(got) != "写一句问候" {
 		t.Errorf("task body should pass through verbatim; got %q", got)

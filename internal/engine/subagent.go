@@ -2,7 +2,10 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -266,13 +269,14 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		)
 	}
 
-	// Step 5a: Compose available-artifacts preamble. Doc §6 mode A —
-	// instead of L2 pasting content into L3's prompt, the framework
-	// surfaces a list of trace-scoped artifact metadata so L3 can
-	// ArtifactRead what it actually needs. The preamble stays empty
-	// when the trace has no artifacts yet, making this a no-op for
-	// the common single-task path.
-	artPreamble := qe.composeArtifactPreamble(ctx, logger)
+	// Step 5a: Compose <task-inputs> preamble. Under the local-files-as-
+	// truth model the framework lists upstream files (with summaries from
+	// each dep's meta.json) instead of trace-scoped artifact metadata.
+	// L3 calls FileRead on the listed paths when it needs the contents.
+	// Empty cfg.InputPaths → no preamble (the artifact-store legacy path
+	// also returned empty in the common single-task case, so this is a
+	// drop-in shape).
+	artPreamble := composeTaskInputsPreamble(cfg, logger)
 
 	// Step 5a': Render the per-spawn deliverable contract (doc §3 M1).
 	// Empty when the dispatcher didn't supply ExpectedOutputs, in which
@@ -330,9 +334,10 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			})
 		}
 		// In fork mode the new task message is a fresh user turn; wrap
-		// it with <task> via WrapTaskWithPreamble so the LLM doesn't
-		// confuse the artifact list with the inherited conversation.
-		taskBody := artifact.WrapTaskWithPreamble(cfg.Prompt, nil, 0) // wrapper handles "no artifacts → passthrough"
+		// it with <task> so the LLM doesn't confuse framework preamble
+		// blocks (artifact list / contract / inputs) with the inherited
+		// conversation.
+		taskBody := "<task>\n" + cfg.Prompt + "\n</task>"
 		taskBody = composeUserMessage(taskBody)
 		sess.AddMessage(types.Message{
 			Role: types.RoleUser,
@@ -1739,6 +1744,73 @@ func refIDs(refs []types.ArtifactRef) []string {
 		ids = append(ids, r.ArtifactID)
 	}
 	return ids
+}
+
+// composeTaskInputsPreamble renders the <task-inputs> block listing the
+// upstream task output files this spawn will read. Each entry pulls its
+// summary from the dep's meta.json (sibling file under .../tasks/{tid}/),
+// so the L3 sees not just paths but a one-line description of each.
+//
+// Empty cfg.InputPaths returns "" — the legacy artifact-store path also
+// returned "" in the common single-task case, so callers compose
+// unconditionally without ever wrapping the result.
+func composeTaskInputsPreamble(cfg *agent.SpawnConfig, logger *zap.Logger) string {
+	if len(cfg.InputPaths) == 0 {
+		return ""
+	}
+	root := workspaceRootDir()
+	rootSID := cfg.RootSessionID
+	if rootSID == "" {
+		rootSID = cfg.ParentSessionID
+	}
+	sessionRoot := ""
+	if root != "" && rootSID != "" {
+		sessionRoot = workspace.SessionRoot(root, rootSID)
+	}
+	refs := make([]workspace.TaskInputRef, 0, len(cfg.InputPaths))
+	for _, p := range cfg.InputPaths {
+		ref := workspace.TaskInputRef{Path: p}
+		if sessionRoot != "" {
+			if rel, err := filepath.Rel(sessionRoot, p); err == nil && !strings.HasPrefix(rel, "..") {
+				ref.Path = rel
+			}
+		}
+		if fi, err := os.Stat(p); err == nil {
+			ref.Bytes = int(fi.Size())
+		}
+		if root != "" && rootSID != "" {
+			if depID := guessTaskIDFromPath(p); depID != "" {
+				if b, err := os.ReadFile(workspace.MetaPath(root, rootSID, depID)); err == nil {
+					var m workspace.Meta
+					if json.Unmarshal(b, &m) == nil {
+						ref.Summary = m.Summary
+					}
+				}
+			}
+		}
+		refs = append(refs, ref)
+	}
+	out := workspace.RenderTaskInputs(refs)
+	if out != "" {
+		logger.Info("task-inputs preamble injected",
+			zap.Int("count", len(refs)),
+			zap.String("root_sid", rootSID),
+		)
+	}
+	return out
+}
+
+// guessTaskIDFromPath extracts the upstream task id from a path that looks
+// like .../tasks/{tid}/<file>. Empty when the path doesn't carry that
+// shape — the preamble degrades to "path only" instead of failing.
+func guessTaskIDFromPath(p string) string {
+	parts := strings.Split(filepath.Clean(p), string(filepath.Separator))
+	for i, e := range parts {
+		if e == "tasks" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
 }
 
 // composeArtifactPreamble queries the artifact store for everything visible
