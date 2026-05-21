@@ -31,10 +31,6 @@ type ToolExecutor struct {
 	timeout     time.Duration
 	approvalFn  PermissionApprovalFunc // nil = deny on Ask (legacy behavior)
 
-	// artifactStore is the *artifact.Store the artifact tools read/write
-	// from. Stored as `any` so this layer doesn't import the artifact
-	// package — keeping the engine→artifact dependency one-way clean.
-	artifactStore any
 	// artifactProducer is the identity stamp every artifact written from
 	// this executor inherits. Set by the engine when constructing the
 	// executor for a given session/agent.
@@ -70,13 +66,6 @@ func NewToolExecutor(
 		timeout:     timeout,
 		approvalFn:  approvalFn,
 	}
-}
-
-// SetArtifactStore wires the artifact store the executor injects into
-// each tool's context. Pass an *artifact.Store; the executor stores it
-// untyped to avoid the import cycle.
-func (te *ToolExecutor) SetArtifactStore(store any) {
-	te.artifactStore = store
 }
 
 // SetStatsRegistry wires the session metrics registry so tool_end
@@ -443,11 +432,9 @@ func (te *ToolExecutor) executeSingle(
 	// emit events (e.g., Agent tool for subagent.start/end) can access it.
 	execCtx = tool.WithEventOut(execCtx, out)
 
-	// Inject the artifact store + producer stamp so ArtifactRead /
-	// ArtifactWrite can run without each tool needing its own wiring.
-	if te.artifactStore != nil {
-		execCtx = tool.WithArtifactStoreValue(execCtx, te.artifactStore)
-	}
+	// Producer stamp travels on ctx so any tool that builds an output ref
+	// (e.g. submittool's metadata round-trip) can attribute it back to
+	// this spawn without each tool having to be wired with the identity.
 	execCtx = tool.WithArtifactProducer(execCtx, te.artifactProducer)
 	// Task contract reaches SubmitTaskResult so M3/M4 validation can
 	// match each claimed artifact against the parent's contract. Always

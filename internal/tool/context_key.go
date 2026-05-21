@@ -92,31 +92,6 @@ func WithArtifactProducer(ctx context.Context, p ArtifactProducer) context.Conte
 	return context.WithValue(ctx, artifactProducerContextKey, p)
 }
 
-// artifactStoreCtxKey is unexported and points at any value — the artifact
-// package's *Store. Stored as `any` so we don't introduce a tool→artifact
-// import here; the artifact tools type-assert when reading.
-type artifactStoreCtxKey struct{}
-
-var artifactStoreContextKey = artifactStoreCtxKey{}
-
-// GetArtifactStoreValue returns whatever value the engine stashed under
-// the artifact-store key. Callers in the artifact tool layer assert it
-// to the concrete *artifact.Store type.
-func GetArtifactStoreValue(ctx context.Context) (any, bool) {
-	v := ctx.Value(artifactStoreContextKey)
-	if v == nil {
-		return nil, false
-	}
-	return v, true
-}
-
-// WithArtifactStoreValue attaches a Store handle to ctx. Engine code
-// passes the concrete *artifact.Store; the helper stays type-agnostic so
-// the tool package doesn't have to import artifact.
-func WithArtifactStoreValue(ctx context.Context, store any) context.Context {
-	return context.WithValue(ctx, artifactStoreContextKey, store)
-}
-
 // TaskContract is the deliverable contract attached to a sub-agent's
 // dispatch. The framework injects it via ctx so SubmitTaskResult can
 // validate submitted artifacts against the parent's expectations

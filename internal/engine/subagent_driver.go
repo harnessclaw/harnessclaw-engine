@@ -73,9 +73,6 @@ func (qe *QueryEngine) runSubAgentDriver(
 		}
 	}
 	executor := NewToolExecutor(pool, lc.permChecker, logger, lc.config.ToolTimeout, approvalFn)
-	if qe.artifactStore != nil {
-		executor.SetArtifactStore(qe.artifactStore)
-	}
 	subProducer := tool.ArtifactProducer{
 		AgentID:   lc.agentID,
 		SessionID: sess.ID,

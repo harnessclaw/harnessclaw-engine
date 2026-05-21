@@ -14,7 +14,6 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/artifact"
 	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/texts"
@@ -976,18 +975,6 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// view is intentionally narrow so emma's context stays tight.
 	var parentVisibleOutput strings.Builder
 	parentVisibleOutput.WriteString(summary)
-	if refs := loopResult.SubmittedArtifacts; len(refs) > 0 {
-		parentVisibleOutput.WriteString("\n\n产出 artifact：\n")
-		for _, a := range refs {
-			fmt.Fprintf(&parentVisibleOutput, "- [%s] %s — %s（%s, %s）\n",
-				roleOrDash(a.Role),
-				a.ArtifactID,
-				artifactDisplayName(a),
-				a.Type,
-				artifact.HumanSize(a.SizeBytes),
-			)
-		}
-	}
 	if len(deliverables) > 0 {
 		parentVisibleOutput.WriteString("\n产出文件：\n")
 		for _, d := range deliverables {
@@ -1159,9 +1146,6 @@ func (qe *QueryEngine) runSubAgentLoop(
 		}
 	}
 	executor := NewToolExecutor(lc.pool, lc.permChecker, logger, lc.config.ToolTimeout, approvalFn)
-	if qe.artifactStore != nil {
-		executor.SetArtifactStore(qe.artifactStore)
-	}
 	if qe.statsRegistry != nil {
 		executor.SetStatsRegistry(qe.statsRegistry)
 	}
@@ -1693,33 +1677,6 @@ func joinNonEmpty(parts []string, sep string) string {
 	return out
 }
 
-// roleOrDash returns the role string, falling back to "-" when empty.
-// Used in the artifact list emma sees so the format stays uniform when
-// some artifacts have a role (contract-mode submissions) and others
-// don't (no-contract dispatches just produce refs).
-func roleOrDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
-}
-
-// artifactDisplayName picks the most human-readable label for the
-// artifact line in the parent-visible output. Preference order:
-//   1. Name — what the producer called the file ("q4-report.md")
-//   2. Description — short human prose ("Q4 销量调研报告")
-//   3. ID — last resort
-// Without this, ListArtifacts entries with empty Name look like raw IDs.
-func artifactDisplayName(a types.ArtifactRef) string {
-	if a.Name != "" {
-		return a.Name
-	}
-	if a.Description != "" {
-		return a.Description
-	}
-	return a.ArtifactID
-}
-
 // countRequired returns how many ExpectedOutputs are marked Required.
 // Used by the spawn.start debug log to preview the contract — operators
 // can see at a glance "this dispatch demands 2 mandatory outputs".
@@ -1809,60 +1766,6 @@ func guessTaskIDFromPath(p string) string {
 		}
 	}
 	return ""
-}
-
-// composeArtifactPreamble queries the artifact store for everything visible
-// in the current trace and formats it as the doc §6.A preamble. Returns ""
-// when the engine has no store wired, when ctx carries no trace, or when
-// the trace has no artifacts yet — callers can safely concatenate.
-//
-// Failure to query is logged at warn level but never aborts the spawn:
-// the preamble is a hint, not a load-bearing input. Falling through to an
-// empty preamble keeps the L3 spawn path resilient to a transient store
-// hiccup.
-func (qe *QueryEngine) composeArtifactPreamble(ctx context.Context, logger *zap.Logger) string {
-	if qe.artifactStore == nil {
-		return ""
-	}
-	store, ok := qe.artifactStore.(artifact.Store)
-	if !ok {
-		// Engine was wired with a non-conforming value. Surface once at
-		// warn so the misconfiguration is visible, then degrade gracefully.
-		logger.Warn("artifact store has unexpected type; preamble disabled")
-		return ""
-	}
-	tc := emit.FromContext(ctx)
-	if tc == nil || tc.TraceID == "" {
-		return ""
-	}
-	arts, err := store.List(ctx, &artifact.ListFilter{TraceID: tc.TraceID})
-	if err != nil {
-		logger.Warn("artifact list for preamble failed; skipping",
-			zap.String("trace_id", tc.TraceID),
-			zap.Error(err),
-		)
-		return ""
-	}
-	if len(arts) == 0 {
-		return ""
-	}
-	// INFO log so the server log shows "L3 was handed N artifacts on spawn"
-	// — without this the §6.A injection is invisible from outside. Listing
-	// the IDs (capped) lets operators correlate the spawn line with later
-	// ArtifactRead events from the L3.
-	ids := make([]string, 0, len(arts))
-	for i, a := range arts {
-		if i >= 5 {
-			break
-		}
-		ids = append(ids, a.ID)
-	}
-	logger.Info("artifact preamble injected for sub-agent",
-		zap.String("trace_id", tc.TraceID),
-		zap.Int("count", len(arts)),
-		zap.Strings("ids", ids),
-	)
-	return artifact.RenderAvailableList(arts, artifact.DefaultPreambleMaxItems)
 }
 
 // truncateRunes truncates s to at most n runes (NOT bytes), appending an

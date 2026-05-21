@@ -60,7 +60,6 @@ var (
 			"role",
 			"principles",
 			"tools",
-			"artifacts", // findings are typically large enough to warrant ArtifactWrite
 			"env",
 		},
 		SectionOverrides: map[string]string{
@@ -81,7 +80,6 @@ var (
 			"currentdate",
 			"role",
 			"principles",
-			"artifacts", // structured plans are reusable artifacts
 			"env",
 			"task",
 		},
@@ -110,7 +108,6 @@ var (
 			"skills", // user-installed skills: Specialists picks candidate_skills for freelancer
 			"principles",
 			"tools",
-			"artifacts", // L2 must understand artifacts to integrate L3 outputs
 			"env",
 		},
 		ExcludeSections: []string{
@@ -159,7 +156,6 @@ var (
 			"role",
 			"principles",
 			"tools",
-			"artifacts", // workers are the primary artifact producers
 			"env",
 			"task",
 		},

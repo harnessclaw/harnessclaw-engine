@@ -12,9 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/artifact"
 	"harnessclaw-go/internal/command"
-	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/texts"
 	"harnessclaw-go/internal/engine/session"
@@ -23,8 +21,6 @@ import (
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/storage/memory"
 	"harnessclaw-go/internal/tool"
-	"harnessclaw-go/internal/tool/artifacttool"
-	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
@@ -652,111 +648,7 @@ func TestSpawnSync_NoPreambleWhenInputsEmpty(t *testing.T) {
 // without parsing tool result JSON — which is exactly the coupling §10
 // is designed to remove.
 func TestSpawnSync_SurfacesArtifactsOnSubAgentEnd(t *testing.T) {
-	// Two-turn script: turn 1 calls ArtifactWrite, turn 2 ends.
-	prov := &subagentMockProvider{
-		responses: []subagentMockResponse{
-			{
-				toolCalls: []types.ToolCall{
-					{
-						ID:   "tu_write_1",
-						Name: artifacttool.WriteToolName,
-						Input: `{
-							"intent":"persist findings",
-							"type":"file",
-							"name":"q4-report.md",
-							"description":"Q4 metrics summary",
-							"mime_type":"text/markdown",
-							"content":"# Q4\nrevenue up 20%"
-						}`,
-					},
-				},
-				stopReason: "tool_use",
-				usage:      &types.Usage{InputTokens: 10, OutputTokens: 5},
-			},
-			{text: "<summary>done</summary>", stopReason: "end_turn", usage: &types.Usage{InputTokens: 5, OutputTokens: 5}},
-		},
-	}
-	eng := newSubagentTestEngine(prov, artifacttool.NewWriteTool())
-
-	store := artifact.NewMemoryStore(artifact.DefaultConfig())
-	eng.SetArtifactStore(store)
-
-	// ParentOut: capture every event the sub-agent forwards so we can
-	// verify both the per-tool subagent_event and the aggregated
-	// subagent_end paths.
-	parentOut := make(chan types.EngineEvent, 64)
-
-	ctx := emit.WithTrace(context.Background(), &emit.TraceContext{
-		TraceID:   "tr_artifacts_e2e",
-		Sequencer: emit.NewSequencer(),
-	})
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := eng.SpawnSync(ctx, &agent.SpawnConfig{
-			Prompt:          "store the report",
-			AgentType:       tool.AgentTypeSync,
-			ParentSessionID: "p_artifacts",
-			ParentOut:       parentOut,
-		})
-		close(parentOut)
-		done <- err
-	}()
-
-	var (
-		sawPerToolRef    bool
-		subAgentEndRefs  []types.ArtifactRef
-	)
-	for evt := range parentOut {
-		switch evt.Type {
-		case types.EngineEventSubAgentEvent:
-			if evt.SubAgentEvent != nil &&
-				evt.SubAgentEvent.EventType == "tool_end" &&
-				evt.SubAgentEvent.ToolName == artifacttool.WriteToolName {
-				if len(evt.SubAgentEvent.Artifacts) == 1 &&
-					evt.SubAgentEvent.Artifacts[0].ArtifactID != "" {
-					sawPerToolRef = true
-				}
-			}
-		case types.EngineEventSubAgentEnd:
-			subAgentEndRefs = evt.Artifacts
-		}
-	}
-	if err := <-done; err != nil {
-		t.Fatalf("SpawnSync: %v", err)
-	}
-
-	if !sawPerToolRef {
-		t.Errorf("no tool_end forwarded with ArtifactRef — UI would miss real-time artifact cards")
-	}
-
-	if len(subAgentEndRefs) != 1 {
-		t.Fatalf("subagent_end Artifacts: want 1, got %d (%+v)", len(subAgentEndRefs), subAgentEndRefs)
-	}
-	got := subAgentEndRefs[0]
-	if got.ArtifactID == "" {
-		t.Error("aggregated Ref has empty ArtifactID")
-	}
-	if got.Name != "q4-report.md" {
-		t.Errorf("aggregated Ref.Name = %q, want q4-report.md", got.Name)
-	}
-	if got.Description != "Q4 metrics summary" {
-		t.Errorf("aggregated Ref.Description = %q", got.Description)
-	}
-	if got.Type != "file" {
-		t.Errorf("aggregated Ref.Type = %q, want file", got.Type)
-	}
-	if got.URI == "" {
-		t.Error("aggregated Ref.URI should be populated so the UI can build a fetch link")
-	}
-	if got.SizeBytes <= 0 {
-		t.Error("aggregated Ref.SizeBytes should reflect content length")
-	}
-
-	// Sanity: the artifact actually landed in the store under the right ID.
-	if _, err := store.Get(ctx, got.ArtifactID); err != nil {
-		t.Errorf("store.Get(%s) failed — Ref ID does not match a real artifact: %v", got.ArtifactID, err)
-	}
+	t.Skip("artifact store removed; deliverables flow via Promote (covered in promotetool)")
 }
 
 // TestSpecialistsAllowedTools_IncludesWorkspaceTools is a regression guard:
@@ -789,107 +681,7 @@ func TestSpecialistsAllowedTools_IncludesWorkspaceTools(t *testing.T) {
 // workspace + submittool unit tests; this driver-level test will be
 // rewritten once the artifact package is removed in Phase 5.
 func TestSpawnSync_ContractGated_HappyPath(t *testing.T) {
-	t.Skip("rewritten in Phase 5 once the artifact-based contract is removed")
-	store := artifact.NewMemoryStore(artifact.DefaultConfig())
-
-	contract := []types.ExpectedOutput{
-		{Role: "findings_report", Type: "file", MinSizeBytes: 50, Required: true},
-	}
-
-	// JIT provider: each Chat() reads live store state to decide what to
-	// "say". This avoids the race where turn 2 needs a real artifact_id
-	// produced by turn 1.
-	//
-	// Turn 0: model calls ArtifactWrite — produces an art_id.
-	// Turn 1: model calls SubmitTaskResult, citing the art_id from turn 0.
-	// Turn 2: end_turn (loop terminates because submission was accepted).
-	prov := &subagentMockProvider{}
-	prov.responseFn = func(callIdx int) subagentMockResponse {
-		switch callIdx {
-		case 0:
-			return subagentMockResponse{
-				toolCalls: []types.ToolCall{{
-					ID:    "tu_write",
-					Name:  artifacttool.WriteToolName,
-					Input: writeInputJSON("findings_report", strings.Repeat("F", 100)),
-				}},
-				stopReason: "tool_use",
-				usage:      &types.Usage{InputTokens: 1, OutputTokens: 1},
-			}
-		case 1:
-			arts, _ := store.List(context.Background(), &artifact.ListFilter{})
-			if len(arts) == 0 {
-				t.Fatal("turn 1: expected at least one artifact in store from turn 0")
-			}
-			return subagentMockResponse{
-				toolCalls: []types.ToolCall{{
-					ID:    "tu_submit",
-					Name:  submittool.ToolName,
-					Input: submitInputJSON(arts[0].ID, "findings_report", "filed"),
-				}},
-				stopReason: "tool_use",
-				usage:      &types.Usage{InputTokens: 1, OutputTokens: 1},
-			}
-		default:
-			return subagentMockResponse{
-				text:       "<summary>findings filed</summary>",
-				stopReason: "end_turn",
-				usage:      &types.Usage{InputTokens: 1, OutputTokens: 1},
-			}
-		}
-	}
-
-	eng := newSubagentTestEngine(prov, artifacttool.NewWriteTool(), submittool.New())
-	eng.SetArtifactStore(store)
-
-	ctx := emit.WithTrace(context.Background(), &emit.TraceContext{
-		TraceID:   "tr_happy",
-		Sequencer: emit.NewSequencer(),
-	})
-
-	res, err := eng.SpawnSync(ctx, &agent.SpawnConfig{
-		Prompt:          "produce findings",
-		AgentType:       tool.AgentTypeSync,
-		ParentSessionID: "p_happy",
-		ExpectedOutputs: contract,
-		TaskID:          "task_happy_path",
-		TaskStartedAt:   time.Now().Add(-1 * time.Minute),
-	})
-	if err != nil {
-		t.Fatalf("SpawnSync: %v", err)
-	}
-	if res.Status != "completed" {
-		t.Errorf("status = %q, want completed (loop should terminate after passing submit)", res.Status)
-	}
-	if len(res.SubmittedArtifacts) != 1 {
-		t.Fatalf("SubmittedArtifacts: want 1, got %d", len(res.SubmittedArtifacts))
-	}
-	got := res.SubmittedArtifacts[0]
-	if got.Role != "findings_report" {
-		t.Errorf("Ref.Role = %q, want findings_report", got.Role)
-	}
-	if got.SizeBytes < 50 {
-		t.Errorf("Ref.SizeBytes = %d, want >= 50", got.SizeBytes)
-	}
-	if len(res.ContractFailures) != 0 {
-		t.Errorf("expected no contract failures, got %d: %v", len(res.ContractFailures), res.ContractFailures)
-	}
-
-	// res.Output is what the dispatching tool surfaces to emma's LLM as
-	// tool_result.Content. The bug we're guarding here: emma must see
-	// the artifact_id + role + name in this string, otherwise she has no
-	// way to reference produced artifacts in her reply (she'd have to
-	// either fabricate IDs or re-paste content).
-	for _, want := range []string{
-		"产出 artifact",                  // section header
-		"[findings_report]",             // role tag
-		got.ArtifactID,                  // the actual ID emma needs to quote
-		"file",                          // type
-	} {
-		if !strings.Contains(res.Output, want) {
-			t.Errorf("res.Output missing %q (emma cannot reference artifacts without it)\nfull Output:\n%s", want, res.Output)
-		}
-	}
+	t.Skip("artifact-based contract removed; equivalent flow covered by workspace + submittool tests")
 }
 
 // TestSpawnSync_ContractGated_NudgesThenFails covers the M2 (force tool
@@ -897,46 +689,7 @@ func TestSpawnSync_ContractGated_HappyPath(t *testing.T) {
 // calling SubmitTaskResult must be nudged up to maxSubmitNudges times,
 // then the loop bails with a contract failure on the result.
 func TestSpawnSync_ContractGated_NudgesThenFails(t *testing.T) {
-	t.Skip("rewritten in Phase 5 once the artifact-based contract is removed")
-	// The mock provider always returns end_turn with no tool calls.
-	// Each turn the loop should nudge once; after the cap it should
-	// terminate. Provide enough scripted responses to cover all nudges.
-	prov := &subagentMockProvider{
-		responses: []subagentMockResponse{
-			{text: "I'm done.", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
-			{text: "I'm done.", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
-			{text: "I'm done.", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
-			{text: "Last try.", stopReason: "end_turn", usage: &types.Usage{InputTokens: 1, OutputTokens: 1}},
-		},
-	}
-	eng := newSubagentTestEngine(prov, artifacttool.NewWriteTool(), submittool.New())
-	eng.SetArtifactStore(artifact.NewMemoryStore(artifact.DefaultConfig()))
-
-	res, err := eng.SpawnSync(context.Background(), &agent.SpawnConfig{
-		Prompt:          "produce findings",
-		AgentType:       tool.AgentTypeSync,
-		ParentSessionID: "p_nudge",
-		ExpectedOutputs: []types.ExpectedOutput{
-			{Role: "findings_report", Required: true},
-		},
-		TaskID:        "task_nudge",
-		TaskStartedAt: time.Now().Add(-1 * time.Minute),
-	})
-	if err != nil {
-		t.Fatalf("SpawnSync: %v", err)
-	}
-	// Loop should NOT report success — the L3 never satisfied the contract.
-	if res.Status == "completed" {
-		t.Errorf("expected non-completed status, got %q", res.Status)
-	}
-	if len(res.ContractFailures) == 0 {
-		t.Errorf("expected ContractFailures populated; got none")
-	}
-	// At least one failure should describe the nudge cap.
-	joined := strings.Join(res.ContractFailures, " | ")
-	if !strings.Contains(joined, "nudges") && !strings.Contains(joined, "SubmitTaskResult") {
-		t.Errorf("contract failures should explain the nudge cap; got %q", joined)
-	}
+	t.Skip("artifact-based contract removed; meta.json nudge behaviour covered in subagent_driver tests")
 }
 
 // TestSpawnSync_NoContract_LegacyPathStillWorks verifies the
@@ -950,7 +703,6 @@ func TestSpawnSync_NoContract_LegacyPathStillWorks(t *testing.T) {
 		},
 	}
 	eng := newSubagentTestEngine(prov)
-	eng.SetArtifactStore(artifact.NewMemoryStore(artifact.DefaultConfig()))
 
 	res, err := eng.SpawnSync(context.Background(), &agent.SpawnConfig{
 		Prompt:          "say hi",
@@ -981,34 +733,6 @@ func writeInputJSON(role, content string) string {
 	return string(body)
 }
 
-// submitInputJSON produces a SubmitTaskResult input pointing at a single ID.
-// No `result` field — caller must add one if the agent's OutputSchema
-// requires it (use submitInputWithResultJSON instead for that case).
-func submitInputJSON(artifactID, role, summary string) string {
-	body, _ := json.Marshal(map[string]any{
-		"intent":  "submit results",
-		"summary": summary,
-		"artifacts": []map[string]any{
-			{"artifact_id": artifactID, "role": role},
-		},
-	})
-	return string(body)
-}
-
-// submitInputWithResultJSON is like submitInputJSON but includes a
-// `result` payload — required when the agent's TaskContract.OutputSchema
-// is non-empty (P0-1 enforcement).
-func submitInputWithResultJSON(artifactID, role, summary string, result map[string]any) string {
-	body, _ := json.Marshal(map[string]any{
-		"intent":  "submit results",
-		"summary": summary,
-		"artifacts": []map[string]any{
-			{"artifact_id": artifactID, "role": role},
-		},
-		"result": result,
-	})
-	return string(body)
-}
 
 // silence unused-import warning in case texts ever stops being referenced
 var _ = texts.SpecialistsRole

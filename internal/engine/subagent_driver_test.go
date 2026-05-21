@@ -5,15 +5,11 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/artifact"
-	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/tool"
-	"harnessclaw-go/internal/tool/artifacttool"
 	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/pkg/types"
 )
@@ -57,94 +53,7 @@ func registerSubAgentDef(t *testing.T, eng *QueryEngine, def *agent.AgentDefinit
 // and TestE2E_WorkspaceHappyPath) and rewritten driver tests will follow
 // once the artifact package is removed in Phase 5.
 func TestSubAgentDriver_HappyPath(t *testing.T) {
-	t.Skip("rewritten in Phase 5 once the artifact-based contract is removed")
-	store := artifact.NewMemoryStore(artifact.DefaultConfig())
-
-	contract := []types.ExpectedOutput{
-		{Role: "draft", Type: "file", MinSizeBytes: 10, Required: true},
-	}
-
-	prov := &subagentMockProvider{}
-	prov.responseFn = func(callIdx int) subagentMockResponse {
-		switch callIdx {
-		case 0:
-			return subagentMockResponse{
-				toolCalls: []types.ToolCall{{
-					ID:    "tu_write",
-					Name:  artifacttool.WriteToolName,
-					Input: writeInputJSON("draft", strings.Repeat("X", 50)),
-				}},
-				stopReason: "tool_use",
-				usage:      &types.Usage{InputTokens: 1, OutputTokens: 1},
-			}
-		case 1:
-			arts, _ := store.List(context.Background(), &artifact.ListFilter{})
-			if len(arts) == 0 {
-				t.Fatal("turn 1: expected artifact in store")
-			}
-			// Schema enforcement (P0-1) requires `result` whenever the
-			// agent's OutputSchema is non-empty. minimalSubAgentSchema
-			// has no required fields, so an empty object passes.
-			return subagentMockResponse{
-				toolCalls: []types.ToolCall{{
-					ID:    "tu_submit",
-					Name:  submittool.ToolName,
-					Input: submitInputWithResultJSON(arts[0].ID, "draft", "drafted", map[string]any{}),
-				}},
-				stopReason: "tool_use",
-				usage:      &types.Usage{InputTokens: 1, OutputTokens: 1},
-			}
-		default:
-			return subagentMockResponse{
-				text:       "<summary>drafted</summary>",
-				stopReason: "end_turn",
-				usage:      &types.Usage{InputTokens: 1, OutputTokens: 1},
-			}
-		}
-	}
-
-	eng := newSubagentTestEngine(prov,
-		artifacttool.NewWriteTool(),
-		submittool.New(),
-		submittool.NewEscalate(),
-	)
-	eng.SetArtifactStore(store)
-
-	registerSubAgentDef(t, eng, &agent.AgentDefinition{
-		Name:         "test_writer",
-		Tier:         agent.TierSubAgent,
-		AgentType:    tool.AgentTypeSync,
-		Description:  "writes drafts",
-		Skills:       []string{"draft"},
-		OutputSchema: minimalSubAgentSchema,
-	})
-
-	ctx := emit.WithTrace(context.Background(), &emit.TraceContext{
-		TraceID:   "tr_l3_happy",
-		Sequencer: emit.NewSequencer(),
-	})
-
-	res, err := eng.SpawnSync(ctx, &agent.SpawnConfig{
-		Prompt:          "write a draft",
-		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "test_writer",
-		ParentSessionID: "p_l3",
-		ExpectedOutputs: contract,
-		TaskID:          "task_l3_happy",
-		TaskStartedAt:   time.Now().Add(-1 * time.Minute),
-	})
-	if err != nil {
-		t.Fatalf("SpawnSync: %v", err)
-	}
-	if res.Status != "completed" {
-		t.Errorf("status = %q, want completed", res.Status)
-	}
-	if len(res.SubmittedArtifacts) != 1 {
-		t.Fatalf("SubmittedArtifacts: want 1, got %d", len(res.SubmittedArtifacts))
-	}
-	if res.NeedsPlanning {
-		t.Error("NeedsPlanning should be false on happy path")
-	}
+	t.Skip("artifact-based contract removed; meta.json equivalent covered by workspace + submittool tests")
 }
 
 // TestSubAgentDriver_StripsDispatchTools verifies that even when AllowedTools
@@ -258,7 +167,6 @@ func TestSubAgentDriver_Escalation(t *testing.T) {
 		submittool.New(),
 		submittool.NewEscalate(),
 	)
-	eng.SetArtifactStore(artifact.NewMemoryStore(artifact.DefaultConfig()))
 
 	registerSubAgentDef(t, eng, &agent.AgentDefinition{
 		Name:         "stuck_worker",
@@ -377,7 +285,6 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 		submittool.New(),
 		submittool.NewEscalate(),
 	)
-	eng.SetArtifactStore(artifact.NewMemoryStore(artifact.DefaultConfig()))
 
 	registerSubAgentDef(t, eng, &agent.AgentDefinition{
 		Name:         "writer", // looked up by Name, not Profile
@@ -509,7 +416,6 @@ func TestPool_DangerousStrippedForSubAgent(t *testing.T) {
 		submittool.NewEscalate(),
 		submittool.New(),
 	)
-	eng.SetArtifactStore(artifact.NewMemoryStore(artifact.DefaultConfig()))
 
 	registerSubAgentDef(t, eng, &agent.AgentDefinition{
 		Name:         "leaf_no_dangerous",

@@ -209,7 +209,6 @@ type QueryEngine struct {
 	eventBus     *event.Bus
 	logger       *zap.Logger
 	config       QueryEngineConfig
-	artifactStore any // *artifact.Store; kept untyped here to avoid the import cycle
 
 	// retryer drives the per-LLM-call retry loop with exponential
 	// backoff + jitter + 529-fallback signalling. Shared across every
@@ -359,7 +358,6 @@ func NewQueryEngine(
 	promptRegistry.Register(sections.NewTeamSection())
 	promptRegistry.Register(sections.NewPrinciplesSection())
 	promptRegistry.Register(sections.NewToolsSection())
-	promptRegistry.Register(sections.NewArtifactsSection())
 	promptRegistry.Register(sections.NewEnvSection())
 	promptRegistry.Register(sections.NewMemorySection())
 	// TODO(phase2): register SkillsSection in profiles that need it.
@@ -703,14 +701,6 @@ func (qe *QueryEngine) RegisterPromptSection(section prompt.Section) {
 func (qe *QueryEngine) SetDefRegistry(reg *agent.AgentDefinitionRegistry) {
 	qe.defRegistry = reg
 	qe.mentionParser = NewMentionParser(reg)
-}
-
-// SetArtifactStore configures the artifact backing store. Pass an
-// *artifact.Store; kept as `any` so the engine package doesn't import
-// internal/artifact (the import only flows the other way through the
-// tool layer).
-func (qe *QueryEngine) SetArtifactStore(store any) {
-	qe.artifactStore = store
 }
 
 // SetSkillReader configures the runtime skill reader for SearchSkill /
@@ -1296,9 +1286,6 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		return qe.requestPermissionApproval(ctx, evtOut, sess.ID, req)
 	}
 	executor := NewToolExecutor(pool, qe.permChecker, qe.logger, qe.config.ToolTimeout, approvalFn)
-	if qe.artifactStore != nil {
-		executor.SetArtifactStore(qe.artifactStore)
-	}
 	if qe.statsRegistry != nil {
 		executor.SetStatsRegistry(qe.statsRegistry)
 	}

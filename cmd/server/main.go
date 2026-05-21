@@ -34,7 +34,6 @@ import (
 	"harnessclaw-go/internal/api/agentcapabilities"
 	"harnessclaw-go/internal/api/modelsregistry"
 	"harnessclaw-go/internal/api/sessionmetrics"
-	"harnessclaw-go/internal/artifact"
 	"harnessclaw-go/internal/channel"
 	wsch "harnessclaw-go/internal/channel/websocket"
 	"harnessclaw-go/internal/command"
@@ -62,7 +61,6 @@ import (
 	"harnessclaw-go/internal/task"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/agenttool"
-	"harnessclaw-go/internal/tool/artifacttool"
 	"harnessclaw-go/internal/tool/askuserquestion"
 	orchestratetool "harnessclaw-go/internal/tool/orchestrate"
 	"harnessclaw-go/internal/tool/specialists"
@@ -174,25 +172,16 @@ func main() {
 	// --- Step 5: Register tools ---
 	registry := tool.NewRegistry()
 
-	// artifactSourceDirs is the allow-list for ArtifactWrite's source_path
-	// field — the server reads files only under these roots so the LLM
-	// cannot ask us to ingest arbitrary system paths. Includes the
-	// well-known workspace root (~/.harnessclaw/workspace) so generated
-	// docx/pdf land there, plus the configured skills dirs so a skill's
-	// own assets/references can also be ingested as artifacts.
-	var artifactSourceDirs []string
 	// workspaceRootDir is the shared root for plan.json / tasks/ /
 	// deliverables/ across every L1 session. Defaults to
 	// ~/.harnessclaw/workspace — the same convention skills and the
-	// artifact store already use. Empty when UserHomeDir fails (e.g.
-	// containerised builds with no $HOME) which disables the new
+	// session DB already use. Empty when UserHomeDir fails (e.g.
+	// containerised builds with no $HOME) which disables the
 	// PlanUpdate/MetaWrite/Promote tools at registry time.
 	var workspaceRootDir string
 	if home, err := os.UserHomeDir(); err == nil {
 		workspaceRootDir = filepath.Join(home, ".harnessclaw", "workspace")
-		artifactSourceDirs = append(artifactSourceDirs, workspaceRootDir)
 	}
-	artifactSourceDirs = append(artifactSourceDirs, cfg.Skills.Dirs...)
 
 	// planWriterReg is the per-process registry of single-consumer plan.json
 	// writers. PlanUpdate / Promote / the engine's post-spawn reconciler
@@ -225,11 +214,6 @@ func main() {
 		// AskUserQuestion is L1's clarification mechanism. Always enabled
 		// (no config — it's a passthrough to the WebSocket client).
 		{true, func() tool.Tool { return askuserquestion.New(logger) }},
-		// ArtifactWrite / ArtifactRead are the cross-agent shared-data
-		// channel (doc §5). Always on — agents are expected to use them
-		// instead of pasting large outputs back into the prompt.
-		{true, func() tool.Tool { return artifacttool.NewWriteTool(artifactSourceDirs...) }},
-		{true, func() tool.Tool { return artifacttool.NewReadTool() }},
 		// SubmitTaskResult is the L3 task-completion declaration
 		// (doc §3 M3+M4). Always on; only fires when the dispatcher
 		// supplied an ExpectedOutputs contract.
@@ -367,26 +351,6 @@ func main() {
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	defer cleanupCancel()
 	go runIdleCleanup(cleanupCtx, sessionMgr, logger)
-
-	// --- Step 7.5: Open artifact store + start TTL janitor ---
-	// The store is the cross-agent shared-data channel (doc §3). Backed
-	// by a dedicated SQLite file so the session DB and the artifact DB
-	// can be tuned and rotated independently.
-	artifactDBPath := defaultDBPath("artifacts.db")
-	artifactStore, err := artifact.NewSQLiteStore(artifactDBPath, artifact.DefaultConfig())
-	if err != nil {
-		logger.Fatal("failed to initialize artifact store",
-			zap.String("path", artifactDBPath),
-			zap.Error(err),
-		)
-	}
-	defer artifactStore.Close()
-	logger.Info("artifact store initialized", zap.String("path", artifactDBPath))
-
-	janitor := artifact.NewJanitor(artifactStore, 0 /*default 10m*/, logger)
-	janitorCtx, janitorCancel := context.WithCancel(context.Background())
-	defer janitorCancel()
-	go janitor.Run(janitorCtx)
 
 	// --- Step 8: Create query engine ---
 	compactor := compact.NewLLMCompactor(llmProvider, logger)
@@ -562,7 +526,6 @@ func main() {
 	eng.SetAgentRegistry(agentReg)
 	eng.SetMessageBroker(broker)
 	eng.SetDefRegistry(agentDefReg)
-	eng.SetArtifactStore(artifactStore)
 	// Session-metrics wiring. The engine reads from the same registry the
 	// StatsProvider writes into; the session manager hand-off lets the
 	// trace-end flush worker force-persist the snapshot on lifecycle
@@ -713,18 +676,13 @@ func main() {
 
 	var consoleServer *api.Server
 	if cfg.Console.Enabled {
-		// Artifact content endpoint: lets the Electron client GET raw
-		// binary bytes of a stored artifact via HTTP, used for rich
-		// preview (docx/pdf/etc.) and download. Wired off the same
-		// artifactStore the engine already runs on.
-		artifactsHandler := api.NewArtifactContentHandler(artifactStore, logger)
-		artifactsMux := http.NewServeMux()
-		artifactsHandler.RegisterRoutes(artifactsMux)
-
+		// Artifact HTTP endpoint was removed with the artifact package.
+		// Promoted files live on disk under {workspace}/session/{sid}/
+		// deliverables/, which the client opens directly.
 		consoleServer = api.NewServer(api.ServerConfig{
 			Host: cfg.Console.Host,
 			Port: cfg.Console.Port,
-		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, artifactsMux, capabilitiesHandler, logger)
+		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, nil, capabilitiesHandler, logger)
 		go func() {
 			if err := consoleServer.Start(); err != nil {
 				logger.Error("console API server exited", zap.Error(err))
