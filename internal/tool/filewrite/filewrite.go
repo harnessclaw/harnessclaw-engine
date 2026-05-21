@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/tool"
@@ -79,10 +80,20 @@ func (t *FileWriteTool) ValidateInput(input json.RawMessage) error {
 	return nil
 }
 
-func (t *FileWriteTool) Execute(_ context.Context, input json.RawMessage) (*types.ToolResult, error) {
+func (t *FileWriteTool) Execute(ctx context.Context, input json.RawMessage) (*types.ToolResult, error) {
 	var wi writeInput
 	if err := json.Unmarshal(input, &wi); err != nil {
 		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
+	}
+
+	if scope, ok := tool.AgentScopeFromCtx(ctx); ok && len(scope.WriteScope) > 0 {
+		if !pathInScope(wi.FilePath, scope.WriteScope) {
+			return &types.ToolResult{
+				Content:   fmt.Sprintf("path %q is outside the write scope for this spawn (allowed prefixes: %v)", wi.FilePath, scope.WriteScope),
+				IsError:   true,
+				ErrorType: types.ToolErrorPermissionDenied,
+			}, nil
+		}
 	}
 
 	content := wi.Content
@@ -106,15 +117,32 @@ func (t *FileWriteTool) Execute(_ context.Context, input json.RawMessage) (*type
 		return &types.ToolResult{Content: "error writing file: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInternal}, nil
 	}
 
+	// render_hint deliberately omitted: Promote is the sole Deliverable
+	// source under the local-files-as-truth model. Surfacing file_info
+	// here would let a sub-agent's intermediate scratch file land in the
+	// user-visible Deliverable surface.
 	return &types.ToolResult{
 		Content: fmt.Sprintf("Successfully wrote to %s", wi.FilePath),
 		Metadata: map[string]any{
-			"render_hint":   "file_info",
 			"file_path":     wi.FilePath,
 			"language":      tool.ExtToLanguage(filepath.Ext(wi.FilePath)),
 			"bytes_written": len(content),
 		},
 	}, nil
+}
+
+// pathInScope returns true if path (after Clean) starts with any allowed
+// prefix (also Cleaned). Symlinks are NOT resolved — the threat model is
+// LLM path mistakes, not adversarial filesystem layout.
+func pathInScope(path string, allowed []string) bool {
+	p := filepath.Clean(path)
+	for _, a := range allowed {
+		ac := filepath.Clean(a)
+		if p == ac || strings.HasPrefix(p, ac+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 const fileWriteDescription = `把内容写入本地文件系统。
