@@ -37,6 +37,13 @@ func workspaceRootDir() string {
 	return workspace.DefaultRootDir()
 }
 
+// planWriterRegistry returns the process-level registry — see
+// workspace.DefaultPlanWriterRegistry for invariants. Local alias keeps
+// engine call sites tidy.
+func planWriterRegistry() *workspace.PlanWriterRegistry {
+	return workspace.DefaultPlanWriterRegistry()
+}
+
 // deriveSessionRoot computes the {workspace}/session/{root-session-id}
 // path for a spawn. Falls back to ParentSessionID when RootSessionID is
 // unset (the L2 case where the parent IS the root). Returns "" if no

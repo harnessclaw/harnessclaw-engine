@@ -490,6 +490,19 @@ func (s *Scheduler) dispatchStep(
 		}
 	}
 
+	// D14 post-spawn reconciliation: read the L3's meta.json (if any)
+	// and update plan.json accordingly. Done in a separate step from the
+	// step-result bookkeeping so a meta-read failure doesn't mask the
+	// scheduler's view of the spawn outcome.
+	if root := workspaceRootDir(); root != "" && rootSID != "" {
+		if _, recErr := workspace.ReconcileSpawnReturn(ctx, planWriterRegistry().Get(rootSID), root, rootSID, step.ID); recErr != nil {
+			s.logger.Warn("scheduler: plan reconcile failed (non-fatal)",
+				zap.String("step_id", step.ID),
+				zap.Error(recErr),
+			)
+		}
+	}
+
 	// Bookkeeping for budget tracker.
 	if s.deps != nil && s.deps.Budget != nil && res.Usage != nil {
 		s.deps.Budget.AddUsage(res.Usage)

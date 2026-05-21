@@ -36,6 +36,29 @@ func NewPlanWriterRegistry(rootDir string) *PlanWriterRegistry {
 	return newPlanWriterRegistryWithIdle(rootDir, DefaultIdleTimeout)
 }
 
+// defaultRegOnce + defaultReg back DefaultPlanWriterRegistry. The
+// process-level singleton lets multiple L2 dispatch sites (Scheduler,
+// Orchestrate executor) share writers per session without each
+// re-creating a registry that would fight over the same plan.json
+// goroutine.
+var (
+	defaultRegOnce sync.Once
+	defaultReg     *PlanWriterRegistry
+)
+
+// DefaultPlanWriterRegistry returns the process-level registry rooted at
+// DefaultRootDir(). Lazily initialised on first call. server/main.go
+// builds its own (non-default) registry for the LLM-facing PlanUpdate
+// tool; both anchor on the same on-disk workspace root, so concurrent
+// writers per session stay serialised regardless of which entry point
+// created the writer first.
+func DefaultPlanWriterRegistry() *PlanWriterRegistry {
+	defaultRegOnce.Do(func() {
+		defaultReg = NewPlanWriterRegistry(DefaultRootDir())
+	})
+	return defaultReg
+}
+
 // newPlanWriterRegistryWithIdle is the test seam — exposes the idle timeout
 // so reclaim behavior can be observed in milliseconds.
 func newPlanWriterRegistryWithIdle(rootDir string, idle time.Duration) *PlanWriterRegistry {

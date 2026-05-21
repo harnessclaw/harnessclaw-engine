@@ -195,10 +195,13 @@ func main() {
 	artifactSourceDirs = append(artifactSourceDirs, cfg.Skills.Dirs...)
 
 	// planWriterReg is the per-process registry of single-consumer plan.json
-	// writers. PlanUpdate and Promote share it so all mutations for a given
-	// session funnel through the same goroutine (D11). Created here so the
-	// shutdown path below can StopAll on graceful exit.
-	planWriterReg := workspace.NewPlanWriterRegistry(workspaceRootDir)
+	// writers. PlanUpdate / Promote / the engine's post-spawn reconciler
+	// all share it so every mutation for a given session funnels through
+	// one goroutine (D11). The default (lazy-initialised) registry anchors
+	// on workspace.DefaultRootDir() — same path we computed locally above —
+	// so calling DefaultPlanWriterRegistry here also seeds it for the
+	// engine call sites without a second registry being created later.
+	planWriterReg := workspace.DefaultPlanWriterRegistry()
 
 	// Register built-in tools based on config.
 	builtInTools := []struct {

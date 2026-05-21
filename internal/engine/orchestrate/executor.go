@@ -423,6 +423,19 @@ func (e *PlanExecutor) runStep(
 		lastErr = err
 		lastSpawn = spawnRes
 
+		// D14 post-spawn reconciliation: read the L3's meta.json (if any)
+		// and update plan.json accordingly. Errors are logged but never
+		// short-circuit retry logic — orchestrate's own attempt counter
+		// is the load-bearing failure signal.
+		if root := workspace.DefaultRootDir(); root != "" && rootSID != "" {
+			if _, recErr := workspace.ReconcileSpawnReturn(ctx, workspace.DefaultPlanWriterRegistry().Get(rootSID), root, rootSID, step.StepID); recErr != nil {
+				e.logger.Warn("orchestrate: plan reconcile failed (non-fatal)",
+					zap.String("step_id", step.StepID),
+					zap.Error(recErr),
+				)
+			}
+		}
+
 		resultsMu.Lock()
 		res.Attempts = attempt
 		resultsMu.Unlock()
