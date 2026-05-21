@@ -58,3 +58,10 @@ func TestMeta_SummaryExactly500Runes(t *testing.T) {
 		t.Errorf("500-rune summary should be valid, got %v", err)
 	}
 }
+
+func TestMeta_EmptyAgent(t *testing.T) {
+	m := &Meta{TaskID: "t_001", Agent: "", Status: StatusDone, Summary: "x"}
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "agent") {
+		t.Errorf("expected agent error, got %v", err)
+	}
+}

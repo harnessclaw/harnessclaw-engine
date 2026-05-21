@@ -35,13 +35,16 @@ func (m *Meta) Validate() error {
 	if m.TaskID == "" {
 		return fmt.Errorf("meta: empty task_id")
 	}
+	if m.Agent == "" {
+		return fmt.Errorf("meta: empty agent")
+	}
 	switch m.Status {
 	case StatusDone, StatusFailed:
 	default:
 		return fmt.Errorf("meta: status %q invalid (want done|failed; meta is only written at task terminal state)", m.Status)
 	}
 	if m.Summary == "" {
-		return fmt.Errorf("meta: summary is required, non-empty")
+		return fmt.Errorf("meta: empty summary")
 	}
 	if n := utf8.RuneCountInString(m.Summary); n > MaxSummaryRunes {
 		return fmt.Errorf("meta: summary too long (%d runes, max %d) — keep it tight, do not paste content", n, MaxSummaryRunes)
