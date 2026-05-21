@@ -301,45 +301,16 @@ func (qe *QueryEngine) runSubAgentDriver(
 			case submittool.MetadataRenderHint:
 				accepted, _ := results[i].Metadata[submittool.MetadataKeyAccepted].(bool)
 				if accepted {
-					// Pull refs first — self-check needs them.
-					var refs []types.ArtifactRef
-					if got, ok := results[i].Metadata[submittool.MetadataKeyArtifacts].([]types.ArtifactRef); ok {
-						refs = got
-					}
-					// Run the post-submit self-check (P0-2). Catches
-					// SEMANTIC mismatches that M4 doesn't (e.g. role
-					// not in def's declared role list, zero-size after
-					// store round-trip). On failure we treat the
-					// submission like a rejection and force a retry —
-					// distinct from M4 reject so contract_failures gets
-					// a 'self_check' prefix the LLM can spot.
-					if checkFails := selfCheckSubmission(lc, refs); len(checkFails) > 0 {
-						submitRejects++
-						for _, f := range checkFails {
-							contractFailures = append(contractFailures, "self_check: "+f)
-						}
-						logger.Info("sub-agent driver submission failed self-check",
-							zap.Int("reject_count", submitRejects),
-							zap.Strings("failures", checkFails),
-						)
-						if submitRejects > maxSubmitRejects {
-							return subAgentLoopResult{
-								Terminal: types.Terminal{
-									Reason:  types.TerminalMaxTurns,
-									Message: fmt.Sprintf("self-check rejected submission %d times — abandoning task", submitRejects),
-									Turn:    ls.turn,
-								},
-								ContractFailures:  contractFailures,
-								SelfCheckFailures: checkFails,
-							}
-						}
-						sess.AddMessage(buildSelfCheckNudge(checkFails))
-						continue
-					}
+					// Local-files-as-truth model: submission no longer
+					// carries an artifacts list (meta.json is the
+					// contract). Accepted = meta.json read+validated by
+					// the tool; no further self-check is needed at the
+					// driver layer.
 					submitAccepted = true
-					submitArtifacts = refs
+					submitArtifacts = nil
 					logger.Info("sub-agent driver submission accepted",
-						zap.Int("artifacts", len(submitArtifacts)),
+						zap.String("task_id", strFromMeta(results[i].Metadata, "task_id")),
+						zap.String("meta_path", strFromMeta(results[i].Metadata, "meta_path")),
 					)
 				} else {
 					submitRejects++
@@ -400,62 +371,14 @@ func (qe *QueryEngine) runSubAgentDriver(
 	}
 }
 
-// selfCheckSubmission runs the post-submit semantic check (P0-2 from your
-// L3 gap list). M4 already validates store-side properties (lineage, size,
-// role-exists-in-contract); self-check catches SEMANTIC mismatches that
-// look fine to the store but break the agent's declared contract. Today
-// it enforces:
-//
-//   - Every submitted artifact has a non-empty role string. M4 only
-//     checks role membership when ExpectedOutputs is non-empty; for
-//     no-contract submissions a blank role would otherwise sneak through.
-//   - Each artifact's SizeBytes > 0. The store checks size on write but
-//     a buggy upstream can synthesize a zero-byte ref; defense in depth.
-//
-// Returns nil when everything passes. Failures are short, actionable
-// strings the LLM can read in the next turn.
-//
-// Future expansions (don't add yet — keep it tight):
-//   - cross-check artifact mime_type against an OutputSchema enum
-//   - require source-citation count when role implies it
-//   - per-agent custom selfCheck function passed via loopConfig
-func selfCheckSubmission(lc *loopConfig, refs []types.ArtifactRef) []string {
-	if len(refs) == 0 {
-		return []string{"submission carries zero artifacts"}
+// strFromMeta safely extracts a string from a metadata map. Used by the
+// submission-accepted log line to surface task_id / meta_path without
+// boilerplate type-assertion at each call site.
+func strFromMeta(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
 	}
-	var fails []string
-	for i, r := range refs {
-		if r.Role == "" {
-			fails = append(fails, fmt.Sprintf("artifacts[%d] (id=%s) is missing a role", i, r.ArtifactID))
-		}
-		if r.SizeBytes <= 0 {
-			fails = append(fails, fmt.Sprintf("artifacts[%d] (role=%s, id=%s) is empty (size 0)", i, r.Role, r.ArtifactID))
-		}
-	}
-	return fails
-}
-
-// buildSelfCheckNudge composes the SYSTEM message appended after a
-// self-check failure so the LLM gets a concrete fix-and-resubmit
-// directive on the next turn. Distinct from buildDriverNudgeMessage
-// (which fires on plain end_turn without any submit attempt).
-func buildSelfCheckNudge(failures []string) types.Message {
-	var b []byte
-	b = append(b, "[SYSTEM] SubmitTaskResult 通过 store 校验，但 sub-agent 自检失败。修正下面的问题后再调一次：\n"...)
-	for _, f := range failures {
-		b = append(b, "- "...)
-		b = append(b, f...)
-		b = append(b, '\n')
-	}
-	b = append(b, "重写有问题的 artifact，再调 SubmitTaskResult 提交（同 ID 不行就用 parent_artifact_id 产新版本）。\n"...)
-	return types.Message{
-		Role: types.RoleUser,
-		Content: []types.ContentBlock{{
-			Type: types.ContentTypeText,
-			Text: string(b),
-		}},
-		CreatedAt: time.Now(),
-	}
+	return ""
 }
 
 // buildDriverNudgeMessage is the L3-specific reminder injected when the

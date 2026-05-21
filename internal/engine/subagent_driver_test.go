@@ -427,53 +427,10 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 	}
 }
 
-// TestSelfCheckSubmission_RejectsMissingRoleOrZeroSize asserts the P0-2
-// self-check fires on the two failure shapes M4 doesn't catch when no
-// ExpectedOutputs is supplied: empty role, and zero-size artifact.
-func TestSelfCheckSubmission_RejectsMissingRoleOrZeroSize(t *testing.T) {
-	cases := []struct {
-		name string
-		refs []types.ArtifactRef
-		want string // substring expected in failure
-	}{
-		{
-			"empty",
-			nil,
-			"zero artifacts",
-		},
-		{
-			"missing role",
-			[]types.ArtifactRef{{ArtifactID: "art_1", SizeBytes: 100}},
-			"missing a role",
-		},
-		{
-			"zero size",
-			[]types.ArtifactRef{{ArtifactID: "art_1", Role: "draft", SizeBytes: 0}},
-			"is empty",
-		},
-	}
-	lc := &loopConfig{}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			fails := selfCheckSubmission(lc, c.refs)
-			if len(fails) == 0 {
-				t.Fatalf("expected failures, got none")
-			}
-			joined := strings.Join(fails, " | ")
-			if !strings.Contains(joined, c.want) {
-				t.Errorf("want substring %q in: %s", c.want, joined)
-			}
-		})
-	}
-}
-
-func TestSelfCheckSubmission_AcceptsValidRef(t *testing.T) {
-	lc := &loopConfig{}
-	refs := []types.ArtifactRef{{ArtifactID: "art_1", Role: "draft", SizeBytes: 100}}
-	if fails := selfCheckSubmission(lc, refs); len(fails) != 0 {
-		t.Errorf("valid submission should pass, got: %v", fails)
-	}
-}
+// selfCheckSubmission was the post-submit semantic check from the
+// artifact-based model; under local-files-as-truth meta.json IS the
+// contract and the check moves into MetaWrite.Validate. The legacy tests
+// that exercised it are deleted along with the helper.
 
 // TestBuildSubAgentSystemPrompt_NoEmmaForSubAgent guards the leaf-isolation
 // rule (P1-4): a TierSubAgent's prompt MUST NOT contain "emma" anywhere —
