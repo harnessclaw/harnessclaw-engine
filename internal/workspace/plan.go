@@ -61,6 +61,12 @@ func (p *Plan) Validate() error {
 		return fmt.Errorf("plan: empty session_id")
 	}
 	for id, t := range p.Tasks {
+		if t.Title == "" {
+			return fmt.Errorf("plan: task %q title is required", id)
+		}
+		if t.Agent == "" {
+			return fmt.Errorf("plan: task %q agent is required", id)
+		}
 		if !t.Status.Valid() {
 			return fmt.Errorf("plan: task %q status %q invalid (want pending|running|done|failed|cancelled)", id, t.Status)
 		}
@@ -76,8 +82,12 @@ func (p *Plan) Validate() error {
 	return nil
 }
 
-// ValidateTransitionFrom checks transition-level invariants that single-snapshot
-// Validate cannot see — frozen is irreversible once set.
+// ValidateTransitionFrom checks transition-level invariants between two Plan
+// snapshots, then calls Validate on the incoming plan. Callers do not need to
+// call Validate separately.
+//
+// Currently enforces frozen-irreversibility: once a Task has Frozen=true it
+// may not be un-frozen or deleted in a subsequent snapshot.
 func (p *Plan) ValidateTransitionFrom(old *Plan) error {
 	// Check frozen-irreversibility first so that error surfaces before
 	// per-task snapshot invariants (e.g. summary_ref) which belong to a

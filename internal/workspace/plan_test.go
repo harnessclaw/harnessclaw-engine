@@ -13,10 +13,11 @@ func TestPlan_RoundTrip(t *testing.T) {
 		CreatedAt: time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC),
 		Tasks: map[string]*Task{
 			"t_001": {
-				Title:   "调研",
-				Agent:   "researcher",
-				Status:  StatusDone,
-				Attempt: 1,
+				Title:      "调研",
+				Agent:      "researcher",
+				Status:     StatusDone,
+				Attempt:    1,
+				SummaryRef: "tasks/t_001/meta.json",
 			},
 		},
 	}
@@ -81,5 +82,27 @@ func TestPlan_StatusDoneRequiresSummaryRef(t *testing.T) {
 	}
 	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "summary_ref") {
 		t.Errorf("expected summary_ref error, got %v", err)
+	}
+}
+
+func TestStatus_Valid_AllAccepted(t *testing.T) {
+	for _, s := range []Status{StatusPending, StatusRunning, StatusDone, StatusFailed, StatusCancelled} {
+		if !s.Valid() {
+			t.Errorf("Status %q must be Valid()", s)
+		}
+	}
+	if Status("garbage").Valid() {
+		t.Errorf("garbage status must not be Valid()")
+	}
+}
+
+func TestPlan_TitleAndAgentRequired(t *testing.T) {
+	p := &Plan{SessionID: "s", Tasks: map[string]*Task{"t_001": {Agent: "x", Status: StatusPending}}}
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "title") {
+		t.Errorf("expected title error, got %v", err)
+	}
+	p = &Plan{SessionID: "s", Tasks: map[string]*Task{"t_001": {Title: "x", Status: StatusPending}}}
+	if err := p.Validate(); err == nil || !strings.Contains(err.Error(), "agent") {
+		t.Errorf("expected agent error, got %v", err)
 	}
 }
