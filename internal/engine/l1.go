@@ -6,6 +6,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -165,11 +166,25 @@ func (l *L1Engine) Inner() *QueryEngine {
 // ProcessMessage delegates to the inner QueryEngine, which now runs with
 // the L1 profile, restricted tool palette, and small loop cap installed at
 // construction time.
+//
+// Side effect: idempotently bootstraps the on-disk workspace
+// ({rootDir}/session/{sessionID}/{plan.json,tasks/,deliverables/}) so any
+// PlanUpdate / MetaWrite / Promote dispatched downstream finds the layout
+// already in place. Failure here is logged but not fatal — the downstream
+// tools surface the real error if the dir genuinely cannot be written.
 func (l *L1Engine) ProcessMessage(
 	ctx context.Context,
 	sessionID string,
 	msg *types.Message,
 ) (<-chan types.EngineEvent, error) {
+	if root := workspaceRootDir(); root != "" {
+		if err := workspace.EnsureSession(root, sessionID); err != nil {
+			l.logger.Warn("ensure session workspace",
+				zap.String("session_id", sessionID),
+				zap.Error(err),
+			)
+		}
+	}
 	return l.inner.ProcessMessage(ctx, sessionID, msg)
 }
 
