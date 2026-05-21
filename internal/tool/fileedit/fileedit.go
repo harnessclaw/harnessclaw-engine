@@ -81,10 +81,20 @@ func (t *FileEditTool) ValidateInput(input json.RawMessage) error {
 	return nil
 }
 
-func (t *FileEditTool) Execute(_ context.Context, input json.RawMessage) (*types.ToolResult, error) {
+func (t *FileEditTool) Execute(ctx context.Context, input json.RawMessage) (*types.ToolResult, error) {
 	var ei editInput
 	if err := json.Unmarshal(input, &ei); err != nil {
 		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
+	}
+
+	if scope, ok := tool.AgentScopeFromCtx(ctx); ok && len(scope.WriteScope) > 0 {
+		if !pathInScope(ei.FilePath, scope.WriteScope) {
+			return &types.ToolResult{
+				Content:   fmt.Sprintf("path %q is outside the write scope for this spawn (allowed prefixes: %v)", ei.FilePath, scope.WriteScope),
+				IsError:   true,
+				ErrorType: types.ToolErrorPermissionDenied,
+			}, nil
+		}
 	}
 
 	// Read file.
@@ -149,6 +159,20 @@ func (t *FileEditTool) Execute(_ context.Context, input json.RawMessage) (*types
 			"language":    tool.ExtToLanguage(filepath.Ext(ei.FilePath)),
 		},
 	}, nil
+}
+
+// pathInScope returns true if path (after Clean) starts with any allowed
+// prefix (also Cleaned). Symlinks are NOT resolved — the threat model is
+// LLM path mistakes, not adversarial filesystem layout.
+func pathInScope(path string, allowed []string) bool {
+	p := filepath.Clean(path)
+	for _, a := range allowed {
+		ac := filepath.Clean(a)
+		if p == ac || strings.HasPrefix(p, ac+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 const fileEditDescription = `在文件中做精确字符串替换。
