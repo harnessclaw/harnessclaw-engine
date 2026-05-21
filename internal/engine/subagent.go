@@ -172,6 +172,20 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// own subtree.
 	ctx = sessionstats.WithImmediateParentSessionID(ctx, cfg.ParentSessionID)
 
+	// Idempotent fallback: ensure the on-disk task dir exists before any
+	// sub-agent tool can be dispatched. Real L2 callers will already have
+	// created it via PlanUpdate, but ad-hoc dispatches and tests still
+	// land here without the dir. workspace.EnsureTaskDir is a no-op when
+	// the dir already exists. Skipped when there's no task_id / no root
+	// session (legacy / freeform spawn) — nothing safe to anchor against.
+	if cfg.TaskID != "" && rootSID != "" {
+		if root := workspaceRootDir(); root != "" {
+			if err := workspace.EnsureTaskDir(root, rootSID, cfg.TaskID); err != nil {
+				return nil, fmt.Errorf("ensure task dir: %w", err)
+			}
+		}
+	}
+
 	// Step 2: Cap MaxTurns.
 	maxTurns := cfg.MaxTurns
 	if maxTurns <= 0 {
