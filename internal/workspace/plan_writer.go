@@ -10,7 +10,12 @@ import (
 	"time"
 )
 
-const defaultIdleTimeout = 10 * time.Minute
+// DefaultIdleTimeout is how long a PlanWriter's consumer goroutine stays
+// alive without work before being reclaimed. Exposed because callers
+// configuring NewPlanWriterRegistry may want to assert / compare against it.
+const DefaultIdleTimeout = 10 * time.Minute
+
+var errStopped = errors.New("plan writer stopped")
 
 // PlanWriterRegistry holds one PlanWriter per active session. Concurrency
 // across sessions is unbounded (each session has its own writer); within
@@ -24,10 +29,11 @@ type PlanWriterRegistry struct {
 	writers map[string]*PlanWriter
 }
 
-// NewPlanWriterRegistry creates a registry with the default 10-minute idle
-// timeout.
+// NewPlanWriterRegistry creates a registry with the default idle timeout
+// (DefaultIdleTimeout = 10 minutes). Writers are reclaimed after that
+// duration of inactivity and lazily restarted on the next Get.
 func NewPlanWriterRegistry(rootDir string) *PlanWriterRegistry {
-	return newPlanWriterRegistryWithIdle(rootDir, defaultIdleTimeout)
+	return newPlanWriterRegistryWithIdle(rootDir, DefaultIdleTimeout)
 }
 
 // newPlanWriterRegistryWithIdle is the test seam — exposes the idle timeout
@@ -47,9 +53,11 @@ func (r *PlanWriterRegistry) Get(sessionID string) *PlanWriter {
 	if w, ok := r.writers[sessionID]; ok {
 		return w
 	}
-	w := newPlanWriter(r.rootDir, sessionID, r.idleTimeout, nil)
+	w := newPlanWriter(r.rootDir, sessionID, r.idleTimeout)
 	w.onIdle = func() {
 		r.mu.Lock()
+		// Pointer-equality match: a lazy restart between idle-close
+		// and onIdle callback may have already replaced the entry.
 		if existing, ok := r.writers[sessionID]; ok && existing == w {
 			delete(r.writers, sessionID)
 		}
@@ -59,14 +67,28 @@ func (r *PlanWriterRegistry) Get(sessionID string) *PlanWriter {
 	return w
 }
 
-// StopAll signals every writer to stop. Used in tests / shutdown.
+// StopAll signals every writer to stop AND waits for each writer's
+// consumer goroutine to exit so any in-flight disk write completes
+// before StopAll returns. Used in tests / shutdown.
 func (r *PlanWriterRegistry) StopAll(ctx context.Context) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	ws := make([]*PlanWriter, 0, len(r.writers))
 	for _, w := range r.writers {
-		w.stop()
+		ws = append(ws, w)
 	}
 	r.writers = map[string]*PlanWriter{}
+	r.mu.Unlock()
+
+	for _, w := range ws {
+		w.stop()
+	}
+	for _, w := range ws {
+		w.wg.Wait()
+		// The loop goroutine has exited. Drain any items that slipped into
+		// the buffered ch in the narrow window between stop() and the
+		// goroutine's last drainAndFail call, so Apply callers don't block.
+		w.drainAndFail()
+	}
 }
 
 // PlanWriter serialises plan.json mutations for one session. Apply enqueues
@@ -77,8 +99,11 @@ type PlanWriter struct {
 	idleTimeout time.Duration
 	onIdle      func()
 
+	ch   chan planMutation // never closed; senders use done to detect shutdown
+	done chan struct{}     // closed by stop(); signals senders + loop
+	wg   sync.WaitGroup
+
 	mu      sync.Mutex
-	ch      chan planMutation
 	stopped bool
 }
 
@@ -87,28 +112,34 @@ type planMutation struct {
 	reply chan error
 }
 
-func newPlanWriter(rootDir, sessionID string, idle time.Duration, onIdle func()) *PlanWriter {
+func newPlanWriter(rootDir, sessionID string, idle time.Duration) *PlanWriter {
 	w := &PlanWriter{
 		rootDir:     rootDir,
 		sessionID:   sessionID,
 		idleTimeout: idle,
-		onIdle:      onIdle,
 		ch:          make(chan planMutation, 64),
+		done:        make(chan struct{}),
 	}
+	w.wg.Add(1)
 	go w.loop()
 	return w
 }
 
 func (w *PlanWriter) loop() {
+	defer w.wg.Done()
 	timer := time.NewTimer(w.idleTimeout)
 	defer timer.Stop()
 	for {
 		select {
-		case m, ok := <-w.ch:
-			if !ok {
-				return
-			}
+		case <-w.done:
+			w.drainAndFail()
+			return
+		case m := <-w.ch:
 			m.reply <- w.handle(m.apply)
+			// Reset the idle timer for the next iteration. Drain the
+			// timer's channel if Stop reports it already fired
+			// (Go time docs §timer.Stop) — otherwise the next iteration
+			// could see a stale tick.
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -117,13 +148,40 @@ func (w *PlanWriter) loop() {
 			}
 			timer.Reset(w.idleTimeout)
 		case <-timer.C:
+			// Timer fired. If items snuck into ch between the timer
+			// firing and select dispatch, prefer them — premature
+			// reclaim during a burst is wasteful (we'd just lazy-start
+			// again on the very next Apply).
+			if len(w.ch) > 0 {
+				timer.Reset(w.idleTimeout)
+				continue
+			}
 			w.mu.Lock()
+			if w.stopped {
+				w.mu.Unlock()
+				w.drainAndFail()
+				return
+			}
 			w.stopped = true
-			close(w.ch)
+			close(w.done)
 			w.mu.Unlock()
 			if w.onIdle != nil {
 				w.onIdle()
 			}
+			w.drainAndFail()
+			return
+		}
+	}
+}
+
+// drainAndFail empties any items left in ch and sends errStopped to each
+// reply channel so Apply callers don't block forever.
+func (w *PlanWriter) drainAndFail() {
+	for {
+		select {
+		case m := <-w.ch:
+			m.reply <- errStopped
+		default:
 			return
 		}
 	}
@@ -149,7 +207,7 @@ func (w *PlanWriter) handle(apply func(*Plan) error) error {
 		return fmt.Errorf("apply: %w", err)
 	}
 	if err := next.ValidateTransitionFrom(&old); err != nil {
-		return err
+		return fmt.Errorf("validate transition: %w", err)
 	}
 	next.UpdatedAt = time.Now().UTC()
 	nb, err := json.MarshalIndent(next, "", "  ")
@@ -161,27 +219,38 @@ func (w *PlanWriter) handle(apply func(*Plan) error) error {
 
 // Apply enqueues a mutation and waits for the consumer goroutine to apply
 // it. Returns the apply / validate / write error to the caller.
+//
+// Contract: once a mutation is enqueued it WILL execute. Apply ignores ctx
+// cancellation after enqueue to ensure the caller always sees the actual
+// mutation result (returning ctx.Err() here would let a successful write
+// silently happen behind a "cancelled" return, enabling double-writes on
+// caller retry).
+//
+// The stopped check under mutex is a fast-path guard. The done arm in the
+// select below catches the narrow race where stop() fires between the flag
+// read and the channel send.
 func (w *PlanWriter) Apply(ctx context.Context, fn func(*Plan) error) error {
 	w.mu.Lock()
-	stopped := w.stopped
-	w.mu.Unlock()
-	if stopped {
-		return errors.New("plan writer stopped")
+	if w.stopped {
+		w.mu.Unlock()
+		return errStopped
 	}
+	w.mu.Unlock()
+
 	reply := make(chan error, 1)
 	select {
 	case w.ch <- planMutation{apply: fn, reply: reply}:
+	case <-w.done:
+		return errStopped
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	select {
-	case err := <-reply:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return <-reply
 }
 
+// stop signals the consumer goroutine to shut down. ch is NEVER closed —
+// the loop owns ch and exits on done. Callers should use the WaitGroup
+// (via Registry.StopAll) to know when the goroutine has actually exited.
 func (w *PlanWriter) stop() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -189,7 +258,7 @@ func (w *PlanWriter) stop() {
 		return
 	}
 	w.stopped = true
-	close(w.ch)
+	close(w.done)
 }
 
 // clonePlan does deep copy via JSON round-trip. Plan is small enough that

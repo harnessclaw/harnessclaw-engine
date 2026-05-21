@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -132,8 +133,7 @@ func TestPlanWriter_ApplyFuncErrorPropagated(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected apply func error to propagate")
 	}
-	// Must mention the original error so caller can diagnose
-	if !contains(err.Error(), want) {
+	if !strings.Contains(err.Error(), want) {
 		t.Errorf("err = %q, want it to contain %q", err.Error(), want)
 	}
 }
@@ -153,14 +153,46 @@ func TestPlanWriter_StopAllPreventsFurtherApply(t *testing.T) {
 	}
 }
 
-func contains(s, sub string) bool {
-	return len(sub) == 0 || (len(s) >= len(sub) && (indexOf(s, sub) >= 0))
-}
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
+func TestPlanWriter_StopAllWaitsForInFlight(t *testing.T) {
+	root := t.TempDir()
+	sid := "sess_a"
+	_ = EnsureSession(root, sid)
+	reg := NewPlanWriterRegistry(root)
+
+	// Block inside the mutation closure so we can race StopAll against
+	// an in-flight handle().
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		_ = reg.Get(sid).Apply(context.Background(), func(p *Plan) error {
+			close(started)
+			// Hold the goroutine slot briefly so StopAll observes us in flight.
+			time.Sleep(80 * time.Millisecond)
+			p.Tasks["t_001"] = &Task{Title: "x", Agent: "y", Status: StatusPending, Attempt: 1}
+			return nil
+		})
+		close(finished)
+	}()
+
+	<-started
+	// StopAll must NOT return until the in-flight Apply has completed.
+	stopDone := make(chan struct{})
+	go func() {
+		reg.StopAll(context.Background())
+		close(stopDone)
+	}()
+
+	select {
+	case <-stopDone:
+		// good — verify in-flight Apply finished and wrote its mutation
+		<-finished
+		b, _ := os.ReadFile(PlanPath(root, sid))
+		var p Plan
+		_ = json.Unmarshal(b, &p)
+		if p.Tasks["t_001"] == nil {
+			t.Errorf("in-flight mutation lost; StopAll returned before write")
 		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("StopAll deadlocked / never returned")
 	}
-	return -1
 }
