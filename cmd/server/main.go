@@ -75,6 +75,9 @@ import (
 	"harnessclaw-go/internal/tool/grep"
 	"harnessclaw-go/internal/tool/listloadedskills"
 	"harnessclaw-go/internal/tool/loadskill"
+	"harnessclaw-go/internal/tool/metatool"
+	"harnessclaw-go/internal/tool/plantool"
+	"harnessclaw-go/internal/tool/promotetool"
 	"harnessclaw-go/internal/tool/searchskill"
 	"harnessclaw-go/internal/tool/skilltool"
 	"harnessclaw-go/internal/tool/unloadskill"
@@ -83,6 +86,7 @@ import (
 	"harnessclaw-go/internal/tool/webfetch"
 	"harnessclaw-go/internal/tool/websearch"
 	"harnessclaw-go/internal/tool/tavilysearch"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -177,11 +181,24 @@ func main() {
 	// docx/pdf land there, plus the configured skills dirs so a skill's
 	// own assets/references can also be ingested as artifacts.
 	var artifactSourceDirs []string
+	// workspaceRootDir is the shared root for plan.json / tasks/ /
+	// deliverables/ across every L1 session. Defaults to
+	// ~/.harnessclaw/workspace — the same convention skills and the
+	// artifact store already use. Empty when UserHomeDir fails (e.g.
+	// containerised builds with no $HOME) which disables the new
+	// PlanUpdate/MetaWrite/Promote tools at registry time.
+	var workspaceRootDir string
 	if home, err := os.UserHomeDir(); err == nil {
-		artifactSourceDirs = append(artifactSourceDirs,
-			filepath.Join(home, ".harnessclaw", "workspace"))
+		workspaceRootDir = filepath.Join(home, ".harnessclaw", "workspace")
+		artifactSourceDirs = append(artifactSourceDirs, workspaceRootDir)
 	}
 	artifactSourceDirs = append(artifactSourceDirs, cfg.Skills.Dirs...)
+
+	// planWriterReg is the per-process registry of single-consumer plan.json
+	// writers. PlanUpdate and Promote share it so all mutations for a given
+	// session funnel through the same goroutine (D11). Created here so the
+	// shutdown path below can StopAll on graceful exit.
+	planWriterReg := workspace.NewPlanWriterRegistry(workspaceRootDir)
 
 	// Register built-in tools based on config.
 	builtInTools := []struct {
@@ -218,6 +235,14 @@ func main() {
 		// Pairs with SubmitTaskResult: every TierSubAgent worker must
 		// reach exactly one of the two before its loop terminates.
 		{true, func() tool.Tool { return submittool.NewEscalate() }},
+		// PlanUpdate / MetaWrite / Promote are the local-files-as-truth
+		// trio (doc §3). Only registered when the workspace root resolved
+		// so unit-tests and headless builds without a home dir stay
+		// unchanged. Promote reads its event channel from ctx, so no
+		// per-session wiring is needed here.
+		{workspaceRootDir != "", func() tool.Tool { return plantool.NewPlanUpdateTool(planWriterReg, workspaceRootDir) }},
+		{workspaceRootDir != "", func() tool.Tool { return metatool.NewMetaWriteTool(workspaceRootDir) }},
+		{workspaceRootDir != "", func() tool.Tool { return promotetool.NewPromoteTool(planWriterReg, workspaceRootDir, nil) }},
 	}
 	for _, bt := range builtInTools {
 		if bt.enabled {
@@ -772,6 +797,12 @@ func main() {
 	if err := sessionMgr.PersistAll(shutdownCtx); err != nil {
 		logger.Error("failed to persist some sessions", zap.Error(err))
 	}
+
+	// Stop the per-session PlanWriter goroutines so any final mutations
+	// drain to disk before the process exits. StopAll respects ctx so a
+	// stuck writer cannot block shutdown indefinitely.
+	planWriterReg.StopAll(shutdownCtx)
+	logger.Info("plan writer registry stopped")
 
 	// Flush logger.
 	logger.Info("shutdown complete")
