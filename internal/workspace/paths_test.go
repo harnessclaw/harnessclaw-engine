@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -20,8 +19,8 @@ func TestPaths_AllUnderSessionRoot(t *testing.T) {
 	}
 	want := SessionRoot(root, sid)
 	for k, p := range got {
-		if !strings.HasPrefix(p, want) {
-			t.Errorf("%s = %q, expected to start with %q", k, p, want)
+		if !strings.HasPrefix(p, want+string(filepath.Separator)) && p != want {
+			t.Errorf("%s = %q, expected to be inside or equal to %q", k, p, want)
 		}
 	}
 }
@@ -36,9 +35,6 @@ func TestPaths_TaskDirIsUnderTasks(t *testing.T) {
 }
 
 func TestPaths_NoTraversalInTaskID(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("path separator behavior differs")
-	}
 	root := "/tmp/hcw"
 	defer func() {
 		if recover() == nil {
@@ -46,4 +42,14 @@ func TestPaths_NoTraversalInTaskID(t *testing.T) {
 		}
 	}()
 	_ = TaskDir(root, "sess_a", "../escape")
+}
+
+func TestPaths_NoTraversalInSessionID(t *testing.T) {
+	root := "/tmp/hcw"
+	defer func() {
+		if recover() == nil {
+			t.Errorf("expected panic for traversal sessionID")
+		}
+	}()
+	_ = SessionRoot(root, "../escape")
 }

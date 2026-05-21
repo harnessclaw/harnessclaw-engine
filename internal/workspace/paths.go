@@ -41,15 +41,14 @@ func MetaPath(rootDir, sessionID, taskID string) string {
 	return filepath.Join(TaskDir(rootDir, sessionID, taskID), "meta.json")
 }
 
-// mustSafe panics on identifiers containing path traversal / separators.
-// We panic instead of returning error because these IDs originate inside
-// the engine (not LLM-supplied) — a bad value here is a programmer bug
-// that should surface loudly, not be silently sanitised.
+// mustSafe panics if id is empty or contains path-traversal sequences.
+// IDs are engine-internal: a bad value is a programmer bug, not a runtime
+// condition, so panic surfaces it immediately instead of silently sanitising.
 func mustSafe(id, what string) {
 	if id == "" {
 		panic(fmt.Sprintf("workspace: empty %s", what))
 	}
-	if strings.ContainsAny(id, "/\\") || id == "." || id == ".." || strings.Contains(id, "..") {
+	if strings.ContainsAny(id, "/\\") || id == "." || strings.Contains(id, "..") {
 		panic(fmt.Sprintf("workspace: unsafe %s %q", what, id))
 	}
 }
