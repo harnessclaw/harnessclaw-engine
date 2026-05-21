@@ -166,13 +166,22 @@ func (t *PromoteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.
 		return errResult("plan update: " + err.Error()), nil
 	}
 
-	// Best-effort Deliverable events. Non-blocking — UI can also recover
-	// from plan.json on reconnect, so a dropped event is not load-bearing.
-	if t.events != nil {
+	// Best-effort Deliverable events. Constructor channel wins for tests;
+	// production callers leave it nil and we fall back to the per-session
+	// event channel attached to ctx by ToolExecutor. Non-blocking — UI can
+	// also recover from plan.json on reconnect, so a dropped event is not
+	// load-bearing.
+	out := t.events
+	if out == nil {
+		if ch, ok := tool.GetEventOut(ctx); ok {
+			out = ch
+		}
+	}
+	if out != nil {
 		for _, m := range in.Mappings {
 			dst := filepath.Join(deliverDir, m.TargetName)
 			select {
-			case t.events <- types.EngineEvent{
+			case out <- types.EngineEvent{
 				Type:        types.EngineEventDeliverable,
 				Deliverable: &types.Deliverable{FilePath: dst, ByteSize: int(safeSize(dst))},
 			}:
