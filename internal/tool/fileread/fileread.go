@@ -74,10 +74,20 @@ func (t *FileReadTool) ValidateInput(input json.RawMessage) error {
 	return nil
 }
 
-func (t *FileReadTool) Execute(_ context.Context, input json.RawMessage) (*types.ToolResult, error) {
+func (t *FileReadTool) Execute(ctx context.Context, input json.RawMessage) (*types.ToolResult, error) {
 	var ri readInput
 	if err := json.Unmarshal(input, &ri); err != nil {
 		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
+	}
+
+	if scope, ok := tool.AgentScopeFromCtx(ctx); ok && len(scope.ReadScope) > 0 {
+		if !pathInScope(ri.FilePath, scope.ReadScope) {
+			return &types.ToolResult{
+				Content:   fmt.Sprintf("path %q is outside the read scope for this spawn (allowed prefixes: %v)", ri.FilePath, scope.ReadScope),
+				IsError:   true,
+				ErrorType: types.ToolErrorPermissionDenied,
+			}, nil
+		}
 	}
 
 	// Check file exists.
@@ -150,6 +160,20 @@ func (t *FileReadTool) Execute(_ context.Context, input json.RawMessage) (*types
 			"lines_read":  linesRead,
 		},
 	}, nil
+}
+
+// pathInScope returns true if path (after Clean) starts with any allowed
+// prefix (also Cleaned). Symlinks are NOT resolved — the threat model is
+// LLM path mistakes, not adversarial filesystem layout.
+func pathInScope(path string, allowed []string) bool {
+	p := filepath.Clean(path)
+	for _, a := range allowed {
+		ac := filepath.Clean(a)
+		if p == ac || strings.HasPrefix(p, ac+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 const fileReadDescription = `读取本地文件系统中的文件。可以直接访问任意文件。
