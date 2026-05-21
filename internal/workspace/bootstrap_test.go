@@ -112,13 +112,23 @@ func TestWriteFileAtomic_NoPartialOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "out.bin")
 
-	// Sanity: writeFileAtomic succeeds normally
+	// Happy path sanity
 	if err := writeFileAtomic(target, []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(target)
 	if string(b) != "hello" {
 		t.Errorf("got %q want %q", string(b), "hello")
+	}
+
+	// Failure path: target inside a missing parent dir → os.WriteFile errors,
+	// and the .tmp sidecar must not survive.
+	bad := filepath.Join(dir, "no_such_subdir", "out.bin")
+	if err := writeFileAtomic(bad, []byte("x"), 0o644); err == nil {
+		t.Fatalf("expected write to fail when parent dir missing")
+	}
+	if _, err := os.Stat(bad + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf(".tmp left behind after write failure: err=%v", err)
 	}
 }
 

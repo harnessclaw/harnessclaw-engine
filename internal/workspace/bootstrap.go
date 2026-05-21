@@ -52,6 +52,10 @@ func EnsureTaskDir(rootDir, sessionID, taskID string) error {
 // Used by retry: each retry starts from a clean slate. If the dir does not
 // exist, it is created (so callers don't need a separate "does it exist?"
 // check before calling).
+//
+// Callers must ensure no other goroutine is writing into the dir concurrently.
+// In the engine this is guaranteed because WipeTaskDir is invoked only after
+// the prior L3 for this task has terminated (D14 retry gate).
 func WipeTaskDir(rootDir, sessionID, taskID string) error {
 	dir := TaskDir(rootDir, sessionID, taskID)
 	entries, err := os.ReadDir(dir)
@@ -70,11 +74,13 @@ func WipeTaskDir(rootDir, sessionID, taskID string) error {
 }
 
 // writeFileAtomic writes content via {path}.tmp + rename so concurrent
-// readers never see a half-written file. Used by bootstrap and the
-// plan_writer's consumer goroutine.
+// readers never see a half-written file. The .tmp is removed on write
+// failure so a partial sidecar does not survive across retries.
+// Used by bootstrap and the plan_writer's consumer goroutine.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, perm); err != nil {
+		_ = os.Remove(tmp) // best-effort; real error is above
 		return err
 	}
 	return os.Rename(tmp, path)
