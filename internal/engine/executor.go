@@ -44,6 +44,10 @@ type ToolExecutor struct {
 	// Empty contract = no enforcement; the loop terminates on plain
 	// end_turn as before.
 	taskContract tool.TaskContract
+	// agentScope is the per-spawn filesystem scope reachable from tool
+	// ctx. File* tools read it to reject out-of-scope paths. Zero-value
+	// = no restriction (legacy compat).
+	agentScope tool.AgentScope
 
 	// statsRegistry, if non-nil, gets a RecordToolCall ping on each
 	// tool_end. Set via SetStatsRegistry at construction. nil = no-op
@@ -93,6 +97,13 @@ func (te *ToolExecutor) SetArtifactProducer(p tool.ArtifactProducer) {
 // TaskContract on legacy / unrestricted dispatches.
 func (te *ToolExecutor) SetTaskContract(c tool.TaskContract) {
 	te.taskContract = c
+}
+
+// SetAgentScope installs the per-spawn filesystem scope reachable from
+// tool execution context. File* tools enforce ReadScope/WriteScope when
+// non-empty; zero-value = no restriction (legacy compat).
+func (te *ToolExecutor) SetAgentScope(s tool.AgentScope) {
+	te.agentScope = s
 }
 
 // ExecuteBatch runs a batch of tool calls. Read-only and concurrency-safe tools
@@ -443,6 +454,13 @@ func (te *ToolExecutor) executeSingle(
 	// attach — when the contract is zero-value the validating tool
 	// degrades to existence-only checks.
 	execCtx = tool.WithTaskContract(execCtx, te.taskContract)
+	// AgentScope reaches File* tools so per-spawn path restrictions are
+	// enforced. Only attach when at least one field is set so empty
+	// scope keeps the legacy "no restriction" behaviour observable via
+	// AgentScopeFromCtx returning ok=false.
+	if te.agentScope.SessionRoot != "" || len(te.agentScope.ReadScope) > 0 || len(te.agentScope.WriteScope) > 0 {
+		execCtx = tool.WithAgentScope(execCtx, te.agentScope)
+	}
 
 	// Inject ToolUseContext so tools (e.g. Specialists) can read the
 	// session ID and tool-call identity without threading these fields

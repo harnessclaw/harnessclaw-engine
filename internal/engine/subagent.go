@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -23,8 +25,41 @@ import (
 	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/submittool"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
+
+// workspaceRootDir returns the on-disk root for the local-files-as-truth
+// layout. Defaults to ~/.harnessclaw/workspace, matching the convention
+// used elsewhere (skills dir, session DB). A config-driven override can
+// replace this helper later without touching call sites.
+func workspaceRootDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".harnessclaw", "workspace")
+}
+
+// deriveSessionRoot computes the {workspace}/session/{root-session-id}
+// path for a spawn. Falls back to ParentSessionID when RootSessionID is
+// unset (the L2 case where the parent IS the root). Returns "" if no
+// session id is available — engine still works, just without the
+// SessionRoot hint in AgentScope.
+func deriveSessionRoot(cfg *agent.SpawnConfig) string {
+	rootSID := cfg.RootSessionID
+	if rootSID == "" {
+		rootSID = cfg.ParentSessionID
+	}
+	if rootSID == "" {
+		return ""
+	}
+	root := workspaceRootDir()
+	if root == "" {
+		return ""
+	}
+	return workspace.SessionRoot(root, rootSID)
+}
 
 // maxSubAgentTurns is the hard upper limit for any sub-agent's MaxTurns,
 // regardless of what SpawnConfig requests. 30 leaves room for genuine
@@ -493,6 +528,9 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		outputSchema:         outputSchema,
 		originalPrompt:       cfg.Prompt,
 		skillTracker:         freelancerTracker, // nil for non-freelancer spawns
+		readScope:            cfg.ReadScope,
+		writeScope:           cfg.WriteScope,
+		sessionRoot:          deriveSessionRoot(cfg),
 	}
 
 	// Step 10: Emit subagent.start event.
@@ -1074,6 +1112,12 @@ type loopConfig struct {
 	// UnloadSkill / ListLoadedSkills) pick it up via ctx. nil = not a
 	// freelancer spawn; those tools refuse to run.
 	skillTracker *SkillTracker
+	// readScope / writeScope / sessionRoot are the per-spawn filesystem
+	// scope plumbed onto every tool ctx via ToolExecutor.SetAgentScope.
+	// All empty means no restriction (legacy compat path).
+	readScope   []string
+	writeScope  []string
+	sessionRoot string
 }
 
 // runSubAgentLoop is a variant of runQueryLoop parameterized by loopConfig.
@@ -1130,6 +1174,11 @@ func (qe *QueryEngine) runSubAgentLoop(
 		TaskStartedAt:   lc.taskStartedAt,
 		ExpectedOutputs: lc.expectedOutputs,
 		OutputSchema:    lc.outputSchema,
+	})
+	executor.SetAgentScope(tool.AgentScope{
+		ReadScope:   lc.readScope,
+		WriteScope:  lc.writeScope,
+		SessionRoot: lc.sessionRoot,
 	})
 
 	// Submission state. Tracked as the loop runs so we know whether
