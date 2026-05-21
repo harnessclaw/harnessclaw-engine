@@ -10,16 +10,8 @@
 /server
 
 # E2E probes — local-only, never committed (source + compiled binaries)
-/ask_e2e
-/emit_e2e
-/l3_e2e
-/subagent_e2e
-cmd/ask_e2e/
-cmd/emit_e2e/
-cmd/l3_e2e/
-!cmd/l3_e2e/freelancer/
-!cmd/l3_e2e/freelancer/**
-cmd/subagent_e2e/
+cmd
+!cmd/server/*
 
 # Build output
 dist/
@@ -52,6 +44,7 @@ vendor/
 # docs — local-only design / draft notes (API references under docs/api/ and protocol docs are tracked)
 docs/*
 !docs/api/console-api.md
+!docs/api/tools-catalog.md
 !docs/protocols/websocket.md
 !docs/protocols/multimodal-input.md
 !docs/release-rules.md
