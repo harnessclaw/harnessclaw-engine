@@ -106,16 +106,16 @@ func TestLoadAllToRegistry_PreservesBuiltinTier(t *testing.T) {
 	}
 
 	// At this point the in-memory registry has full builtins. Verify
-	// the writer worker has Tier=SubAgent.
-	beforeReload := reg.Get("writer")
+	// the freelancer worker has Tier=SubAgent.
+	beforeReload := reg.Get("freelancer")
 	if beforeReload == nil {
-		t.Fatal("writer should be registered as builtin")
+		t.Fatal("freelancer should be registered as builtin")
 	}
 	if beforeReload.Tier != TierSubAgent {
-		t.Fatalf("writer.Tier = %q before reload, want %q", beforeReload.Tier, TierSubAgent)
+		t.Fatalf("freelancer.Tier = %q before reload, want %q", beforeReload.Tier, TierSubAgent)
 	}
 	if len(beforeReload.OutputSchema) == 0 {
-		t.Fatal("writer.OutputSchema should be populated by RegisterBuiltins")
+		t.Fatal("freelancer.OutputSchema should be populated by RegisterBuiltins")
 	}
 
 	// Simulate the lossy round-trip: pretend the SQLite store strips
@@ -127,21 +127,21 @@ func TestLoadAllToRegistry_PreservesBuiltinTier(t *testing.T) {
 	}
 
 	// Reload from store. After this the bug would have replaced the
-	// in-memory writer with an empty-Tier copy.
+	// in-memory freelancer with an empty-Tier copy.
 	if err := svc.LoadAllToRegistry(context.Background()); err != nil {
 		t.Fatalf("LoadAllToRegistry: %v", err)
 	}
 
-	afterReload := reg.Get("writer")
+	afterReload := reg.Get("freelancer")
 	if afterReload == nil {
-		t.Fatal("writer disappeared after reload")
+		t.Fatal("freelancer disappeared after reload")
 	}
 	if afterReload.Tier != TierSubAgent {
-		t.Errorf("writer.Tier lost after reload: got %q, want %q",
+		t.Errorf("freelancer.Tier lost after reload: got %q, want %q",
 			afterReload.Tier, TierSubAgent)
 	}
 	if len(afterReload.OutputSchema) == 0 {
-		t.Errorf("writer.OutputSchema lost after reload")
+		t.Errorf("freelancer.OutputSchema lost after reload")
 	}
 
 	// And ListForPlanner should still surface the worker — the actual
@@ -152,13 +152,13 @@ func TestLoadAllToRegistry_PreservesBuiltinTier(t *testing.T) {
 	}
 	foundWriter := false
 	for _, l := range listings {
-		if l.Name == "writer" {
+		if l.Name == "freelancer" {
 			foundWriter = true
 			break
 		}
 	}
 	if !foundWriter {
-		t.Errorf("ListForPlanner missing writer; got %d listings: %v",
+		t.Errorf("ListForPlanner missing freelancer; got %d listings: %v",
 			len(listings), listingNames(listings))
 	}
 }
@@ -180,8 +180,8 @@ func TestLoadAllToRegistry_AppliesUserEdits(t *testing.T) {
 	// by mutating the store entry directly). Tier still missing in
 	// store as before.
 	for name, d := range store.defs {
-		if name == "writer" {
-			d.DisplayName = "重命名后的小林"
+		if name == "freelancer" {
+			d.DisplayName = "重命名后的外援"
 			d.Tier = "" // simulate lossy schema
 		}
 	}
@@ -190,8 +190,8 @@ func TestLoadAllToRegistry_AppliesUserEdits(t *testing.T) {
 		t.Fatalf("LoadAllToRegistry: %v", err)
 	}
 
-	w := reg.Get("writer")
-	if w.DisplayName != "重命名后的小林" {
+	w := reg.Get("freelancer")
+	if w.DisplayName != "重命名后的外援" {
 		t.Errorf("user edit lost; DisplayName = %q", w.DisplayName)
 	}
 	if w.Tier != TierSubAgent {

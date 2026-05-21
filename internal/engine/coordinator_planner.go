@@ -458,22 +458,13 @@ func buildPlannerUserMessage(in PlannerInput, feedback string) string {
 }
 
 // subagentKeywords lists the strings each sub-agent type accepts as a
-// signal that the goal is its kind of task. Substring match is intentional
-// for Chinese (where 调研 / 代码 etc. are unambiguous tokens) but tight
-// for English — see the `developer` block: 'code' / 'go ' / 'script' /
-// 'function' were dropped because they triggered on `codex` / `vscode` /
-// `encode` / `decode` / English connector words / `transcript` /
-// `functional analysis` etc., causing research and analysis tasks to be
-// misrouted to developer.
-var subagentKeywords = map[string][]string{
-	"writer":         {"write ", "draft", "polish", "translate", "邮件", "翻译", "润色", "撰写"},
-	"researcher":     {"research", "find out", "调研", "查一下", "搜集"},
-	"analyst":        {"analyze", "compare", "对比", "分析"},
-	"developer":      {"代码", "脚本", "中间件", "调试", "middleware", "debug", "python", "typescript", "javascript", "compile"},
-	"travel_planner": {"travel", "trip", "itinerary", "出行", "行程"},
-	"recommender":    {"recommend", "best", "pick", "推荐", "选购", "比价"},
-	"scheduler":      {"schedule", "calendar", "日程", "排期", "会议"},
-}
+// signal that the goal is its kind of task. Empty since the 7 fixed L3
+// workers were removed — freelancer is the only remaining sub-agent and
+// is keyword-agnostic (capability comes from the loaded skill, not from
+// task-text matching). Kept as a map so callers compile; semantically
+// equivalent to "no keyword routing available" and the resolver falls
+// through to its fallback path.
+var subagentKeywords = map[string][]string{}
 
 // matchesSubagent reports whether goal matches any keyword for subagent.
 // Kept as a thin wrapper so callers that only need yes/no don't pay for

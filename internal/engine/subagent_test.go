@@ -508,41 +508,12 @@ func TestBuildSubAgentSystemPrompt_GeneralPurposeDoesNotLeakEmma(t *testing.T) {
 	}
 }
 
-// TestBuildSubAgentSystemPrompt_WriterUsesSpecializedPrompt verifies that
-// TierSubAgent workers with a SystemPrompt set use that prompt for the role
-// section — not BuildFunctionalIdentity or BuildWorkerIdentity. For writer,
-// the specialized prompt contains "专业写作执行者" and workflow steps.
-func TestBuildSubAgentSystemPrompt_WriterUsesSpecializedPrompt(t *testing.T) {
-	prov := &subagentMockProvider{}
-	eng := newSubagentTestEngine(prov)
-	eng.config.MainAgentDisplayName = "emma"
-
-	reg := agent.NewAgentDefinitionRegistry()
-	reg.RegisterBuiltins()
-	eng.SetDefRegistry(reg)
-
-	sess := &session.Session{ID: "sess_test"}
-	got := eng.buildSubAgentSystemPrompt(
-		context.Background(),
-		sess,
-		nil,
-		prompt.WorkerProfile,
-		"writer",
-		nil,
-		nil,
-	)
-
-	// Specialized system_prompt must be present.
-	if !contains(got, "专业写作执行者") {
-		t.Errorf("writer prompt missing specialized system_prompt; got:\n%s", got)
-	}
-	// Must NOT contain the emma persona or team-member framing.
-	for _, leak := range []string{"我是 emma", "你叫 emma", "团队的搭档"} {
-		if strings.Contains(got, leak) {
-			t.Errorf("writer prompt leaked team identity (%q); got:\n%s", leak, got)
-		}
-	}
-}
+// TestBuildSubAgentSystemPrompt_WriterUsesSpecializedPrompt covered the
+// writer specialized prompt path. writer + the 6 other built-in L3
+// agents were removed; freelancer is the only remaining L3, and it
+// derives its prompt from the loaded skill, not a static SystemPrompt.
+// The leaf-isolation property (no "emma" leakage) is still covered by
+// TestBuildSubAgentSystemPrompt_NoEmmaForSubAgent against freelancer.
 
 // TestSpawnSync_InjectsTaskInputsPreamble replaces the legacy artifact-
 // preamble check: under the local-files-as-truth model, the framework

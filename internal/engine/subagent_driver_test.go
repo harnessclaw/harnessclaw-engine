@@ -345,14 +345,16 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 // TestBuildSubAgentSystemPrompt_NoEmmaForSubAgent guards the leaf-isolation
 // rule (P1-4): a TierSubAgent's prompt MUST NOT contain "emma" anywhere —
 // neither in the worker identity ("是 emma 团队的搭档") nor in the
-// principles ("emma 派你来").
+// principles ("emma 派你来"). Asserted against freelancer, the only
+// remaining built-in TierSubAgent after the 7 fixed L3 workers were
+// removed.
 func TestBuildSubAgentSystemPrompt_NoEmmaForSubAgent(t *testing.T) {
 	prov := &subagentMockProvider{}
 	eng := newSubagentTestEngine(prov)
 	eng.config.MainAgentDisplayName = "emma"
 
 	reg := agent.NewAgentDefinitionRegistry()
-	reg.RegisterBuiltins() // writer is now TierSubAgent
+	reg.RegisterBuiltins()
 	eng.SetDefRegistry(reg)
 
 	sess := &session.Session{ID: "sess_test"}
@@ -361,21 +363,14 @@ func TestBuildSubAgentSystemPrompt_NoEmmaForSubAgent(t *testing.T) {
 		sess,
 		nil,
 		prompt.WorkerProfile,
-		"writer",
+		"freelancer",
 		nil,
 		nil,
 	)
 	if strings.Contains(got, "emma") {
-		// Locate first hit so the failure message is grep-friendly.
 		idx := strings.Index(got, "emma")
 		excerpt := got[max(0, idx-40):min(len(got), idx+60)]
 		t.Errorf("TierSubAgent prompt leaks emma:\n  ...%s...", excerpt)
-	}
-	// Sanity: writer's specialized system_prompt should be present.
-	// writer now uses def.SystemPrompt (functional role) instead of
-	// BuildFunctionalIdentity — check for a phrase unique to that prompt.
-	if !strings.Contains(got, "专业写作执行者") {
-		t.Errorf("writer specialized system_prompt missing from prompt")
 	}
 }
 

@@ -81,11 +81,14 @@ func (r *HeuristicSubagentResolver) Resolve(_ context.Context, goal string, avai
 		return fallbackSubagent(set, available), "fallback: empty goal", nil
 	}
 
-	priority := []string{
-		"researcher", "analyst", "writer",
-		"travel_planner", "recommender", "scheduler",
-		"developer",
-	}
+	// Heuristic resolver's keyword routing was tied to the 7 fixed L3
+	// workers (writer/researcher/analyst/developer/travel_planner/
+	// recommender/scheduler) which have been removed. freelancer is the
+	// only remaining L3 and is keyword-agnostic. Leaving the priority
+	// list empty makes the loop below a no-op so resolution always
+	// falls through to fallbackSubagent — which is the correct
+	// behaviour now.
+	priority := []string{}
 
 	bestName := ""
 	bestScore := 0
@@ -114,9 +117,14 @@ func (r *HeuristicSubagentResolver) Resolve(_ context.Context, goal string, avai
 	return pick, "no keyword match; defaulting to fallback", nil
 }
 
-// fallbackSubagent encapsulates the "no rule matched" priority:
-// general-purpose first (handles arbitrary tasks), then any.
+// fallbackSubagent encapsulates the "no rule matched" priority: prefer
+// freelancer (the user-skill-driven L3, capable of any task once an
+// appropriate skill is loaded), then the legacy general-purpose
+// coordinator if it's still registered, then whatever is first.
 func fallbackSubagent(set subagentSet, available []string) string {
+	if set.has("freelancer") {
+		return "freelancer"
+	}
 	if set.has("general-purpose") {
 		return "general-purpose"
 	}
