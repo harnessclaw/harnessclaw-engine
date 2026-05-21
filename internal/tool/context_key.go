@@ -204,3 +204,32 @@ func GetPlanConfirmation(ctx context.Context) string {
 func WithPlanConfirmation(ctx context.Context, mode string) context.Context {
 	return context.WithValue(ctx, planConfirmationContextKey, mode)
 }
+
+// AgentScope is the per-spawn filesystem scope. The engine sets it just
+// before tool Execute so File* tools can reject paths outside the scope.
+// Empty/nil scopes mean "no restriction" — preserves backward compat for
+// callers that haven't migrated yet (legacy tests, ad-hoc spawn).
+type AgentScope struct {
+	// ReadScope lists absolute path prefixes a tool may read from.
+	ReadScope []string
+	// WriteScope lists absolute path prefixes a tool may write to.
+	WriteScope []string
+	// SessionRoot is the {workspace}/session/{root-session-id} dir for
+	// this spawn. Tools may use it to derive relative paths for logging.
+	SessionRoot string
+}
+
+type agentScopeKey struct{}
+
+var agentScopeContextKey = agentScopeKey{}
+
+// WithAgentScope attaches a scope to ctx.
+func WithAgentScope(ctx context.Context, s AgentScope) context.Context {
+	return context.WithValue(ctx, agentScopeContextKey, s)
+}
+
+// AgentScopeFromCtx returns the scope and ok=false when absent.
+func AgentScopeFromCtx(ctx context.Context) (AgentScope, bool) {
+	s, ok := ctx.Value(agentScopeContextKey).(AgentScope)
+	return s, ok
+}
