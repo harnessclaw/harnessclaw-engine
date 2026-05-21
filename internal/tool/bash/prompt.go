@@ -34,5 +34,9 @@ func getDescription() string {
    - 用户没明确要求时，不要跳过 hooks（--no-verify）或绕过签名（--no-gpg-sign / -c commit.gpgsign=false）。hook 失败要去查根因。
  - 避免无谓的 ` + "`sleep`" + `：
    - 能立刻跑的命令之间不要 sleep——直接跑。
-   - 不要在 sleep 循环里重试失败命令——去查根因。`
+   - 不要在 sleep 循环里重试失败命令——去查根因。
+
+# 路径作用域（重要）
+
+L3 sub-agent 通过 ReadScope/WriteScope 限制 FileRead/FileEdit/FileWrite 的可达路径，**Bash 不在该作用域校验之内**。请自觉只在本 task 目录及上游声明的 input_paths 下读写，不要 ` + "`rm`" + ` / ` + "`cp`" + ` / ` + "`>`" + ` 到其他 task 目录。越界由 L2 通过 plan.json 审计可追溯。`
 }
