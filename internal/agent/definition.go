@@ -448,6 +448,11 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 			"EscalateToPlanner",
 			"WebSearch",
 			"TavilySearch",
+			// File system access — every L3 sub-agent needs to inspect
+			// / modify user files directly (writing draft email to disk,
+			// reading source for context, etc.). Bash stays off for
+			// non-developer agents; these four cover the common cases.
+			"Read", "Edit", "Write", "Glob",
 			// Skill enhancement: writer can SearchSkill for format helpers
 			// (email-template, document-style etc.) and LoadSkill them when
 			// useful. Configured by spec §"派 freelancer 的补充约定".
@@ -574,6 +579,8 @@ confidence 评级：
 			"EscalateToPlanner",
 			"WebSearch",
 			"TavilySearch",
+			// File system access (see writer for rationale).
+			"Read", "Edit", "Write", "Glob",
 			// Skill enhancement: researcher can SearchSkill for domain-specific
 			// research workflows (e.g., academic-citation, market-analysis skill).
 			"SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills",
@@ -674,6 +681,8 @@ confidence 评级：
 			"EscalateToPlanner",
 			"WebSearch",
 			"TavilySearch",
+			// File system access (see writer for rationale).
+			"Read", "Edit", "Write", "Glob",
 			// Skill enhancement: analyst can SearchSkill for analytical
 			// workflows / chart conventions (e.g., financial-reporting skill).
 			"SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills",
@@ -796,6 +805,9 @@ tested 字段规则：
 			"SubmitTaskResult",
 			"EscalateToPlanner",
 			"Bash",
+			// File system access — developer additionally needs Bash
+			// for running tests; the four below cover non-shell file ops.
+			"Read", "Edit", "Write", "Glob",
 			// Skill enhancement: developer can SearchSkill for testing
 			// frameworks, language tooling, lint conventions, etc. NOT for
 			// document generation (docx/pdf) — that should be freelancer.
@@ -903,6 +915,8 @@ tested 字段规则：
 			"EscalateToPlanner",
 			"WebSearch",
 			"TavilySearch",
+			// File system access (see writer for rationale).
+			"Read", "Edit", "Write", "Glob",
 		},
 		Skills: []string{
 			"travel_planning",
@@ -1005,6 +1019,8 @@ tested 字段规则：
 			"EscalateToPlanner",
 			"WebSearch",
 			"TavilySearch",
+			// File system access (see writer for rationale).
+			"Read", "Edit", "Write", "Glob",
 		},
 		Skills: []string{
 			"restaurant_recommendation",
@@ -1113,6 +1129,8 @@ slot_count 计算规则：实际安排的独立时间段数量（一个会议 = 
 			"EscalateToPlanner",
 			"WebSearch",
 			"TavilySearch",
+			// File system access (see writer for rationale).
+			"Read", "Edit", "Write", "Glob",
 		},
 		Skills: []string{
 			"scheduling",
@@ -1195,7 +1213,7 @@ slot_count 计算规则：实际安排的独立时间段数量（一个会议 = 
 		// tools that are on by default for unrestricted L3 workers. Without
 		// these two, L2 cannot persist its integrated output or read back
 		// what its L3 children produced, breaking the doc §6.A loop.
-		AllowedTools: []string{"Task", "WebSearch", "TavilySearch", "ArtifactWrite", "ArtifactRead", "SearchSkill", "Skill"},
+		AllowedTools: []string{"Task", "WebSearch", "TavilySearch", "ArtifactWrite", "ArtifactRead", "Read", "Edit", "Write", "Glob", "SearchSkill", "Skill"},
 	})
 	r.MustRegister(&AgentDefinition{
 		Name:        "general-purpose",
@@ -1232,8 +1250,13 @@ slot_count 计算规则：实际安排的独立时间段数量（一个会议 = 
 		AgentType:    tool.AgentTypeSync,
 		IsTeamMember: false,
 		AllowedTools: []string{
-			// Generic file + shell, gated by PermissionManager
-			"FileRead", "FileEdit", "FileWrite", "Glob", "Bash",
+			// Generic file + shell, gated by PermissionManager.
+			// Note: tool registry keys are the literal Tool.Name() values
+			// — Read / Edit / Write — not FileRead / FileEdit / FileWrite.
+			// The earlier "FileRead" etc. strings silently failed to match
+			// any registered tool, so freelancer was effectively running
+			// Bash-only for file ops. Fixed to the actual registered names.
+			"Read", "Edit", "Write", "Glob", "Bash",
 			// Web + artifact
 			"WebFetch", "WebSearch", "TavilySearch",
 			"ArtifactRead", "ArtifactWrite",
