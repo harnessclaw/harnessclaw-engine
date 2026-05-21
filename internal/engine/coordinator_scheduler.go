@@ -11,6 +11,7 @@ import (
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -445,6 +446,9 @@ func (s *Scheduler) dispatchStep(
 
 	prompt := buildStepPrompt(step, prior)
 
+	rootSID := pickStr(parentCfg, func(c *agent.SpawnConfig) string { return c.RootSessionID })
+	_, inputPaths, readScope, writeScope := workspace.L3SpawnScope(workspaceRootDir(), rootSID, step.ID, step.DependsOn)
+
 	cfg := &agent.SpawnConfig{
 		Prompt:           prompt,
 		AgentType:        tool.AgentTypeSync,
@@ -452,7 +456,7 @@ func (s *Scheduler) dispatchStep(
 		Description:      step.Description,
 		Name:             fmt.Sprintf("plan-step-%s", step.ID),
 		ParentSessionID:  pickStr(parentCfg, func(c *agent.SpawnConfig) string { return c.ParentSessionID }),
-		RootSessionID:    pickStr(parentCfg, func(c *agent.SpawnConfig) string { return c.RootSessionID }),
+		RootSessionID:    rootSID,
 		ParentOut:        pickOut(parentCfg),
 		// Timeout is intentionally omitted: the per-step 15-min wall clock
 		// killed legitimate long sub-agent runs mid-flight (token already
@@ -461,9 +465,16 @@ func (s *Scheduler) dispatchStep(
 		// the lifecycle watchdog (5-min idle on the step card) and the
 		// failure-decision gate at the scheduler level.
 		ExpectedOutputs: step.ExpectedOutputs,
-		TaskID:          fmt.Sprintf("plan-%s-%s", plan.Goal, step.ID),
-		TaskStartedAt:   time.Now(),
-		ParentStepID:    step.ID,
+		// TaskID is step.ID directly (clean identifier matching
+		// plan.json/tasks/{id}/). The previous "plan-{goal}-{step.ID}"
+		// composite couldn't pass workspace.mustSafe because plan.Goal is
+		// free user text.
+		TaskID:        step.ID,
+		TaskStartedAt: time.Now(),
+		ParentStepID:  step.ID,
+		InputPaths:    inputPaths,
+		ReadScope:     readScope,
+		WriteScope:    writeScope,
 	}
 
 	res, err := s.dispatch.Dispatch(ctx, cfg)

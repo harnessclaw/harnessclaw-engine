@@ -5,9 +5,23 @@ package workspace
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
+
+// DefaultRootDir returns the on-disk root for the local-files-as-truth
+// layout. Defaults to ~/.harnessclaw/workspace, matching the convention
+// used elsewhere (skills dir, session DB). Returns "" when UserHomeDir
+// fails (containerised builds with no $HOME); callers degrade gracefully
+// by treating that as "scope disabled".
+func DefaultRootDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".harnessclaw", "workspace")
+}
 
 // SessionRoot is {rootDir}/session/{sessionID}.
 func SessionRoot(rootDir, sessionID string) string {

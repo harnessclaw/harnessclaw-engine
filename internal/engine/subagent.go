@@ -3,8 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -29,16 +27,11 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// workspaceRootDir returns the on-disk root for the local-files-as-truth
-// layout. Defaults to ~/.harnessclaw/workspace, matching the convention
-// used elsewhere (skills dir, session DB). A config-driven override can
-// replace this helper later without touching call sites.
+// workspaceRootDir is a package-local alias of workspace.DefaultRootDir
+// so engine internals can reach the shared default without each call site
+// re-importing the workspace package.
 func workspaceRootDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".harnessclaw", "workspace")
+	return workspace.DefaultRootDir()
 }
 
 // deriveSessionRoot computes the {workspace}/session/{root-session-id}

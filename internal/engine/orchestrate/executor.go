@@ -11,7 +11,9 @@ import (
 
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/emit"
+	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -390,6 +392,15 @@ func (e *PlanExecutor) runStep(
 		default:
 		}
 
+		// rootSID anchors workspace paths to the user-facing root session.
+		// Falls back to ParentSessionID when ctx doesn't carry the root
+		// (single-layer dispatches where the orchestrate caller IS root).
+		rootSID, _ := sessionstats.RootSessionIDFromCtx(ctx)
+		if rootSID == "" {
+			rootSID = opts.ParentSessionID
+		}
+		_, inputPaths, readScope, writeScope := workspace.L3SpawnScope(workspace.DefaultRootDir(), rootSID, step.StepID, step.DependsOn)
+
 		cfg := &agent.SpawnConfig{
 			Prompt:          buildStepPrompt(step, attempt, lastErr, lastSpawn),
 			AgentType:       tool.AgentTypeSync,
@@ -398,9 +409,14 @@ func (e *PlanExecutor) runStep(
 			Name:            step.StepID,
 			ContextSummary:  contextSummary,
 			ParentSessionID: opts.ParentSessionID,
+			RootSessionID:   rootSID,
 			ParentOut:       opts.ParentOut,
 			Timeout:         opts.StepTimeout,
 			ParentStepID:    step.StepID,
+			TaskID:          step.StepID,
+			InputPaths:      inputPaths,
+			ReadScope:       readScope,
+			WriteScope:      writeScope,
 		}
 
 		spawnRes, err := e.spawner.SpawnSync(ctx, cfg)
