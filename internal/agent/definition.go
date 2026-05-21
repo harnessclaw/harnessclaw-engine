@@ -442,8 +442,7 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 
 		Tier: TierSubAgent,
 		AllowedTools: []string{
-			"ArtifactRead",
-			"ArtifactWrite",
+			"MetaWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
 			"WebSearch",
@@ -573,8 +572,7 @@ confidence 评级：
 
 		Tier: TierSubAgent,
 		AllowedTools: []string{
-			"ArtifactRead",
-			"ArtifactWrite",
+			"MetaWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
 			"WebSearch",
@@ -675,8 +673,7 @@ confidence 评级：
 
 		Tier: TierSubAgent,
 		AllowedTools: []string{
-			"ArtifactRead",
-			"ArtifactWrite",
+			"MetaWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
 			"WebSearch",
@@ -800,8 +797,7 @@ tested 字段规则：
 		// Bash is included because developer must be able to run and verify code.
 		// WithoutDangerousUnless keeps Bash when it appears in AllowedTools.
 		AllowedTools: []string{
-			"ArtifactRead",
-			"ArtifactWrite",
+			"MetaWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
 			"Bash",
@@ -909,8 +905,7 @@ tested 字段规则：
 
 		Tier: TierSubAgent,
 		AllowedTools: []string{
-			"ArtifactRead",
-			"ArtifactWrite",
+			"MetaWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
 			"WebSearch",
@@ -1013,8 +1008,7 @@ tested 字段规则：
 
 		Tier: TierSubAgent,
 		AllowedTools: []string{
-			"ArtifactRead",
-			"ArtifactWrite",
+			"MetaWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
 			"WebSearch",
@@ -1123,8 +1117,7 @@ slot_count 计算规则：实际安排的独立时间段数量（一个会议 = 
 
 		Tier: TierSubAgent,
 		AllowedTools: []string{
-			"ArtifactRead",
-			"ArtifactWrite",
+			"MetaWrite",
 			"SubmitTaskResult",
 			"EscalateToPlanner",
 			"WebSearch",
@@ -1208,12 +1201,12 @@ slot_count 计算规则：实际安排的独立时间段数量（一个会议 = 
 		// bypasses the AgentType blacklist (which would otherwise block
 		// Task for sync sub-agents).
 		//
-		// ArtifactWrite/ArtifactRead are listed explicitly because the
-		// whitelist semantics drop EVERYTHING not named here — including
-		// tools that are on by default for unrestricted L3 workers. Without
-		// these two, L2 cannot persist its integrated output or read back
-		// what its L3 children produced, breaking the doc §6.A loop.
-		AllowedTools: []string{"Task", "WebSearch", "TavilySearch", "ArtifactWrite", "ArtifactRead", "Read", "Edit", "Write", "Glob", "SearchSkill", "Skill"},
+		// PlanUpdate / Promote are listed explicitly because the whitelist
+		// semantics drop EVERYTHING not named here. PlanUpdate is the L2's
+		// sole entry point for mutating plan.json (create/done/wipe); Promote
+		// is the sole Deliverable source. Without these two L2 cannot drive
+		// the local-files-as-truth state machine.
+		AllowedTools: []string{"Task", "WebSearch", "TavilySearch", "PlanUpdate", "Promote", "Read", "Edit", "Write", "Glob", "SearchSkill", "Skill"},
 	})
 	r.MustRegister(&AgentDefinition{
 		Name:        "general-purpose",
@@ -1259,7 +1252,7 @@ slot_count 计算规则：实际安排的独立时间段数量（一个会议 = 
 			"Read", "Edit", "Write", "Glob", "Bash",
 			// Web + artifact
 			"WebFetch", "WebSearch", "TavilySearch",
-			"ArtifactRead", "ArtifactWrite",
+			"MetaWrite",
 			// Skill self-management — the four tools introduced by this design
 			"SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills",
 			// Terminal tools (also auto-augmented by MaybeAugmentForSubAgent;
