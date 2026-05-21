@@ -30,6 +30,7 @@ import (
 // preamble injector, store) could each pass their unit tests yet still be
 // wired wrong end-to-end.
 func TestArtifactsE2E_TwoAgentHandoff(t *testing.T) {
+	t.Skip("artifact preamble replaced by <task-inputs>; deleted in Phase 5")
 	const (
 		traceID  = "tr_e2e_handoff"
 		artName  = "input-data.md"

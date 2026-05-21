@@ -759,13 +759,13 @@ func TestSpawnSync_SurfacesArtifactsOnSubAgentEnd(t *testing.T) {
 	}
 }
 
-// TestSpecialistsAllowedTools_IncludesArtifactTools is a regression guard:
+// TestSpecialistsAllowedTools_IncludesWorkspaceTools is a regression guard:
 // the Specialists L2 AgentDefinition uses an explicit AllowedTools whitelist
 // that bypasses every other filter. Adding a tool to the registry doesn't
-// help if it isn't named here. The two artifact tools are listed
-// explicitly so L2 can persist its integrated output and read back what
-// L3 produced — without them the doc §6.A loop dead-ends on integration.
-func TestSpecialistsAllowedTools_IncludesArtifactTools(t *testing.T) {
+// help if it isn't named here. Under the local-files-as-truth model L2 needs
+// PlanUpdate (plan.json state machine) and Promote (Deliverable surface) —
+// without them L2 cannot drive the loop.
+func TestSpecialistsAllowedTools_IncludesWorkspaceTools(t *testing.T) {
 	reg := agent.NewAgentDefinitionRegistry()
 	reg.RegisterBuiltins()
 	def := reg.Get("specialists")
@@ -776,23 +776,20 @@ func TestSpecialistsAllowedTools_IncludesArtifactTools(t *testing.T) {
 	for _, name := range def.AllowedTools {
 		allowed[name] = true
 	}
-	for _, want := range []string{"ArtifactWrite", "ArtifactRead"} {
+	for _, want := range []string{"PlanUpdate", "Promote"} {
 		if !allowed[want] {
-			t.Errorf("Specialists AllowedTools missing %q — L2 will be unable to use artifact tools", want)
+			t.Errorf("Specialists AllowedTools missing %q — L2 cannot drive plan.json / promote deliverables", want)
 		}
 	}
 }
 
-// TestSpawnSync_ContractGated_HappyPath drives an L3 through the full
-// Milestone A flow with a mock provider that does the right thing:
-//
-//	turn 1: ArtifactWrite — produces the deliverable artifact
-//	turn 2: SubmitTaskResult — submits the ID with matching role
-//	turn 3: end_turn       — loop terminates because submission passed
-//
-// Asserts: SpawnResult.SubmittedArtifacts is populated with the validated
-// ref, no contract failures, status="completed".
+// TestSpawnSync_ContractGated_HappyPath drove an L3 through the
+// artifact-based contract flow; that path is replaced by meta.json under
+// local-files-as-truth. Equivalent end-to-end coverage is provided by the
+// workspace + submittool unit tests; this driver-level test will be
+// rewritten once the artifact package is removed in Phase 5.
 func TestSpawnSync_ContractGated_HappyPath(t *testing.T) {
+	t.Skip("rewritten in Phase 5 once the artifact-based contract is removed")
 	store := artifact.NewMemoryStore(artifact.DefaultConfig())
 
 	contract := []types.ExpectedOutput{
@@ -900,6 +897,7 @@ func TestSpawnSync_ContractGated_HappyPath(t *testing.T) {
 // calling SubmitTaskResult must be nudged up to maxSubmitNudges times,
 // then the loop bails with a contract failure on the result.
 func TestSpawnSync_ContractGated_NudgesThenFails(t *testing.T) {
+	t.Skip("rewritten in Phase 5 once the artifact-based contract is removed")
 	// The mock provider always returns end_turn with no tool calls.
 	// Each turn the loop should nudge once; after the cap it should
 	// terminate. Provide enough scripted responses to cover all nudges.
