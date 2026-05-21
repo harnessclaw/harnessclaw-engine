@@ -81,6 +81,20 @@ type SpawnConfig struct {
 	// parent IS the root, e.g. Specialists spawned directly by emma).
 	RootSessionID string
 
+	// InputPaths lists upstream task output paths this spawn will read.
+	// Used by the framework to render the <task-inputs> preamble and to
+	// compute ReadScope. Absolute paths.
+	InputPaths []string
+
+	// ReadScope restricts File* tool reads. Absolute path prefixes; empty
+	// means no restriction (legacy compat). Engine derives ReadScope from
+	// {own task dir, InputPaths, plan.json}.
+	ReadScope []string
+
+	// WriteScope restricts File* tool writes. Absolute path prefixes; empty
+	// means no restriction (legacy compat). Typically {own task dir}.
+	WriteScope []string
+
 	// ParentMessages holds the parent's conversation history for fork mode.
 	// Only used when Fork is true. Callers must provide a deep copy.
 	//
