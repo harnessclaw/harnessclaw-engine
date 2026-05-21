@@ -679,20 +679,11 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		case types.EngineEventText:
 			textBuf.WriteString(evt.Text)
 		case types.EngineEventToolEnd:
-			// Detect deliverables: FileWrite tool_end with render_hint "file_info".
-			if evt.ToolResult != nil && evt.ToolResult.Metadata != nil {
-				if hint, _ := evt.ToolResult.Metadata["render_hint"].(string); hint == "file_info" {
-					d := types.Deliverable{
-						FilePath:  strVal(evt.ToolResult.Metadata, "file_path"),
-						Language:  strVal(evt.ToolResult.Metadata, "language"),
-						ByteSize:  intVal(evt.ToolResult.Metadata, "bytes_written"),
-						ToolUseID: evt.ToolUseID,
-					}
-					if d.FilePath != "" {
-						deliverables = append(deliverables, d)
-					}
-				}
-			}
+			// Deliverable detection used to look at FileWrite's
+			// render_hint=file_info here. Under the local-files-as-truth
+			// model Promote is the sole Deliverable source — it emits an
+			// EngineEventDeliverable directly through the parent channel,
+			// so no per-tool-end inspection is needed.
 			// Aggregate artifacts the executor stamped on this tool_end
 			// (single Ref per ArtifactWrite). Buffered until subagent_end
 			// rather than emitted twice — the per-tool emission happens
@@ -1865,27 +1856,6 @@ func (qe *QueryEngine) composeArtifactPreamble(ctx context.Context, logger *zap.
 		zap.Strings("ids", ids),
 	)
 	return artifact.RenderAvailableList(arts, artifact.DefaultPreambleMaxItems)
-}
-
-// strVal safely extracts a string from a metadata map.
-func strVal(m map[string]any, key string) string {
-	if v, ok := m[key].(string); ok {
-		return v
-	}
-	return ""
-}
-
-// intVal safely extracts an int from a metadata map.
-// Handles both int and float64 (JSON numbers decode as float64).
-func intVal(m map[string]any, key string) int {
-	switch v := m[key].(type) {
-	case int:
-		return v
-	case float64:
-		return int(v)
-	default:
-		return 0
-	}
 }
 
 // truncateRunes truncates s to at most n runes (NOT bytes), appending an
