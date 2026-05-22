@@ -123,6 +123,7 @@ func (t *PlanUpdateTool) handleCreate(ctx context.Context, w *workspace.PlanWrit
 	if err := workspace.EnsureTaskDir(t.rootDir, in.SessionID, in.Task.ID); err != nil {
 		return errResult("mkdir task dir: " + err.Error()), nil
 	}
+	var snapshot *workspace.Plan
 	err := w.Apply(ctx, func(p *workspace.Plan) error {
 		if p.Tasks == nil {
 			p.Tasks = map[string]*workspace.Task{}
@@ -139,6 +140,7 @@ func (t *PlanUpdateTool) handleCreate(ctx context.Context, w *workspace.PlanWrit
 			InputPaths: in.Task.InputPaths,
 			OutputDir:  fmt.Sprintf("tasks/%s/", in.Task.ID),
 		}
+		snapshot = p
 		return nil
 	})
 	if err != nil {
@@ -151,6 +153,11 @@ func (t *PlanUpdateTool) handleCreate(ctx context.Context, w *workspace.PlanWrit
 		}
 		return errResult("plan update: " + err.Error()), nil
 	}
+	evtType := types.EngineEventPlanUpdated
+	if len(snapshot.Tasks) == 1 {
+		evtType = types.EngineEventPlanCreated
+	}
+	emitPlanEvent(ctx, evtType, snapshot)
 	return okResult(fmt.Sprintf("task %s created", in.Task.ID)), nil
 }
 
@@ -165,6 +172,7 @@ func (t *PlanUpdateTool) handleUpdateStatus(ctx context.Context, w *workspace.Pl
 	if st == workspace.StatusDone && in.SummaryRef == "" {
 		return errResult("status=done requires summary_ref"), nil
 	}
+	var snapshot *workspace.Plan
 	err := w.Apply(ctx, func(p *workspace.Plan) error {
 		task, ok := p.Tasks[in.TaskID]
 		if !ok {
@@ -183,11 +191,13 @@ func (t *PlanUpdateTool) handleUpdateStatus(ctx context.Context, w *workspace.Pl
 		if st == workspace.StatusDone || st == workspace.StatusFailed {
 			task.EndedAt = time.Now().UTC()
 		}
+		snapshot = p
 		return nil
 	})
 	if err != nil {
 		return errResult("plan update: " + err.Error()), nil
 	}
+	emitPlanEvent(ctx, planOverallEventType(snapshot), snapshot)
 	return okResult(fmt.Sprintf("task %s status=%s", in.TaskID, in.Status)), nil
 }
 
@@ -199,6 +209,7 @@ func (t *PlanUpdateTool) handleWipe(ctx context.Context, w *workspace.PlanWriter
 		return errResult("wipe dir: " + err.Error()), nil
 	}
 	var newAttempt int
+	var snapshot *workspace.Plan
 	err := w.Apply(ctx, func(p *workspace.Plan) error {
 		task, ok := p.Tasks[in.TaskID]
 		if !ok {
@@ -213,11 +224,13 @@ func (t *PlanUpdateTool) handleWipe(ctx context.Context, w *workspace.PlanWriter
 		task.StartedAt = time.Time{}
 		task.EndedAt = time.Time{}
 		newAttempt = task.Attempt
+		snapshot = p
 		return nil
 	})
 	if err != nil {
 		return errResult("plan update: " + err.Error()), nil
 	}
+	emitPlanEvent(ctx, types.EngineEventPlanUpdated, snapshot)
 	return okResult(fmt.Sprintf("task %s wiped; attempt now %d", in.TaskID, newAttempt)), nil
 }
 
@@ -227,6 +240,67 @@ func errResult(msg string) *types.ToolResult {
 
 func okResult(msg string) *types.ToolResult {
 	return &types.ToolResult{Content: msg}
+}
+
+// planOverallEventType returns the plan-level event type based on whether all
+// tasks have reached a terminal state.
+func planOverallEventType(p *workspace.Plan) types.EngineEventType {
+	hasFailed := false
+	for _, t := range p.Tasks {
+		switch t.Status {
+		case workspace.StatusPending, workspace.StatusRunning:
+			return types.EngineEventPlanUpdated
+		case workspace.StatusFailed:
+			hasFailed = true
+		}
+	}
+	if hasFailed {
+		return types.EngineEventPlanFailed
+	}
+	return types.EngineEventPlanCompleted
+}
+
+// emitPlanEvent sends a non-blocking plan lifecycle event on the context
+// event channel. Dropped events are acceptable — the client can recover from
+// plan.json on reconnect.
+func emitPlanEvent(ctx context.Context, evtType types.EngineEventType, p *workspace.Plan) {
+	out, ok := tool.GetEventOut(ctx)
+	if !ok {
+		return
+	}
+	tasks := make([]types.PlanTaskInfo, 0, len(p.Tasks))
+	for id, t := range p.Tasks {
+		tasks = append(tasks, types.PlanTaskInfo{
+			TaskID:          id,
+			SubagentType:    t.Agent,
+			DependsOn:       t.DependsOn,
+			UserFacingTitle: t.Title,
+		})
+	}
+	select {
+	case out <- types.EngineEvent{
+		Type: evtType,
+		PlanEvent: &types.PlanEvent{
+			PlanID: p.SessionID,
+			Status: planEventStatus(evtType),
+			Tasks:  tasks,
+		},
+	}:
+	default:
+	}
+}
+
+func planEventStatus(evtType types.EngineEventType) string {
+	switch evtType {
+	case types.EngineEventPlanCreated:
+		return "created"
+	case types.EngineEventPlanCompleted:
+		return "completed"
+	case types.EngineEventPlanFailed:
+		return "failed"
+	default:
+		return "updated"
+	}
 }
 
 const description = `维护 plan.json 状态机的唯一入口。只允许 L2 调用。
