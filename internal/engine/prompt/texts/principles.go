@@ -242,7 +242,7 @@ const specialistsPrinciples = `# 调度的 Loop
 
 为什么必须带：
 - 没有契约 → L3 可能把正文塞进 summary，emma 拿到正文复述给用户
-- 带契约 → 框架强制 L3 用 FileWrite + MetaWrite + SubmitTaskResult，emma 只看到 task_id / meta_path 引用
+- 带契约 → 框架强制 L3 用 Write + MetaWrite + SubmitTaskResult，emma 只看到 task_id / meta_path 引用
 
 ` + "`role`" + ` 命名规则：场景明确的语义名（` + "`draft_email`" + ` / ` + "`comparison_table`" + ` / ` + "`findings_report`" + `），不是 ` + "`output1`" + ` 这种占位符。
 
@@ -333,10 +333,10 @@ const workerPrinciples = `# 系统
 - 每次工具返回结果后，认真读结果，确认是否符合预期
 - 遇到意外情况，先评估再继续，不要盲目重试
 
-# 文本-only 产出（小结论，不需 ArtifactWrite）
+# 文本-only 产出（小结论）
 
 短答案、单一判断、几行搜索结果可直接文本输出，配一个 ` + "`<summary>`" + ` 头即可。
-判断标准：**>500 字**或者**结构化数据/文件型产出**一律走 ArtifactWrite（详见 Artifact 使用规范段）。
+**>500 字**或者**结构化数据/文件型产出**则用 Write 工具落到自己的 task 目录里，summary 只放摘要 + 文件路径，不要把正文复述一遍。
 
 # 停止条件
 
@@ -349,7 +349,7 @@ const workerPrinciples = `# 系统
 # 工作区目录（local-files-as-truth）
 
 - 你的 task 目录已由系统准备好（plan.json + tasks/{task_id}/），不要用 Bash 调 ` + "`mkdir`" + ` / ` + "`mv`" + ` / ` + "`cp`" + ` 来管理目录或搬运产物。
-- 所有读写都通过 FileRead / FileEdit / FileWrite，路径要在 ReadScope / WriteScope 之内（越界会被拒）。
+- 所有读写都通过 Read / Edit / Write 工具，写入位置限定在自己的 task 目录里（tasks/{task_id}/），不要往工作区根目录或其他 task 的目录里写。
 - 任务结束前必须调一次 MetaWrite 写 meta.json，再调 SubmitTaskResult 把 task_id + meta_path 提交给 L2。`
 
 // =====================================================================
@@ -530,7 +530,7 @@ const plannerPrinciples = `# 系统
 //     L2-supplied candidate skill bodies
 //   - LLM has SearchSkill / LoadSkill / UnloadSkill / ListLoadedSkills
 //     tools to manage its skill loadout at runtime (≤3 active)
-//   - It uses generic Bash / FileRead / FileEdit / FileWrite to operate
+//   - It uses generic Bash / Read / Edit / Write to operate
 //     skill-bundled scripts/references/assets, NOT specialized tools
 
 const freelancerPrinciples = `# Freelancer 工作纪律
@@ -544,13 +544,13 @@ const freelancerPrinciples = `# Freelancer 工作纪律
 <skill name="..." version="..." root="...">…</skill>
 ` + "```" + `
 块的形式出现在你看到的第一条 user message 中。**root 属性是 skill 在磁盘上的根目录**——
-后面调 Bash / FileRead 时拼绝对路径用。
+后面调 Bash / Read 时拼绝对路径用。
 
 ## skill 的使用
 
 - 看 candidate 是不是够用 → 够用就直接按 body 指令工作
 - skill 要求"运行 scripts/export.py" → 调 Bash 工具 ` + "`python {root}/scripts/export.py`" + `（每次执行会问用户授权）
-- skill 要求"读 references/api.md" → 调 FileRead 工具，路径是 ` + "`{root}/references/api.md`" + `
+- skill 要求"读 references/api.md" → 调 Read 工具，路径是 ` + "`{root}/references/api.md`" + `
 
 ## 候选不够 / 想换 skill
 
@@ -575,4 +575,4 @@ const freelancerPrinciples = `# Freelancer 工作纪律
 
 - 不要假装能调 server 没注册的工具——调不出来，直接 EscalateToPlanner 说"我需要 X 工具"
 - 不要绕过配额规则，比如把多个 skill body 拼到一个 LoadSkill 调用里
-- 不要复制 skill body 内容到 SubmitTaskResult——产出走 ArtifactWrite，元数据走 SubmitTaskResult`
+- 不要复制 skill body 内容到 SubmitTaskResult——产出落到自己的 task 目录里（Write 工具），元数据走 MetaWrite + SubmitTaskResult`
