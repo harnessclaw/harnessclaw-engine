@@ -39,11 +39,10 @@ func (*MetaWriteTool) InputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"session_id": map[string]any{"type": "string"},
-			"task_id":    map[string]any{"type": "string"},
-			"agent":      map[string]any{"type": "string"},
-			"status":     map[string]any{"type": "string", "enum": []string{"done", "failed"}},
-			"summary":    map[string]any{"type": "string", "description": "≤ 500 字。不要塞内容；只描述产物形态、要点、字数等。"},
+			"task_id": map[string]any{"type": "string"},
+			"agent":   map[string]any{"type": "string"},
+			"status":  map[string]any{"type": "string", "enum": []string{"done", "failed"}},
+			"summary": map[string]any{"type": "string", "description": "≤ 500 字。不要塞内容；只描述产物形态、要点、字数等。"},
 			"outputs": map[string]any{
 				"type": "array",
 				"items": map[string]any{
@@ -60,12 +59,11 @@ func (*MetaWriteTool) InputSchema() map[string]any {
 				"type": "array", "items": map[string]any{"type": "string"},
 			},
 		},
-		"required": []string{"session_id", "task_id", "agent", "status", "summary"},
+		"required": []string{"task_id", "agent", "status", "summary"},
 	}
 }
 
 type input struct {
-	SessionID      string             `json:"session_id"`
 	TaskID         string             `json:"task_id"`
 	Agent          string             `json:"agent"`
 	Status         string             `json:"status"`
@@ -110,10 +108,22 @@ func (t *MetaWriteTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 		return errResult(err.Error()), nil
 	}
 
-	metaPath := workspace.MetaPath(t.rootDir, in.SessionID, in.TaskID)
+	// Derive the meta.json path from AgentScope.SessionRoot injected by the
+	// executor — avoids requiring the LLM to pass a session_id it might
+	// omit or hallucinate.
+	scope, _ := tool.AgentScopeFromCtx(ctx)
+	if scope.SessionRoot == "" {
+		return errResult("SessionRoot missing in ctx — engine configuration error"), nil
+	}
+	relPath := filepath.Join("tasks", in.TaskID, "meta.json")
+	metaPath := filepath.Join(scope.SessionRoot, relPath)
+
 	body, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return errResult("marshal: " + err.Error()), nil
+	}
+	if err := os.MkdirAll(filepath.Dir(metaPath), 0o755); err != nil {
+		return errResult("mkdir: " + err.Error()), nil
 	}
 	f, err := os.OpenFile(metaPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
@@ -126,7 +136,7 @@ func (t *MetaWriteTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 	if _, err := f.Write(body); err != nil {
 		return errResult("write: " + err.Error()), nil
 	}
-	return &types.ToolResult{Content: fmt.Sprintf("meta written to %s", metaPath)}, nil
+	return &types.ToolResult{Content: fmt.Sprintf("meta written; pass meta_path=%q to SubmitTaskResult", relPath)}, nil
 }
 
 func pathInScope(path string, allowed []string) bool {
