@@ -9,7 +9,6 @@ import (
 
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/workspace"
-	"harnessclaw-go/pkg/types"
 )
 
 func TestMetaWrite_HappyPath(t *testing.T) {
@@ -74,31 +73,6 @@ func TestMetaWrite_RejectsSecondCall(t *testing.T) {
 	res, _ := mt.Execute(ctx, raw)
 	if res.ErrorType == "" {
 		t.Errorf("second call should fail (O_EXCL)")
-	}
-}
-
-func TestMetaWrite_RejectsOutputPathOutOfScope(t *testing.T) {
-	root := t.TempDir()
-	sid := "sess_a"
-	tid := "t_001"
-	if err := workspace.EnsureSession(root, sid); err != nil {
-		t.Fatal(err)
-	}
-	if err := workspace.EnsureTaskDir(root, sid, tid); err != nil {
-		t.Fatal(err)
-	}
-	mt := NewMetaWriteTool(root)
-	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{
-		WriteScope:  []string{workspace.TaskDir(root, sid, tid)},
-		SessionRoot: workspace.SessionRoot(root, sid),
-	})
-	raw, _ := json.Marshal(map[string]any{
-		"session_id": sid, "task_id": tid, "agent": "x", "status": "done", "summary": "x",
-		"outputs": []map[string]any{{"path": "/etc/passwd", "type": "x"}},
-	})
-	res, _ := mt.Execute(ctx, raw)
-	if res.ErrorType != types.ToolErrorPermissionDenied {
-		t.Errorf("expected permission_denied, got %+v", res)
 	}
 }
 

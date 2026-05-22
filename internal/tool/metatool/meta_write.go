@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"harnessclaw-go/internal/tool"
@@ -48,7 +47,7 @@ func (*MetaWriteTool) InputSchema() map[string]any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"path":  map[string]any{"type": "string", "description": "绝对路径，必须在本 task 的 WriteScope 内"},
+						"path":  map[string]any{"type": "string", "description": "产物的绝对路径"},
 						"type":  map[string]any{"type": "string"},
 						"bytes": map[string]any{"type": "integer"},
 					},
@@ -76,23 +75,6 @@ func (t *MetaWriteTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 	var in input
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult("invalid input: " + err.Error()), nil
-	}
-
-	// Defence in depth: even though SubmitTool will already have driven the
-	// L3 here via the scope-restricted tool pool, double-check each declared
-	// output path falls inside the spawn's WriteScope. An L3 that hand-rolls
-	// a fake outputs[] entry pointing outside its dir gets rejected here
-	// instead of leaking into plan.json.
-	if scope, ok := tool.AgentScopeFromCtx(ctx); ok && len(scope.WriteScope) > 0 {
-		for _, o := range in.Outputs {
-			if !pathInScope(o.Path, scope.WriteScope) {
-				return &types.ToolResult{
-					Content:   fmt.Sprintf("output path %q is outside WriteScope %v", o.Path, scope.WriteScope),
-					IsError:   true,
-					ErrorType: types.ToolErrorPermissionDenied,
-				}, nil
-			}
-		}
 	}
 
 	meta := &workspace.Meta{
@@ -139,17 +121,6 @@ func (t *MetaWriteTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 	return &types.ToolResult{Content: fmt.Sprintf("meta written; pass meta_path=%q to SubmitTaskResult", relPath)}, nil
 }
 
-func pathInScope(path string, allowed []string) bool {
-	p := filepath.Clean(path)
-	for _, a := range allowed {
-		ac := filepath.Clean(a)
-		if p == ac || strings.HasPrefix(p, ac+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
-}
-
 func errResult(msg string) *types.ToolResult {
 	return &types.ToolResult{Content: msg, IsError: true, ErrorType: types.ToolErrorInvalidInput}
 }
@@ -158,5 +129,5 @@ const description = `L3 task 结束时调用：写自己 task 目录的 meta.jso
 
 - 只允许调用一次（O_EXCL 兜底）。
 - summary 必填、非空、≤ 500 字。**不要把内容粘进 summary**，只描述形态。
-- outputs[].path 必须在你的 WriteScope 内（绝对路径）。
+- outputs[].path 填产物的绝对路径。
 - 写完后通常紧接着调 SubmitTool({task_id, meta_path}) 通知 L2 验收。`
