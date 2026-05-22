@@ -192,6 +192,13 @@ type AgentScope struct {
 	// SessionRoot is the {workspace}/session/{root-session-id} dir for
 	// this spawn. Tools may use it to derive relative paths for logging.
 	SessionRoot string
+	// TaskID is the plan-step id this spawn was dispatched for. Tools
+	// like MetaWrite read it from ctx instead of trusting an LLM-supplied
+	// value (which the model has been observed to confuse with session_id).
+	TaskID string
+	// Agent is the subagent_type for this spawn (e.g. "freelancer"). Same
+	// rationale as TaskID — framework-known fields shouldn't be LLM input.
+	Agent string
 }
 
 type agentScopeKey struct{}

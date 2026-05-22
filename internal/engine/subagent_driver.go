@@ -98,6 +98,8 @@ func (qe *QueryEngine) runSubAgentDriver(
 		ReadScope:   lc.readScope,
 		WriteScope:  lc.writeScope,
 		SessionRoot: lc.sessionRoot,
+		TaskID:      lc.taskID,
+		Agent:       lc.subagentType,
 	})
 
 	// L3 is contract-enforced unconditionally. Plain end_turn is never
@@ -106,6 +108,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 	var (
 		submitAccepted     bool
 		submitArtifacts    []types.ArtifactRef
+		submitSummary      string
 		submitNudges       int
 		submitRejects      int
 		contractFailures   []string
@@ -225,6 +228,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 						Turn:    ls.turn,
 					},
 					SubmittedArtifacts: submitArtifacts,
+					Summary:            submitSummary,
 				}
 			}
 			if needsPlanning {
@@ -316,6 +320,13 @@ func (qe *QueryEngine) runSubAgentDriver(
 					// driver layer.
 					submitAccepted = true
 					submitArtifacts = nil
+					// Pull meta.json's summary out of the submit tool's
+					// metadata into loopResult.Summary. Without this the
+					// upper Scheduler falls back to parseSummary(text)
+					// and only sees the LLM's last thinking lines —
+					// which is why ReviewGoal kept judging "outputs not
+					// mentioned" and triggering a replan.
+					submitSummary = strFromMeta(results[i].Metadata, "summary")
 					logger.Info("sub-agent driver submission accepted",
 						zap.String("task_id", strFromMeta(results[i].Metadata, "task_id")),
 						zap.String("meta_path", strFromMeta(results[i].Metadata, "meta_path")),

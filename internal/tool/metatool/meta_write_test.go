@@ -31,14 +31,13 @@ func TestMetaWrite_HappyPath(t *testing.T) {
 	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{
 		WriteScope:  []string{taskDir},
 		SessionRoot: workspace.SessionRoot(root, sid),
+		TaskID:      tid,
+		Agent:       "researcher",
 	})
 	raw, _ := json.Marshal(map[string]any{
-		"session_id": sid,
-		"task_id":    tid,
-		"agent":      "researcher",
-		"status":     "done",
-		"summary":    "对比 5 家产品",
-		"outputs":    []map[string]any{{"path": outPath, "type": "markdown", "bytes": 5}},
+		"status":  "done",
+		"summary": "对比 5 家产品",
+		"outputs": []map[string]any{{"path": outPath, "type": "markdown"}},
 	})
 	res, err := mt.Execute(ctx, raw)
 	if err != nil || res.ErrorType != "" {
@@ -49,6 +48,15 @@ func TestMetaWrite_HappyPath(t *testing.T) {
 	_ = json.Unmarshal(b, &m)
 	if m.Summary != "对比 5 家产品" {
 		t.Errorf("meta not written: %+v", m)
+	}
+	if m.TaskID != tid {
+		t.Errorf("TaskID from ctx not applied: %q != %q", m.TaskID, tid)
+	}
+	if m.Agent != "researcher" {
+		t.Errorf("Agent from ctx not applied: %q", m.Agent)
+	}
+	if len(m.Outputs) != 1 || m.Outputs[0].Bytes != 5 {
+		t.Errorf("bytes should be stat-filled from real file size 5; got outputs=%+v", m.Outputs)
 	}
 }
 
@@ -63,10 +71,12 @@ func TestMetaWrite_RejectsSecondCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	mt := NewMetaWriteTool(root)
-	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: workspace.SessionRoot(root, sid)})
-	raw, _ := json.Marshal(map[string]any{
-		"session_id": sid, "task_id": tid, "agent": "x", "status": "done", "summary": "x",
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{
+		SessionRoot: workspace.SessionRoot(root, sid),
+		TaskID:      tid,
+		Agent:       "x",
 	})
+	raw, _ := json.Marshal(map[string]any{"status": "done", "summary": "x"})
 	if res, _ := mt.Execute(ctx, raw); res.ErrorType != "" {
 		t.Fatalf("first call: %+v", res)
 	}
@@ -87,10 +97,13 @@ func TestMetaWrite_ValidatesSummaryRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 	mt := NewMetaWriteTool(root)
-	raw, _ := json.Marshal(map[string]any{
-		"session_id": sid, "task_id": tid, "agent": "x", "status": "done", "summary": "",
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{
+		SessionRoot: workspace.SessionRoot(root, sid),
+		TaskID:      tid,
+		Agent:       "x",
 	})
-	res, _ := mt.Execute(context.Background(), raw)
+	raw, _ := json.Marshal(map[string]any{"status": "done", "summary": ""})
+	res, _ := mt.Execute(ctx, raw)
 	if res.ErrorType == "" {
 		t.Errorf("expected validation error for empty summary, got %+v", res)
 	}
