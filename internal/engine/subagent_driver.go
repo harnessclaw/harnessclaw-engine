@@ -88,6 +88,17 @@ func (qe *QueryEngine) runSubAgentDriver(
 		ExpectedOutputs: lc.expectedOutputs,
 		OutputSchema:    lc.outputSchema,
 	})
+	// AgentScope plumbing was previously only wired in runSubAgentLoop
+	// (the Coordinator path). TierSubAgent dispatches land here in
+	// runSubAgentDriver, which means L3 tools like MetaWrite / SubmitTaskResult
+	// saw an empty SessionRoot in ctx and rejected with "SessionRoot missing
+	// in ctx — engine bug". Mirror the call here so the L3 driver gets the
+	// same per-spawn scope as the coordinator path.
+	executor.SetAgentScope(tool.AgentScope{
+		ReadScope:   lc.readScope,
+		WriteScope:  lc.writeScope,
+		SessionRoot: lc.sessionRoot,
+	})
 
 	// L3 is contract-enforced unconditionally. Plain end_turn is never
 	// terminal — the loop exits only when SubmitTaskResult passes or
@@ -133,7 +144,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 
 		systemPrompt := lc.systemPromptOverride
 		if systemPrompt == "" {
-			systemPrompt = qe.buildSubAgentSystemPrompt(ctx, sess, messages, lc.profile, lc.subagentType, lc.allowedSkills, pool)
+			systemPrompt = qe.buildSubAgentSystemPrompt(ctx, sess, messages, lc.profile, lc.subagentType, lc.allowedSkills, pool, lc.sessionRoot)
 		}
 
 		req := &provider.ChatRequest{

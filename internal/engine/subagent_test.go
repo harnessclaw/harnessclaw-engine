@@ -438,6 +438,7 @@ func TestBuildSubAgentSystemPrompt_SpecialistsKeepsStaticRole(t *testing.T) {
 		"specialists",
 		nil,
 		nil,
+		"",
 	)
 
 	// Must contain the methodology that lives only in SpecialistsRole.
@@ -489,6 +490,7 @@ func TestBuildSubAgentSystemPrompt_GeneralPurposeDoesNotLeakEmma(t *testing.T) {
 		"general-purpose",
 		nil,
 		nil,
+		"",
 	)
 
 	// The general-purpose agent's role identity should mention "通用执行者"

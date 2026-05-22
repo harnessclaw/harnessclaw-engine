@@ -366,6 +366,7 @@ func TestBuildSubAgentSystemPrompt_NoEmmaForSubAgent(t *testing.T) {
 		"freelancer",
 		nil,
 		nil,
+		"",
 	)
 	if strings.Contains(got, "emma") {
 		idx := strings.Index(got, "emma")

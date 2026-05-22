@@ -1219,7 +1219,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 		// Build system prompt.
 		systemPrompt := lc.systemPromptOverride
 		if systemPrompt == "" {
-			systemPrompt = qe.buildSubAgentSystemPrompt(ctx, sess, messages, lc.profile, lc.subagentType, lc.allowedSkills, lc.pool)
+			systemPrompt = qe.buildSubAgentSystemPrompt(ctx, sess, messages, lc.profile, lc.subagentType, lc.allowedSkills, lc.pool, lc.sessionRoot)
 		}
 
 		req := &provider.ChatRequest{
@@ -1478,6 +1478,7 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 	subagentType string,
 	allowedSkills map[string]bool,
 	pool *tool.ToolPool,
+	sessionRoot string,
 ) string {
 	if qe.promptBuilder == nil {
 		return qe.config.SystemPrompt
@@ -1579,7 +1580,7 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 		TotalTokensUsed:      totalTokens,
 		ContextWindowSize:    qe.contextWindow(),
 		Memory:               make(map[string]string),
-		EnvInfo:              qe.getEnvSnapshot(),
+		EnvInfo:              qe.getEnvSnapshot(sessionRoot),
 		SkillListing:         skillListing,
 		SystemPromptOverride: workerIdentity,
 	}

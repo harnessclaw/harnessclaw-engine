@@ -27,6 +27,7 @@ import (
 	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/skilltool"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -610,7 +611,9 @@ func (qe *QueryEngine) resolveCoordinator(preference, goal string, logger *zap.L
 		QE:           qe,
 		Logger:       logger,
 		Budget:       NewBudgetTracker(DefaultPlanBudget()).Start(),
-		Judge:        NewJudge(logger),
+		Judge: NewJudge(logger).
+			WithLLM(qe.provider, qe.plannerModel()).
+			WithRetry(qe.retryer, qe.llmTimeouts()),
 		Planner: NewLLMPlanner(qe.provider, qe.plannerModel()).
 			WithRetry(qe.retryer, qe.llmTimeouts(), logger),
 		Fallback:     NewFallbackChain(logger),
@@ -1914,7 +1917,7 @@ func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Sess
 		TotalTokensUsed:   totalTokens,
 		ContextWindowSize: qe.contextWindow(),
 		Memory:            make(map[string]string),
-		EnvInfo:           qe.getEnvSnapshot(),
+		EnvInfo:           qe.getEnvSnapshot(workspace.SessionRoot(workspaceRootDir(), sess.ID)),
 		SkillListing:      qe.getSkillListing(),
 		TeamMembers:       qe.getTeamMembers(),
 	}
@@ -2001,15 +2004,20 @@ func (qe *QueryEngine) getTeamMembers() []prompt.TeamMember {
 }
 
 // getEnvSnapshot captures current environment information dynamically.
-func (qe *QueryEngine) getEnvSnapshot() prompt.EnvSnapshot {
+// sessionRoot, when non-empty, is used as the CWD so agents see the
+// session-specific workspace path rather than the generic root.
+func (qe *QueryEngine) getEnvSnapshot(sessionRoot string) prompt.EnvSnapshot {
 	snap := prompt.EnvSnapshot{
 		OS:       runtime.GOOS,
 		Platform: runtime.GOOS + "/" + runtime.GOARCH,
 		Date:     time.Now().Format("2006-01-02"),
 	}
 
-	// CWD
-	snap.CWD = "~/.harnessclaw/workspace"
+	if sessionRoot != "" {
+		snap.CWD = sessionRoot
+	} else {
+		snap.CWD = "~/.harnessclaw/workspace"
+	}
 
 	// Shell
 	if shell := os.Getenv("SHELL"); shell != "" {
