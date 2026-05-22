@@ -72,6 +72,14 @@ const (
 	// same silent wait. Translator renders it as a card.tick(kind=note)
 	// on the active agent/message card with a human-readable status.
 	EngineEventLLMRetry          EngineEventType = "llm_retry"
+
+	// EngineEventTextReset fires when callLLM is about to retry after
+	// attempt 1 streamed partial text live. Translator closes the
+	// in-progress message card so the stale partial text is discarded;
+	// the next EngineEventText chunk from the fresh attempt opens a new
+	// card. Without this, a successful retry would append to the partial
+	// attempt-1 prefix, producing duplicated or inconsistent content.
+	EngineEventTextReset         EngineEventType = "text_reset"
 	EngineEventSubAgentStart     EngineEventType = "subagent_start"     // sub-agent session begins
 	EngineEventSubAgentEnd       EngineEventType = "subagent_end"       // sub-agent session completes
 	EngineEventSubAgentEvent     EngineEventType = "subagent_event"     // real-time sub-agent streaming event

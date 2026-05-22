@@ -867,6 +867,16 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			UptimeMs: ev.Duration,
 		})
 
+	case types.EngineEventTextReset:
+		// callLLM retry after attempt 1 streamed partial text live.
+		// Close the in-progress message card so the stale prefix is
+		// discarded; the next EngineEventText chunk opens a fresh card.
+		if s.messageCardID == "" {
+			return
+		}
+		em.Card(emitv2.CardMessage, s.messageCardID).Close(emitv2.StatusOK)
+		s.messageCardID = ""
+
 	case types.EngineEventLLMRetry:
 		// Surface retry status to the wire. Same card-routing logic as
 		// the heartbeat case (sub-agent CardAgent if known, else the

@@ -138,28 +138,25 @@ func callLLM(
 ) *llmCallResult {
 	var result *llmCallResult
 	attempt := 0
+	streamedLive := false // true when attempt 1 succeeded after streaming live
 
 	logSubmissionShape(logger, req)
 
 	doOnce := func(ctx context.Context) error {
 		attempt++
 
-		// All attempts are silently buffered — no text / tool_use is
-		// streamed to `out` during the call. We replay the
-		// SUCCESSFUL attempt's full content once retryer.Do returns
-		// (see the post-loop block). Trade-off: front-end no longer
-		// sees typing-style live text; in exchange there's never a
-		// case where attempt 1 streams a partial response, fails, a
-		// retry produces a different answer, and the user is stuck
-		// with stale prefix on screen + a fresh full reply in the
-		// model's internal state. Plan-mode sub-agents don't emit
-		// text to the wire at all (L1/L2 isolation), so for them
-		// this change is invisible.
+		// Attempt 1 streams text live to `out` for responsive UX. If
+		// attempt 1 fails, onRetry emits EngineEventTextReset to clear
+		// the partial prefix on the frontend, then subsequent attempts
+		// buffer silently. The successful attempt's content is replayed
+		// post-loop only when it wasn't already streamed live.
 		//
-		// Heartbeats DO keep firing on `out` during the wait — they
-		// don't carry assistant content, only watchdog-keepalive
-		// ticks, so they're orthogonal to the buffer-vs-stream
-		// trade-off.
+		// Heartbeats keep firing on `out` during all attempts — they
+		// carry only watchdog-keepalive ticks, not assistant content.
+		var attemptOut chan<- types.EngineEvent
+		if attempt == 1 {
+			attemptOut = out
+		}
 
 		// Heartbeat: while this attempt is in flight, ping the parent
 		// `out` channel every llmHeartbeatInterval with a typed
@@ -212,11 +209,9 @@ func callLLM(
 			zap.Int("system_chars", len(req.System)),
 			zap.Int("max_tokens", req.MaxTokens),
 		)
-		// Pass nil for out — every attempt is buffered, never streamed live.
-		// See the comment block above for the rationale.
 		// planningOut is threaded through so planning events fire live
 		// even during retried attempts (and are retracted on each retry).
-		attemptResult := callLLMOnce(ctx, prov, req, nil, planningOut, timeouts, logger)
+		attemptResult := callLLMOnce(ctx, prov, req, attemptOut, planningOut, timeouts, logger)
 		elapsed := time.Since(startedAt)
 
 		if attemptResult.streamErr == nil {
@@ -248,6 +243,9 @@ func callLLM(
 				zap.Int64("cache_write", cacheWrite),
 				zap.Int64("thinking_tokens", thinkingTok),
 			)
+			if attempt == 1 && out != nil {
+				streamedLive = true
+			}
 			if attempt > 1 {
 				logger.Info("LLM call succeeded after retry",
 					zap.Int("attempt", attempt),
@@ -279,6 +277,14 @@ func callLLM(
 	onRetry := func(attempt int, delay time.Duration, apiErr *retry.APIError) {
 		if out == nil || apiErr == nil {
 			return
+		}
+		// Attempt 1 streamed live; clear its partial text before the next attempt.
+		select {
+		case out <- types.EngineEvent{
+			Type:    types.EngineEventTextReset,
+			AgentID: agentID,
+		}:
+		default:
 		}
 		info := &types.LLMRetryInfo{
 			Attempt:    attempt,
@@ -370,7 +376,8 @@ func callLLM(
 	// common). Front-end rendering of "text bubble + tool card
 	// sequence" is unaffected.
 	if err == nil && out != nil && result != nil {
-		if result.textBuf != "" {
+		// Skip text replay when attempt 1 already streamed it live.
+		if !streamedLive && result.textBuf != "" {
 			out <- types.EngineEvent{Type: types.EngineEventText, Text: result.textBuf}
 		}
 		for _, tc := range result.toolCalls {
