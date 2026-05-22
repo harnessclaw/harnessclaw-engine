@@ -1047,16 +1047,22 @@ func buildBifrostAdapter(
 			provName, provCfg.Type, bifrost.AllowedTypeNames())
 	}
 
-	// Quirks lookup keys on the BACKEND type (registry knows
-	// "anthropic"/"openai", not yaml-key names like "claude-46").
+	// Quirks: prefer the provider YAML key (e.g. "deepseek") so vendors
+	// running on an openai-compatible backend get their own quirks
+	// (deepseek_type thinking style) instead of the generic openai ones.
+	// Fall back to the backend type when no named entry exists.
 	var quirks *bifrost.ProviderQuirks
-	if prov := modelReg.LookupProvider(provCfg.Type); prov != nil {
+	provSpec := modelReg.LookupProvider(provName)
+	if provSpec == nil {
+		provSpec = modelReg.LookupProvider(provCfg.Type)
+	}
+	if provSpec != nil {
 		quirks = &bifrost.ProviderQuirks{
-			ThinkingParamStyle:             prov.Quirks.ThinkingParamStyle,
-			ToolCallsRequireReasoningField: prov.Quirks.ToolCallsRequireReasoningField,
-			ExtraParamsPassthroughRequired: prov.Quirks.ExtraParamsPassthroughRequired,
-			InlineUsageOnEveryChunk:        prov.Quirks.InlineUsageOnEveryChunk,
-			ExplicitCacheControl:           prov.Quirks.ExplicitCacheControl,
+			ThinkingParamStyle:             provSpec.Quirks.ThinkingParamStyle,
+			ToolCallsRequireReasoningField: provSpec.Quirks.ToolCallsRequireReasoningField,
+			ExtraParamsPassthroughRequired: provSpec.Quirks.ExtraParamsPassthroughRequired,
+			InlineUsageOnEveryChunk:        provSpec.Quirks.InlineUsageOnEveryChunk,
+			ExplicitCacheControl:           provSpec.Quirks.ExplicitCacheControl,
 		}
 	}
 
