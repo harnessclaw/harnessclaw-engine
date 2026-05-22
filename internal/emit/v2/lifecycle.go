@@ -15,12 +15,13 @@ import (
 // scheduler death) gets compensated by the watchdog so the renderer's
 // card tree never has zombie nodes.
 type Tracker struct {
-	mu      sync.Mutex
-	open    map[string]*openCard // cardID → entry
+	mu         sync.Mutex
+	open       map[string]*openCard // cardID → entry for cards currently open
+	parentOf   map[string]string    // cardID → parent_card_id; PERMANENT — survives Close so Touch can still walk up through already-closed ancestors. Cleared only when the Tracker itself shuts down (one tracker per session).
 	checkEvery time.Duration
-	stop    chan struct{}
-	stopped bool
-	now     func() time.Time
+	stop       chan struct{}
+	stopped    bool
+	now        func() time.Time
 }
 
 type openCard struct {
@@ -53,6 +54,7 @@ func NewTracker(cfg TrackerConfig) *Tracker {
 	}
 	return &Tracker{
 		open:       make(map[string]*openCard),
+		parentOf:   make(map[string]string),
 		checkEvery: cfg.CheckEvery,
 		stop:       make(chan struct{}),
 		now:        cfg.Now,
@@ -97,6 +99,13 @@ func (t *Tracker) Open(cardID string, kind CardKind, timeout time.Duration, pare
 		timeout:  timeout,
 		builder:  b,
 	}
+	// Record the parent link permanently. After this card closes, Touch
+	// on a still-open descendant must be able to skip over this card and
+	// keep refreshing the deadline of further ancestors — otherwise a
+	// long-running grandchild orphan-times the still-relevant root card
+	// (the bug that killed turn cards while Specialists was still
+	// running underneath an already-closed message card).
+	t.parentOf[cardID] = parent
 }
 
 // Close marks cardID as closed and stops tracking it. Called by
@@ -108,14 +117,13 @@ func (t *Tracker) Close(cardID string) {
 }
 
 // ParentOf returns the parent_card_id that was recorded when cardID was
-// opened. Returns "" for unknown cards.
+// opened. Survives Close — callers that need to know "what was the
+// parent of this (now possibly closed) card" get a stable answer for the
+// lifetime of the Tracker.
 func (t *Tracker) ParentOf(cardID string) string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if c, ok := t.open[cardID]; ok {
-		return c.parent
-	}
-	return ""
+	return t.parentOf[cardID]
 }
 
 // Suspend pauses the orphan watchdog for cardID. While paused, the card
@@ -175,15 +183,21 @@ func (t *Tracker) Touch(cardID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
+	// Walk along the PERMANENT parent map, not just the still-open cards.
+	// When an intermediate ancestor has already been closed (typical for
+	// the message card that wrapped a Specialists tool call), we skip
+	// the deadline refresh on that gravestone but keep climbing — the
+	// turn / plan / step above are still tracked and must not orphan
+	// just because a sibling card already finished.
 	for cur := cardID; cur != ""; {
-		c, ok := t.open[cur]
-		if !ok {
-			break
-		}
-		if !c.paused {
+		if c, ok := t.open[cur]; ok && !c.paused {
 			c.deadline = now.Add(c.timeout)
 		}
-		cur = c.parent
+		parent, known := t.parentOf[cur]
+		if !known {
+			break
+		}
+		cur = parent
 	}
 }
 

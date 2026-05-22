@@ -279,6 +279,72 @@ func TestTracker_HeartbeatPropagatesToAncestors(t *testing.T) {
 	}
 }
 
+// Regression: when an intermediate ancestor card is closed but its
+// descendant subtree is still doing work, the heartbeats from the
+// descendants must continue refreshing the root's deadline. Otherwise
+// the watchdog kills the root mid-flight.
+//
+// Real-world layout that triggered this:
+//
+//	turn      (10 min orphan)             ← root, must stay alive
+//	└── message      ← closes immediately when LLM finishes its text turn
+//	    └── tool (Specialists, WithoutLifecycle / chain-only)
+//	        └── agent (worker)
+//	            └── step
+//	                └── agent (freelancer, heart-beating)
+//
+// Before the fix, Touch(freelancer) walked tracker.open and hit message
+// (already evicted by Close), broke out of the loop, and never touched
+// turn. After 10 min turn would orphan-timeout while Specialists was
+// still legitimately running underneath. The fix records the parent
+// link permanently so Touch can step over the gravestone.
+func TestTracker_HeartbeatSkipsClosedAncestor(t *testing.T) {
+	clk := atomicClock{t: time.Now()}
+	tk := NewTracker(TrackerConfig{Now: clk.Now})
+	rec := NewRecorder()
+	em := New(EmitterConfig{
+		Sink: rec, SessionID: "s",
+		Lifecycle: tk, Now: clk.Now,
+	})
+
+	em.Card(CardTurn, "turn_a").Add(TurnPayload{})
+	em.Card(CardMessage, "msg_a").Add(MessagePayload{})
+	// Tool is chain-only (Specialists / Task wrap multi-minute sub-agent
+	// runs); registered with timeout=0 so it never expires on its own
+	// but Touch can still walk through it.
+	em.Card(CardTool, "tool_a").Add(ToolPayload{Name: "Specialists"},
+		WithoutLifecycle())
+	em.Card(CardAgent, "agent_a").Add(AgentPayload{Name: "freelancer"})
+
+	// Message closes quickly — LLM emitted its text + tool_use and the
+	// translator closed the message card before the tool ran.
+	em.Card(CardMessage, "msg_a").Close(StatusOK)
+
+	// Now simulate 15 min of inner-agent heartbeats (one per 90s, well
+	// above the LLM heartbeat cadence we ship in production). The turn
+	// card's 10-min orphan timeout MUST be refreshed by these despite
+	// the closed message between them and turn.
+	for i := 0; i < 10; i++ {
+		clk.advance(90 * time.Second)
+		em.Card(CardAgent, "agent_a").Tick(TickHeartbeat, HeartbeatPayload{UptimeMs: int64(i * 90_000)})
+		tk.SweepNow()
+	}
+
+	// Turn must still be open, no synthetic close should have fired
+	// against it (or any other tracked card).
+	for _, e := range rec.FilterByType(EventCardClose) {
+		pl, _ := e.Payload.(ClosePayload)
+		if pl.Error != nil && pl.Error.Type == ErrorTypeOrphanTimeout {
+			t.Errorf("watchdog orphan-killed %s while heartbeats were still arriving below a closed message ancestor",
+				e.Envelope.CardID)
+		}
+	}
+	// ParentOf must survive Close so Touch could walk through it.
+	if got := tk.ParentOf("msg_a"); got != "turn_a" {
+		t.Errorf("ParentOf(msg_a) after Close = %q, want turn_a (parent link must persist)", got)
+	}
+}
+
 func TestTracker_StartStop(t *testing.T) {
 	tk := NewTracker(TrackerConfig{CheckEvery: 1 * time.Millisecond})
 	tk.Start()
