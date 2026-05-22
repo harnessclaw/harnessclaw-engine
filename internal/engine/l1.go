@@ -85,6 +85,9 @@ func DefaultL1Config() L1Config {
 			"WebSearch",
 			"TavilySearch",
 			"AskUserQuestion",
+			"Read",
+			"Glob",
+			"Grep",
 		},
 		MaxTurns: 10,
 	}
@@ -122,6 +125,9 @@ func NewL1Engine(inner *QueryEngine, cfg L1Config, logger *zap.Logger) *L1Engine
 			"WebSearch",
 			"TavilySearch",
 			"AskUserQuestion",
+			"Read",
+			"Glob",
+			"Grep",
 		}
 	}
 	if cfg.MaxTurns <= 0 {

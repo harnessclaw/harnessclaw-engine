@@ -132,13 +132,17 @@ func TestL1Engine_DefaultL1Config(t *testing.T) {
 	}
 	// L1 palette in the 3-tier architecture: a single delegation entry
 	// (Specialists), light search for context (WebSearch/TavilySearch),
-	// and clarification (AskUserQuestion). Agent / Orchestrate are NOT
-	// in this list — they are L2-internal.
+	// clarification (AskUserQuestion), and lightweight local file access
+	// (Read/Glob/Grep) for workspace inspection without spawning L2.
+	// Agent / Orchestrate are NOT in this list — they are L2-internal.
 	wantTools := map[string]bool{
 		"Specialists":     true,
 		"WebSearch":       true,
 		"TavilySearch":    true,
 		"AskUserQuestion": true,
+		"Read":            true,
+		"Glob":            true,
+		"Grep":            true,
 	}
 	if len(cfg.AllowedTools) != len(wantTools) {
 		t.Errorf("DefaultL1Config AllowedTools length = %d, want %d",
