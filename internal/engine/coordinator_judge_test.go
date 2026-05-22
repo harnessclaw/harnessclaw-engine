@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -132,21 +133,26 @@ func TestJudge_ReviewGoal_HappyPath(t *testing.T) {
 	results := []*StepResult{
 		{StepID: "s1", Status: "success", Artifacts: []types.ArtifactRef{{ArtifactID: "art_1"}}},
 	}
-	v := j.ReviewGoal("write a report", results)
+	v := j.ReviewGoal(context.Background(), "write a report", results)
 	if !v.Pass {
 		t.Errorf("happy path goal review failed: %v", v.Reasons)
 	}
-	if v.Tier != "llm" {
-		t.Errorf("goal review should report LLM tier; got %q", v.Tier)
+	// Without a provider, ReviewGoal falls back to rule tier.
+	if v.Tier != "rule" && v.Tier != "llm" {
+		t.Errorf("goal review tier should be rule or llm; got %q", v.Tier)
 	}
 }
 
-func TestJudge_ReviewGoal_FlagsZeroArtifacts(t *testing.T) {
+func TestJudge_ReviewGoal_PassesWhenAllStepsSucceedNoArtifacts(t *testing.T) {
+	// File-based tasks write to disk without calling SubmitTaskResult — they
+	// produce no artifact-store entries. ReviewGoal must not penalise this:
+	// dispatchStep already marks a step failed when ExpectedOutputs declared
+	// but not met, so the zero-artifact check here was a false negative.
 	j := NewJudge(nil)
 	results := []*StepResult{{StepID: "s1", Status: "success"}}
-	v := j.ReviewGoal("write a report", results)
-	if v.Pass {
-		t.Error("zero artifacts across all steps should fail")
+	v := j.ReviewGoal(context.Background(), "write a report", results)
+	if !v.Pass {
+		t.Errorf("all-success steps with no artifacts should pass ReviewGoal, got reasons: %v", v.Reasons)
 	}
 }
 
@@ -156,7 +162,7 @@ func TestJudge_ReviewGoal_FlagsAnyFailure(t *testing.T) {
 		{StepID: "s1", Status: "success", Artifacts: []types.ArtifactRef{{ArtifactID: "a"}}},
 		{StepID: "s2", Status: "failed"},
 	}
-	v := j.ReviewGoal("compose", results)
+	v := j.ReviewGoal(context.Background(), "compose", results)
 	if v.Pass {
 		t.Error("any step failure should fail goal review")
 	}

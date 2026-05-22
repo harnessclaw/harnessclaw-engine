@@ -1,10 +1,15 @@
 package engine
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/provider"
+	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/pkg/types"
 )
@@ -35,16 +40,38 @@ func (v JudgeVerdict) String() string {
 // later tiers don't run. This matches architecture_v2.md §"图 3" Judge
 // 三层渐进 and minimises LLM cost.
 type Judge struct {
-	logger *zap.Logger
+	logger   *zap.Logger
+	provider provider.Provider
+	model    string
+	retryer  *retry.Retryer
+	timeouts llmCallTimeouts
 }
 
 // NewJudge constructs the singleton-per-task Judge. logger may be nil
-// (tests).
+// (tests). Wire an LLM via WithLLM + WithRetry before use in plan mode.
 func NewJudge(logger *zap.Logger) *Judge {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	return &Judge{logger: logger.Named("judge")}
+}
+
+// WithLLM attaches an LLM provider so ReviewGoal can call the model.
+// model may be empty (provider uses its configured default). Returns j
+// for chaining.
+func (j *Judge) WithLLM(p provider.Provider, model string) *Judge {
+	j.provider = p
+	j.model = model
+	return j
+}
+
+// WithRetry attaches the engine-level Retryer and call timeouts so
+// ReviewGoal LLM calls inherit the same retry/heartbeat/visibility stack
+// as LLMPlanner / LLMSubagentResolver.
+func (j *Judge) WithRetry(retryer *retry.Retryer, timeouts llmCallTimeouts) *Judge {
+	j.retryer = retryer
+	j.timeouts = timeouts
+	return j
 }
 
 // ReviewPlan validates a Plan structurally. Tier "rule" — purely
@@ -125,51 +152,196 @@ func (j *Judge) ReviewStep(step *PlanStep, result *StepResult) JudgeVerdict {
 	return v
 }
 
-// ReviewGoal is the L3 LLM-driven check: did the aggregate of all steps
-// actually satisfy the user's goal? Conceptually expensive — runs once at
-// the end of a Plan execution. The current implementation is a stub
-// (defaults to pass when status is success); replacing it with a real
-// LLM call is a follow-up that requires committing to a goal-review
-// prompt format we haven't yet stabilised.
+// ReviewGoal checks whether the aggregate plan output actually satisfied
+// the user's goal.
 //
-// Until the LLM body lands, we still do basic sanity:
-//   - any step failed → fail
-//   - zero artifacts produced → fail
-// This catches the obvious "Plan ran but produced nothing useful" path.
-func (j *Judge) ReviewGoal(goal string, results []*StepResult) JudgeVerdict {
-	v := JudgeVerdict{Tier: "llm", Pass: true}
-
+// Two-tier flow:
+//  1. Rule (free): any step failed → instant fail, skip LLM.
+//  2. LLM (when provider wired): call model with goal + step summaries;
+//     structured tool output gives pass/fail + reasons.
+//     On LLM error the rule-level pass-through applies so a transient
+//     network hiccup never blocks a completed plan.
+//
+// Without an LLM provider the method degrades to pure rule-based: all
+// steps success → pass, any failure → fail.
+func (j *Judge) ReviewGoal(ctx context.Context, goal string, results []*StepResult) JudgeVerdict {
+	// Guard: empty inputs.
 	if goal == "" {
-		v.Pass = false
-		v.Reasons = []string{"empty goal"}
-		return v
+		return JudgeVerdict{Tier: "rule", Pass: false, Reasons: []string{"empty goal"}}
 	}
 	if len(results) == 0 {
-		v.Pass = false
-		v.Reasons = []string{"no step results to judge"}
-		return v
+		return JudgeVerdict{Tier: "rule", Pass: false, Reasons: []string{"no step results to judge"}}
 	}
-	totalArt := 0
+
+	// L1 rule tier: check step statuses — cheap, no LLM cost.
+	var ruleFailures []string
 	for _, r := range results {
 		if r == nil {
 			continue
 		}
 		if r.Status != "success" {
-			v.Pass = false
-			v.Reasons = append(v.Reasons,
+			ruleFailures = append(ruleFailures,
 				fmt.Sprintf("step %s ended in status %q", r.StepID, r.Status))
 		}
-		totalArt += len(r.Artifacts)
 	}
-	if totalArt == 0 {
-		v.Pass = false
-		v.Reasons = append(v.Reasons, "no artifacts produced across all steps")
+	if len(ruleFailures) > 0 {
+		return JudgeVerdict{Tier: "rule", Pass: false, Reasons: ruleFailures}
 	}
-	// TODO(plan-mode): wire this to a Sonnet-side review_goal prompt
-	// once the prompt format has stabilised. Until then the verdict is
-	// rule-tier in disguise — we report Tier="llm" so telemetry already
-	// reflects the intended call site.
-	return v
+
+	// All steps succeeded — call LLM for semantic judgment when wired.
+	if j.provider == nil {
+		return JudgeVerdict{Tier: "rule", Pass: true}
+	}
+	return j.reviewGoalLLM(ctx, goal, results)
+}
+
+// reviewGoalLLM sends one structured-output request to the LLM and
+// interprets the emit_goal_review tool call. On any failure it logs a
+// warning and returns a pass verdict so a transient LLM error never
+// blocks an otherwise-complete plan.
+func (j *Judge) reviewGoalLLM(ctx context.Context, goal string, results []*StepResult) JudgeVerdict {
+	req := &provider.ChatRequest{
+		Model:  j.model,
+		System: buildGoalReviewSystemPrompt(),
+		Messages: []types.Message{{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: buildGoalReviewUserMessage(goal, results)}},
+		}},
+		Tools:     []provider.ToolSchema{goalReviewEmitTool()},
+		MaxTokens: 1024,
+		// Temperature 0: deterministic assessment, not creative interpretation.
+		Temperature: 0,
+	}
+
+	var toolInput string
+	agentID, out := retryRoutingFromCtx(ctx)
+	if j.retryer != nil {
+		result := callLLM(ctx, j.provider, req, j.logger, j.retryer, j.timeouts, agentID, out, out)
+		if result == nil || result.streamErr != nil {
+			err := result.streamErr
+			if result == nil {
+				err = fmt.Errorf("nil result")
+			}
+			j.logger.Warn("judge: ReviewGoal LLM call failed; defaulting to pass",
+				zap.Error(err),
+			)
+			return JudgeVerdict{Tier: "llm", Pass: true, Reasons: []string{"LLM unavailable; rule-pass applied"}}
+		}
+		for _, tc := range result.toolCalls {
+			if tc.Name == goalReviewToolName {
+				toolInput = tc.Input
+			}
+		}
+	} else {
+		stream, err := j.provider.Chat(ctx, req)
+		if err != nil {
+			j.logger.Warn("judge: ReviewGoal LLM call failed; defaulting to pass", zap.Error(err))
+			return JudgeVerdict{Tier: "llm", Pass: true, Reasons: []string{"LLM unavailable; rule-pass applied"}}
+		}
+		for ev := range stream.Events {
+			if ev.Type == types.StreamEventToolUse && ev.ToolCall != nil &&
+				ev.ToolCall.Name == goalReviewToolName {
+				toolInput = ev.ToolCall.Input
+			}
+		}
+		if err := stream.Err(); err != nil {
+			j.logger.Warn("judge: ReviewGoal stream error; defaulting to pass", zap.Error(err))
+			return JudgeVerdict{Tier: "llm", Pass: true, Reasons: []string{"LLM stream error; rule-pass applied"}}
+		}
+	}
+
+	if toolInput == "" {
+		j.logger.Warn("judge: ReviewGoal model did not call tool; defaulting to pass",
+			zap.String("tool", goalReviewToolName),
+		)
+		return JudgeVerdict{Tier: "llm", Pass: true, Reasons: []string{"model did not emit review; rule-pass applied"}}
+	}
+
+	var parsed struct {
+		Pass    bool     `json:"pass"`
+		Reasons []string `json:"reasons"`
+	}
+	if err := json.Unmarshal([]byte(toolInput), &parsed); err != nil {
+		j.logger.Warn("judge: ReviewGoal tool input parse failed; defaulting to pass", zap.Error(err))
+		return JudgeVerdict{Tier: "llm", Pass: true, Reasons: []string{"parse error; rule-pass applied"}}
+	}
+
+	j.logger.Info("judge: ReviewGoal LLM verdict",
+		zap.Bool("pass", parsed.Pass),
+		zap.Strings("reasons", parsed.Reasons),
+	)
+	return JudgeVerdict{Tier: "llm", Pass: parsed.Pass, Reasons: parsed.Reasons}
+}
+
+const goalReviewToolName = "emit_goal_review"
+
+// goalReviewEmitTool defines the single structured-output tool the LLM
+// must call. Schema keeps it minimal: pass/fail + up to 5 short reasons.
+func goalReviewEmitTool() provider.ToolSchema {
+	return provider.ToolSchema{
+		Name:        goalReviewToolName,
+		Description: "提交目标评审结论。这是你唯一可以调用的工具，调用后立即停止。",
+		InputSchema: map[string]any{
+			"type":     "object",
+			"required": []string{"pass", "reasons"},
+			"properties": map[string]any{
+				"pass": map[string]any{
+					"type":        "boolean",
+					"description": "true = 目标已达成；false = 目标未达成或有明显质量缺陷。",
+				},
+				"reasons": map[string]any{
+					"type":        "array",
+					"description": "pass=true 时留空数组；pass=false 时列出最多 5 条具体问题，每条不超过 100 字。",
+					"maxItems":    5,
+					"items": map[string]any{
+						"type":      "string",
+						"maxLength": 200,
+					},
+				},
+			},
+		},
+	}
+}
+
+// buildGoalReviewSystemPrompt sets the evaluator role and output rules.
+func buildGoalReviewSystemPrompt() string {
+	var sb strings.Builder
+	sb.WriteString("你是计划执行质检员。\n\n")
+	sb.WriteString("你的唯一职责：评审执行团队完成的步骤，判断是否真正达成了用户给出的目标。\n\n")
+	sb.WriteString("判断标准：\n")
+	sb.WriteString("- 目标的核心诉求是否被满足（不要求完美，但不能有明显遗漏）\n")
+	sb.WriteString("- 每个步骤的产出摘要是否与目标方向吻合\n")
+	sb.WriteString("- 不要因为步骤数量少或执行路径不同于你的预期而否定结果\n\n")
+	sb.WriteString("硬性规则：只能调用 emit_goal_review 工具，不要输出任何其它正文。\n")
+	return sb.String()
+}
+
+// buildGoalReviewUserMessage formats the goal and step results into a
+// concise brief for the LLM evaluator.
+func buildGoalReviewUserMessage(goal string, results []*StepResult) string {
+	var sb strings.Builder
+	sb.WriteString("用户目标：\n")
+	sb.WriteString(strings.TrimSpace(goal))
+	sb.WriteString("\n\n执行结果（各步骤摘要）：\n")
+	for _, r := range results {
+		if r == nil {
+			continue
+		}
+		summary := strings.TrimSpace(r.Summary)
+		if summary == "" {
+			summary = "（无摘要）"
+		} else {
+			summary = truncForLog(summary, 300)
+		}
+		artCount := len(r.Artifacts)
+		if artCount > 0 {
+			fmt.Fprintf(&sb, "- 步骤 %s（%s，%d 份产出）：%s\n", r.StepID, r.Status, artCount, summary)
+		} else {
+			fmt.Fprintf(&sb, "- 步骤 %s（%s）：%s\n", r.StepID, r.Status, summary)
+		}
+	}
+	sb.WriteString("\n请判断：上述执行结果是否真正满足了用户目标？")
+	return sb.String()
 }
 
 // requiredRoles is a small helper — slimmer than submittool's because

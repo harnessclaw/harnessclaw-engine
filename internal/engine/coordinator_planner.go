@@ -447,6 +447,23 @@ func buildPlannerUserMessage(in PlannerInput, feedback string) string {
 	if in.Escalation != nil && !in.Escalation.IsEmpty() {
 		sb.WriteString("\n\n--- 重新规划上下文 ---")
 		sb.WriteString("\n上一次尝试已经产出了部分结果。请保留已有产物，只补充缺失的步骤，不要重复已完成的工作。")
+		if in.Escalation.Reason != "" {
+			sb.WriteString("\n总体失败原因：")
+			sb.WriteString(truncForLog(in.Escalation.Reason, 300))
+		}
+		for _, a := range in.Escalation.PriorAttempts {
+			if a.Status != "failed" || len(a.Failures) == 0 {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("\n步骤 %s 失败详情：", a.Skill))
+			for i, f := range a.Failures {
+				if i >= 3 {
+					break
+				}
+				sb.WriteString("\n  - ")
+				sb.WriteString(truncForLog(f, 200))
+			}
+		}
 	}
 
 	if feedback != "" {

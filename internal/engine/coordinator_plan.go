@@ -219,7 +219,7 @@ func (c *PlanCoordinator) Run(
 		)
 
 		if outcome.Status == "success" {
-			if v := c.deps.Judge.ReviewGoal(plan.Goal, outcome.StepResults); v.Pass {
+			if v := c.deps.Judge.ReviewGoal(ctx, plan.Goal, outcome.StepResults); v.Pass {
 				emitPlanCompleted(out, plan, lc.agentID)
 				res := c.successResult(plan, outcome, lc.agentID)
 				emitPlanSummaryText(out, res.Summary)
