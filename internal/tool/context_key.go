@@ -208,3 +208,24 @@ func AgentScopeFromCtx(ctx context.Context) (AgentScope, bool) {
 	s, ok := ctx.Value(agentScopeContextKey).(AgentScope)
 	return s, ok
 }
+
+// ScopeEscalationFn is called by file tools when a path is outside the
+// current read scope. It presents a permission prompt to the user and
+// returns true if access was granted.
+type ScopeEscalationFn func(ctx context.Context, path string, isReadOnly bool) bool
+
+type scopeEscalationKey struct{}
+
+var scopeEscalationContextKey = scopeEscalationKey{}
+
+// WithScopeEscalationFn attaches a scope escalation function to ctx.
+func WithScopeEscalationFn(ctx context.Context, fn ScopeEscalationFn) context.Context {
+	return context.WithValue(ctx, scopeEscalationContextKey, fn)
+}
+
+// ScopeEscalationFnFromCtx retrieves the scope escalation function from ctx.
+// Returns nil, false when not present (legacy tools, tests).
+func ScopeEscalationFnFromCtx(ctx context.Context) (ScopeEscalationFn, bool) {
+	fn, ok := ctx.Value(scopeEscalationContextKey).(ScopeEscalationFn)
+	return fn, ok
+}

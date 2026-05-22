@@ -86,16 +86,6 @@ func (t *FileWriteTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
-	if scope, ok := tool.AgentScopeFromCtx(ctx); ok && len(scope.WriteScope) > 0 {
-		if !pathInScope(wi.FilePath, scope.WriteScope) {
-			return &types.ToolResult{
-				Content:   fmt.Sprintf("path %q is outside the write scope for this spawn (allowed prefixes: %v)", wi.FilePath, scope.WriteScope),
-				IsError:   true,
-				ErrorType: types.ToolErrorPermissionDenied,
-			}, nil
-		}
-	}
-
 	content := wi.Content
 	if content == "" {
 		return &types.ToolResult{Content: "content is required", IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil

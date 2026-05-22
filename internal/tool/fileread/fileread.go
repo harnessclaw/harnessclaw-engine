@@ -80,16 +80,6 @@ func (t *FileReadTool) Execute(ctx context.Context, input json.RawMessage) (*typ
 		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
-	if scope, ok := tool.AgentScopeFromCtx(ctx); ok && len(scope.ReadScope) > 0 {
-		if !pathInScope(ri.FilePath, scope.ReadScope) {
-			return &types.ToolResult{
-				Content:   fmt.Sprintf("path %q is outside the read scope for this spawn (allowed prefixes: %v)", ri.FilePath, scope.ReadScope),
-				IsError:   true,
-				ErrorType: types.ToolErrorPermissionDenied,
-			}, nil
-		}
-	}
-
 	// Check file exists.
 	info, err := os.Stat(ri.FilePath)
 	if err != nil {

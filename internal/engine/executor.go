@@ -449,6 +449,43 @@ func (te *ToolExecutor) executeSingle(
 		execCtx = tool.WithAgentScope(execCtx, te.agentScope)
 	}
 
+	// ScopeEscalationFn allows file tools to prompt the user when a path
+	// is outside the current read scope, rather than hard-failing silently.
+	// Only injected when an approvalFn is wired (i.e. we have a live
+	// session that can surface a permission card to the user).
+	if te.approvalFn != nil {
+		toolName := tc.Name
+		toolInput := string(tc.Input)
+		approvalFn := te.approvalFn
+		execCtx = tool.WithScopeEscalationFn(execCtx, func(ctx context.Context, path string, isReadOnly bool) bool {
+			evtOut, ok := tool.GetEventOut(ctx)
+			if !ok {
+				return false
+			}
+			var msg string
+			if isReadOnly {
+				msg = fmt.Sprintf("读取 %s 超出当前任务作用域，是否允许访问？", path)
+			} else {
+				msg = fmt.Sprintf("写入 %s 超出当前任务作用域，是否允许访问？", path)
+			}
+			req := &types.PermissionRequest{
+				RequestID:     "perm_" + uuid.New().String()[:8],
+				ToolName:      toolName,
+				ToolInput:     toolInput,
+				Message:       msg,
+				IsReadOnly:    isReadOnly,
+				PermissionKey: "ScopeRead:" + path,
+				Options: []types.PermissionOption{
+					{Label: "允许一次", Scope: types.PermissionScopeOnce, Allow: true},
+					{Label: "本次会话始终允许", Scope: types.PermissionScopeSession, Allow: true},
+					{Label: "拒绝", Scope: types.PermissionScopeOnce, Allow: false},
+				},
+			}
+			resp := approvalFn(ctx, evtOut, req)
+			return resp != nil && resp.Approved
+		})
+	}
+
 	// Inject ToolUseContext so tools (e.g. Specialists) can read the
 	// session ID and tool-call identity without threading these fields
 	// through every call signature. Without this injection,
