@@ -16,45 +16,51 @@ func fixedPicker(seed int64) *copypkg.CopyPicker {
 	})
 }
 
-func TestTranslator_ToolPlanning_OpensCardEarly(t *testing.T) {
+func TestTranslator_ToolPlanning_NoWireEventUntilQueued(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_plan")
 	tr := NewTranslator(fixedPicker(1))
 
-	// 现实流程下 MessageStart 先于 ToolPlanning
+	// 现实流程：MessageStart → ToolPlanning（流式期间）
 	tr.Translate(em, "sess_plan", &types.EngineEvent{
 		Type:      types.EngineEventMessageStart,
 		MessageID: "msg_1",
 		Model:     "claude",
 	})
-
 	tr.Translate(em, "sess_plan", &types.EngineEvent{
 		Type:      types.EngineEventToolPlanning,
 		ToolUseID: "toolu_p1",
 		ToolName:  "Bash",
 	})
 
-	// 应有一个 card.add(tool) 事件，cardKind=tool，phase=planning
+	// ToolPlanning 阶段不应向客户端发送任何工具卡事件
+	for _, ev := range rec.Events() {
+		if ev.Type == emitv2.EventCardAdd && ev.Envelope.CardKind == emitv2.CardTool {
+			t.Errorf("ToolPlanning should not emit card.add; got %+v", ev)
+		}
+	}
+
+	// ToolQueued（文字 replay 之后）才开卡
+	tr.Translate(em, "sess_plan", &types.EngineEvent{
+		Type:      types.EngineEventToolQueued,
+		ToolUseID: "toolu_p1",
+		ToolName:  "Bash",
+	})
+
 	found := false
 	for _, ev := range rec.Events() {
-		if ev.Type != emitv2.EventCardAdd {
-			continue
-		}
-		if ev.Envelope.CardKind != emitv2.CardTool {
+		if ev.Type != emitv2.EventCardAdd || ev.Envelope.CardKind != emitv2.CardTool {
 			continue
 		}
 		pl, ok := ev.Payload.(emitv2.ToolPayload)
 		if !ok {
 			continue
 		}
-		if pl.Name == "Bash" && pl.Phase == emitv2.PhasePlanning {
+		if pl.Name == "Bash" && pl.Phase == emitv2.PhaseQueued {
 			found = true
-			if pl.PhaseHint == "" {
-				t.Error("PhaseHint should be resolved by picker, got empty")
-			}
 		}
 	}
 	if !found {
-		t.Error("expected card.add(tool, phase=planning, name=Bash)")
+		t.Error("expected card.add(tool, phase=queued, name=Bash) after ToolQueued")
 	}
 }
 
@@ -65,7 +71,7 @@ func TestTranslator_ToolPlanning_Idempotent(t *testing.T) {
 	tr.Translate(em, "sess_idem", &types.EngineEvent{
 		Type: types.EngineEventMessageStart, MessageID: "msg_1",
 	})
-	// 同一 ToolUseID 来两次
+	// 同一 ToolUseID 来两次 — 仍只应跟踪一次
 	for i := 0; i < 2; i++ {
 		tr.Translate(em, "sess_idem", &types.EngineEvent{
 			Type:      types.EngineEventToolPlanning,
@@ -73,7 +79,18 @@ func TestTranslator_ToolPlanning_Idempotent(t *testing.T) {
 			ToolName:  "Read",
 		})
 	}
-	// 应该只有 1 个 card.add(tool)
+	// ToolPlanning 阶段不开卡
+	for _, ev := range rec.Events() {
+		if ev.Type == emitv2.EventCardAdd && ev.Envelope.CardKind == emitv2.CardTool {
+			t.Error("ToolPlanning should not open tool card")
+		}
+	}
+	// ToolQueued 触发后应有且仅有 1 个 card.add(tool)
+	tr.Translate(em, "sess_idem", &types.EngineEvent{
+		Type:      types.EngineEventToolQueued,
+		ToolUseID: "toolu_dup",
+		ToolName:  "Read",
+	})
 	count := 0
 	for _, ev := range rec.Events() {
 		if ev.Type == emitv2.EventCardAdd && ev.Envelope.CardKind == emitv2.CardTool {
@@ -81,42 +98,30 @@ func TestTranslator_ToolPlanning_Idempotent(t *testing.T) {
 		}
 	}
 	if count != 1 {
-		t.Errorf("expected 1 tool card add, got %d", count)
+		t.Errorf("expected 1 tool card add after ToolQueued, got %d", count)
 	}
 }
 
-func TestTranslator_ToolPlanningProgress_SetsPhaseAndBytes(t *testing.T) {
+func TestTranslator_ToolPlanningProgress_NoOpDuringPlanning(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_prog")
 	tr := NewTranslator(fixedPicker(2))
 
+	// 流式期间 ToolPlanning → ToolPlanningProgress：
+	// 工具卡尚未发到客户端，Progress 应该是无操作。
 	tr.Translate(em, "sess_prog", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
 	tr.Translate(em, "sess_prog", &types.EngineEvent{
 		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_w", ToolName: "Write",
 	})
-
 	tr.Translate(em, "sess_prog", &types.EngineEvent{
 		Type: types.EngineEventToolPlanningProgress, ToolUseID: "toolu_w", ToolName: "Write", Bytes: 1234,
 	})
 
-	found := false
-	// RecorderSink method: use the same method already used in TestTranslator_ToolPlanning_OpensCardEarly
+	// 不应有任何 card.set（planning_args 或其他）
 	for _, ev := range rec.Events() {
-		if ev.Type != emitv2.EventCardSet {
-			continue
+		if ev.Type == emitv2.EventCardSet && ev.Envelope.CardKind == emitv2.CardTool {
+			patch, _ := ev.Payload.(map[string]any)
+			t.Errorf("ToolPlanningProgress should be no-op before ToolQueued; got card.set %v", patch)
 		}
-		patch, ok := ev.Payload.(map[string]any)
-		if !ok {
-			continue
-		}
-		if patch["phase"] == emitv2.PhasePlanningArgs && patch["phase_bytes"] == 1234 {
-			found = true
-			if hint, _ := patch["phase_hint"].(string); hint == "" {
-				t.Error("phase_hint should be resolved")
-			}
-		}
-	}
-	if !found {
-		t.Error("expected card.set with phase=planning_args + bytes=1234")
 	}
 }
 
@@ -135,7 +140,7 @@ func TestTranslator_ToolPlanningProgress_NoOpWhenCardMissing(t *testing.T) {
 	}
 }
 
-func TestTranslator_ToolQueued_SetsPhaseQueued(t *testing.T) {
+func TestTranslator_ToolQueued_OpensCard(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_q")
 	tr := NewTranslator(fixedPicker(3))
 
@@ -143,29 +148,35 @@ func TestTranslator_ToolQueued_SetsPhaseQueued(t *testing.T) {
 	tr.Translate(em, "sess_q", &types.EngineEvent{
 		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_q1", ToolName: "Bash",
 	})
+	// 文字 replay（简化为无文字的纯工具轮次）
 	tr.Translate(em, "sess_q", &types.EngineEvent{
 		Type: types.EngineEventToolQueued, ToolUseID: "toolu_q1", ToolName: "Bash",
 	})
 
+	// ToolQueued 应发 card.add(tool, phase=queued)，而非 card.set
 	found := false
 	for _, ev := range rec.Events() {
-		if ev.Type != emitv2.EventCardSet {
+		if ev.Type != emitv2.EventCardAdd || ev.Envelope.CardKind != emitv2.CardTool {
 			continue
 		}
-		patch, _ := ev.Payload.(map[string]any)
-		if patch["phase"] == emitv2.PhaseQueued {
+		pl, ok := ev.Payload.(emitv2.ToolPayload)
+		if !ok {
+			continue
+		}
+		if pl.Phase == emitv2.PhaseQueued && pl.Name == "Bash" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("expected card.set with phase=queued")
+		t.Error("expected card.add(tool, phase=queued) from ToolQueued")
 	}
 }
 
-func TestTranslator_Retract_ClosesPlanningCards(t *testing.T) {
+func TestTranslator_Retract_ClearsStateWithoutClosingCards(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_retract")
 	tr := NewTranslator(fixedPicker(4))
 
+	// planning 阶段工具卡从未 card.add 到客户端，retract 只需清理内部状态。
 	tr.Translate(em, "sess_retract", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
 	tr.Translate(em, "sess_retract", &types.EngineEvent{
 		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_a", ToolName: "Bash",
@@ -173,26 +184,31 @@ func TestTranslator_Retract_ClosesPlanningCards(t *testing.T) {
 	tr.Translate(em, "sess_retract", &types.EngineEvent{
 		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_b", ToolName: "Read",
 	})
-
 	tr.Translate(em, "sess_retract", &types.EngineEvent{
 		Type: types.EngineEventToolPlanningRetract,
 	})
 
-	closedCount := 0
+	// 不应有任何工具卡 close 事件（卡从未被 add）
 	for _, ev := range rec.Events() {
-		if ev.Type != emitv2.EventCardClose {
-			continue
-		}
-		if ev.Envelope.CardKind != emitv2.CardTool {
-			continue
-		}
-		pl, _ := ev.Payload.(emitv2.ClosePayload)
-		if pl.Status == emitv2.StatusCancelled {
-			closedCount++
+		if ev.Type == emitv2.EventCardClose && ev.Envelope.CardKind == emitv2.CardTool {
+			t.Errorf("retract should not emit card.close for never-added planning cards: %+v", ev)
 		}
 	}
-	if closedCount != 2 {
-		t.Errorf("expected 2 cancelled closes, got %d", closedCount)
+
+	// 验证内部状态已清理：ToolQueued 发送 a/b 不应开卡（已被 retract 清除）
+	tr.Translate(em, "sess_retract", &types.EngineEvent{
+		Type: types.EngineEventToolQueued, ToolUseID: "toolu_a", ToolName: "Bash",
+	})
+	addCount := 0
+	for _, ev := range rec.Events() {
+		if ev.Type == emitv2.EventCardAdd && ev.Envelope.CardKind == emitv2.CardTool {
+			addCount++
+		}
+	}
+	// retract 清除了 toolu_a，ToolQueued 找不到 toolsFromPlanning 记录，
+	// 走 "未见过" 路径新建 ID 并开卡 — 仍应有 1 个 add（新 attempt 的工具）
+	if addCount != 1 {
+		t.Errorf("after retract, ToolQueued for new attempt should open 1 card, got %d", addCount)
 	}
 }
 
@@ -260,15 +276,20 @@ func TestTranslator_ToolStart_UpgradesPlanningCard(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_up")
 	tr := NewTranslator(fixedPicker(6))
 
+	// 真实事件顺序：ToolPlanning（流式）→ ToolQueued（文字 replay 后）→ ToolStart（执行）
 	tr.Translate(em, "sess_up", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
 	tr.Translate(em, "sess_up", &types.EngineEvent{
 		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_u", ToolName: "Bash",
 	})
 	tr.Translate(em, "sess_up", &types.EngineEvent{
+		Type: types.EngineEventToolQueued, ToolUseID: "toolu_u", ToolName: "Bash",
+	})
+	tr.Translate(em, "sess_up", &types.EngineEvent{
 		Type: types.EngineEventToolStart, ToolUseID: "toolu_u", ToolName: "Bash", ToolInput: `{"command":"ls"}`,
 	})
 
-	// 应该只有 1 个 card.add(tool)，1 个或多个 card.set 带 phase=executing
+	// ToolQueued 开卡（phase=queued），ToolStart 升级（phase=executing）
+	// 总计 1 个 card.add(tool)，有 card.set 带 phase=executing
 	adds := 0
 	sawExecuting := false
 	for _, ev := range rec.Events() {
@@ -286,10 +307,10 @@ func TestTranslator_ToolStart_UpgradesPlanningCard(t *testing.T) {
 		}
 	}
 	if adds != 1 {
-		t.Errorf("expected 1 tool add, got %d", adds)
+		t.Errorf("expected 1 tool add (from ToolQueued), got %d", adds)
 	}
 	if !sawExecuting {
-		t.Error("expected card.set with phase=executing")
+		t.Error("expected card.set with phase=executing from ToolStart")
 	}
 }
 

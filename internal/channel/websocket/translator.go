@@ -336,40 +336,26 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 
 	// ----- Tool lifecycle -----
 	case types.EngineEventToolPlanning:
-		// SSE 拿到 tool_use block 的 name；早开 CardTool（WithoutLifecycle
-		// 避免 LLM 流式期间被孤儿守护狗误杀），后续 progress/queued 通过
-		// Set 更新；ToolStart 到达时 Set(phase=executing) + 注册 watchdog。
+		// LLM 流式期间拿到 tool_use block 的 name。
+		// 只更新内部跟踪状态，不向客户端发送任何事件。
+		// 实际的 card.add 推迟到 EngineEventToolQueued（在 buffer-then-replay
+		// 的文字事件之后），确保文字先于工具卡出现在 wire 上。
+		// AskUserQuestion 经由 EngineEventToolCall 升级为 prompt.user，不需要工具卡。
 		t.openTurnIfNeeded(s, em)
 		if _, exists := s.tools[ev.ToolUseID]; exists {
-			return // 幂等：可能是 main out replay 后到达的 ToolUse 已开过
+			return // 幂等
 		}
 		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
 		s.tools[ev.ToolUseID] = toolCardID
 		s.toolsFromPlanning[ev.ToolUseID] = true
 		s.toolNames[ev.ToolUseID] = ev.ToolName
-		em.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
-			Name:      ev.ToolName,
-			Target:    "server",
-			Phase:     emitv2.PhasePlanning,
-			PhaseHint: t.pickCopy(s, ev.ToolName, emitv2.PhasePlanning, 0, nil),
-		}, emitv2.WithParent(parentForTool(s)), emitv2.WithoutLifecycle())
 
 	case types.EngineEventToolPlanningProgress:
-		toolCardID, ok := s.tools[ev.ToolUseID]
-		if !ok {
-			return // planning 还没到，progress 先到 — 忽略，下次会补
+		// 流式期间工具参数累积。card 在 ToolQueued 才开，此时无需更新客户端。
+		if s.toolsFromPlanning[ev.ToolUseID] {
+			return
 		}
-		toolName := s.toolNames[ev.ToolUseID]
-		if toolName == "" {
-			toolName = ev.ToolName // 兜底用事件携带的
-		}
-		em.Card(emitv2.CardTool, toolCardID).Set(map[string]any{
-			"phase":       emitv2.PhasePlanningArgs,
-			"phase_hint":  t.pickCopy(s, toolName, emitv2.PhasePlanningArgs, ev.Bytes, nil),
-			"phase_bytes": ev.Bytes,
-		})
-
-	case types.EngineEventToolQueued:
+		// 非 planning 路径（罕见）— card 已开，正常 Set。
 		toolCardID, ok := s.tools[ev.ToolUseID]
 		if !ok {
 			return
@@ -379,23 +365,43 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			toolName = ev.ToolName
 		}
 		em.Card(emitv2.CardTool, toolCardID).Set(map[string]any{
-			"phase":      emitv2.PhaseQueued,
-			"phase_hint": t.pickCopy(s, toolName, emitv2.PhaseQueued, 0, nil),
+			"phase":       emitv2.PhasePlanningArgs,
+			"phase_hint":  t.pickCopy(s, toolName, emitv2.PhasePlanningArgs, ev.Bytes, nil),
+			"phase_bytes": ev.Bytes,
 		})
 
+	case types.EngineEventToolQueued:
+		// buffer-then-replay 的文字事件已经发出，现在安全地开工具卡。
+		// AskUserQuestion 走 prompt.user 路径，不需要工具卡。
+		toolName := s.toolNames[ev.ToolUseID]
+		if toolName == "" {
+			toolName = ev.ToolName
+		}
+		if toolName == askUserQuestionToolName {
+			return
+		}
+		toolCardID, ok := s.tools[ev.ToolUseID]
+		if !ok {
+			// ToolPlanning 未触发（极少见）— 直接新建 ID
+			toolCardID = emitv2.NewCardID(emitv2.CardTool)
+			s.tools[ev.ToolUseID] = toolCardID
+			s.toolNames[ev.ToolUseID] = toolName
+		}
+		opts := []emitv2.EmitOpt{
+			emitv2.WithParent(parentForTool(s)),
+			emitv2.WithoutLifecycle(),
+		}
+		em.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
+			Name:      toolName,
+			Target:    "server",
+			Phase:     emitv2.PhaseQueued,
+			PhaseHint: t.pickCopy(s, toolName, emitv2.PhaseQueued, 0, nil),
+		}, opts...)
+
 	case types.EngineEventToolPlanningRetract:
-		// callLLM.onRetry 触发 — 关闭所有 planning 早开且尚未由 ToolStart
-		// 转正的 tool card。已转正（toolsFromPlanning 已 delete）的不动。
+		// callLLM.onRetry 触发。planning 阶段的工具卡从未 card.add 到客户端
+		// （推迟到 ToolQueued），只需清理内部跟踪状态。
 		for id := range s.toolsFromPlanning {
-			cardID, ok := s.tools[id]
-			if !ok {
-				continue
-			}
-			em.Card(emitv2.CardTool, cardID).Close(emitv2.StatusCancelled,
-				emitv2.WithError(&emitv2.ErrorInfo{
-					Type:    emitv2.ErrorTypeUserAborted,
-					Message: "model retry — superseded",
-				}))
 			delete(s.tools, id)
 			delete(s.toolNames, id)
 		}
@@ -421,24 +427,21 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		t.openTurnIfNeeded(s, em)
 		input := parseJSONObject(ev.ToolInput)
 		if existing, ok := s.tools[ev.ToolUseID]; ok {
-			// Planning 早开过 — 升级而非重开
+			// ToolQueued 已开卡 — 升级到 executing 而非重开
 			em.Card(emitv2.CardTool, existing).Set(map[string]any{
 				"phase":      emitv2.PhaseExecuting,
 				"phase_hint": t.pickCopy(s, ev.ToolName, emitv2.PhaseExecuting, 0, nil),
 				"input":      input,
 			})
-			// 摘除 planning 标记 — 这卡已转正，retract 不应再关它
+			// 摘除 planning 标记 — 这卡已转正，retract 不应再操作它
 			delete(s.toolsFromPlanning, ev.ToolUseID)
-			// 缓存 toolName（如果之前 Planning 没设过的话）
 			if _, ok := s.toolNames[ev.ToolUseID]; !ok {
 				s.toolNames[ev.ToolUseID] = ev.ToolName
 			}
-			// 注：当前 WithoutLifecycle 设置之后无法"反取消" — 这是 emit/v2 已知
-			// 的一个 limitation。Phase 4 接受这种 trade-off；后续 emit/v2 加 API
-			// 可以再补。
+			// WithoutLifecycle 设置后无法反取消（emit/v2 已知 limitation）。
 			return
 		}
-		// Fresh open 路径（无 planning 早开 — 客户端工具 / 异步 / planning 出错的兜底）
+		// Fresh open 路径（ToolPlanning / ToolQueued 未触发的兜底）
 		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
 		s.tools[ev.ToolUseID] = toolCardID
 		s.toolNames[ev.ToolUseID] = ev.ToolName
@@ -534,6 +537,10 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			}
 			em.PromptUserWithID(reqID, "question", payload)
 			s.askQuestion[reqID] = ev.ToolUseID
+			// 清理 planning 阶段留下的内部跟踪记录（card 从未发到客户端）。
+			delete(s.tools, ev.ToolUseID)
+			delete(s.toolNames, ev.ToolUseID)
+			delete(s.toolsFromPlanning, ev.ToolUseID)
 			t.suspendForPrompt(s, em, ev.AgentID, reqID)
 			return
 		}
