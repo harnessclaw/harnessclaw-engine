@@ -12,14 +12,14 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// DeleteTool implements the TeamDelete tool for removing teams.
+// DeleteTool implements the team_delete tool for removing teams.
 type DeleteTool struct {
 	tool.BaseTool
 	teamMgr *agent.TeamManager
 	logger  *zap.Logger
 }
 
-// NewDelete creates a TeamDelete tool.
+// NewDelete creates a team_delete tool.
 func NewDelete(teamMgr *agent.TeamManager, logger *zap.Logger) *DeleteTool {
 	return &DeleteTool{
 		teamMgr: teamMgr,
@@ -27,7 +27,7 @@ func NewDelete(teamMgr *agent.TeamManager, logger *zap.Logger) *DeleteTool {
 	}
 }
 
-func (t *DeleteTool) Name() string            { return "TeamDelete" }
+func (t *DeleteTool) Name() string            { return "team_delete" }
 func (t *DeleteTool) Description() string      { return "删除一个 team 及其任务资源。" }
 func (t *DeleteTool) IsReadOnly() bool         { return false }
 func (t *DeleteTool) IsConcurrencySafe() bool  { return true }

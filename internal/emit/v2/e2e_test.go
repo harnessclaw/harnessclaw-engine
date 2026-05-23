@@ -201,7 +201,7 @@ func TestE2E_SubAgentExecution(t *testing.T) {
 	// Sub-agent's inner tool call — directly emits as top-level Card,
 	// envelope.agent_id is "sub_e5", parent_card_id = "sub_e5".
 	sub.Card(CardTool, "toolu_sub_1").Add(ToolPayload{
-		Name:   "Grep",
+		Name:   "grep",
 		Target: "server",
 	})
 	sub.Card(CardTool, "toolu_sub_1").Tick(TickHeartbeat, HeartbeatPayload{
@@ -284,13 +284,13 @@ func TestE2E_PlanModeWithReview(t *testing.T) {
 	em.Card(CardMessage, "msg_1").Close(StatusOK)
 
 	em.Card(CardTool, "tu_main_1").Add(
-		ToolPayload{Name: "Specialists", Intent: "派 Specialists"},
+		ToolPayload{Name: "scheduler", Intent: "派 Scheduler"},
 		WithParent("msg_1"),
 	)
 
 	// L2 sub-agent
 	l2 := em.Sub("sub_y", RoleWorker, "run_l2")
-	l2.Card(CardAgent, "sub_y").Add(AgentPayload{Name: "specialists"})
+	l2.Card(CardAgent, "sub_y").Add(AgentPayload{Name: "scheduler"})
 
 	// Plan review prompt
 	reqID := em.PromptUser("plan_review", PlanReviewPromptPayload{
@@ -414,7 +414,7 @@ func TestE2E_LongTaskHeartbeats(t *testing.T) {
 	em, rec, _ := e2eEmitter(t)
 
 	em.Card(CardTool, "toolu_1").Add(ToolPayload{
-		Name: "WebFetch", Intent: "抓取 vLLM 论文",
+		Name: "web_fetch", Intent: "抓取 vLLM 论文",
 	})
 	em.Card(CardTool, "toolu_1").Tick(TickHeartbeat, HeartbeatPayload{
 		Stage: "connecting", UptimeMs: 5000,

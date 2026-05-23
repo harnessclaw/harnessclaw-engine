@@ -18,14 +18,14 @@ type Tier string
 
 const (
 	// TierCoordinator can dispatch other agents and integrate their results.
-	// Specialists (the L2 entry point) and Plan / Explore / general-purpose
+	// scheduler (the L2 entry point) and Plan / Explore / general-purpose
 	// fall into this tier. The runSubAgentLoop driver serves coordinators.
 	TierCoordinator Tier = "coordinator"
 
 	// TierSubAgent is a leaf executor — single responsibility, runs a pure
 	// ReAct loop, MUST submit a structured result via SubmitTaskResult, and
-	// is forbidden from calling Task / Specialists / Orchestrate (no further
-	// dispatch). Workers like writer / researcher / analyst belong here.
+	// is forbidden from calling the dispatch tools (task / scheduler) — no
+	// further dispatch. freelancer is the only TierSubAgent today.
 	TierSubAgent Tier = "sub_agent"
 )
 
@@ -174,9 +174,9 @@ type SubAgentDef struct {
 // Rules:
 //   - Name is required.
 //   - TierSubAgent requires OutputSchema (the structured result contract).
-//   - TierSubAgent forbids dispatch tools in AllowedTools (no Task, no
-//     Specialists, no Orchestrate). The runtime driver also strips them
-//     defensively, but rejecting at registration catches misconfig early.
+//   - TierSubAgent forbids dispatch tools in AllowedTools (no task, no
+//     scheduler). The runtime driver also strips them defensively, but
+//     rejecting at registration catches misconfig early.
 func (d *AgentDefinition) Validate() error {
 	if d.Name == "" {
 		return fmt.Errorf("agent definition: Name is required")
@@ -186,7 +186,7 @@ func (d *AgentDefinition) Validate() error {
 			return fmt.Errorf("agent %q: TierSubAgent requires OutputSchema", d.Name)
 		}
 		for _, t := range d.AllowedTools {
-			if t == "Task" || t == "Specialists" || t == "Orchestrate" {
+			if t == "task" || t == "scheduler" {
 				return fmt.Errorf("agent %q: TierSubAgent cannot dispatch (tool %q forbidden)", d.Name, t)
 			}
 		}
@@ -226,7 +226,7 @@ func (d *AgentDefinition) MaybeAugmentForSubAgent() []string {
 		}
 		return d.AllowedTools
 	}
-	required := []string{"SubmitTaskResult", "EscalateToPlanner"}
+	required := []string{"submit_task_result", "escalate_to_planner"}
 	out := make([]string, 0, len(d.AllowedTools)+len(required))
 	out = append(out, d.AllowedTools...)
 	seen := make(map[string]bool, len(out))
@@ -407,28 +407,28 @@ func (r *AgentDefinitionRegistry) ListForPlanner() []PlannerListing {
 //     each gets a hand-crafted OutputSchema / Limitations / Skills /
 //     CostTier, it flips. Workers still on TierCoordinator (the default)
 //     run the legacy runSubAgentLoop until promoted.
-//   - System agents (specialists / general-purpose / Plan / Explore) are
+//   - System agents (scheduler / general-purpose / Plan / Explore) are
 //     coordinators by design — they may dispatch and integrate.
 func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 	// --- 系统级 agent（不在用户可见的搭档表中） ---
 	r.MustRegister(&AgentDefinition{
-		Name:        "specialists",
-		DisplayName: "Specialists",
+		Name:        "scheduler",
+		DisplayName: "scheduler",
 		Description: "L2 调度统筹者：拆解任务、派 L3 sub-agent、整合产出、检查质量",
 		AgentType:   tool.AgentTypeSync,
-		Profile:     "specialists",
-		// Specialists needs an explicit tool whitelist so it can use the
-		// Task tool to dispatch L3 sub-agents. The tool filter pipeline
+		Profile:     "scheduler",
+		// scheduler needs an explicit tool whitelist so it can use the
+		// task tool to dispatch L3 sub-agents. The tool filter pipeline
 		// in subagent.go treats AllowedTools as authoritative — it
 		// bypasses the AgentType blacklist (which would otherwise block
-		// Task for sync sub-agents).
+		// task for sync sub-agents).
 		//
 		// PlanUpdate / Promote are listed explicitly because the whitelist
 		// semantics drop EVERYTHING not named here. PlanUpdate is the L2's
 		// sole entry point for mutating plan.json (create/done/wipe); Promote
 		// is the sole Deliverable source. Without these two L2 cannot drive
 		// the local-files-as-truth state machine.
-		AllowedTools: []string{"Task", "WebSearch", "TavilySearch", "PlanUpdate", "Promote", "Read", "Edit", "Write", "Glob", "SearchSkill", "Skill"},
+		AllowedTools: []string{"task", "web_search", "tavily_search", "plan_update", "promote", "read", "edit", "write", "glob", "search_skill", "skill"},
 	})
 	r.MustRegister(&AgentDefinition{
 		Name:        "general-purpose",
@@ -471,23 +471,23 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 			// The earlier "FileRead" etc. strings silently failed to match
 			// any registered tool, so freelancer was effectively running
 			// Bash-only for file ops. Fixed to the actual registered names.
-			"Read", "Edit", "Write", "Glob", "Bash",
+			"read", "edit", "write", "glob", "bash",
 			// Web + artifact
-			"WebFetch", "WebSearch", "TavilySearch",
-			"MetaWrite",
+			"web_fetch", "web_search", "tavily_search",
+			"meta_write",
 			// Skill self-management — the four tools introduced by this design
-			"SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills",
+			"search_skill", "load_skill", "unload_skill", "list_loaded_skills",
 			// Terminal tools (also auto-augmented by MaybeAugmentForSubAgent;
 			// listed here explicitly for legibility)
-			"SubmitTaskResult", "EscalateToPlanner",
+			"submit_task_result", "escalate_to_planner",
 		},
 		// InputSchema validates the structured cfg.Inputs only. The actual
-		// task description flows through Task tool's `prompt` → cfg.Prompt
-		// (NOT cfg.Inputs), so we don't list/require `task` here — doing so
-		// would fail validation whenever cfg.Inputs is non-empty (e.g. when
-		// Specialists includes candidate_skills) since the task text never
-		// lands in cfg.Inputs. The only thing this schema needs to enforce
-		// is the shape of candidate_skills.
+		// task description flows through the task tool's `prompt` →
+		// cfg.Prompt (NOT cfg.Inputs), so we don't list/require `task`
+		// here — doing so would fail validation whenever cfg.Inputs is
+		// non-empty (e.g. when scheduler includes candidate_skills) since
+		// the task text never lands in cfg.Inputs. The only thing this
+		// schema needs to enforce is the shape of candidate_skills.
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

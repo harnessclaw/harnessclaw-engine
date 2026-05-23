@@ -3,7 +3,7 @@ package websocket
 // translator_orchestration_tool_test.go — regression guard for the
 // WithoutLifecycle() opt-out path.
 //
-// Background: EngineEventToolStart with ToolName="Task" or "Specialists"
+// Background: EngineEventToolStart with ToolName="task" or "scheduler"
 // calls isOrchestrationTool() and appends emitv2.WithoutLifecycle() to
 // the emit opts. Builder.Add() then calls lifecycle.Open(..., timeout=0,
 // ...)  instead of the normal 120 s CardTool timeout. The sweep loop
@@ -66,7 +66,7 @@ func makeTrackedEmitterWithClock(t *testing.T, sessionID string, clk *testClock)
 const cardToolOrphanTimeout = 120 * time.Second
 
 // TestTranslator_TaskToolCardIsLifecycleExempt verifies that a tool card
-// opened for ToolName="Task" does NOT receive a synthetic orphan_timeout
+// opened for ToolName="task" does NOT receive a synthetic orphan_timeout
 // close even after the 120 s CardTool watchdog deadline has elapsed.
 // The fix: translator appends WithoutLifecycle() → Builder.Add registers
 // timeout=0 (chain-only) → sweep() skips it.
@@ -84,7 +84,7 @@ func TestTranslator_TaskToolCardIsLifecycleExempt(t *testing.T) {
 	// Fire the orchestration tool event.
 	tr.Translate(em, "sess_task", &types.EngineEvent{
 		Type:      types.EngineEventToolStart,
-		ToolName:  "Task",
+		ToolName:  "task",
 		ToolUseID: "toolu_task_1",
 		ToolInput: `{"goal":"write a report"}`,
 	})
@@ -124,9 +124,9 @@ func TestTranslator_TaskToolCardIsLifecycleExempt(t *testing.T) {
 	// NOT paused (but the point here is absence of close, which we checked).
 }
 
-// TestTranslator_SpecialistsToolCardIsLifecycleExempt is the same guard
-// for ToolName="Specialists" — the other name in isOrchestrationTool().
-func TestTranslator_SpecialistsToolCardIsLifecycleExempt(t *testing.T) {
+// TestTranslator_SchedulerToolCardIsLifecycleExempt is the same guard
+// for ToolName="scheduler" — the other name in isOrchestrationTool().
+func TestTranslator_SchedulerToolCardIsLifecycleExempt(t *testing.T) {
 	clk := newTestClock()
 	em, rec, tk := makeTrackedEmitterWithClock(t, "sess_spec", clk)
 	tr := NewTranslator(nil)
@@ -137,7 +137,7 @@ func TestTranslator_SpecialistsToolCardIsLifecycleExempt(t *testing.T) {
 	})
 	tr.Translate(em, "sess_spec", &types.EngineEvent{
 		Type:      types.EngineEventToolStart,
-		ToolName:  "Specialists",
+		ToolName:  "scheduler",
 		ToolUseID: "toolu_spec_1",
 		ToolInput: `{"task":"coordinate"}`,
 	})
@@ -159,7 +159,7 @@ func TestTranslator_SpecialistsToolCardIsLifecycleExempt(t *testing.T) {
 			continue
 		}
 		if pl.Error != nil && pl.Error.Type == emitv2.ErrorTypeOrphanTimeout {
-			t.Errorf("Specialists tool card received orphan_timeout close — WithoutLifecycle() opt-out is broken")
+			t.Errorf("scheduler tool card received orphan_timeout close — WithoutLifecycle() opt-out is broken")
 		}
 	}
 }
@@ -182,7 +182,7 @@ func TestTranslator_TaskToolCardCallPathIsLifecycleExempt(t *testing.T) {
 	// Fire the orchestration tool via the ToolCall path (not ToolStart).
 	tr.Translate(em, "sess_task_call", &types.EngineEvent{
 		Type:      types.EngineEventToolCall,
-		ToolName:  "Task",
+		ToolName:  "task",
 		ToolUseID: "toolu_task_call_1",
 		ToolInput: `{"goal":"write a report"}`,
 	})
@@ -212,7 +212,7 @@ func TestTranslator_TaskToolCardCallPathIsLifecycleExempt(t *testing.T) {
 }
 
 // TestTranslator_TaskToolCardViaSubAgentEventIsLifecycleExempt covers the
-// nested-dispatch path: Specialists (itself a sub-agent) calls Task. Its
+// nested-dispatch path: scheduler (itself a sub-agent) calls Task. Its
 // tool_start arrives wrapped in EngineEventSubAgentEvent, which historically
 // did NOT route through isOrchestrationTool() — so the Task card got the
 // default 120 s CardTool timeout and was killed mid-run while plan-coord
@@ -230,18 +230,18 @@ func TestTranslator_TaskToolCardViaSubAgentEventIsLifecycleExempt(t *testing.T) 
 	})
 	tr.Translate(em, "sess_subevt", &types.EngineEvent{
 		Type:      types.EngineEventSubAgentStart,
-		AgentID:   "agent_specialists",
-		AgentName: "specialists",
+		AgentID:   "agent_scheduler",
+		AgentName: "scheduler",
 		AgentType: "sync",
 	})
 
-	// Specialists (sub-agent) dispatches Task — the event arrives wrapped.
+	// scheduler (sub-agent) dispatches Task — the event arrives wrapped.
 	tr.Translate(em, "sess_subevt", &types.EngineEvent{
 		Type:    types.EngineEventSubAgentEvent,
-		AgentID: "agent_specialists",
+		AgentID: "agent_scheduler",
 		SubAgentEvent: &types.SubAgentEventData{
 			EventType: "tool_start",
-			ToolName:  "Task",
+			ToolName:  "task",
 			ToolUseID: "toolu_nested_task",
 			ToolInput: `{"subagent_type":"general-purpose","prompt":"..."}`,
 		},
@@ -283,7 +283,7 @@ func TestTranslator_RegularToolCardOrphansAfterTimeout(t *testing.T) {
 	})
 	tr.Translate(em, "sess_ctrl", &types.EngineEvent{
 		Type:      types.EngineEventToolStart,
-		ToolName:  "Bash",
+		ToolName:  "bash",
 		ToolUseID: "toolu_ctrl_1",
 		ToolInput: `{"command":"sleep 9999"}`,
 	})

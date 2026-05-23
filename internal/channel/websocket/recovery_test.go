@@ -123,12 +123,12 @@ func TestRecovery_LiveAnswerStillWorks(t *testing.T) {
 	url, ch, _, rec := startRecoveryChannel(t, dbPath, handler)
 	ws := dialAndCreate(t, url, "sess_live")
 
-	// Engine emits AskUserQuestion → translator persists wait + emits prompt.
+	// Engine emits ask_user_question → translator persists wait + emits prompt.
 	go func() {
 		time.Sleep(30 * time.Millisecond)
 		_ = ch.SendEvent(context.Background(), "sess_live", &types.EngineEvent{
 			Type:      types.EngineEventToolCall,
-			ToolName:  "AskUserQuestion",
+			ToolName:  "ask_user_question",
 			ToolUseID: "toolu_live",
 			ToolInput: `{"question":"go?","options":[{"label":"yes"},{"label":"no"}]}`,
 		})
@@ -193,7 +193,7 @@ func TestRecovery_ServerRestartReplay(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 		_ = chA.SendEvent(context.Background(), "sess_recover", &types.EngineEvent{
 			Type:      types.EngineEventToolCall,
-			ToolName:  "AskUserQuestion",
+			ToolName:  "ask_user_question",
 			ToolUseID: "toolu_recover",
 			ToolInput: `{"question":"continue?","options":[{"label":"yes"},{"label":"no"}]}`,
 		})
@@ -368,7 +368,7 @@ func TestRecovery_PersistFailureSuppressesEmit(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 		_ = ch.SendEvent(context.Background(), "sess_fail", &types.EngineEvent{
 			Type:      types.EngineEventToolCall,
-			ToolName:  "AskUserQuestion",
+			ToolName:  "ask_user_question",
 			ToolUseID: "toolu_fail",
 			ToolInput: `{"question":"?"}`,
 		})

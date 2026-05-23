@@ -1,4 +1,4 @@
-// Package promotetool implements the Promote tool — L2's "this is a final
+// Package promotetool implements the promote tool — L2's "this is a final
 // deliverable, surface it to the user" action. Uses cp (not mv): source is
 // frozen by the same call, so the two copies never diverge.
 package promotetool
@@ -17,7 +17,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-const ToolName = "Promote"
+const ToolName = "promote"
 
 type PromoteTool struct {
 	tool.BaseTool
@@ -92,7 +92,7 @@ func (t *PromoteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.
 		return errResult(fmt.Sprintf("task %s not found in plan", in.TaskID)), nil
 	}
 	if task.Frozen {
-		return errResult(fmt.Sprintf("task %s already promoted (frozen); Promote is single-shot", in.TaskID)), nil
+		return errResult(fmt.Sprintf("task %s already promoted (frozen); promote is single-shot", in.TaskID)), nil
 	}
 	seen := map[int]bool{}
 	seenTarget := map[string]bool{}

@@ -144,7 +144,7 @@ func TestJudge_ReviewGoal_HappyPath(t *testing.T) {
 }
 
 func TestJudge_ReviewGoal_PassesWhenAllStepsSucceedNoArtifacts(t *testing.T) {
-	// File-based tasks write to disk without calling SubmitTaskResult — they
+	// File-based tasks write to disk without calling submit_task_result — they
 	// produce no artifact-store entries. ReviewGoal must not penalise this:
 	// dispatchStep already marks a step failed when ExpectedOutputs declared
 	// but not met, so the zero-artifact check here was a false negative.

@@ -26,26 +26,26 @@ const (
 // reflection. This protects against silent miscategorization when tool
 // names overlap (e.g. "BashOutput" is read-class, not exec-class).
 var toolCategoryMap = map[string]ToolCategory{
-	"Write":         CategoryWrite,
-	"Edit":          CategoryWrite,
+	"write":         CategoryWrite,
+	"edit":          CategoryWrite,
 	"MultiEdit":     CategoryWrite,
 	"ArtifactWrite": CategoryWrite,
 
-	"Read":       CategoryRead,
-	"Grep":       CategoryRead,
-	"Glob":       CategoryRead,
+	"read":       CategoryRead,
+	"grep":       CategoryRead,
+	"glob":       CategoryRead,
 	"LS":         CategoryRead,
 	"BashOutput": CategoryRead,
 
-	"Bash": CategoryExec,
+	"bash": CategoryExec,
 
-	"WebSearch":    CategoryNetwork,
-	"WebFetch":     CategoryNetwork,
-	"TavilySearch": CategoryNetwork,
+	"web_search":    CategoryNetwork,
+	"web_fetch":     CategoryNetwork,
+	"tavily_search": CategoryNetwork,
 
-	"Task":        CategoryDispatch,
-	"Specialists": CategoryDispatch,
-	"SkillTool":   CategoryDispatch,
+	"task":      CategoryDispatch,
+	"scheduler": CategoryDispatch,
+	"SkillTool": CategoryDispatch,
 }
 
 // Categorize returns the registered category for a tool name. Unknown

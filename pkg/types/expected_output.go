@@ -3,7 +3,7 @@ package types
 import "encoding/json"
 
 // ExpectedOutput is one entry in a task's deliverable contract. L2
-// (Specialists, or any orchestrator) declares an []ExpectedOutput when
+// (scheduler, or any orchestrator) declares an []ExpectedOutput when
 // dispatching to L3 so the framework can:
 //
 //	(1) inject the contract into L3's task prompt as a `<expected-outputs>`

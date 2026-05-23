@@ -24,7 +24,7 @@ import (
 type EmitFunc func(ctx context.Context, ev types.EngineEvent) error
 
 // SearchGapDetector emits at most one CardSystem notice per session
-// when a TierSubAgent spawns with WebSearch or TavilySearch in its
+// when a TierSubAgent spawns with web_search or tavily_search in its
 // declared AllowedTools but neither tool is present in the final tool
 // pool (typically because both are disabled in yaml). Scope is strictly
 // the search backend pair — no general capability-group abstraction.
@@ -36,7 +36,7 @@ type SearchGapDetector struct {
 // searchToolNames are the registered tool names of the two interchangeable
 // search backends. Keep in sync with cmd/server/main.go's builtInTools
 // table — TestSearchGapDetector_NamesMatchToolFactory (Task 5b) guards this.
-var searchToolNames = []string{"WebSearch", "TavilySearch"}
+var searchToolNames = []string{"web_search", "tavily_search"}
 
 // NewSearchGapDetector returns a fresh detector. log must be non-nil.
 func NewSearchGapDetector(log *zap.Logger) *SearchGapDetector {

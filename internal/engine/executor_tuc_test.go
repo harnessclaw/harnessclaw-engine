@@ -17,7 +17,7 @@ import (
 // populated ToolUseContext into the tool's execution context when the
 // parent ctx carries a SessionID.
 //
-// Before the fix, tool.GetToolUseContext always returned nil, so Specialists
+// Before the fix, tool.GetToolUseContext always returned nil, so scheduler
 // could never read ParentSessionID and sub-agent token metrics were lost.
 func TestExecutor_InjectsToolUseContext(t *testing.T) {
 	// --- setup ---

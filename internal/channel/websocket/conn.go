@@ -437,7 +437,7 @@ func (c *Conn) handleToolResult(ctx context.Context, raw []byte) {
 //
 // Routing precedence (one prompt.user_response can only be one of these):
 //
-//  1. AskUserQuestion (translator-tracked) → bridge to tool.result so the
+//  1. ask_user_question (translator-tracked) → bridge to tool.result so the
 //     engine's askUserQuestion tool unblocks. The user's selected
 //     options / custom text become the tool's Output string.
 //  2. plan_review (payload has updated_steps or reason) → PlanResponse.
@@ -460,7 +460,7 @@ func (c *Conn) handlePromptResponse(ctx context.Context, raw []byte) {
 		UserID:      c.userID,
 	}
 
-	// Path 1: AskUserQuestion bridge.
+	// Path 1: ask_user_question bridge.
 	if toolUseID := c.ch.translator.ResolveAskQuestion(c.sessionID, f.RequestID); toolUseID != "" {
 		status := "success"
 		if !approved {

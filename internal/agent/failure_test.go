@@ -54,10 +54,10 @@ func TestBuildFailureContent_SurfacesProviderError(t *testing.T) {
 			Turn:    1,
 		},
 	}
-	got := BuildFailureContent(res, "Specialists")
+	got := BuildFailureContent(res, "scheduler")
 
 	for _, must := range []string{
-		"Specialists",                       // agent label
+		"scheduler",                       // agent label
 		"reason: model_error",               // structured field
 		"502",                                // the actual provider error code
 		"openai",                             // who failed

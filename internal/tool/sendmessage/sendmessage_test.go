@@ -197,8 +197,8 @@ func TestSendMessage_ShutdownResponseType(t *testing.T) {
 func TestSendMessage_Name(t *testing.T) {
 	broker := agent.NewMessageBroker()
 	tool := New(broker, "test", "", zap.NewNop())
-	if tool.Name() != "SendMessage" {
-		t.Errorf("expected name 'SendMessage', got %q", tool.Name())
+	if tool.Name() != "send_message" {
+		t.Errorf("expected name 'send_message', got %q", tool.Name())
 	}
 }
 

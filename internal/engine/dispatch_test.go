@@ -17,7 +17,7 @@ import (
 // executeClientTools never calls Execute on a client-routed tool.
 type fakeClientRoutedTool struct{}
 
-func (fakeClientRoutedTool) Name() string                              { return "AskUserQuestion" }
+func (fakeClientRoutedTool) Name() string                              { return "ask_user_question" }
 func (fakeClientRoutedTool) Description() string                       { return "" }
 func (fakeClientRoutedTool) IsReadOnly() bool                          { return false }
 func (fakeClientRoutedTool) IsConcurrencySafe() bool                   { return true }
@@ -33,7 +33,7 @@ func (fakeClientRoutedTool) IsClientRouted() bool { return true }
 // delegation branch keeps its timeout.
 type fakeDelegatedTool struct{}
 
-func (fakeDelegatedTool) Name() string                          { return "Bash" }
+func (fakeDelegatedTool) Name() string                          { return "bash" }
 func (fakeDelegatedTool) Description() string                   { return "" }
 func (fakeDelegatedTool) IsReadOnly() bool                      { return false }
 func (fakeDelegatedTool) IsConcurrencySafe() bool               { return false }
@@ -79,7 +79,7 @@ func TestExecuteClientTools_HumanInteractiveWaitsPastTimeout(t *testing.T) {
 	defer close(stop)
 
 	calls := []types.ToolCall{
-		{ID: "toolu_user_1", Name: "AskUserQuestion", Input: `{"question":"x"}`},
+		{ID: "toolu_user_1", Name: "ask_user_question", Input: `{"question":"x"}`},
 	}
 
 	var got []types.ToolResult
@@ -130,7 +130,7 @@ func TestExecuteClientTools_DelegatedToolStillTimesOut(t *testing.T) {
 	defer close(stop)
 
 	calls := []types.ToolCall{
-		{ID: "toolu_bash_1", Name: "Bash", Input: `{"command":"sleep 99"}`},
+		{ID: "toolu_bash_1", Name: "bash", Input: `{"command":"sleep 99"}`},
 	}
 
 	start := time.Now()
@@ -158,7 +158,7 @@ func TestExecuteClientTools_HumanInteractiveCancelledByContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := []types.ToolCall{
-		{ID: "toolu_user_2", Name: "AskUserQuestion", Input: `{"question":"x"}`},
+		{ID: "toolu_user_2", Name: "ask_user_question", Input: `{"question":"x"}`},
 	}
 
 	var got []types.ToolResult

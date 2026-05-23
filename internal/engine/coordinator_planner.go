@@ -212,7 +212,7 @@ func (p *LLMPlanner) Plan(ctx context.Context, in PlannerInput) (*PlannerOutput,
 // When p.retryer is set (production path), the LLM call goes through
 // callLLM — same code path L1 emma and L3 sub-agents use — so the
 // planner inherits transport-level retry + backoff, heartbeats keeping
-// the L2 specialists card alive, and "重试中" wire events. When nil
+// the L2 scheduler card alive, and "重试中" wire events. When nil
 // (tests / minimal setups), the legacy direct-stream path is used.
 func (p *LLMPlanner) callOnce(ctx context.Context, in PlannerInput, feedback string) (*Plan, string, error) {
 	req := &provider.ChatRequest{
@@ -236,7 +236,7 @@ func (p *LLMPlanner) callOnce(ctx context.Context, in PlannerInput, feedback str
 // callOnceWithRetry routes through callLLM to get the full
 // retry/heartbeat/visibility stack. AgentID and out are pulled from ctx
 // (set by PlanCoordinator before invoking the planner) so heartbeats
-// land on the L2 specialists agent card rather than nowhere.
+// land on the L2 scheduler agent card rather than nowhere.
 func (p *LLMPlanner) callOnceWithRetry(ctx context.Context, req *provider.ChatRequest) (*Plan, string, error) {
 	agentID, out := retryRoutingFromCtx(ctx)
 	logger := p.logger

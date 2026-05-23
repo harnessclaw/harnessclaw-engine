@@ -9,7 +9,7 @@ import (
 
 // IsTerminalError reports whether the SpawnResult's terminal reason
 // represents a hard failure that the calling tool should surface as
-// IsError=true. Called by both the Task and Specialists tools so the
+// IsError=true. Called by both the task and scheduler tools so the
 // "what counts as failure" rule lives in one place — divergence here
 // would mean emma sees inconsistent error semantics depending on which
 // dispatch tool the LLM picked.

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// orchestrateInput is the parsed payload for the Orchestrate tool.
+// orchestrateInput is the parsed payload for the orchestrate tool.
 type orchestrateInput struct {
 	// Intent is the natural-language description of the multi-step task.
 	// emma writes one line; the Planner expands it into a plan.
@@ -23,7 +23,7 @@ type orchestrateInput struct {
 func parseInput(raw json.RawMessage) (*orchestrateInput, error) {
 	var in orchestrateInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return nil, fmt.Errorf("invalid Orchestrate input: %w", err)
+		return nil, fmt.Errorf("invalid orchestrate input: %w", err)
 	}
 	return &in, nil
 }

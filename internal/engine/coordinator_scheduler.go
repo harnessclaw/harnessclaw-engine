@@ -308,7 +308,7 @@ func (s *Scheduler) askStepDecisionOnFailure(
 	}
 
 	// Strip inherited ctx deadlines so the user gets unbounded time —
-	// same wait policy as plan_review / AskUserQuestion. Cancellation
+	// same wait policy as plan_review / ask_user_question. Cancellation
 	// via session abort still propagates through SubmitStepDecision /
 	// engine shutdown, which closes the response channel.
 	waitCtx := context.WithoutCancel(ctx)
@@ -371,7 +371,7 @@ func summariseFailures(r *StepResult) string {
 //     - connection refused / reset / network unreachable
 //
 //   non-transient (retry wastes resources):
-//     - contract violations (sub-agent failed SubmitTaskResult schema)
+//     - contract violations (sub-agent failed submit_task_result schema)
 //     - dependency failures (upstream step skipped)
 //     - resolution failures (no L3 matches the step)
 //     - invalid input (4xx-class)
@@ -595,7 +595,7 @@ func expectedRolesOf(outs []types.ExpectedOutput) []string {
 	return roles
 }
 
-// failureSample is the same shape as the helper in tools/specialists,
+// failureSample is the same shape as the helper in tool/scheduler,
 // duplicated locally so the scheduler doesn't import a tool package
 // (would create a cycle). Keeps the Warn line readable.
 func failureSample(failures []string, n int) []string {
@@ -921,7 +921,7 @@ func classifyStepErrorType(failures []string) emit.ErrorType {
 		return emit.ErrorTypeDependencyFail
 	case strings.Contains(combined, "contract"),
 		strings.Contains(combined, "expected outputs"),
-		strings.Contains(combined, "submittask"):
+		strings.Contains(combined, "submit_task"):
 		return emit.ErrorTypeInternal // contract_fail not in v1 enum; reuse Internal
 	case strings.Contains(combined, "invalid"),
 		strings.Contains(combined, "schema"):

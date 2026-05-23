@@ -13,7 +13,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-const ToolName = "UnloadSkill"
+const ToolName = "unload_skill"
 
 type UnloadSkillTool struct {
 	tool.BaseTool
@@ -80,7 +80,7 @@ func (t *UnloadSkillTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 			zap.String("reason", "non-freelancer caller"),
 		)
 		return &types.ToolResult{
-			Content: "UnloadSkill is only available to freelancer sub-agents",
+			Content: "unload_skill is only available to freelancer sub-agents",
 			IsError: true,
 		}, nil
 	}
@@ -138,7 +138,7 @@ const description = `把一个先前 Load 过的 skill 标记为卸载，释放�
 - skill body 仍在 message history 里（LLM API 不允许删历史），只是不再生效
 
 何时用：
-- 配额已满（3/3）且必须 LoadSkill 新 skill 时
+- 配额已满（3/3）且必须 load_skill 新 skill 时
 - candidate 中有 skill 显然不合用，想换个
 
 错误：

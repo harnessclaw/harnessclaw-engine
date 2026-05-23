@@ -10,7 +10,7 @@ import (
 // SpawnSync prepends to a freelancer's first user message. Returns "" when
 // the input is empty so callers don't have to nil-check.
 //
-// The format is identical to what LoadSkill injects via NewMessages later,
+// The format is identical to what load_skill injects via NewMessages later,
 // so the LLM sees a single uniform shape for "skill body in messages":
 //
 //   <loaded-skills>
@@ -34,9 +34,9 @@ func buildLoadedSkillsBlock(fulls []*skill.SkillFull) string {
 }
 
 // BuildSingleSkillBlock renders one <skill>...</skill> element. Exported
-// because LoadSkill (in another package) needs to emit a single skill
+// because load_skill (in another package) needs to emit a single skill
 // block for runtime hot-load NewMessages. Used by both Preload-time bulk
-// injection (above) and LoadSkill-time NewMessages — same shape, no skew
+// injection (above) and load_skill-time NewMessages — same shape, no skew
 // between paths.
 func BuildSingleSkillBlock(f *skill.SkillFull) string {
 	var sb strings.Builder

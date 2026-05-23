@@ -210,7 +210,7 @@ func TestTracker_HeartbeatResetsDeadline(t *testing.T) {
 		Lifecycle: tk, Now: clk.Now,
 	})
 
-	em.Card(CardTool, "tool_a").Add(ToolPayload{Name: "Bash"})
+	em.Card(CardTool, "tool_a").Add(ToolPayload{Name: "bash"})
 	// CardTool timeout is 120s. Advance to 90s (still alive), heartbeat
 	// via Tick, then advance another 90s — total 180s, but each window
 	// from the last Touch was only 90s, so it should still be alive.
@@ -248,7 +248,7 @@ func TestTracker_HeartbeatPropagatesToAncestors(t *testing.T) {
 	})
 
 	em.Card(CardAgent, "agent_a").Add(AgentPayload{Name: "worker"})
-	em.Card(CardTool, "tool_a").Add(ToolPayload{Name: "Bash"})
+	em.Card(CardTool, "tool_a").Add(ToolPayload{Name: "bash"})
 
 	// Heartbeat the tool every 90s for 15 minutes total. CardAgent's
 	// orphan timeout is 10 min, so without the chain heartbeat the
@@ -288,14 +288,14 @@ func TestTracker_HeartbeatPropagatesToAncestors(t *testing.T) {
 //
 //	turn      (10 min orphan)             ← root, must stay alive
 //	└── message      ← closes immediately when LLM finishes its text turn
-//	    └── tool (Specialists, WithoutLifecycle / chain-only)
+//	    └── tool (Scheduler, WithoutLifecycle / chain-only)
 //	        └── agent (worker)
 //	            └── step
 //	                └── agent (freelancer, heart-beating)
 //
 // Before the fix, Touch(freelancer) walked tracker.open and hit message
 // (already evicted by Close), broke out of the loop, and never touched
-// turn. After 10 min turn would orphan-timeout while Specialists was
+// turn. After 10 min turn would orphan-timeout while Scheduler was
 // still legitimately running underneath. The fix records the parent
 // link permanently so Touch can step over the gravestone.
 func TestTracker_HeartbeatSkipsClosedAncestor(t *testing.T) {
@@ -309,10 +309,10 @@ func TestTracker_HeartbeatSkipsClosedAncestor(t *testing.T) {
 
 	em.Card(CardTurn, "turn_a").Add(TurnPayload{})
 	em.Card(CardMessage, "msg_a").Add(MessagePayload{})
-	// Tool is chain-only (Specialists / Task wrap multi-minute sub-agent
+	// Tool is chain-only (Scheduler / Task wrap multi-minute sub-agent
 	// runs); registered with timeout=0 so it never expires on its own
 	// but Touch can still walk through it.
-	em.Card(CardTool, "tool_a").Add(ToolPayload{Name: "Specialists"},
+	em.Card(CardTool, "tool_a").Add(ToolPayload{Name: "scheduler"},
 		WithoutLifecycle())
 	em.Card(CardAgent, "agent_a").Add(AgentPayload{Name: "freelancer"})
 

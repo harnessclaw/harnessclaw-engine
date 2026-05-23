@@ -41,7 +41,7 @@ type PlanStep struct {
 
 	// SubagentType names the L3 sub-agent definition that will run this
 	// step. Matches AgentDefinition.Name (e.g. "writer" / "researcher").
-	// Optional — see struct doc above. Was named "Skill" before v1.16;
+	// Optional — see struct doc above. Was named "skill" before v1.16;
 	// renamed to remove ambiguity with AgentDefinition.Skills (which is
 	// the L3's capability tag list, a different concept).
 	SubagentType string

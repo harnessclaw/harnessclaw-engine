@@ -23,7 +23,7 @@ import (
 )
 
 // ToolName is the registered name of the SkillTool.
-const ToolName = "Skill"
+const ToolName = "skill"
 
 // SkillTool bridges the tool system to the command/skill system.
 type SkillTool struct {

@@ -15,7 +15,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-const toolName = "Read"
+const toolName = "read"
 
 // readInput is the JSON structure the LLM sends to invoke the tool.
 type readInput struct {

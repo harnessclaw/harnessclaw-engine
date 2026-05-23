@@ -19,7 +19,7 @@ func NewList(store task.Store, scopeID string) *ListTool {
 	return &ListTool{store: store, scopeID: scopeID}
 }
 
-func (t *ListTool) Name() string             { return "TaskList" }
+func (t *ListTool) Name() string             { return "task_list" }
 func (t *ListTool) Description() string       { return "列出所有任务。" }
 func (t *ListTool) IsReadOnly() bool          { return true }
 func (t *ListTool) IsConcurrencySafe() bool   { return true }

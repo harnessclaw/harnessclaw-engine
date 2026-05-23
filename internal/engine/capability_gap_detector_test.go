@@ -19,25 +19,25 @@ func TestShouldWarn(t *testing.T) {
 	}{
 		{
 			name:     "both search runtime missing",
-			declared: []string{"WebSearch", "TavilySearch", "ArtifactRead"},
+			declared: []string{"web_search", "tavily_search", "ArtifactRead"},
 			final:    []string{"ArtifactRead"},
 			want:     true,
 		},
 		{
 			name:     "websearch present in runtime",
-			declared: []string{"WebSearch", "TavilySearch"},
-			final:    []string{"WebSearch"},
+			declared: []string{"web_search", "tavily_search"},
+			final:    []string{"web_search"},
 			want:     false,
 		},
 		{
 			name:     "tavilysearch present in runtime",
-			declared: []string{"WebSearch", "TavilySearch"},
-			final:    []string{"TavilySearch"},
+			declared: []string{"web_search", "tavily_search"},
+			final:    []string{"tavily_search"},
 			want:     false,
 		},
 		{
 			name:     "def declares neither search tool",
-			declared: []string{"Bash", "FsRead"},
+			declared: []string{"bash", "FsRead"},
 			final:    []string{},
 			want:     false,
 		},
@@ -81,7 +81,7 @@ func TestSearchGapDetector_BasicEmit(t *testing.T) {
 	d := NewSearchGapDetector(zap.NewNop())
 	f := newFakeEmitter()
 	d.CheckAndEmit(context.Background(), "s1", "researcher",
-		[]string{"WebSearch", "TavilySearch"}, []string{"ArtifactRead"}, f.Emit)
+		[]string{"web_search", "tavily_search"}, []string{"ArtifactRead"}, f.Emit)
 	if f.Count() != 1 {
 		t.Fatalf("expected 1 emit, got %d", f.Count())
 	}
@@ -114,7 +114,7 @@ func TestSearchGapDetector_DedupePerSession(t *testing.T) {
 	f := newFakeEmitter()
 	for i := 0; i < 3; i++ {
 		d.CheckAndEmit(context.Background(), "s1", "researcher",
-			[]string{"WebSearch", "TavilySearch"}, nil, f.Emit)
+			[]string{"web_search", "tavily_search"}, nil, f.Emit)
 	}
 	if f.Count() != 1 {
 		t.Errorf("expected 1 emit (dedupe per session), got %d", f.Count())
@@ -125,9 +125,9 @@ func TestSearchGapDetector_DifferentSessions(t *testing.T) {
 	d := NewSearchGapDetector(zap.NewNop())
 	f := newFakeEmitter()
 	d.CheckAndEmit(context.Background(), "s1", "researcher",
-		[]string{"WebSearch", "TavilySearch"}, nil, f.Emit)
+		[]string{"web_search", "tavily_search"}, nil, f.Emit)
 	d.CheckAndEmit(context.Background(), "s2", "writer",
-		[]string{"WebSearch", "TavilySearch"}, nil, f.Emit)
+		[]string{"web_search", "tavily_search"}, nil, f.Emit)
 	if f.Count() != 2 {
 		t.Errorf("expected 2 emits across sessions, got %d", f.Count())
 	}
@@ -137,7 +137,7 @@ func TestSearchGapDetector_NoSessionID(t *testing.T) {
 	d := NewSearchGapDetector(zap.NewNop())
 	f := newFakeEmitter()
 	d.CheckAndEmit(context.Background(), "", "researcher",
-		[]string{"WebSearch", "TavilySearch"}, nil, f.Emit)
+		[]string{"web_search", "tavily_search"}, nil, f.Emit)
 	if f.Count() != 0 {
 		t.Errorf("expected 0 emits with empty session ID, got %d", f.Count())
 	}
@@ -147,10 +147,10 @@ func TestSearchGapDetector_ForgetReEmits(t *testing.T) {
 	d := NewSearchGapDetector(zap.NewNop())
 	f := newFakeEmitter()
 	d.CheckAndEmit(context.Background(), "s1", "researcher",
-		[]string{"WebSearch", "TavilySearch"}, nil, f.Emit)
+		[]string{"web_search", "tavily_search"}, nil, f.Emit)
 	d.Forget("s1")
 	d.CheckAndEmit(context.Background(), "s1", "researcher",
-		[]string{"WebSearch", "TavilySearch"}, nil, f.Emit)
+		[]string{"web_search", "tavily_search"}, nil, f.Emit)
 	if f.Count() != 2 {
 		t.Errorf("expected 2 emits after Forget, got %d", f.Count())
 	}
@@ -160,7 +160,7 @@ func TestSearchGapDetector_NilReceiverSafe(t *testing.T) {
 	var d *SearchGapDetector
 	// Should not panic.
 	d.CheckAndEmit(context.Background(), "s1", "researcher",
-		[]string{"WebSearch", "TavilySearch"}, nil, func(_ context.Context, ev types.EngineEvent) error { return nil })
+		[]string{"web_search", "tavily_search"}, nil, func(_ context.Context, ev types.EngineEvent) error { return nil })
 	d.Forget("s1")
 }
 
@@ -168,9 +168,9 @@ func TestSearchGapDetector_NoWarnWhenSearchPresent(t *testing.T) {
 	d := NewSearchGapDetector(zap.NewNop())
 	f := newFakeEmitter()
 	d.CheckAndEmit(context.Background(), "s1", "researcher",
-		[]string{"WebSearch", "TavilySearch"}, []string{"WebSearch"}, f.Emit)
+		[]string{"web_search", "tavily_search"}, []string{"web_search"}, f.Emit)
 	if f.Count() != 0 {
-		t.Errorf("expected 0 emits when WebSearch available, got %d", f.Count())
+		t.Errorf("expected 0 emits when web_search available, got %d", f.Count())
 	}
 }
 
@@ -187,9 +187,9 @@ func TestSearchGapDetector_EmitFailureRollsBack(t *testing.T) {
 		return nil
 	}
 	d.CheckAndEmit(context.Background(), "s1", "researcher",
-		[]string{"WebSearch", "TavilySearch"}, nil, emit)
+		[]string{"web_search", "tavily_search"}, nil, emit)
 	d.CheckAndEmit(context.Background(), "s1", "researcher",
-		[]string{"WebSearch", "TavilySearch"}, nil, emit)
+		[]string{"web_search", "tavily_search"}, nil, emit)
 	if callCount != 2 {
 		t.Errorf("expected 2 emit attempts (1 fail + 1 retry), got %d", callCount)
 	}
@@ -201,14 +201,14 @@ func (e errStub) Error() string { return string(e) }
 
 // TestSearchGapDetector_NamesMatchToolFactory guards searchToolNames
 // against drift from the canonical tool names. If you renamed the
-// WebSearch / TavilySearch tools, update searchToolNames to match —
+// web_search / tavily_search tools, update searchToolNames to match —
 // otherwise the detector will silently stop firing.
 func TestSearchGapDetector_NamesMatchToolFactory(t *testing.T) {
 	// The actual cross-check against the live registry happens in the
 	// integration test (Task 8). This test pins the strings to known
 	// values so a typo in one place fails immediately rather than at
 	// integration time.
-	wantSorted := []string{"TavilySearch", "WebSearch"}
+	wantSorted := []string{"tavily_search", "web_search"}
 	gotSorted := append([]string{}, searchToolNames...)
 	sortStrings(gotSorted)
 	if len(wantSorted) != len(gotSorted) {

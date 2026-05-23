@@ -32,7 +32,7 @@ func TestPlanConfirmation_AutoModeSkipsApproval(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "调研 X 写 Y",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_auto_confirm",
 		CoordinatorMode: "plan",
 	}
@@ -87,7 +87,7 @@ func TestPlanConfirmation_RequiredModeBlocksUntilApproval(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "调研 X 写 Y",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_required",
 		CoordinatorMode: "plan",
 	}
@@ -171,7 +171,7 @@ func TestPlanConfirmation_RejectionCancelsRun(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "调研 X 写 Y",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_reject",
 		CoordinatorMode: "plan",
 	}
@@ -234,7 +234,7 @@ func TestPlanConfirmation_UserEditsApplied(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "调研 X 写 Y", // would normally route to research+writer
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_edit",
 		CoordinatorMode: "plan",
 	}
@@ -293,7 +293,7 @@ func TestPlanConfirmation_InvalidEditTreatedAsRejection(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "调研 X 写 Y",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_bad_edit",
 		CoordinatorMode: "plan",
 	}
@@ -361,7 +361,7 @@ func TestRequestPlanApproval_ContextCancellation(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "调研 X 写 Y",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_cancel",
 		CoordinatorMode: "plan",
 	}

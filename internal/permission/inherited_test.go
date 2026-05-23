@@ -17,8 +17,8 @@ func TestInheritedChecker_ReadOnlyAlwaysAllowed(t *testing.T) {
 }
 
 func TestInheritedChecker_ApprovedToolAllowed(t *testing.T) {
-	ic := NewInheritedChecker([]string{"Bash", "Edit"})
-	r := ic.Check(context.Background(), "Bash", nil, false)
+	ic := NewInheritedChecker([]string{"bash", "edit"})
+	r := ic.Check(context.Background(), "bash", nil, false)
 	if r.Decision != Allow {
 		t.Errorf("expected Allow for approved tool, got %s", r.Decision)
 	}
@@ -28,8 +28,8 @@ func TestInheritedChecker_ApprovedToolAllowed(t *testing.T) {
 }
 
 func TestInheritedChecker_UnapprovedToolDenied(t *testing.T) {
-	ic := NewInheritedChecker([]string{"Bash"})
-	r := ic.Check(context.Background(), "Edit", nil, false)
+	ic := NewInheritedChecker([]string{"bash"})
+	r := ic.Check(context.Background(), "edit", nil, false)
 	if r.Decision != Deny {
 		t.Errorf("expected Deny for unapproved tool, got %s", r.Decision)
 	}
@@ -40,12 +40,12 @@ func TestInheritedChecker_UnapprovedToolDenied(t *testing.T) {
 
 func TestInheritedChecker_DynamicApproval(t *testing.T) {
 	ic := NewInheritedChecker(nil)
-	r := ic.Check(context.Background(), "Bash", nil, false)
+	r := ic.Check(context.Background(), "bash", nil, false)
 	if r.Decision != Deny {
 		t.Errorf("expected Deny before approval, got %s", r.Decision)
 	}
-	ic.Approve("Bash")
-	r = ic.Check(context.Background(), "Bash", nil, false)
+	ic.Approve("bash")
+	r = ic.Check(context.Background(), "bash", nil, false)
 	if r.Decision != Allow {
 		t.Errorf("expected Allow after approval, got %s", r.Decision)
 	}
@@ -53,18 +53,18 @@ func TestInheritedChecker_DynamicApproval(t *testing.T) {
 
 func TestInheritedChecker_EmptyApprovedList(t *testing.T) {
 	ic := NewInheritedChecker([]string{})
-	r := ic.Check(context.Background(), "Bash", nil, false)
+	r := ic.Check(context.Background(), "bash", nil, false)
 	if r.Decision != Deny {
 		t.Errorf("expected Deny with empty approved list, got %s", r.Decision)
 	}
 }
 
 func TestInheritedChecker_MultipleApprovals(t *testing.T) {
-	ic := NewInheritedChecker([]string{"Bash"})
-	ic.Approve("Edit")
-	ic.Approve("Write")
+	ic := NewInheritedChecker([]string{"bash"})
+	ic.Approve("edit")
+	ic.Approve("write")
 
-	for _, tool := range []string{"Bash", "Edit", "Write"} {
+	for _, tool := range []string{"bash", "edit", "write"} {
 		r := ic.Check(context.Background(), tool, nil, false)
 		if r.Decision != Allow {
 			t.Errorf("expected Allow for %s after approval, got %s", tool, r.Decision)

@@ -15,7 +15,7 @@ import (
 // SessionID, the Chat() call attributes token usage to that session's tracker.
 //
 // This test exercises the stats_provider path that the executor fix (Task 1.2)
-// enables: with TUC injected, Specialists builds SpawnConfig.ParentSessionID
+// enables: with TUC injected, scheduler builds SpawnConfig.ParentSessionID
 // from the session, the sub-agent ctx gets the SessionID, and stats_provider
 // correctly attributes the spend.
 func TestStatsProvider_SubAgentSessionPropagatesFromCtx(t *testing.T) {

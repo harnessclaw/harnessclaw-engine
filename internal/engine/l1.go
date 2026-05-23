@@ -14,7 +14,7 @@ import (
 // the WebSocket / API channel. It owns the L1 layer (面子): persona,
 // lightweight Q&A, clarification, dispatch decision. It does NOT execute
 // file/bash/grep tools directly; those live in L2 sub-agents spawned via
-// the Agent and Orchestrate tools.
+// the Agent and orchestrate tools.
 //
 // Implementation note: L1Engine is a thin wrapper over QueryEngine. The
 // underlying loop, LLM calling, session management, and prompt assembly
@@ -23,9 +23,9 @@ import (
 //
 //   - Profile          → EmmaProfile (identity / principles / memory — no team:
 //                        L1 treats L2 as a black box; the team roster is
-//                        consumed by Specialists, not by emma)
+//                        consumed by the scheduler, not by emma)
 //   - DisplayName      → "emma" (interpolated into worker identity templates)
-//   - AllowedTools     → ["Agent","Orchestrate"] (only delegation)
+//   - AllowedTools     → ["scheduler", ...] (delegation + light context tools)
 //   - MaxTurns         → 10 (small loop, chat-oriented)
 //
 // L2 sub-agents (workers, planner, etc.) bypass L1 restrictions because
@@ -48,7 +48,7 @@ type L1Config struct {
 	DisplayName string
 
 	// AllowedTools restricts the tools advertised to the L1 LLM. Default:
-	// ["Agent", "Orchestrate"]. Pass an explicit slice to override; pass
+	// ["Agent", "orchestrate"]. Pass an explicit slice to override; pass
 	// a single-element slice to a non-default tool list to widen/narrow.
 	AllowedTools []string
 
@@ -60,34 +60,34 @@ type L1Config struct {
 // DefaultL1Config returns the canonical emma L1 configuration.
 //
 // Tool palette rationale (post 3-tier refactor):
-//   - Specialists            → THE delegation entry point. emma never picks
+//   - scheduler               → THE delegation entry point. emma never picks
 //                              between single-step / multi-step or specific
-//                              sub-agents — Specialists (L2) handles all
+//                              sub-agents — the scheduler (L2) handles all
 //                              decomposition, dispatch, and integration.
-//   - WebSearch / TavilySearch → emma's own *light* fact-finding for
-//                              context gathering before dispatching to
-//                              Specialists (e.g. confirm an entity, fetch
-//                              a key fact). Deep research is Specialists's
+//   - web_search / tavily_search → emma's own *light* fact-finding for
+//                              context gathering before dispatching to the
+//                              scheduler (e.g. confirm an entity, fetch a
+//                              key fact). Deep research is the scheduler's
 //                              concern, not emma's.
-//   - AskUserQuestion        → clarification when the request is ambiguous
+//   - ask_user_question        → clarification when the request is ambiguous
 //                              or a key fact is missing. Prefer asking
-//                              over guessing — Specialists cannot ask the
+//                              over guessing — the scheduler cannot ask the
 //                              user, so emma must clarify upstream.
 //
-// Agent and Orchestrate are intentionally NOT in this list. They live
-// inside the L2 layer (Specialists uses Agent internally to dispatch L3).
+// The task tool is intentionally NOT in this list. It lives inside the L2
+// layer (the scheduler uses task internally to dispatch L3).
 func DefaultL1Config() L1Config {
 	return L1Config{
 		Profile:     prompt.EmmaProfile,
 		DisplayName: "emma",
 		AllowedTools: []string{
-			"Specialists",
-			"WebSearch",
-			"TavilySearch",
-			"AskUserQuestion",
-			"Read",
-			"Glob",
-			"Grep",
+			"scheduler",
+			"web_search",
+			"tavily_search",
+			"ask_user_question",
+			"read",
+			"glob",
+			"grep",
 		},
 		MaxTurns: 10,
 	}
@@ -101,8 +101,8 @@ func DefaultL1Config() L1Config {
 //  1. Build QueryEngine (engine.NewQueryEngine)
 //  2. Wrap with NewL1Engine (this function)
 //  3. Hand the L1Engine to the router/channel layer
-//  4. Register Agent/Orchestrate tools using the inner QueryEngine as the
-//     AgentSpawner — they call SpawnSync directly to launch L2 workers.
+//  4. Register the task / scheduler tools using the inner QueryEngine as
+//     the AgentSpawner — they call SpawnSync directly to launch L2/L3 workers.
 func NewL1Engine(inner *QueryEngine, cfg L1Config, logger *zap.Logger) *L1Engine {
 	if logger == nil {
 		logger = zap.NewNop()
@@ -117,17 +117,17 @@ func NewL1Engine(inner *QueryEngine, cfg L1Config, logger *zap.Logger) *L1Engine
 	}
 	if len(cfg.AllowedTools) == 0 {
 		// Default to the canonical L1 palette — single delegation entry
-		// (Specialists) plus light context tools. Mirror DefaultL1Config()
+		// (scheduler) plus light context tools. Mirror DefaultL1Config()
 		// so that NewL1Engine(inner, L1Config{}) behaves identically to
 		// NewL1Engine(inner, DefaultL1Config()).
 		cfg.AllowedTools = []string{
-			"Specialists",
-			"WebSearch",
-			"TavilySearch",
-			"AskUserQuestion",
-			"Read",
-			"Glob",
-			"Grep",
+			"scheduler",
+			"web_search",
+			"tavily_search",
+			"ask_user_question",
+			"read",
+			"glob",
+			"grep",
 		}
 	}
 	if cfg.MaxTurns <= 0 {
@@ -161,7 +161,7 @@ func (l *L1Engine) Config() L1Config {
 }
 
 // Inner exposes the underlying QueryEngine so the wiring layer can pass it
-// to Agent / Orchestrate tools as the AgentSpawner. Sub-agent spawning
+// to Agent / orchestrate tools as the AgentSpawner. Sub-agent spawning
 // bypasses L1 — that is by design (L2 workers need the full tool palette).
 func (l *L1Engine) Inner() *QueryEngine {
 	return l.inner
@@ -175,7 +175,7 @@ func (l *L1Engine) Inner() *QueryEngine {
 //
 // Side effect: idempotently bootstraps the on-disk workspace
 // ({rootDir}/session/{sessionID}/{plan.json,tasks/,deliverables/}) so any
-// PlanUpdate / MetaWrite / Promote dispatched downstream finds the layout
+// plan_update / meta_write / promote dispatched downstream finds the layout
 // already in place. Failure here is logged but not fatal — the downstream
 // tools surface the real error if the dir genuinely cannot be written.
 func (l *L1Engine) ProcessMessage(
@@ -196,7 +196,7 @@ func (l *L1Engine) ProcessMessage(
 
 // SubmitToolResult forwards a client-side tool result to the inner engine.
 // Tool results are currently delivered for the L1 layer's tool calls (Agent,
-// Orchestrate, AskUserQuestion if/when added). L2 sub-agent tool results
+// orchestrate, ask_user_question if/when added). L2 sub-agent tool results
 // flow internally and never cross this method.
 func (l *L1Engine) SubmitToolResult(
 	ctx context.Context,

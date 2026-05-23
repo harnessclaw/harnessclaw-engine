@@ -58,7 +58,7 @@ func (BaseTool) ValidateInput(_ json.RawMessage) error { return nil }
 // ---------------------------------------------------------------------------
 
 // AliasedTool provides alternative names for backward-compatible lookup.
-// Example: "Bash" tool might have aliases ["Shell", "BashTool"].
+// Example: "bash" tool might have aliases ["Shell", "BashTool"].
 type AliasedTool interface {
 	Aliases() []string
 }
@@ -122,7 +122,7 @@ type PermissionPreChecker interface {
 }
 
 // ClientRoutedTool marks tools whose execution **must** happen on the
-// connected client (e.g. AskUserQuestion, which can only render in the UI
+// connected client (e.g. ask_user_question, which can only render in the UI
 // where the human is sitting). When IsClientRouted returns true, the
 // engine sends a tool.call wire message regardless of the global
 // QueryEngineConfig.ClientTools flag, and never falls through to the

@@ -60,7 +60,7 @@ func findClosePayload(t *testing.T, rec *emitv2.RecorderSink, cardID string) emi
 }
 
 // TestTranslator_ToolEnd_PassesSearchMetadataThrough is the regression
-// guard for the WebSearch / TavilySearch case: rich tool result
+// guard for the web_search / tavily_search case: rich tool result
 // metadata (urls, query, result_count, has_raw) must reach the wire
 // via ToolPayload.Metadata, not be silently dropped.
 func TestTranslator_ToolEnd_PassesSearchMetadataThrough(t *testing.T) {
@@ -70,14 +70,14 @@ func TestTranslator_ToolEnd_PassesSearchMetadataThrough(t *testing.T) {
 	// Open a tool first so EngineEventToolEnd has a card to close.
 	tr.Translate(em, "sess_x", &types.EngineEvent{
 		Type:      types.EngineEventToolStart,
-		ToolName:  "WebSearch",
+		ToolName:  "web_search",
 		ToolUseID: "toolu_ws_1",
 		ToolInput: `{"query":"vLLM 论文"}`,
 	})
 
 	tr.Translate(em, "sess_x", &types.EngineEvent{
 		Type:      types.EngineEventToolEnd,
-		ToolName:  "WebSearch",
+		ToolName:  "web_search",
 		ToolUseID: "toolu_ws_1",
 		ToolResult: &types.ToolResult{
 			Content: "Search results for \"vLLM 论文\":\n\n--- Result 1 ---\nTitle: ...\nURL: https://...\n",
@@ -129,11 +129,11 @@ func TestTranslator_ToolEnd_PassesTavilyHasRawThrough(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_t")
 	tr := NewTranslator(nil)
 	tr.Translate(em, "sess_t", &types.EngineEvent{
-		Type: types.EngineEventToolStart, ToolName: "TavilySearch", ToolUseID: "toolu_tv",
+		Type: types.EngineEventToolStart, ToolName: "tavily_search", ToolUseID: "toolu_tv",
 		ToolInput: `{"query":"x"}`,
 	})
 	tr.Translate(em, "sess_t", &types.EngineEvent{
-		Type: types.EngineEventToolEnd, ToolName: "TavilySearch", ToolUseID: "toolu_tv",
+		Type: types.EngineEventToolEnd, ToolName: "tavily_search", ToolUseID: "toolu_tv",
 		ToolResult: &types.ToolResult{
 			Content: "...",
 			Metadata: map[string]any{
@@ -156,11 +156,11 @@ func TestTranslator_ToolEnd_PromotesAllKnownKeys(t *testing.T) {
 	em, rec := makeRecorderEmitter(t, "sess_p")
 	tr := NewTranslator(nil)
 	tr.Translate(em, "sess_p", &types.EngineEvent{
-		Type: types.EngineEventToolStart, ToolName: "Bash", ToolUseID: "toolu_p",
+		Type: types.EngineEventToolStart, ToolName: "bash", ToolUseID: "toolu_p",
 		ToolInput: `{}`,
 	})
 	tr.Translate(em, "sess_p", &types.EngineEvent{
-		Type: types.EngineEventToolEnd, ToolName: "Bash", ToolUseID: "toolu_p",
+		Type: types.EngineEventToolEnd, ToolName: "bash", ToolUseID: "toolu_p",
 		ToolResult: &types.ToolResult{
 			Content: "out",
 			Metadata: map[string]any{
@@ -215,7 +215,7 @@ func TestTranslator_PlanReview_PausesAgentCardWatchdog(t *testing.T) {
 	tr.Translate(em, "sess_pr", &types.EngineEvent{
 		Type:        types.EngineEventSubAgentStart,
 		AgentID:     "agent_worker",
-		AgentName:   "specialists",
+		AgentName:   "scheduler",
 		AgentTask:   "plan a thing",
 	})
 

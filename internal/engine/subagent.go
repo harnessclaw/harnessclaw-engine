@@ -176,7 +176,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 
 	// Idempotent fallback: ensure the on-disk task dir exists before any
 	// sub-agent tool can be dispatched. Real L2 callers will already have
-	// created it via PlanUpdate, but ad-hoc dispatches and tests still
+	// created it via plan_update, but ad-hoc dispatches and tests still
 	// land here without the dir. workspace.EnsureTaskDir is a no-op when
 	// the dir already exists. Skipped when there's no task_id / no root
 	// session (legacy / freeform spawn) — nothing safe to anchor against.
@@ -236,14 +236,14 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	}
 
 	// Skill-aware hydration: any L3 that declares the skill self-mgmt
-	// tools (SearchSkill / LoadSkill / UnloadSkill / ListLoadedSkills)
+	// tools (search_skill / load_skill / unload_skill / list_loaded_skills)
 	// gets a SkillTracker so those tools have somewhere to store state.
 	//
 	// freelancer additionally accepts `candidate_skills` from L2 — those
 	// get preloaded into the tracker and prepended to cfg.Prompt as a
 	// <loaded-skills> block. Fixed L3 agents (writer / developer / ...)
 	// that have been enhanced with skill tools just receive an empty
-	// tracker and use SearchSkill / LoadSkill at runtime themselves.
+	// tracker and use search_skill / load_skill at runtime themselves.
 	var freelancerTracker *SkillTracker
 	if agentDef != nil && defHasSkillSelfMgmtTool(agentDef.AllowedTools) {
 		candidates := parseCandidateSkills(cfg.Inputs)
@@ -393,7 +393,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// Filtering policy:
 	//   - If AgentDefinition.AllowedTools is non-empty, treat it as an
 	//     authoritative whitelist that bypasses AgentType blacklist.
-	//     This lets specialised agents like "specialists" (L2) re-enable
+	//     This lets specialised agents like "scheduler" (L2) re-enable
 	//     tools that are blanket-blocked for sync sub-agents (e.g. Agent).
 	//   - Otherwise apply the default AgentType-based blacklist.
 	//
@@ -403,8 +403,8 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	pool := tool.NewToolPool(qe.registry, nil, nil)
 
 	// L3 sub-agents get their AllowedTools (when set) augmented with the
-	// always-required terminal tools — SubmitTaskResult and EscalateToPlanner.
-	// Without this, a worker definition that whitelists ["WebSearch"]
+	// always-required terminal tools — submit_task_result and escalate_to_planner.
+	// Without this, a worker definition that whitelists ["web_search"]
 	// would have no way to submit OR escalate, and the driver would loop
 	// to nudge cap and fail. The augment happens BEFORE FilterByNames so
 	// the final pool definitively includes both.
@@ -443,7 +443,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 
 	// Search-tool capability gap — emit a one-shot CardSystem notice
 	// to the user when this sub-agent declares search capability but
-	// neither WebSearch nor TavilySearch is registered at runtime.
+	// neither web_search nor tavily_search is registered at runtime.
 	// nil-safe on detector or ParentOut.
 	if isSubAgent && qe.searchGapDetector != nil {
 		var declared []string
@@ -521,7 +521,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 
 	// Per-agent temperature / OutputSchema flow from registry to loop.
 	// Both stay nil for definitions that don't set them, in which case
-	// the loop and the SubmitTaskResult validator behave as before.
+	// the loop and the submit_task_result validator behave as before.
 	var temperature *float64
 	var outputSchema map[string]any
 	if agentDef != nil {
@@ -687,7 +687,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		case types.EngineEventToolEnd:
 			// Deliverable detection used to look at FileWrite's
 			// render_hint=file_info here. Under the local-files-as-truth
-			// model Promote is the sole Deliverable source — it emits an
+			// model promote is the sole Deliverable source — it emits an
 			// EngineEventDeliverable directly through the parent channel,
 			// so no per-tool-end inspection is needed.
 			// Aggregate artifacts the executor stamped on this tool_end
@@ -714,14 +714,14 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		//
 		//  1. THIS sub-agent's own tool lifecycle (ToolStart/ToolEnd) — wrap
 		//     as SubAgentEvent stamped with this layer's agentID, so the
-		//     parent can render "Specialists is calling Task / WebSearch".
+		//     parent can render "scheduler is calling task / web_search".
 		//
 		//  2. Events that already came from a deeper layer (e.g. L3 events
 		//     bubbling through L2 on their way to L1) — these arrive here as
 		//     SubAgentStart/SubAgentEnd/SubAgentEvent/Deliverable and must
 		//     be forwarded *as-is* with their original AgentID preserved.
 		//     Without this, the WebSocket client never sees L3 lifecycle when
-		//     L2 (Specialists) dispatches L3 via the Task tool.
+		//     L2 (scheduler) dispatches L3 via the task tool.
 		//
 		// See docs/protocols/websocket.md v1.10.
 		if cfg.ParentOut != nil {
@@ -841,7 +841,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	case types.TerminalAbortedStreaming, types.TerminalAbortedTools:
 		agentStatus = "aborted"
 	}
-	// Prefer SubmitTaskResult-validated artifacts when present — that's
+	// Prefer submit_task_result-validated artifacts when present — that's
 	// the canonical "deliverables" set. Fall back to the broader
 	// produced-while-running list (everything any tool wrote) when the
 	// task had no contract.
@@ -1007,7 +1007,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		ContractFailures:   loopResult.ContractFailures,
 		// L3 escalation surface (TierSubAgent driver only). Zero-valued
 		// for L2 coordinator runs, populated when the L3 called
-		// EscalateToPlanner instead of SubmitTaskResult.
+		// escalate_to_planner instead of submit_task_result.
 		NeedsPlanning:      loopResult.NeedsPlanning,
 		EscalationReason:   loopResult.EscalationReason,
 		SuggestedNextSteps: loopResult.SuggestedNextSteps,
@@ -1083,11 +1083,11 @@ type loopConfig struct {
 	// when no contract was supplied (legacy / simple-task path).
 	taskID string
 	// taskStartedAt anchors the temporal "no time travel" check applied
-	// by SubmitTaskResult. Zero disables that check.
+	// by submit_task_result. Zero disables that check.
 	taskStartedAt time.Time
 	// expectedOutputs is the deliverable contract supplied by the parent.
 	// Length 0 = no contract; loop terminates on end_turn as before.
-	// Length > 0 = SubmitTaskResult required; loop refuses to terminate
+	// Length > 0 = submit_task_result required; loop refuses to terminate
 	// without a passing submit (M3 + M4 from doc §3).
 	expectedOutputs []types.ExpectedOutput
 	// temperature overrides the LLM sampling temperature for this loop.
@@ -1096,7 +1096,7 @@ type loopConfig struct {
 	// for sub-agents, nil for the legacy main-agent loop.
 	temperature *float64
 	// outputSchema is the per-agent declared structured output shape
-	// (AgentDefinition.OutputSchema). When set the SubmitTaskResult
+	// (AgentDefinition.OutputSchema). When set the submit_task_result
 	// server-side validation matches submitted `result` against it.
 	outputSchema map[string]any
 	// originalPrompt is the natural-language task seed the dispatcher
@@ -1105,8 +1105,8 @@ type loopConfig struct {
 	// the Planner without re-deriving from session state.
 	originalPrompt string
 	// skillTracker is non-nil only when this loop is running the freelancer
-	// AgentDefinition. The four skill self-management tools (LoadSkill /
-	// UnloadSkill / ListLoadedSkills) pick it up via ctx. nil = not a
+	// AgentDefinition. The four skill self-management tools (load_skill /
+	// unload_skill / list_loaded_skills) pick it up via ctx. nil = not a
 	// freelancer spawn; those tools refuse to run.
 	skillTracker *SkillTracker
 	// readScope / writeScope / sessionRoot are the per-spawn filesystem
@@ -1122,10 +1122,10 @@ type loopConfig struct {
 // the engine's defaults.
 //
 // When lc.expectedOutputs is non-empty the loop refuses to terminate
-// until SubmitTaskResult has been called AND its M4 validation passed.
+// until submit_task_result has been called AND its M4 validation passed.
 // On end_turn without a passing submit, a SYSTEM reminder is appended
 // and the loop continues; bounded by maxSubmitNudges to avoid spinning.
-// Validation rejections from SubmitTaskResult itself are bounded by
+// Validation rejections from submit_task_result itself are bounded by
 // maxSubmitRejects independently.
 func (qe *QueryEngine) runSubAgentLoop(
 	ctx context.Context,
@@ -1153,7 +1153,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 		AgentID:   lc.agentID,
 		SessionID: sess.ID,
 		// TaskID stamps every artifact this sub-agent writes with the
-		// orchestrator-assigned task identifier. SubmitTaskResult's M4
+		// orchestrator-assigned task identifier. submit_task_result's M4
 		// validation rejects artifacts whose producer.task_id ≠ this
 		// value, blocking failure mode #8 (claiming someone else's
 		// artifact as your output).
@@ -1323,14 +1323,14 @@ func (qe *QueryEngine) runSubAgentLoop(
 				return subAgentLoopResult{
 					Terminal: types.Terminal{
 						Reason:  types.TerminalMaxTurns,
-						Message: fmt.Sprintf("L3 declined to call SubmitTaskResult after %d reminders", maxSubmitNudges),
+						Message: fmt.Sprintf("L3 declined to call submit_task_result after %d reminders", maxSubmitNudges),
 						Turn:    ls.turn,
 					},
 					ContractFailures: append(contractFailures,
-						fmt.Sprintf("missing SubmitTaskResult after %d nudges", maxSubmitNudges)),
+						fmt.Sprintf("missing submit_task_result after %d nudges", maxSubmitNudges)),
 				}
 			}
-			logger.Info("nudging sub-agent to call SubmitTaskResult",
+			logger.Info("nudging sub-agent to call submit_task_result",
 				zap.Int("nudge", submitNudges),
 				zap.Int("cap", maxSubmitNudges),
 			)
@@ -1349,7 +1349,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 			execCtx = tool.WithAllowedSkills(execCtx, lc.allowedSkills)
 		}
 
-		// Sub-agents also honour per-tool client routing — AskUserQuestion
+		// Sub-agents also honour per-tool client routing — ask_user_question
 		// is filtered out of sub-agent pools by the AllAgentDisallowed
 		// blacklist, but using the same dispatcher keeps the routing rule
 		// in one place and makes future "must-route-to-client" tools
@@ -1379,7 +1379,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 				sess.AddMessage(nm)
 			}
 
-			// Observe SubmitTaskResult outcomes — both accepted and
+			// Observe submit_task_result outcomes — both accepted and
 			// rejected cases land here. Render hint is the unique signal
 			// the submit tool emits (decoupled from package import).
 			if hint, _ := results[i].Metadata["render_hint"].(string); hint == "task_submission" {
@@ -1405,7 +1405,7 @@ func (qe *QueryEngine) runSubAgentLoop(
 						return subAgentLoopResult{
 							Terminal: types.Terminal{
 								Reason:  types.TerminalMaxTurns,
-								Message: fmt.Sprintf("SubmitTaskResult rejected %d times — abandoning task", submitRejects),
+								Message: fmt.Sprintf("submit_task_result rejected %d times — abandoning task", submitRejects),
 								Turn:    ls.turn,
 							},
 							ContractFailures: contractFailures,
@@ -1430,16 +1430,16 @@ func (qe *QueryEngine) runSubAgentLoop(
 }
 
 // buildSubmitNudgeMessage assembles the SYSTEM-style reminder injected
-// when an L3 reaches end_turn without a passing SubmitTaskResult.
+// when an L3 reaches end_turn without a passing submit_task_result.
 // Listed by [SYSTEM] tag so the LLM treats it as framework directive,
 // not a user input. Includes the contract roles so the model has
 // everything it needs to make progress.
 func buildSubmitNudgeMessage(nudge int, outs []types.ExpectedOutput) types.Message {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[SYSTEM] 你尚未调用 SubmitTaskResult 提交产物。任务未完成，请立即调用 (提示 %d/%d)。\n",
+	fmt.Fprintf(&b, "[SYSTEM] 你尚未调用 submit_task_result 提交产物。任务未完成，请立即调用 (提示 %d/%d)。\n",
 		nudge, maxSubmitNudges)
 	if nudge >= 2 {
-		b.WriteString("强制提示：先用 ArtifactWrite 把每份产出写入 store，再用 SubmitTaskResult 提交 ID 列表。\n")
+		b.WriteString("强制提示：先用 ArtifactWrite 把每份产出写入 store，再用 submit_task_result 提交 ID 列表。\n")
 	}
 	if nudge >= maxSubmitNudges {
 		b.WriteString("这是最后一次机会，再不提交将判定任务失败。\n")
@@ -1507,7 +1507,7 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 	//                                                identity into L3 prompts)
 	//   4. profile has role SectionOverride        → leave empty so the profile's
 	//                                                static role text wins
-	//                                                (Specialists / Explore / Plan)
+	//                                                (scheduler / Explore / Plan)
 	//
 	// Without case 3, dispatching `general-purpose` (IsTeamMember=false,
 	// WorkerProfile has no role override) would silently install emma's
@@ -1526,7 +1526,7 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 		//   "L3 sub-agent 不知道 Emma 是谁"
 		// For TierSubAgent we deliberately drop the leader name — the
 		// identity reads "你叫小林，是团队的搭档" instead of "你叫小林，是
-		// emma 团队的搭档". For coordinators (specialists / Plan / etc.)
+		// emma 团队的搭档". For coordinators (scheduler / Plan / etc.)
 		// we still surface the leader because they DO need to coordinate
 		// with the user-facing agent.
 		leaderName := qe.config.MainAgentDisplayName
@@ -1616,7 +1616,7 @@ func resolveSubAgentProfile(subagentType string) *prompt.AgentProfile {
 //
 // The L3 driver (runSubAgentDriver) reuses this type and additionally
 // populates NeedsPlanning / EscalationReason / SuggestedNextSteps when an
-// EscalateToPlanner call fired. The L2 path (runSubAgentLoop) leaves
+// escalate_to_planner call fired. The L2 path (runSubAgentLoop) leaves
 // those fields zero-valued.
 type subAgentLoopResult struct {
 	Terminal           types.Terminal
@@ -1649,7 +1649,7 @@ type subAgentLoopResult struct {
 }
 
 // maxSubmitNudges caps how many times the loop will re-prompt an L3 that
-// reaches end_turn without a passing SubmitTaskResult. Doc §7 — three
+// reaches end_turn without a passing submit_task_result. Doc §7 — three
 // strikes covers honest mistakes (forgot, mis-roled, missing required)
 // without giving an adversarial / broken model unlimited turns.
 const maxSubmitNudges = 3
@@ -1813,15 +1813,15 @@ func parseSummaryTag(text string) string {
 // Strings only — non-string elements are skipped (defensive against
 // loose JSON unmarshalling).
 // defHasSkillSelfMgmtTool reports whether an agent definition's AllowedTools
-// includes any of the skill self-management tools (SearchSkill / LoadSkill /
-// UnloadSkill / ListLoadedSkills). When true, SpawnSync creates a SkillTracker
+// includes any of the skill self-management tools (search_skill / load_skill /
+// unload_skill / list_loaded_skills). When true, SpawnSync creates a SkillTracker
 // so those tools have somewhere to store state — regardless of whether the
 // agent is `freelancer` or one of the fixed L3 partners that's been enhanced
 // with skill access.
 func defHasSkillSelfMgmtTool(allowed []string) bool {
 	for _, t := range allowed {
 		switch t {
-		case "SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills":
+		case "search_skill", "load_skill", "unload_skill", "list_loaded_skills":
 			return true
 		}
 	}
@@ -1853,7 +1853,7 @@ func parseCandidateSkills(inputs map[string]any) []string {
 // freelancer agent. Returns (tracker, newPrompt, err).
 //
 // When candidates is empty, returns a fresh empty tracker and the prompt
-// unchanged — freelancer can still SearchSkill at runtime.
+// unchanged — freelancer can still search_skill at runtime.
 //
 // On error (missing skill, too many candidates) returns (nil, "", err) so
 // SpawnSync can fail fast before any LLM call.

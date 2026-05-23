@@ -7,7 +7,7 @@ package tool
 //
 // Three buckets cover what matters operationally:
 //   - SafetySafe:      pure read / lookup, no side effect (Read, Grep, Glob,
-//                      WebFetch, WebSearch, ArtifactRead).
+//                      web_fetch, web_search, ArtifactRead).
 //   - SafetyCaution:   local mutation that's easily reversible
 //                      (Write, Edit, ArtifactWrite, FileWrite).
 //   - SafetyDangerous: shell/network with external side effects
@@ -72,28 +72,26 @@ const (
 // AllAgentDisallowed lists tools blocked for ALL sub-agents by default.
 //
 // Important: AgentDefinition.AllowedTools acts as an EXPLICIT WHITELIST
-// that bypasses this blacklist. Specialists (L2) declares
-// AllowedTools=["Task", ...], which lets it use the Task tool to dispatch
-// L3 even though Task is in this list. See subagent.go's filter pipeline.
+// that bypasses this blacklist. scheduler (L2) declares
+// AllowedTools=["task", ...], which lets it use the task tool to dispatch
+// L3 even though task is in this list. See subagent.go's filter pipeline.
 //
 // Reason for each entry:
 //   - TaskOutput: prevents recursion
 //   - ExitPlanMode: plan mode is a main thread abstraction
 //   - EnterPlanMode: plan mode is a main thread abstraction
-//   - AskUserQuestion: only emma (L1) is allowed to prompt the user
+//   - ask_user_question: only emma (L1) is allowed to prompt the user
 //   - TaskStop: requires access to main thread task state
-//   - Task: prevents arbitrary recursion (Specialists overrides via whitelist)
-//   - Orchestrate: legacy multi-step tool, emma-only
-//   - Specialists: L2 coordinator entry point; emma-only — L3 cannot recurse to L2
+//   - task: prevents arbitrary recursion (scheduler overrides via whitelist)
+//   - scheduler: L2 coordinator entry point; emma-only — L3 cannot recurse to L2
 var AllAgentDisallowed = map[string]bool{
-	"TaskOutput":      true,
-	"ExitPlanMode":    true,
-	"EnterPlanMode":   true,
-	"AskUserQuestion": true,
-	"TaskStop":        true,
-	"Task":            true, // bypassed by AgentDefinition.AllowedTools whitelist (Specialists)
-	"Orchestrate":     true, // legacy multi-step tool, emma-only
-	"Specialists":     true, // L2 entry point — only emma may invoke
+	"TaskOutput":        true,
+	"ExitPlanMode":      true,
+	"EnterPlanMode":     true,
+	"ask_user_question": true,
+	"TaskStop":          true,
+	"task":              true, // bypassed by AgentDefinition.AllowedTools whitelist (scheduler)
+	"scheduler":         true, // L2 entry point — only emma may invoke
 }
 
 // CustomAgentDisallowed is the blacklist for custom agents.
@@ -103,17 +101,17 @@ var CustomAgentDisallowed = copySet(AllAgentDisallowed)
 // AsyncAgentAllowed is the whitelist of tools available to async agents.
 // Only tools in this list are permitted for async execution.
 var AsyncAgentAllowed = map[string]bool{
-	"Read":            true,
-	"WebSearch":       true,
+	"read":            true,
+	"web_search":       true,
 	"TodoWrite":       true,
-	"Grep":            true,
-	"WebFetch":        true,
-	"Glob":            true,
-	"Bash":            true,
-	"Edit":            true,
-	"Write":           true,
+	"grep":            true,
+	"web_fetch":        true,
+	"glob":            true,
+	"bash":            true,
+	"edit":            true,
+	"write":           true,
 	"NotebookEdit":    true,
-	"Skill":           true,
+	"skill":           true,
 	"SyntheticOutput": true,
 	"ToolSearch":      true,
 	"EnterWorktree":   true,
@@ -123,11 +121,11 @@ var AsyncAgentAllowed = map[string]bool{
 // InProcessTeammateExtra lists additional tools for in-process teammates,
 // beyond the AsyncAgentAllowed set.
 var InProcessTeammateExtra = map[string]bool{
-	"TaskCreate":  true,
-	"TaskGet":     true,
-	"TaskList":    true,
-	"TaskUpdate":  true,
-	"SendMessage": true,
+	"task_create":  true,
+	"task_get":     true,
+	"task_list":    true,
+	"task_update":  true,
+	"send_message": true,
 	// CronCreate, CronDelete, CronList conditionally added at runtime
 }
 
@@ -136,7 +134,7 @@ var InProcessTeammateExtra = map[string]bool{
 var CoordinatorAllowed = map[string]bool{
 	"Agent":           true,
 	"TaskStop":        true,
-	"SendMessage":     true,
+	"send_message":     true,
 	"SyntheticOutput": true,
 }
 

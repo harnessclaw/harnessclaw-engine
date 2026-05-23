@@ -14,7 +14,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-const toolName = "Write"
+const toolName = "write"
 
 // writeInput is the JSON structure the LLM sends to invoke the tool.
 type writeInput struct {
@@ -107,7 +107,7 @@ func (t *FileWriteTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 		return &types.ToolResult{Content: "error writing file: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInternal}, nil
 	}
 
-	// render_hint deliberately omitted: Promote is the sole Deliverable
+	// render_hint deliberately omitted: promote is the sole Deliverable
 	// source under the local-files-as-truth model. Surfacing file_info
 	// here would let a sub-agent's intermediate scratch file land in the
 	// user-visible Deliverable surface.

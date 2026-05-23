@@ -4,7 +4,7 @@ import "context"
 
 // skillTrackerKey is the unexported key type for *SkillTracker in ctx.
 // Stored as `any` so this package doesn't import internal/engine.
-// LoadSkill / UnloadSkill / ListLoadedSkills type-assert when reading.
+// load_skill / unload_skill / list_loaded_skills type-assert when reading.
 type skillTrackerKey struct{}
 
 var skillTrackerContextKey = skillTrackerKey{}

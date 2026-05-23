@@ -18,8 +18,8 @@ type agentInput struct {
 	RunInBackground bool                   `json:"run_in_background"`
 	// ExpectedOutputs is the deliverable contract — see doc §3 (mechanisms
 	// M3/M4) and pkg/types.ExpectedOutput. The dispatching agent (e.g.
-	// Specialists) declares what artifacts the L3 must submit; the
-	// framework enforces it via SubmitTaskResult.
+	// scheduler) declares what artifacts the L3 must submit; the
+	// framework enforces it via submit_task_result.
 	ExpectedOutputs []types.ExpectedOutput `json:"expected_outputs,omitempty"`
 	// CandidateSkills, when subagent_type=="freelancer", is forwarded to
 	// SpawnConfig.Inputs so SpawnSync can preload the named skills' SKILL.md
@@ -46,13 +46,12 @@ func (i *agentInput) validate() error {
 	// subagent_type is informational at this layer. The actual resolution
 	// happens in engine/subagent.go via defRegistry.Get(SubagentType):
 	// built-in types (general-purpose / Explore / Plan) plus any
-	// AgentDefinition registered at startup (writer / researcher /
-	// analyst / developer / lifestyle / scheduler / custom names). The
-	// resolver falls back to AgentTypeSync default for unknown names, so
-	// hardcoded rejection here just wasted one LLM round-trip per
-	// Specialists dispatch that picked a team-member name (the tool
-	// description advertises those names — schema and description must
-	// not contradict each other).
+	// AgentDefinition registered at startup (freelancer today; custom
+	// names if registered). The resolver falls back to AgentTypeSync
+	// default for unknown names, so hardcoded rejection here just wasted
+	// one LLM round-trip per scheduler dispatch that picked a team-member
+	// name (the tool description advertises those names — schema and
+	// description must not contradict each other).
 
 	return nil
 }
@@ -100,7 +99,7 @@ var inputSchema = map[string]any{
 		},
 		"expected_outputs": map[string]any{
 			"type":        "array",
-			"description": "可选的「必交产物」契约。每一项声明一份 sub-agent 必须用 SubmitTaskResult 提交的 artifact。任务有结构化产出（报告/表格/数据文件）时使用；零散任务可省。框架会服务端校验 type / size / role 是否匹配，挡住「声称完成实际没产出」的失败。",
+			"description": "可选的「必交产物」契约。每一项声明一份 sub-agent 必须用 submit_task_result 提交的 artifact。任务有结构化产出（报告/表格/数据文件）时使用；零散任务可省。框架会服务端校验 type / size / role 是否匹配，挡住「声称完成实际没产出」的失败。",
 			"items": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

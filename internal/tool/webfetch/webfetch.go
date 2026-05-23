@@ -1,4 +1,4 @@
-// Package webfetch implements the WebFetch tool for fetching and processing web content.
+// Package webfetch implements the web_fetch tool for fetching and processing web content.
 package webfetch
 
 import (
@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	toolName     = "WebFetch"
+	toolName     = "web_fetch"
 	maxBodySize  = 1024 * 1024 // 1MB
 	fetchTimeout = 30 * time.Second
 )

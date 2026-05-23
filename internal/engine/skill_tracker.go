@@ -17,7 +17,7 @@ const (
 )
 
 // LoadedSource records how a skill got into the tracker — candidate (L2
-// preload at SpawnSync) vs runtime (LoadSkill in the loop).
+// preload at SpawnSync) vs runtime (load_skill in the loop).
 type LoadedSource string
 
 const (
@@ -40,7 +40,7 @@ type LoadedRef struct {
 }
 
 // SkillTracker is a per-spawn state container shared by SpawnSync and the
-// four skill self-management tools (LoadSkill / UnloadSkill / ListLoaded).
+// four skill self-management tools (load_skill / unload_skill / ListLoaded).
 // It tracks WHICH skills are active vs unloaded and enforces a hard budget.
 //
 // What it does NOT do: modify tool pool, modify systemPrompt, modify
@@ -52,7 +52,7 @@ type SkillTracker struct {
 }
 
 // NewSkillTracker constructs a tracker with the given active-skill budget.
-// Budget includes both L2 candidates and runtime LoadSkill.
+// Budget includes both L2 candidates and runtime load_skill.
 func NewSkillTracker(maxBudget int) *SkillTracker {
 	return &SkillTracker{
 		entries:   make(map[string]*LoadedEntry),

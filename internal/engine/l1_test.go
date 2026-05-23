@@ -23,21 +23,21 @@ func TestL1Engine_DefaultConfig(t *testing.T) {
 	}
 	// AllowedTools length & exact membership are asserted in
 	// TestL1Engine_DefaultL1Config — here we just sanity-check non-empty
-	// and that the single delegation entry (Specialists) is present.
+	// and that the single delegation entry (scheduler) is present.
 	if len(cfg.AllowedTools) < 2 {
-		t.Errorf("default AllowedTools = %v, want at least Specialists + a search tool", cfg.AllowedTools)
+		t.Errorf("default AllowedTools = %v, want at least scheduler + a search tool", cfg.AllowedTools)
 	}
-	hasSpecialists := false
+	hasScheduler := false
 	for _, n := range cfg.AllowedTools {
-		if n == "Specialists" {
-			hasSpecialists = true
+		if n == "scheduler" {
+			hasScheduler = true
 		}
-		if n == "Agent" || n == "Orchestrate" {
+		if n == "Agent" || n == "orchestrate" {
 			t.Errorf("L1 must not expose %q (L2-internal)", n)
 		}
 	}
-	if !hasSpecialists {
-		t.Errorf("default AllowedTools missing Specialists: %v", cfg.AllowedTools)
+	if !hasScheduler {
+		t.Errorf("default AllowedTools missing scheduler: %v", cfg.AllowedTools)
 	}
 	if cfg.MaxTurns != 10 {
 		t.Errorf("default MaxTurns = %d, want 10", cfg.MaxTurns)
@@ -51,7 +51,7 @@ func TestL1Engine_AppliesToInnerConfig(t *testing.T) {
 	_ = NewL1Engine(inner, L1Config{
 		Profile:      prompt.EmmaProfile,
 		DisplayName:  "emma",
-		AllowedTools: []string{"Agent", "Orchestrate"},
+		AllowedTools: []string{"Agent", "orchestrate"},
 		MaxTurns:     7,
 	}, zap.NewNop())
 
@@ -102,7 +102,7 @@ func TestL1Engine_CustomProfile(t *testing.T) {
 func TestL1Engine_ConfigReturnsCopy(t *testing.T) {
 	inner := newSubagentTestEngine(&subagentMockProvider{})
 	l1 := NewL1Engine(inner, L1Config{
-		AllowedTools: []string{"Agent", "Orchestrate"},
+		AllowedTools: []string{"Agent", "orchestrate"},
 	}, zap.NewNop())
 
 	cfg := l1.Config()
@@ -131,18 +131,18 @@ func TestL1Engine_DefaultL1Config(t *testing.T) {
 		t.Error("DefaultL1Config DisplayName mismatch")
 	}
 	// L1 palette in the 3-tier architecture: a single delegation entry
-	// (Specialists), light search for context (WebSearch/TavilySearch),
-	// clarification (AskUserQuestion), and lightweight local file access
+	// (scheduler), light search for context (web_search/tavily_search),
+	// clarification (ask_user_question), and lightweight local file access
 	// (Read/Glob/Grep) for workspace inspection without spawning L2.
-	// Agent / Orchestrate are NOT in this list — they are L2-internal.
+	// Agent / orchestrate are NOT in this list — they are L2-internal.
 	wantTools := map[string]bool{
-		"Specialists":     true,
-		"WebSearch":       true,
-		"TavilySearch":    true,
-		"AskUserQuestion": true,
-		"Read":            true,
-		"Glob":            true,
-		"Grep":            true,
+		"scheduler":     true,
+		"web_search":       true,
+		"tavily_search":    true,
+		"ask_user_question": true,
+		"read":            true,
+		"glob":            true,
+		"grep":            true,
 	}
 	if len(cfg.AllowedTools) != len(wantTools) {
 		t.Errorf("DefaultL1Config AllowedTools length = %d, want %d",
@@ -157,9 +157,9 @@ func TestL1Engine_DefaultL1Config(t *testing.T) {
 	if len(wantTools) > 0 {
 		t.Errorf("default L1 palette missing tools: %v", wantTools)
 	}
-	// Agent / Orchestrate must NOT be exposed at L1.
+	// Agent / orchestrate must NOT be exposed at L1.
 	for _, n := range cfg.AllowedTools {
-		if n == "Agent" || n == "Orchestrate" {
+		if n == "Agent" || n == "orchestrate" {
 			t.Errorf("L1 palette must not expose %q (L2-internal)", n)
 		}
 	}

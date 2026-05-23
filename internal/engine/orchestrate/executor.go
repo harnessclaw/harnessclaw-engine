@@ -17,7 +17,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// Plan execution status — returned to the Orchestrate tool aggregator.
+// Plan execution status — returned to the orchestrate tool aggregator.
 const (
 	StatusCompleted        = "completed"
 	StatusPartialCompleted = "partial_completed"
@@ -32,7 +32,7 @@ const (
 	stepStatusPending   = "pending"
 )
 
-// StepResult is the per-step outcome reported back to the Orchestrate tool.
+// StepResult is the per-step outcome reported back to the orchestrate tool.
 type StepResult struct {
 	StepID       string              `json:"step_id"`
 	SubagentType string              `json:"subagent_type"`

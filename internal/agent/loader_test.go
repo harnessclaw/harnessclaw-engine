@@ -21,12 +21,12 @@ profile: full
 model: claude-3-opus
 max_turns: 10
 tools:
-  - Read
-  - Write
+  - read
+  - write
 allowed_tools:
-  - Bash
+  - bash
 disallowed_tools:
-  - WebFetch
+  - web_fetch
 auto_team: false
 `
 	if err := os.WriteFile(filepath.Join(dir, "test-agent.yaml"), []byte(yamlContent), 0644); err != nil {
@@ -64,14 +64,14 @@ auto_team: false
 	if def.MaxTurns != 10 {
 		t.Errorf("MaxTurns = %d, want %d", def.MaxTurns, 10)
 	}
-	if len(def.Tools) != 2 || def.Tools[0] != "Read" || def.Tools[1] != "Write" {
-		t.Errorf("Tools = %v, want [Read Write]", def.Tools)
+	if len(def.Tools) != 2 || def.Tools[0] != "read" || def.Tools[1] != "write" {
+		t.Errorf("Tools = %v, want [read write]", def.Tools)
 	}
-	if len(def.AllowedTools) != 1 || def.AllowedTools[0] != "Bash" {
-		t.Errorf("AllowedTools = %v, want [Bash]", def.AllowedTools)
+	if len(def.AllowedTools) != 1 || def.AllowedTools[0] != "bash" {
+		t.Errorf("AllowedTools = %v, want [bash]", def.AllowedTools)
 	}
-	if len(def.DisallowedTools) != 1 || def.DisallowedTools[0] != "WebFetch" {
-		t.Errorf("DisallowedTools = %v, want [WebFetch]", def.DisallowedTools)
+	if len(def.DisallowedTools) != 1 || def.DisallowedTools[0] != "web_fetch" {
+		t.Errorf("DisallowedTools = %v, want [web_fetch]", def.DisallowedTools)
 	}
 	if def.AutoTeam != false {
 		t.Errorf("AutoTeam = %v, want false", def.AutoTeam)

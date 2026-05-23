@@ -11,7 +11,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// CoordinatorMode names a way an L2 coordinator (e.g. Specialists) chooses
+// CoordinatorMode names a way an L2 coordinator (e.g. scheduler) chooses
 // to organize work. Modes are orthogonal to L3 dispatch strategies — the
 // strategy decides how a single step fans out into sub-agents, the mode
 // decides whether the coordinator runs as a free-form ReAct loop or as a
@@ -22,7 +22,7 @@ import (
 type CoordinatorMode string
 
 const (
-	// CoordinatorModeReAct is the historical Specialists behaviour: a
+	// CoordinatorModeReAct is the historical scheduler behaviour: a
 	// dispatch-capable LLM loop that thinks, calls Task to spawn L3
 	// sub-agents, integrates results, and returns. Cheap, fast, suitable
 	// for one-shot or short multi-step tasks.
@@ -52,7 +52,7 @@ func (m CoordinatorMode) IsKnown() bool {
 	return false
 }
 
-// Coordinator is the L2-side abstraction over "how does Specialists organize
+// Coordinator is the L2-side abstraction over "how does the scheduler organize
 // its work?". Different modes (react / plan / debate / vote / ...) implement
 // the same interface and are interchangeable at the SpawnSync routing point.
 //

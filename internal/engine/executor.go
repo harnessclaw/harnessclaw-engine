@@ -36,7 +36,7 @@ type ToolExecutor struct {
 	// executor for a given session/agent.
 	artifactProducer tool.ArtifactProducer
 	// taskContract carries the deliverable expectations + temporal
-	// boundary the SubmitTaskResult tool reads back during M4 validation.
+	// boundary the submit_task_result tool reads back during M4 validation.
 	// Empty contract = no enforcement; the loop terminates on plain
 	// end_turn as before.
 	taskContract tool.TaskContract
@@ -81,7 +81,7 @@ func (te *ToolExecutor) SetArtifactProducer(p tool.ArtifactProducer) {
 }
 
 // SetTaskContract installs the deliverable contract reachable from tool
-// execution context. SubmitTaskResult uses it to validate every claimed
+// execution context. submit_task_result uses it to validate every claimed
 // artifact_id against the parent's expectations. Pass a zero-value
 // TaskContract on legacy / unrestricted dispatches.
 func (te *ToolExecutor) SetTaskContract(c tool.TaskContract) {
@@ -203,8 +203,8 @@ func (te *ToolExecutor) executeSingle(
 		}
 		// Doc §10: surface produced artifacts on the wire as Refs, not
 		// content. Two metadata shapes are accepted:
-		//   1. metadata["artifacts"] = []ArtifactRef — used by Task /
-		//      Specialists tools that aggregate refs from sub-agent
+		//   1. metadata["artifacts"] = []ArtifactRef — used by task /
+		//      scheduler tools that aggregate refs from sub-agent
 		//      submissions. Lift the list directly.
 		//   2. render_hint=artifact + scalar fields — used by per-call
 		//      ArtifactWrite. Build a single Ref via the helper.
@@ -243,7 +243,7 @@ func (te *ToolExecutor) executeSingle(
 		// can watch L2/L3 lifecycle in production without flipping to
 		// debug. Includes:
 		//   - agent_id: which sub-agent layer ran this — lets you skim the
-		//     log and see "L2 calls Task → L3 calls WebSearch → L3 calls
+		//     log and see "L2 calls Task → L3 calls web_search → L3 calls
 		//     ArtifactWrite → L2 calls ArtifactRead" without correlation.
 		//   - artifact_id: when the tool produced one, so the §10 chain
 		//     (write → emit → store → read) is traceable from the log alone.
@@ -367,7 +367,7 @@ func (te *ToolExecutor) executeSingle(
 		permKey := extractPermissionKey(tc.Name, tc.Input)
 
 		// Derive a human-readable command label for the UI.
-		// "Bash:git" → "git", "Edit:/src/main.go" → "Edit /src/main.go", "Grep" → "Grep"
+		// "Bash:git" → "git", "Edit:/src/main.go" → "Edit /src/main.go", "grep" → "grep"
 		cmdLabel := permKeyLabel(permKey, tc.Name)
 
 		// Build a clear, actionable permission message for the user.
@@ -436,7 +436,7 @@ func (te *ToolExecutor) executeSingle(
 	// (e.g. submittool's metadata round-trip) can attribute it back to
 	// this spawn without each tool having to be wired with the identity.
 	execCtx = tool.WithArtifactProducer(execCtx, te.artifactProducer)
-	// Task contract reaches SubmitTaskResult so M3/M4 validation can
+	// Task contract reaches submit_task_result so M3/M4 validation can
 	// match each claimed artifact against the parent's contract. Always
 	// attach — when the contract is zero-value the validating tool
 	// degrades to existence-only checks.
@@ -486,10 +486,10 @@ func (te *ToolExecutor) executeSingle(
 		})
 	}
 
-	// Inject ToolUseContext so tools (e.g. Specialists) can read the
+	// Inject ToolUseContext so tools (e.g. scheduler) can read the
 	// session ID and tool-call identity without threading these fields
 	// through every call signature. Without this injection,
-	// tool.GetToolUseContext always returns nil and Specialists falls
+	// tool.GetToolUseContext always returns nil and scheduler falls
 	// into the empty ParentSessionID branch — sub-agents never get
 	// attributed to the parent session and metrics show sub_agents:[].
 	if sid, ok := sessionstats.SessionIDFromCtx(execCtx); ok {
@@ -538,12 +538,12 @@ func (te *ToolExecutor) executeSingle(
 //	"Bash:git"            → "git"
 //	"Bash:npm"            → "npm"
 //	"Edit:/src/main.go"   → "Edit /src/main.go"
-//	"Grep"                → "Grep"
+//	"grep"                → "grep"
 func permKeyLabel(permKey, toolName string) string {
 	if idx := strings.IndexByte(permKey, ':'); idx >= 0 {
 		prefix := permKey[:idx]
 		suffix := permKey[idx+1:]
-		if prefix == "Bash" {
+		if prefix == "bash" {
 			// For Bash commands, show just the program name (e.g. "git").
 			return suffix
 		}

@@ -58,7 +58,7 @@ func (c *ReActCoordinator) Run(
 		return result
 	}
 
-	// D-mode auto-escalation only fires for Specialists. The other
+	// D-mode auto-escalation only fires for the scheduler. The other
 	// coordinator-tier agents (Plan, Explore, general-purpose) are
 	// themselves alternative coordinators — wrapping them in Plan mode
 	// would be tier confusion. The check is on the agent name (matches
@@ -139,14 +139,14 @@ func escapeJSON(s string) string {
 	return string(out)
 }
 
-// escalationEligible bounds D-mode promotion to the Specialists path.
+// escalationEligible bounds D-mode promotion to the scheduler path.
 // Other coordinator-tier agents are pre-existing specialised loops; they
 // shouldn't be wrapped in Plan mode just because they hit a recoverable
 // failure. Tests with no subagentType (the bare engine path) also fall
 // through unmodified — escalation requires explicit opt-in via the
-// Specialists name.
+// scheduler name.
 func escalationEligible(lc *loopConfig) bool {
-	return lc != nil && lc.subagentType == "specialists"
+	return lc != nil && lc.subagentType == "scheduler"
 }
 
 // budgetExceeded is the same gate Plan uses; ReAct consults it before
@@ -181,7 +181,7 @@ func shouldEscalate(r subAgentLoopResult) bool {
 	case types.TerminalCompleted:
 		// Completed cleanly — trust it. Escalate only if the loop
 		// produced contract failures despite "completed" status, which
-		// happens when SubmitTaskResult never passed.
+		// happens when submit_task_result never passed.
 		return len(r.ContractFailures) > 0
 	case types.TerminalAbortedStreaming, types.TerminalAbortedTools:
 		// User-side abort; respect the abort.

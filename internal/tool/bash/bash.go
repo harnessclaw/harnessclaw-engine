@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	toolName = "Bash"
+	toolName = "bash"
 
 	// maxOutputLen is the maximum number of characters returned to the LLM.
 	maxOutputLen = 30_000

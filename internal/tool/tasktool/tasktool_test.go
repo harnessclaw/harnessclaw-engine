@@ -100,8 +100,8 @@ func TestCreateTool_InvalidJSONErrors(t *testing.T) {
 
 func TestCreateTool_Metadata(t *testing.T) {
 	ct := NewCreate(newTestStore(), "s1")
-	if ct.Name() != "TaskCreate" {
-		t.Errorf("expected name 'TaskCreate', got %q", ct.Name())
+	if ct.Name() != "task_create" {
+		t.Errorf("expected name 'task_create', got %q", ct.Name())
 	}
 	if ct.IsReadOnly() {
 		t.Error("expected IsReadOnly to be false")
@@ -173,8 +173,8 @@ func TestGetTool_ValidateInput_InvalidJSON(t *testing.T) {
 
 func TestGetTool_Metadata(t *testing.T) {
 	gt := NewGet(newTestStore(), "s1")
-	if gt.Name() != "TaskGet" {
-		t.Errorf("expected name 'TaskGet', got %q", gt.Name())
+	if gt.Name() != "task_get" {
+		t.Errorf("expected name 'task_get', got %q", gt.Name())
 	}
 	if !gt.IsReadOnly() {
 		t.Error("expected IsReadOnly to be true")
@@ -306,8 +306,8 @@ func TestListTool_EmptyScope(t *testing.T) {
 
 func TestListTool_Metadata(t *testing.T) {
 	lt := NewList(newTestStore(), "s1")
-	if lt.Name() != "TaskList" {
-		t.Errorf("expected name 'TaskList', got %q", lt.Name())
+	if lt.Name() != "task_list" {
+		t.Errorf("expected name 'task_list', got %q", lt.Name())
 	}
 	if !lt.IsReadOnly() {
 		t.Error("expected IsReadOnly to be true")
@@ -425,8 +425,8 @@ func TestUpdateTool_ValidateInput_InvalidJSON(t *testing.T) {
 
 func TestUpdateTool_Metadata(t *testing.T) {
 	ut := NewUpdate(newTestStore(), "s1")
-	if ut.Name() != "TaskUpdate" {
-		t.Errorf("expected name 'TaskUpdate', got %q", ut.Name())
+	if ut.Name() != "task_update" {
+		t.Errorf("expected name 'task_update', got %q", ut.Name())
 	}
 	if ut.IsReadOnly() {
 		t.Error("expected IsReadOnly to be false")

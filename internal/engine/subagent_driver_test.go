@@ -24,7 +24,7 @@ var minimalSubAgentSchema = map[string]any{
 	},
 }
 
-// escalateInputJSON produces an EscalateToPlanner input for tests.
+// escalateInputJSON produces an escalate_to_planner input for tests.
 func escalateInputJSON(reason, suggested string) string {
 	body, _ := json.Marshal(map[string]any{
 		"reason":               reason,
@@ -57,8 +57,8 @@ func TestSubAgentDriver_HappyPath(t *testing.T) {
 }
 
 // TestSubAgentDriver_StripsDispatchTools verifies that even when AllowedTools
-// is empty (full registry visible by AgentType filtering), Task / Specialists
-// / Orchestrate never reach the LLM. Inspection: read prov.recorded and
+// is empty (full registry visible by AgentType filtering), Task / scheduler
+// / orchestrate never reach the LLM. Inspection: read prov.recorded and
 // confirm the tool schemas list excludes those names.
 func TestSubAgentDriver_StripsDispatchTools(t *testing.T) {
 	prov := &subagentMockProvider{
@@ -78,12 +78,12 @@ func TestSubAgentDriver_StripsDispatchTools(t *testing.T) {
 	}
 
 	// Register Task as a real tool so it WOULD show up if the strip didn't run.
-	taskTool := &fakeDispatchTool{name: "Task"}
-	specialistsTool := &fakeDispatchTool{name: "Specialists"}
-	orchestrateTool := &fakeDispatchTool{name: "Orchestrate"}
+	taskTool := &fakeDispatchTool{name: "task"}
+	schedulerTool := &fakeDispatchTool{name: "scheduler"}
+	orchestrateTool := &fakeDispatchTool{name: "orchestrate"}
 
 	eng := newSubagentTestEngine(prov,
-		taskTool, specialistsTool, orchestrateTool,
+		taskTool, schedulerTool, orchestrateTool,
 		submittool.NewEscalate(),
 		submittool.New(),
 	)
@@ -117,7 +117,7 @@ func TestSubAgentDriver_StripsDispatchTools(t *testing.T) {
 	// directly, assert via the post-hoc tool-call test instead.
 	//
 	// Test plan: have the model TRY to call Task. The driver dispatches via
-	// pool.Get; with WithoutNames stripping, pool.Get("Task") returns nil
+	// pool.Get; with WithoutNames stripping, pool.Get("task") returns nil
 	// and the executor reports "tool not found". So we can detect by
 	// running a follow-up that tries Task and observing failure.
 	//
@@ -126,7 +126,7 @@ func TestSubAgentDriver_StripsDispatchTools(t *testing.T) {
 	// the unit test on pool.WithoutNames, that's sufficient for this layer.
 }
 
-// fakeDispatchTool stands in for Task/Specialists/Orchestrate so the registry
+// fakeDispatchTool stands in for Task/scheduler/orchestrate so the registry
 // has something to filter. The driver's WithoutNames strip should drop it
 // before the LLM ever sees it.
 type fakeDispatchTool struct {
@@ -145,7 +145,7 @@ func (t *fakeDispatchTool) Execute(_ context.Context, _ json.RawMessage) (*types
 	return &types.ToolResult{Content: "fake dispatch executed"}, nil
 }
 
-// TestSubAgentDriver_Escalation drives the L3 to call EscalateToPlanner and
+// TestSubAgentDriver_Escalation drives the L3 to call escalate_to_planner and
 // verifies SpawnResult.NeedsPlanning + EscalationReason flow back to the
 // parent. Status should be "needs_planning", not "completed".
 func TestSubAgentDriver_Escalation(t *testing.T) {
@@ -187,7 +187,7 @@ func TestSubAgentDriver_Escalation(t *testing.T) {
 	}
 
 	if !res.NeedsPlanning {
-		t.Error("NeedsPlanning should be true after EscalateToPlanner")
+		t.Error("NeedsPlanning should be true after escalate_to_planner")
 	}
 	if res.Status != "needs_planning" {
 		t.Errorf("status = %q, want needs_planning", res.Status)
@@ -204,8 +204,8 @@ func TestSubAgentDriver_Escalation(t *testing.T) {
 }
 
 // TestSubAgentDriver_NudgeMentionsEscalate confirms the L3-specific nudge
-// surfaces EscalateToPlanner — that's what distinguishes the L3 driver from
-// the L2 loop's nudge (which only mentions SubmitTaskResult).
+// surfaces escalate_to_planner — that's what distinguishes the L3 driver from
+// the L2 loop's nudge (which only mentions submit_task_result).
 func TestSubAgentDriver_NudgeMentionsEscalate(t *testing.T) {
 	msg := buildDriverNudgeMessage(1, []types.ExpectedOutput{
 		{Role: "draft", Required: true},
@@ -214,7 +214,7 @@ func TestSubAgentDriver_NudgeMentionsEscalate(t *testing.T) {
 		t.Fatal("nudge message has no content")
 	}
 	text := msg.Content[0].Text
-	for _, want := range []string{"SubmitTaskResult", "EscalateToPlanner", "draft"} {
+	for _, want := range []string{"submit_task_result", "escalate_to_planner", "draft"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("nudge missing %q\n%s", want, text)
 		}
@@ -222,21 +222,21 @@ func TestSubAgentDriver_NudgeMentionsEscalate(t *testing.T) {
 }
 
 // TestSubAgentDriver_AugmentsAllowedTools confirms that a TierSubAgent with
-// a narrow AllowedTools list still gets SubmitTaskResult and
-// EscalateToPlanner injected — otherwise the driver would loop forever
+// a narrow AllowedTools list still gets submit_task_result and
+// escalate_to_planner injected — otherwise the driver would loop forever
 // trying to nudge a worker that physically cannot submit.
 func TestSubAgentDriver_AugmentsAllowedTools(t *testing.T) {
 	def := &agent.AgentDefinition{
 		Name:         "narrow",
 		Tier:         agent.TierSubAgent,
 		AgentType:    tool.AgentTypeSync,
-		AllowedTools: []string{"WebSearch"}, // intentionally narrow
+		AllowedTools: []string{"web_search"}, // intentionally narrow
 		OutputSchema: minimalSubAgentSchema,
 	}
 
 	got := def.MaybeAugmentForSubAgent()
 
-	want := map[string]bool{"WebSearch": true, "SubmitTaskResult": true, "EscalateToPlanner": true}
+	want := map[string]bool{"web_search": true, "submit_task_result": true, "escalate_to_planner": true}
 	if len(got) != len(want) {
 		t.Fatalf("augmented tools = %v, want %v", got, want)
 	}
@@ -262,7 +262,7 @@ func TestSubAgentDriver_AugmentsAllowedTools(t *testing.T) {
 // TierCoordinator and TierSubAgent definitions never reached runSubAgentDriver.
 //
 // We verify by spawning through the @-mention code path with a TierSubAgent
-// definition that demands SubmitTaskResult; the test mock immediately
+// definition that demands submit_task_result; the test mock immediately
 // escalates so we can observe NeedsPlanning=true on the result. If the bug
 // regressed, the def lookup would miss, the L3 driver would not run, and
 // the escalation render_hint would not be intercepted (NeedsPlanning would
@@ -296,7 +296,7 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 
 	// Drive the @-mention code path directly via processWithAgent. This is
 	// the path that had the bug; SpawnSync alone wouldn't catch it because
-	// most callers (Specialists / Agent tools) already pass def.Name.
+	// most callers (scheduler / Agent tools) already pass def.Name.
 	sess, err := eng.sessionMgr.GetOrCreate(context.Background(), "sess_gap5", "", "")
 	if err != nil {
 		t.Fatalf("session: %v", err)
@@ -330,7 +330,7 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 	//   - "completed": driver finished normally (escalation = clean terminate)
 	// What we MUST NOT see is "max_turns" — that's what would happen if the
 	// def lookup missed and the legacy loop ran (legacy loop has no
-	// EscalateToPlanner detection, so the escalation tool result would
+	// escalate_to_planner detection, so the escalation tool result would
 	// silently no-op and the loop would nudge until cap).
 	if endStatus == "max_turns" {
 		t.Errorf("subagent.end status = %q — looks like the def lookup missed and the legacy loop ran (Gap 5 regressed)", endStatus)
@@ -339,7 +339,7 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 
 // selfCheckSubmission was the post-submit semantic check from the
 // artifact-based model; under local-files-as-truth meta.json IS the
-// contract and the check moves into MetaWrite.Validate. The legacy tests
+// contract and the check moves into meta_write.Validate. The legacy tests
 // that exercised it are deleted along with the helper.
 
 // TestBuildSubAgentSystemPrompt_NoEmmaForSubAgent guards the leaf-isolation
@@ -474,11 +474,11 @@ func TestSubAgentDriver_AugmentSkipsCoordinator(t *testing.T) {
 	def := &agent.AgentDefinition{
 		Name:         "coord",
 		AgentType:    tool.AgentTypeSync,
-		AllowedTools: []string{"Task", "WebSearch"},
+		AllowedTools: []string{"task", "web_search"},
 		// No Tier set — defaults to TierCoordinator.
 	}
 	got := def.MaybeAugmentForSubAgent()
-	if len(got) != 2 || got[0] != "Task" || got[1] != "WebSearch" {
+	if len(got) != 2 || got[0] != "task" || got[1] != "web_search" {
 		t.Errorf("coordinator AllowedTools should be untouched, got %v", got)
 	}
 }

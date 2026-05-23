@@ -23,11 +23,11 @@ import (
 
 // ToolName is the registered name of the dispatch tool.
 //
-// Renamed from "Agent" to "Task" to disambiguate from the L1/L2/L3 agent
+// Renamed from "Agent" to "task" to disambiguate from the L1/L2/L3 agent
 // concept in the architecture: this tool's job is to create a *task* and
 // hand it to a sub-agent. The package name (agenttool) is kept for
 // historical continuity — only the LLM-facing string changed.
-const ToolName = "Task"
+const ToolName = "task"
 
 // AgentTool spawns sub-agents to handle complex, multi-step tasks.
 type AgentTool struct {
@@ -113,11 +113,11 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		Fork:         input.Fork,
 		// Forward the deliverable contract (doc §3 mechanisms 3+4): when
 		// declared, the framework refuses to terminate the L3 loop until
-		// SubmitTaskResult validates against this list. Empty = no
+		// submit_task_result validates against this list. Empty = no
 		// contract; sub-agent terminates on plain end_turn (legacy path).
 		ExpectedOutputs: input.ExpectedOutputs,
 		// TaskID gives every artifact this dispatch produces a uniform
-		// producer.task_id stamp — SubmitTaskResult's M4 validation
+		// producer.task_id stamp — submit_task_result's M4 validation
 		// rejects refs whose stamp doesn't match. Generated here from
 		// the tool_use_id so each Task tool invocation is its own task.
 		TaskID:        deriveTaskID(ctx),
@@ -169,7 +169,7 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 	// "L3 didn't write the right artifact" by comparing the contract
 	// the LLM passed against what came back in dispatch.out.
 	t.logger.Debug("dispatch.in",
-		zap.String("tool", "Task"),
+		zap.String("tool", "task"),
 		zap.String("parent_session_id", cfg.ParentSessionID),
 		zap.String("subagent_type", input.SubagentType),
 		zap.String("name", input.Name),
@@ -271,7 +271,7 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		metadata["terminal_reason"] = string(result.Terminal.Reason)
 	}
 	// Surface produced artifacts so the executor can lift them onto the
-	// tool.end event. Same rationale as Specialists: gives the WebSocket
+	// tool.end event. Same rationale as scheduler: gives the WebSocket
 	// a single anchor point for "what came out of this Task call" without
 	// the frontend having to aggregate from sub-agent events.
 	if len(result.SubmittedArtifacts) > 0 {
@@ -316,7 +316,7 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		// first few failures, not just counts. Without this an operator
 		// staring at logs sees "contract_failures=2" and has to dig into
 		// the WebSocket / tool_result content to find what they were —
-		// painful when iterating on Specialists prompts. The truncation
+		// painful when iterating on scheduler prompts. The truncation
 		// below stops a 50-failure cascade from blowing the log line.
 		var reason, msg string
 		if result.Terminal != nil {
@@ -337,13 +337,13 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 	}
 
 	// DEBUG: dispatch.out — exactly what the calling LLM (typically L2
-	// Specialists) will see as tool_result.Content. The
+	// scheduler) will see as tool_result.Content. The
 	// submitted_artifacts count is the field to watch: 0 with isError=false
 	// means the L3 finished but nothing came back across the contract —
 	// either the dispatch had no expected_outputs, or the framework's
 	// gating let it through inappropriately.
 	t.logger.Debug("dispatch.out",
-		zap.String("tool", "Task"),
+		zap.String("tool", "task"),
 		zap.String("subagent_type", input.SubagentType),
 		zap.Bool("is_error", isError),
 		zap.Int("content_len", len(content)),

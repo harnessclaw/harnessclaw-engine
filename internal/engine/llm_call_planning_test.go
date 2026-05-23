@@ -42,7 +42,7 @@ func TestCallLLMOnce_EmitsToolPlanningOnFirstChunk(t *testing.T) {
 				Type: types.StreamEventToolUse,
 				ToolCall: &types.ToolCall{
 					ID:    "toolu_1",
-					Name:  "Bash",
+					Name:  "bash",
 					Input: `{"command":"ls"`, // 50B 不到 200B
 				},
 			},
@@ -56,7 +56,7 @@ func TestCallLLMOnce_EmitsToolPlanningOnFirstChunk(t *testing.T) {
 	var sawPlanning bool
 	var sawProgress bool
 	for ev := range planningOut {
-		if ev.Type == types.EngineEventToolPlanning && ev.ToolUseID == "toolu_1" && ev.ToolName == "Bash" {
+		if ev.Type == types.EngineEventToolPlanning && ev.ToolUseID == "toolu_1" && ev.ToolName == "bash" {
 			sawPlanning = true
 		}
 		if ev.Type == types.EngineEventToolPlanningProgress {
@@ -79,7 +79,7 @@ func TestCallLLMOnce_EmitsProgressAboveThreshold(t *testing.T) {
 		chunks: []types.StreamEvent{
 			{
 				Type: types.StreamEventToolUse,
-				ToolCall: &types.ToolCall{ID: "toolu_big", Name: "Write", Input: bigInput},
+				ToolCall: &types.ToolCall{ID: "toolu_big", Name: "write", Input: bigInput},
 			},
 		},
 	}
@@ -154,7 +154,7 @@ func TestCallLLM_EmitsToolQueuedOnSuccess(t *testing.T) {
 		chunks: []types.StreamEvent{
 			{
 				Type: types.StreamEventToolUse,
-				ToolCall: &types.ToolCall{ID: "toolu_q", Name: "Read", Input: `{"path":"/tmp/x"}`},
+				ToolCall: &types.ToolCall{ID: "toolu_q", Name: "read", Input: `{"path":"/tmp/x"}`},
 			},
 		},
 	}
@@ -181,7 +181,7 @@ func TestCallLLM_EmitsToolQueuedOnSuccess(t *testing.T) {
 	if queuedCount != 1 {
 		t.Errorf("queuedCount = %d, want 1", queuedCount)
 	}
-	if queuedToolName != "Read" {
+	if queuedToolName != "read" {
 		t.Errorf("queuedToolName = %q, want Read", queuedToolName)
 	}
 }

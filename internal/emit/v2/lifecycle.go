@@ -103,7 +103,7 @@ func (t *Tracker) Open(cardID string, kind CardKind, timeout time.Duration, pare
 	// on a still-open descendant must be able to skip over this card and
 	// keep refreshing the deadline of further ancestors — otherwise a
 	// long-running grandchild orphan-times the still-relevant root card
-	// (the bug that killed turn cards while Specialists was still
+	// (the bug that killed turn cards while scheduler was still
 	// running underneath an already-closed message card).
 	t.parentOf[cardID] = parent
 }
@@ -185,7 +185,7 @@ func (t *Tracker) Touch(cardID string) {
 	now := t.now()
 	// Walk along the PERMANENT parent map, not just the still-open cards.
 	// When an intermediate ancestor has already been closed (typical for
-	// the message card that wrapped a Specialists tool call), we skip
+	// the message card that wrapped a scheduler tool call), we skip
 	// the deadline refresh on that gravestone but keep climbing — the
 	// turn / plan / step above are still tracked and must not orphan
 	// just because a sibling card already finished.
@@ -278,8 +278,8 @@ func (t *Tracker) loop() {
 //
 // Cards with timeout==0 are "chain-only" entries: registered solely so
 // Touch can walk their parent link. They never expire — the watchdog
-// skips them. Used for long-lived orchestration tool cards (Specialists,
-// Task) whose lifetime is bounded by the inner agent run, not by any
+// skips them. Used for long-lived orchestration tool cards (scheduler,
+// task) whose lifetime is bounded by the inner agent run, not by any
 // wall-clock budget.
 func (t *Tracker) sweep() {
 	now := t.now()

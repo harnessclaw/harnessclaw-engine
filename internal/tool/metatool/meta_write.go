@@ -1,4 +1,4 @@
-// Package metatool implements MetaWrite — L3's task-completion declaration.
+// Package metatool implements meta_write — L3's task-completion declaration.
 // Writes {taskDir}/meta.json exactly once via O_EXCL so accidental second
 // calls are rejected (one task = one canonical summary).
 package metatool
@@ -16,7 +16,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-const ToolName = "MetaWrite"
+const ToolName = "meta_write"
 
 type MetaWriteTool struct {
 	tool.BaseTool
@@ -128,7 +128,7 @@ func (t *MetaWriteTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 	f, err := os.OpenFile(metaPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		if os.IsExist(err) {
-			return errResult(fmt.Sprintf("meta.json already exists for task %s — MetaWrite is single-shot", scope.TaskID)), nil
+			return errResult(fmt.Sprintf("meta.json already exists for task %s — meta_write is single-shot", scope.TaskID)), nil
 		}
 		return errResult("open: " + err.Error()), nil
 	}
@@ -136,7 +136,7 @@ func (t *MetaWriteTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 	if _, err := f.Write(body); err != nil {
 		return errResult("write: " + err.Error()), nil
 	}
-	return &types.ToolResult{Content: fmt.Sprintf("meta written; pass meta_path=%q to SubmitTaskResult", relPath)}, nil
+	return &types.ToolResult{Content: fmt.Sprintf("meta written; pass meta_path=%q to submit_task_result", relPath)}, nil
 }
 
 func errResult(msg string) *types.ToolResult {
@@ -149,4 +149,4 @@ const description = `L3 task 结束时调用：写自己 task 目录的 meta.jso
 - 入参只有 status / summary / outputs / consumed_inputs；task_id、agent、outputs[].bytes 由框架自动填，**不要在入参里写**。
 - summary 必填、非空、≤ 500 字。**不要把内容粘进 summary**，只描述形态。
 - outputs[].path 填产物的绝对路径。
-- 写完后紧接着调 SubmitTaskResult({task_id, meta_path}) 通知 L2 验收（task_id 在你看到的 task spawn 信息里）。`
+- 写完后紧接着调 submit_task_result({task_id, meta_path}) 通知 L2 验收（task_id 在你看到的 task spawn 信息里）。`

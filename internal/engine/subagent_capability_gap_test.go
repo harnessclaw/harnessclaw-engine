@@ -12,12 +12,12 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// fakeWebSearchTool is a minimal stub that reports itself as "WebSearch".
+// fakeWebSearchTool is a minimal stub that reports itself as "web_search".
 // Used to construct an engine that has a search tool registered, so the
 // capability-gap detector should stay silent.
 type fakeWebSearchTool struct{ tool.BaseTool }
 
-func (f *fakeWebSearchTool) Name() string                { return "WebSearch" }
+func (f *fakeWebSearchTool) Name() string                { return "web_search" }
 func (f *fakeWebSearchTool) Description() string         { return "fake web search for test" }
 func (f *fakeWebSearchTool) IsReadOnly() bool            { return true }
 func (f *fakeWebSearchTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
@@ -26,14 +26,14 @@ func (f *fakeWebSearchTool) Execute(_ context.Context, _ json.RawMessage) (*type
 }
 
 // researcherDef is a minimal TierSubAgent definition that declares both
-// WebSearch and TavilySearch in its AllowedTools. The detector fires when
+// web_search and tavily_search in its AllowedTools. The detector fires when
 // neither is available at runtime.
 var researcherDef = &agent.AgentDefinition{
 	Name: "researcher-test",
 	Tier: agent.TierSubAgent,
 	AllowedTools: []string{
-		"WebSearch", "TavilySearch", "ArtifactRead", "ArtifactWrite",
-		"SubmitTaskResult", "EscalateToPlanner",
+		"web_search", "tavily_search", "ArtifactRead", "ArtifactWrite",
+		"submit_task_result", "escalate_to_planner",
 	},
 	OutputSchema: map[string]any{
 		"type": "object",
@@ -115,7 +115,7 @@ func spawnResearcher(
 }
 
 // TestSubAgentSpawn_SearchGap_EmitsSystemNotice verifies that spawning a
-// TierSubAgent that declares WebSearch/TavilySearch when neither is registered
+// TierSubAgent that declares web_search/tavily_search when neither is registered
 // in the engine causes exactly one EngineEventSystemNotice to appear on
 // ParentOut with the expected topic, title, icon, and agent name in Summary.
 func TestSubAgentSpawn_SearchGap_EmitsSystemNotice(t *testing.T) {
@@ -207,12 +207,12 @@ func TestSubAgentSpawn_SearchGap_DedupesPerSession(t *testing.T) {
 }
 
 // TestSubAgentSpawn_SearchAvailable_NoNotice verifies that no
-// EngineEventSystemNotice is emitted when the engine has WebSearch registered.
+// EngineEventSystemNotice is emitted when the engine has web_search registered.
 func TestSubAgentSpawn_SearchAvailable_NoNotice(t *testing.T) {
 	prov := &subagentMockProvider{
 		responses: []subagentMockResponse{newEndTurnResponse()},
 	}
-	eng := newGapTestEngine(t, prov, &fakeWebSearchTool{}) // WebSearch is available
+	eng := newGapTestEngine(t, prov, &fakeWebSearchTool{}) // web_search is available
 
 	parentOut := make(chan types.EngineEvent, 64)
 	errCh := spawnResearcher(t, eng, parentOut, "sess-int-no-notice")
@@ -224,7 +224,7 @@ func TestSubAgentSpawn_SearchAvailable_NoNotice(t *testing.T) {
 	// Drain all events; none should be a SystemNotice.
 	for ev := range parentOut {
 		if ev.Type == types.EngineEventSystemNotice {
-			t.Errorf("unexpected EngineEventSystemNotice when WebSearch is available: %+v", ev.SystemNotice)
+			t.Errorf("unexpected EngineEventSystemNotice when web_search is available: %+v", ev.SystemNotice)
 		}
 	}
 }

@@ -29,12 +29,12 @@ func (d *dummyLoader) LoadSessionStats(_ context.Context, _ string) (types.Sessi
 // the tracker will have rows and this test confirms the HTTP surface exposes them.
 func TestMetricsAPI_ReturnsSubAgentRows(t *testing.T) {
 	const sessionID = "sess_e2e_subagent"
-	const subRunID = "run_specialists_xyz"
+	const subRunID = "run_scheduler_xyz"
 
 	// Build an in-memory tracker with a populated sub-agent row.
 	reg := sessionstats.NewRegistry()
 	tr := reg.GetOrCreate(sessionID)
-	tr.StartSubAgent(subRunID, subRunID, "specialists", "", "")
+	tr.StartSubAgent(subRunID, subRunID, "scheduler", "", "")
 
 	// Simulate a Chat call: RecordLLMCall with agentRunID routes tokens to
 	// the sub-agent row opened above.
@@ -78,8 +78,8 @@ func TestMetricsAPI_ReturnsSubAgentRows(t *testing.T) {
 	if sa.CacheReadTokens != 100 {
 		t.Errorf("cache_read_tokens = %d, want 100", sa.CacheReadTokens)
 	}
-	if sa.AgentType != "specialists" {
-		t.Errorf("agent_type = %q, want %q", sa.AgentType, "specialists")
+	if sa.AgentType != "scheduler" {
+		t.Errorf("agent_type = %q, want %q", sa.AgentType, "scheduler")
 	}
 	if sa.LLMCalls != 1 {
 		t.Errorf("llm_calls = %d, want 1", sa.LLMCalls)

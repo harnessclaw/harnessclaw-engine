@@ -108,7 +108,7 @@ func (j *Judge) ReviewPlan(p *Plan) JudgeVerdict {
 //   - every required ExpectedOutput.Role is covered by some Artifact
 //
 // Schema validation (L2) reuses the existing in-house validator from
-// submittool — same code path SubmitTaskResult uses, so the verdict is
+// submittool — same code path submit_task_result uses, so the verdict is
 // consistent across L2's per-step Judge and the L3 driver's submit-time
 // validation.
 func (j *Judge) ReviewStep(step *PlanStep, result *StepResult) JudgeVerdict {
@@ -139,7 +139,7 @@ func (j *Judge) ReviewStep(step *PlanStep, result *StepResult) JudgeVerdict {
 		}
 	}
 
-	// L2 schema check is left to SubmitTaskResult itself — by the time
+	// L2 schema check is left to submit_task_result itself — by the time
 	// the result reaches Judge, it has already passed schema validation
 	// (or failed loudly). We don't re-run schema here to avoid double
 	// costs; instead, we trust ContractFailures forwarded via
@@ -375,7 +375,7 @@ func missingRoles(required []string, artifacts []types.ArtifactRef) []string {
 }
 
 // validateSubmissionResult provides a tiny adapter so callers wanting to
-// drive Judge from a SubmitTaskResult outcome can do so without touching
+// drive Judge from a submit_task_result outcome can do so without touching
 // the schema package directly. Currently unused by the coordinator (the
 // L3 driver already validates), kept so future Plan-mode hooks can call
 // it before accepting a step's submission.

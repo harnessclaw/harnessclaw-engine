@@ -61,6 +61,6 @@ func TestFileWrite_DoesNotEmitFileInfoRenderHint(t *testing.T) {
 		t.Fatalf("execute err: %v", err)
 	}
 	if got, _ := res.Metadata["render_hint"].(string); got == "file_info" {
-		t.Errorf("FileWrite must not emit render_hint=file_info (Promote is the sole Deliverable source)")
+		t.Errorf("FileWrite must not emit render_hint=file_info (promote is the sole Deliverable source)")
 	}
 }

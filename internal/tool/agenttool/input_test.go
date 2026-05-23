@@ -9,7 +9,7 @@ import (
 // reject sub-agent types declared in agentToolDescription (writer /
 // researcher / analyst / developer / lifestyle / scheduler). Prior to
 // fix, the hardcoded whitelist rejected these, costing one wasted
-// round-trip per Specialists dispatch that picked a team-member name.
+// round-trip per scheduler dispatch that picked a team-member name.
 func TestValidate_AcceptsTeamMemberSubAgentTypes(t *testing.T) {
 	for _, st := range []string{
 		"general-purpose", "Explore", "explore", "Plan", "plan",

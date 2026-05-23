@@ -14,7 +14,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-const toolName = "Edit"
+const toolName = "edit"
 
 // editInput is the JSON structure the LLM sends to invoke the tool.
 type editInput struct {

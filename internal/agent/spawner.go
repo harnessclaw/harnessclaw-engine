@@ -78,7 +78,7 @@ type SpawnConfig struct {
 	// (which uses sess.ID as ParentSessionID, hiding L3 from emma's view).
 	//
 	// Empty defaults to ParentSessionID (the L2 case where the immediate
-	// parent IS the root, e.g. Specialists spawned directly by emma).
+	// parent IS the root, e.g. scheduler spawned directly by emma).
 	RootSessionID string
 
 	// InputPaths lists upstream task output paths this spawn will read.
@@ -180,7 +180,7 @@ type SpawnConfig struct {
 	Inputs map[string]any
 
 	// CoordinatorMode optionally pins the L2 coordinator mode for this
-	// spawn. Only meaningful for coordinator-tier agents (Specialists,
+	// spawn. Only meaningful for coordinator-tier agents (scheduler,
 	// Plan, Explore, etc.); ignored for TierSubAgent which always runs
 	// the strict L3 driver.
 	//
@@ -190,7 +190,7 @@ type SpawnConfig struct {
 	//
 	// Wiring path: WebSocket clients pass coordinator_mode at session /
 	// turn level; the API layer threads it through ProcessMessage onto
-	// SpawnConfig when emma dispatches Specialists. Unknown values
+	// SpawnConfig when emma dispatches scheduler. Unknown values
 	// degrade gracefully to ReAct with a warn log — bad client input
 	// must never crash the spawn.
 	//

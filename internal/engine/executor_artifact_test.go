@@ -62,7 +62,7 @@ func TestArtifactRefFromMetadata_PopulatesAllFields(t *testing.T) {
 }
 
 // TestArtifactRefFromMetadata_PrefersListWhenPresent guards the
-// L1-tool.end gap fix: Specialists / Task tools put the aggregated
+// L1-tool.end gap fix: scheduler / Task tools put the aggregated
 // SubmittedArtifacts list on metadata["artifacts"] so the WebSocket
 // gets the full set on the dispatch tool's tool.end event, not just
 // the per-write subagent.event stream.

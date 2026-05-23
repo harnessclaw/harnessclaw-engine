@@ -118,7 +118,7 @@ func TestRegister_RejectsSubAgentWithDispatchTool(t *testing.T) {
 		Tier:         TierSubAgent,
 		AgentType:    tool.AgentTypeSync,
 		OutputSchema: map[string]any{"type": "object"},
-		AllowedTools: []string{"Task"},
+		AllowedTools: []string{"task"},
 	})
 	if err == nil {
 		t.Fatal("expected error: TierSubAgent with Task")
@@ -221,7 +221,7 @@ func TestRenderSubAgentContract_RendersAllSections(t *testing.T) {
 		"<sub-agent-contract>",
 		"</sub-agent-contract>",
 		"L3 sub-agent",
-		"EscalateToPlanner",
+		"escalate_to_planner",
 		"writing / polishing", // skills joined
 		"output_schema",
 		"```json",  // schema fenced code block
@@ -238,7 +238,7 @@ func TestRenderSubAgentContract_RendersAllSections(t *testing.T) {
 	// back in — Final Text contract / ArtifactWrite mechanics already live
 	// in artifactsGuidance.
 	for _, mustNotHave := range []string{
-		"SubmitTaskResult", // belongs in artifactsGuidance, not here
+		"submit_task_result", // belongs in artifactsGuidance, not here
 		"ArtifactWrite",    // ditto
 	} {
 		if strings.Contains(got, mustNotHave) {
@@ -302,7 +302,7 @@ func TestFreelancer_BuiltinRegistration(t *testing.T) {
 		t.Error("freelancer must NOT be a team member (emma should not see it)")
 	}
 	// AllowedTools must contain the four skill self-management tools
-	wantTools := []string{"SearchSkill", "LoadSkill", "UnloadSkill", "ListLoadedSkills"}
+	wantTools := []string{"search_skill", "load_skill", "unload_skill", "list_loaded_skills"}
 	for _, w := range wantTools {
 		found := false
 		for _, a := range def.AllowedTools {
@@ -315,9 +315,9 @@ func TestFreelancer_BuiltinRegistration(t *testing.T) {
 			t.Errorf("AllowedTools missing %q", w)
 		}
 	}
-	// Must NOT contain "Skill" tool — spec calls this out explicitly
+	// Must NOT contain "skill" tool — spec calls this out explicitly
 	for _, a := range def.AllowedTools {
-		if a == "Skill" {
+		if a == "skill" {
 			t.Error("freelancer AllowedTools should NOT contain Skill tool (use LoadSkill)")
 		}
 	}

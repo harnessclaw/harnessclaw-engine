@@ -14,8 +14,8 @@ func TestCreateTool_Name(t *testing.T) {
 	tm := agent.NewTeamManager()
 	broker := agent.NewMessageBroker()
 	tool := NewCreate(tm, broker, zap.NewNop())
-	if tool.Name() != "TeamCreate" {
-		t.Errorf("expected 'TeamCreate', got %q", tool.Name())
+	if tool.Name() != "team_create" {
+		t.Errorf("expected 'team_create', got %q", tool.Name())
 	}
 }
 
@@ -89,8 +89,8 @@ func TestCreateTool_ValidateInput(t *testing.T) {
 func TestDeleteTool_Name(t *testing.T) {
 	tm := agent.NewTeamManager()
 	tool := NewDelete(tm, zap.NewNop())
-	if tool.Name() != "TeamDelete" {
-		t.Errorf("expected 'TeamDelete', got %q", tool.Name())
+	if tool.Name() != "team_delete" {
+		t.Errorf("expected 'team_delete', got %q", tool.Name())
 	}
 }
 

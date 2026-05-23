@@ -12,12 +12,12 @@ import (
 
 // EscalateToolName is the LLM-facing name for the escalation tool.
 //
-// Why a dedicated tool rather than a SubmitTaskResult status field:
-// escalation is a different terminal class. SubmitTaskResult means "task
-// done, here are the deliverables"; EscalateToPlanner means "task
+// Why a dedicated tool rather than a submit_task_result status field:
+// escalation is a different terminal class. submit_task_result means "task
+// done, here are the deliverables"; escalate_to_planner means "task
 // undoable as scoped, please re-plan." Conflating them blurs the loop
 // driver's exit logic and pollutes the planner-facing surface area.
-const EscalateToolName = "EscalateToPlanner"
+const EscalateToolName = "escalate_to_planner"
 
 // EscalateMetadataRenderHint is the unique signal Execute writes to
 // ToolResult.Metadata "render_hint" — the L3 driver reads this to detect
@@ -163,4 +163,4 @@ const escalateDescription = `把任务退回给调度方——当你在当前作
 效果：
 框架把本工具视为终止动作。你的 loop 结束；上层收到 status=needs_planning，由它决定是否换个范围重试。调本工具不算失败——这是对"不可能任务"的正确反应。
 
-同一个任务里，本工具与 SubmitTaskResult 互斥，只能调其中之一。`
+同一个任务里，本工具与 submit_task_result 互斥，只能调其中之一。`

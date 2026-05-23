@@ -1,4 +1,4 @@
-// Package plantool implements the PlanUpdate LLM tool — the sole L2-facing
+// Package plantool implements the plan_update LLM tool — the sole L2-facing
 // interface for mutating plan.json. All mutations flow through PlanWriter
 // (single-consumer goroutine per session) so the state machine is never raced.
 package plantool
@@ -15,7 +15,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-const ToolName = "PlanUpdate"
+const ToolName = "plan_update"
 
 type PlanUpdateTool struct {
 	tool.BaseTool

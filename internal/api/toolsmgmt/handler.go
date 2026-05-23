@@ -50,7 +50,7 @@ func New(registry *tool.Registry, cfg *config.Config, cfgPath string, logger *za
 // ToolEntry is the wire-shape returned by GET endpoints.
 type ToolEntry struct {
 	Name             string         `json:"name"`              // yaml key, e.g. "web_search"
-	RegisteredName   string         `json:"registered_name"`   // LLM-facing tool name, e.g. "WebSearch"
+	RegisteredName   string         `json:"registered_name"`   // LLM-facing tool name, e.g. "web_search"
 	Enabled          bool           `json:"enabled"`           // raw enabled flag
 	Effective        bool           `json:"effective"`         // tool.IsEnabled() — true only when enabled AND credentials complete
 	Config           map[string]any `json:"config"`            // current cfg fields (api_key plaintext, per design A/A/A/A/A)

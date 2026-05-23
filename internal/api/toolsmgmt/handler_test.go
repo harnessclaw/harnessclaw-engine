@@ -18,7 +18,7 @@ import (
 )
 
 // newTestHandler builds a Handler with a tool.Registry that already
-// has WebSearch + TavilySearch registered from the given cfg. Mirrors
+// has web_search + tavily_search registered from the given cfg. Mirrors
 // what cmd/server/main.go does at startup (always register both;
 // IsEnabled() decides whether they're effective).
 func newTestHandler(t *testing.T, cfg *config.Config) *Handler {
@@ -95,7 +95,7 @@ func TestGet_WebSearch_ReturnsCredentials(t *testing.T) {
 	if resp.Data.Name != "web_search" {
 		t.Errorf("name: %q", resp.Data.Name)
 	}
-	if resp.Data.RegisteredName != "WebSearch" {
+	if resp.Data.RegisteredName != "web_search" {
 		t.Errorf("registered_name: %q", resp.Data.RegisteredName)
 	}
 	if !resp.Data.Enabled {
@@ -142,7 +142,7 @@ func TestPatch_WebSearch_HotSwapAndPersist(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.yaml")
 	if err := os.WriteFile(cfgPath, []byte(`tools:
-  web_search:
+  WebSearch:
     enabled: false
     api_key: "old"
 `), 0o600); err != nil {
@@ -170,7 +170,7 @@ func TestPatch_WebSearch_HotSwapAndPersist(t *testing.T) {
 		t.Fatalf("status: got %d body=%s", rec.Code, rec.Body.String())
 	}
 	// Hot-swap check: registry now holds a tool whose IsEnabled() reflects new credentials.
-	got := reg.Get("WebSearch")
+	got := reg.Get("web_search")
 	if got == nil || !got.IsEnabled() {
 		t.Errorf("expected hot-swapped enabled tool, got %v", got)
 	}
@@ -193,7 +193,7 @@ func TestPatch_WebSearch_HotSwapAndPersist(t *testing.T) {
 func TestPatch_RejectsEnableWithoutCredentials(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte("tools:\n  web_search:\n    enabled: false\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("tools:\n  WebSearch:\n    enabled: false\n"), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	cfg := &config.Config{Tools: config.ToolsConfig{WebSearch: config.WebSearchConfig{}}}
@@ -212,7 +212,7 @@ func TestPatch_RejectsEnableWithoutCredentials(t *testing.T) {
 		t.Fatalf("status: got %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
 	// Registry untouched.
-	if reg.Get("WebSearch").IsEnabled() {
+	if reg.Get("web_search").IsEnabled() {
 		t.Error("registry should not have been hot-swapped on validation failure")
 	}
 }
@@ -221,7 +221,7 @@ func TestPatch_PartialUpdate_PreservesUnsetFields(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.yaml")
 	if err := os.WriteFile(cfgPath, []byte(`tools:
-  web_search:
+  WebSearch:
     enabled: true
     api_key: "keep"
 `), 0o600); err != nil {

@@ -33,7 +33,7 @@ func makeInputWithTimeout(command string, timeoutMs int) json.RawMessage {
 
 func TestName(t *testing.T) {
 	bt := newTestTool()
-	if bt.Name() != "Bash" {
+	if bt.Name() != "bash" {
 		t.Errorf("expected 'Bash', got %q", bt.Name())
 	}
 }

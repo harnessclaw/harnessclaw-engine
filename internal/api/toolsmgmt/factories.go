@@ -13,7 +13,7 @@ import (
 
 func init() {
 	factories["web_search"] = &factory{
-		registeredName:   "WebSearch",
+		registeredName:   "web_search",
 		credentialFields: []string{"api_key"},
 		snapshot: func(c *config.Config) map[string]any {
 			ws := c.Tools.WebSearch
@@ -38,7 +38,7 @@ func init() {
 	}
 
 	factories["tavily_search"] = &factory{
-		registeredName:   "TavilySearch",
+		registeredName:   "tavily_search",
 		credentialFields: []string{"api_key"},
 		snapshot: func(c *config.Config) map[string]any {
 			ts := c.Tools.TavilySearch

@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	toolName      = "Grep"
+	toolName      = "grep"
 	maxOutputLen  = 30_000
 )
 

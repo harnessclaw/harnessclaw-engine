@@ -41,7 +41,7 @@ import (
 type Kind string
 
 const (
-	KindQuestion      Kind = "question"       // AskUserQuestion tool
+	KindQuestion      Kind = "question"       // ask_user_question tool
 	KindPermission    Kind = "permission"     // tool permission gate
 	KindPlanReview    Kind = "plan_review"    // PlanCoordinator user-confirmation
 	KindStepDecision  Kind = "step_decision"  // Scheduler / PlanCoordinator failure-decision gate

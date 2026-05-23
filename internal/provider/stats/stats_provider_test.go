@@ -238,7 +238,7 @@ func TestStatsProvider_WrapperExitsOnContextCancel(t *testing.T) {
 
 func TestStatsProvider_DualWritesToRootWhenRootDiffersFromSession(t *testing.T) {
 	const (
-		specialistsSubID = "sess_emma_001_sub_spec01"
+		schedulerSubID = "sess_emma_001_sub_spec01"
 		emmaSessionID    = "sess_emma_001"
 		writerRunID      = "agent_writer_001"
 	)
@@ -248,7 +248,7 @@ func TestStatsProvider_DualWritesToRootWhenRootDiffersFromSession(t *testing.T) 
 	// Pre-create both trackers. The dual-write uses GetOrCreate for the root
 	// tracker, so it will create on first write — but we pre-open the SubAgent
 	// rows so RecordLLMCall can attribute them, matching SpawnSync's sequence.
-	specTracker := reg.GetOrCreate(specialistsSubID)
+	specTracker := reg.GetOrCreate(schedulerSubID)
 	emmaTracker := reg.GetOrCreate(emmaSessionID)
 	specTracker.StartSubAgent(writerRunID, writerRunID, "writer", "", "")
 	emmaTracker.StartSubAgent(writerRunID, writerRunID, "writer", "", "")
@@ -260,7 +260,7 @@ func TestStatsProvider_DualWritesToRootWhenRootDiffersFromSession(t *testing.T) 
 	}}}
 	sp := New(inner, reg)
 
-	ctx := sessionstats.WithSessionID(context.Background(), specialistsSubID)
+	ctx := sessionstats.WithSessionID(context.Background(), schedulerSubID)
 	ctx = sessionstats.WithRootSessionID(ctx, emmaSessionID)
 	ctx = sessionstats.WithAgentRunID(ctx, writerRunID)
 
@@ -271,13 +271,13 @@ func TestStatsProvider_DualWritesToRootWhenRootDiffersFromSession(t *testing.T) 
 	for range stream.Events {
 	}
 
-	// Specialists (immediate parent) tracker must have the writer sub-agent row.
+	// Scheduler (immediate parent) tracker must have the writer sub-agent row.
 	specSnap := specTracker.Snapshot()
 	if len(specSnap.SubAgents) != 1 || specSnap.SubAgents[0].InputTokens != 300 {
-		t.Errorf("specialists tracker SubAgents: %+v, want 1 row with InputTokens=300", specSnap.SubAgents)
+		t.Errorf("scheduler tracker SubAgents: %+v, want 1 row with InputTokens=300", specSnap.SubAgents)
 	}
 	if specSnap.SubAgents[0].AgentRunID != writerRunID {
-		t.Errorf("specialists tracker row AgentRunID = %q, want %q", specSnap.SubAgents[0].AgentRunID, writerRunID)
+		t.Errorf("scheduler tracker row AgentRunID = %q, want %q", specSnap.SubAgents[0].AgentRunID, writerRunID)
 	}
 
 	// Emma (root) tracker must ALSO have the writer sub-agent row with the same data.

@@ -13,8 +13,8 @@ import (
 
 func TestTool_Metadata(t *testing.T) {
 	tl := New(zap.NewNop())
-	if tl.Name() != "AskUserQuestion" {
-		t.Errorf("Name() = %q, want AskUserQuestion", tl.Name())
+	if tl.Name() != "ask_user_question" {
+		t.Errorf("Name() = %q, want ask_user_question", tl.Name())
 	}
 	if !tl.IsReadOnly() {
 		t.Error("IsReadOnly should be true (asking the user mutates nothing)")

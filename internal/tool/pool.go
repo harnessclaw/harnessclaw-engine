@@ -314,10 +314,9 @@ func (tp *ToolPool) WithoutDangerousUnless(keepList []string) *ToolPool {
 }
 
 // WithoutNames returns a sub-pool with the named tools removed. Useful for
-// defense-in-depth filters — e.g. stripping dispatch tools (Task, Specialists,
-// Orchestrate) from L3 sub-agent pools regardless of what AllowedTools said,
-// so a misconfigured definition can't accidentally re-enable cross-tier
-// dispatch.
+// defense-in-depth filters — e.g. stripping dispatch tools (task, scheduler)
+// from L3 sub-agent pools regardless of what AllowedTools said, so a
+// misconfigured definition can't accidentally re-enable cross-tier dispatch.
 //
 // Aliases of removed tools are dropped too, so calls under either the
 // canonical name or any alias resolve to nil after filtering.

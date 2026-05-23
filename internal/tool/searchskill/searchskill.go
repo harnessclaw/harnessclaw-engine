@@ -12,7 +12,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-const ToolName = "SearchSkill"
+const ToolName = "search_skill"
 
 type SearchSkillTool struct {
 	tool.BaseTool
@@ -117,7 +117,7 @@ func (t *SearchSkillTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 const description = `搜索本地 skills 目录中可用的 skill。
 
 返回 skill 元数据列表（name / description / when_to_use / version / allowed_tools），不含 SKILL.md body。
-仅供 L2 specialists 与 L3 freelancer 使用。
+仅供 L2 scheduler 与 L3 freelancer 使用。
 
 调用时机：
 - L2: 任务不属于固定搭档时，先调用此工具看磁盘上有哪些匹配

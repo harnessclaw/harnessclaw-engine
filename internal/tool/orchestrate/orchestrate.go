@@ -1,4 +1,4 @@
-// Package orchestrate implements the Phase-2 Orchestrate tool.
+// Package orchestrate implements the Phase-2 orchestrate tool.
 //
 // emma calls this tool with a single `intent` string. The tool internally:
 //   1. Spawns a Planner sub-agent that converts intent → structured plan JSON.
@@ -30,13 +30,13 @@ import (
 )
 
 // ToolName is the LLM-facing tool identifier.
-const ToolName = "Orchestrate"
+const ToolName = "orchestrate"
 
 // PlannerSubagentType is the subagent_type used when spawning the Planner.
 // It maps to PlannerProfile in internal/engine/prompt.
 const PlannerSubagentType = "planner"
 
-// MaxPlannerAttempts caps how many times the Orchestrate tool will ask the
+// MaxPlannerAttempts caps how many times the orchestrate tool will ask the
 // Planner for a plan. After this many failures it returns plan_failed with
 // degraded:true so emma can fall back to Phase-1 serial Agent dispatch.
 const MaxPlannerAttempts = 3 // 1 initial + 2 retries (matches doc §八)
@@ -63,7 +63,7 @@ func (s staticRoster) ListForPlanner() []agent.PlannerListing { return nil }
 // NewStaticRoster builds an AgentRoster from a slice of names — handy for tests.
 func NewStaticRoster(names []string) AgentRoster { return staticRoster(names) }
 
-// OrchestrateTool implements the Tool interface for the Orchestrate slot.
+// OrchestrateTool implements the Tool interface for the orchestrate slot.
 type OrchestrateTool struct {
 	tool.BaseTool
 	spawner  agent.AgentSpawner
@@ -95,7 +95,7 @@ func (t *OrchestrateTool) InputSchema() map[string]any {
 	return inputSchema
 }
 
-// CheckPermission auto-allows — Orchestrate just spawns sub-agents, which
+// CheckPermission auto-allows — orchestrate just spawns sub-agents, which
 // themselves go through the normal permission pipeline.
 func (t *OrchestrateTool) CheckPermission(_ context.Context, _ json.RawMessage) tool.PermissionPreResult {
 	return tool.PermissionPreResult{Behavior: "allow"}
@@ -457,7 +457,7 @@ func appendRetryHint(base string, lastErr error, lastSummary string) string {
 
 const orchestrateDescription = `把多步意图拆成计划，按 sub-agent DAG 并行执行。
 
-仅当用户请求需要多个 sub-agent 步骤、且步骤间有明确顺序或数据依赖时（如"调研 → 分析 → 写报告"）才用 Orchestrate。单步一次搞定的任务用 Agent 工具——开销更小，控制更直接。
+仅当用户请求需要多个 sub-agent 步骤、且步骤间有明确顺序或数据依赖时（如"调研 → 分析 → 写报告"）才用 orchestrate。单步一次搞定的任务用 Agent 工具——开销更小，控制更直接。
 
 工作流程：
 - 传入一行自然语言 ` + "`intent`" + ` 描述总体目标。
@@ -472,5 +472,5 @@ const orchestrateDescription = `把多步意图拆成计划，按 sub-agent DAG 
 
 注意：
 - 单个 plan 最多 10 步。
-- Orchestrate 内部的 sub-agent 不能递归调 Orchestrate 或 Agent。
+- orchestrate 内部的 sub-agent 不能递归调 orchestrate 或 Agent。
 - ` + "`intent`" + ` 必填；` + "`description`" + ` 和 ` + "`available_agents`" + ` 可选。`

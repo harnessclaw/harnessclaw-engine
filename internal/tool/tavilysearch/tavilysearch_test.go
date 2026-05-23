@@ -26,8 +26,8 @@ func newTestTool(handler http.HandlerFunc) (*TavilySearchTool, *httptest.Server)
 
 func TestName(t *testing.T) {
 	tool := New(config.TavilySearchConfig{}, zap.NewNop())
-	if tool.Name() != "TavilySearch" {
-		t.Errorf("expected 'TavilySearch', got %q", tool.Name())
+	if tool.Name() != "tavily_search" {
+		t.Errorf("expected 'tavily_search', got %q", tool.Name())
 	}
 }
 

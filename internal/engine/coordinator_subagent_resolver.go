@@ -66,7 +66,7 @@ func NewHeuristicSubagentResolver() *HeuristicSubagentResolver {
 //   1. researcher  — "find out / 调研" verb tasks
 //   2. analyst     — "compare / 分析" verb tasks
 //   3. writer      — "撰写 / draft" verb tasks
-//   4. travel_planner / recommender / scheduler — domain specialists
+//   4. travel_planner / recommender — domain specialists
 //   5. developer   — software-action object tasks; intentionally last
 //                    because developer keywords (代码 / 脚本) often
 //                    appear as the OBJECT of a research / analysis verb
@@ -81,10 +81,10 @@ func (r *HeuristicSubagentResolver) Resolve(_ context.Context, goal string, avai
 		return fallbackSubagent(set, available), "fallback: empty goal", nil
 	}
 
-	// Heuristic resolver's keyword routing was tied to the 7 fixed L3
-	// workers (writer/researcher/analyst/developer/travel_planner/
-	// recommender/scheduler) which have been removed. freelancer is the
-	// only remaining L3 and is keyword-agnostic. Leaving the priority
+	// Heuristic resolver's keyword routing was tied to the historical fixed
+	// L3 workers (writer/researcher/analyst/developer/travel_planner/
+	// recommender) which have been removed. freelancer is the only
+	// remaining L3 and is keyword-agnostic. Leaving the priority
 	// list empty makes the loop below a no-op so resolution always
 	// falls through to fallbackSubagent — which is the correct
 	// behaviour now.

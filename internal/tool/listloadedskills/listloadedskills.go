@@ -11,7 +11,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-const ToolName = "ListLoadedSkills"
+const ToolName = "list_loaded_skills"
 
 type ListLoadedSkillsTool struct {
 	tool.BaseTool
@@ -59,7 +59,7 @@ func (t *ListLoadedSkillsTool) Execute(ctx context.Context, _ json.RawMessage) (
 			zap.String("reason", "non-freelancer caller"),
 		)
 		return &types.ToolResult{
-			Content: "ListLoadedSkills is only available to freelancer sub-agents",
+			Content: "list_loaded_skills is only available to freelancer sub-agents",
 			IsError: true,
 		}, nil
 	}

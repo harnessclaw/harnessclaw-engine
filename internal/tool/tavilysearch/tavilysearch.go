@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	toolName    = "TavilySearch"
+	toolName    = "tavily_search"
 	apiEndpoint = "https://api.tavily.com/search"
 	maxBodySize = 2 << 20 // 2 MB — raw_content responses can be large
 
@@ -74,8 +74,8 @@ func (t *TavilySearchTool) Description() string {
 - 用户说"不要搜"或答案明显在你的训练数据里。
 
 深度调研的两段式：
-1. 先 TavilySearch include_raw_content=false（默认）拿摘要 + URL。
-2. 若某条结果需要深读，对该 URL 调 WebFetch。
+1. 先 tavily_search include_raw_content=false（默认）拿摘要 + URL。
+2. 若某条结果需要深读，对该 URL 调 web_fetch。
 这样不会把全部结果的正文一次性灌进上下文。
 
 include_raw_content=true 只在确实需要每条都拿全文时设（比如"汇总这 3 篇文章"），会显著消耗 token。`
@@ -127,7 +127,7 @@ func (t *TavilySearchTool) InputSchema() map[string]any {
 			},
 			"include_raw_content": map[string]any{
 				"type":        "boolean",
-				"description": "是否在每条结果里返回 markdown 化的清洗后正文。会显著增加 token 用量。仅在确实需要每条都拿全文时启用。默认 false——更推荐两段式：先搜摘要，再对挑中的 URL 调 WebFetch。",
+				"description": "是否在每条结果里返回 markdown 化的清洗后正文。会显著增加 token 用量。仅在确实需要每条都拿全文时启用。默认 false——更推荐两段式：先搜摘要，再对挑中的 URL 调 web_fetch。",
 			},
 		},
 		"required": []string{"query"},

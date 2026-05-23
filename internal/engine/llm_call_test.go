@@ -537,7 +537,7 @@ func (p *twoChunkProvider) Chat(_ context.Context, _ *provider.ChatRequest) (*pr
 		ch <- types.StreamEvent{Type: types.StreamEventText, Text: "world"}
 		ch <- types.StreamEvent{
 			Type:     types.StreamEventToolUse,
-			ToolCall: &types.ToolCall{ID: "tu_a", Name: "Bash", Input: `{"command":"ls"}`},
+			ToolCall: &types.ToolCall{ID: "tu_a", Name: "bash", Input: `{"command":"ls"}`},
 		}
 		ch <- types.StreamEvent{Type: types.StreamEventMessageEnd, StopReason: "tool_use"}
 	}()
@@ -576,7 +576,7 @@ func TestRetryLLMCall_ReplaysBufferedContentOnSuccess(t *testing.T) {
 	if result.textBuf != "Hello world" {
 		t.Errorf("textBuf mismatch: %q", result.textBuf)
 	}
-	if len(result.toolCalls) != 1 || result.toolCalls[0].Name != "Bash" {
+	if len(result.toolCalls) != 1 || result.toolCalls[0].Name != "bash" {
 		t.Errorf("toolCalls mismatch: %+v", result.toolCalls)
 	}
 
@@ -603,7 +603,7 @@ func TestRetryLLMCall_ReplaysBufferedContentOnSuccess(t *testing.T) {
 	if len(texts) != 1 || texts[0] != "Hello world" {
 		t.Errorf("expected exactly one text event with full content; got %v", texts)
 	}
-	if len(tools) != 1 || tools[0] != "Bash" {
+	if len(tools) != 1 || tools[0] != "bash" {
 		t.Errorf("expected one tool_use; got %v", tools)
 	}
 	// Heartbeats may or may not fire (call is fast); not asserting.

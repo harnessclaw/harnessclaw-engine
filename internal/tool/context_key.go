@@ -93,7 +93,7 @@ func WithArtifactProducer(ctx context.Context, p ArtifactProducer) context.Conte
 }
 
 // TaskContract is the deliverable contract attached to a sub-agent's
-// dispatch. The framework injects it via ctx so SubmitTaskResult can
+// dispatch. The framework injects it via ctx so submit_task_result can
 // validate submitted artifacts against the parent's expectations
 // (doc §3 mechanisms M3/M4).
 //
@@ -106,7 +106,7 @@ type TaskContract struct {
 	ExpectedOutputs []types.ExpectedOutput
 	// OutputSchema is the per-agent declared structured-result shape
 	// (mirrors AgentDefinition.OutputSchema for TierSubAgent). When
-	// non-empty, SubmitTaskResult requires a matching `result` payload
+	// non-empty, submit_task_result requires a matching `result` payload
 	// and validates it server-side. Empty means "no schema enforced",
 	// i.e. legacy free-form submissions.
 	OutputSchema map[string]any
@@ -130,11 +130,11 @@ func WithTaskContract(ctx context.Context, c TaskContract) context.Context {
 
 // coordinatorModeKey carries the operator-supplied L2 coordinator mode
 // preference (e.g. from a WebSocket session parameter) down to the
-// Specialists tool, which threads it onto SpawnConfig.CoordinatorMode.
+// scheduler tool, which threads it onto SpawnConfig.CoordinatorMode.
 //
 // Mode is intentionally NOT exposed in emma's tool input — emma should
 // not have to choose between react and plan; that's an operator / API
-// surface decision. emma always calls Specialists with the task; the
+// surface decision. emma always calls scheduler with the task; the
 // runtime decides which coordinator backs the call based on this ctx
 // value (defaults to "" → react via registry fallback).
 type coordinatorModeKey struct{}
@@ -193,7 +193,7 @@ type AgentScope struct {
 	// this spawn. Tools may use it to derive relative paths for logging.
 	SessionRoot string
 	// TaskID is the plan-step id this spawn was dispatched for. Tools
-	// like MetaWrite read it from ctx instead of trusting an LLM-supplied
+	// like meta_write read it from ctx instead of trusting an LLM-supplied
 	// value (which the model has been observed to confuse with session_id).
 	TaskID string
 	// Agent is the subagent_type for this spawn (e.g. "freelancer"). Same

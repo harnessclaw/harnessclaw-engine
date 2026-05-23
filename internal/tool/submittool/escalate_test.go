@@ -90,12 +90,12 @@ func TestEscalateTool_Description_HasGuidance(t *testing.T) {
 	desc := NewEscalate().Description()
 	// The description must surface the WHEN / DO NOT guidance pair so the
 	// LLM has a clear "use" vs "abuse" rubric, and must reference the
-	// peer terminal tool (SubmitTaskResult) so the model picks the right
+	// peer terminal tool (submit_task_result) so the model picks the right
 	// exit when both are available.
 	// Description got translated to Chinese (P0 prompt cleanup) — assert
 	// the Chinese markers now ("何时" / "不要") plus the still-English
 	// peer tool name and status.
-	for _, want := range []string{"SubmitTaskResult", "何时", "不要", "needs_planning"} {
+	for _, want := range []string{"submit_task_result", "何时", "不要", "needs_planning"} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("description missing %q (%d chars total)", want, len(desc))
 		}

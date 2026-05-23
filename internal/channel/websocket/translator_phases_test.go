@@ -29,7 +29,7 @@ func TestTranslator_ToolPlanning_NoWireEventUntilQueued(t *testing.T) {
 	tr.Translate(em, "sess_plan", &types.EngineEvent{
 		Type:      types.EngineEventToolPlanning,
 		ToolUseID: "toolu_p1",
-		ToolName:  "Bash",
+		ToolName:  "bash",
 	})
 
 	// ToolPlanning 阶段不应向客户端发送任何工具卡事件
@@ -43,7 +43,7 @@ func TestTranslator_ToolPlanning_NoWireEventUntilQueued(t *testing.T) {
 	tr.Translate(em, "sess_plan", &types.EngineEvent{
 		Type:      types.EngineEventToolQueued,
 		ToolUseID: "toolu_p1",
-		ToolName:  "Bash",
+		ToolName:  "bash",
 	})
 
 	found := false
@@ -55,7 +55,7 @@ func TestTranslator_ToolPlanning_NoWireEventUntilQueued(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if pl.Name == "Bash" && pl.Phase == emitv2.PhaseQueued {
+		if pl.Name == "bash" && pl.Phase == emitv2.PhaseQueued {
 			found = true
 		}
 	}
@@ -76,7 +76,7 @@ func TestTranslator_ToolPlanning_Idempotent(t *testing.T) {
 		tr.Translate(em, "sess_idem", &types.EngineEvent{
 			Type:      types.EngineEventToolPlanning,
 			ToolUseID: "toolu_dup",
-			ToolName:  "Read",
+			ToolName:  "read",
 		})
 	}
 	// ToolPlanning 阶段不开卡
@@ -89,7 +89,7 @@ func TestTranslator_ToolPlanning_Idempotent(t *testing.T) {
 	tr.Translate(em, "sess_idem", &types.EngineEvent{
 		Type:      types.EngineEventToolQueued,
 		ToolUseID: "toolu_dup",
-		ToolName:  "Read",
+		ToolName:  "read",
 	})
 	count := 0
 	for _, ev := range rec.Events() {
@@ -110,10 +110,10 @@ func TestTranslator_ToolPlanningProgress_NoOpDuringPlanning(t *testing.T) {
 	// 工具卡尚未发到客户端，Progress 应该是无操作。
 	tr.Translate(em, "sess_prog", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
 	tr.Translate(em, "sess_prog", &types.EngineEvent{
-		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_w", ToolName: "Write",
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_w", ToolName: "write",
 	})
 	tr.Translate(em, "sess_prog", &types.EngineEvent{
-		Type: types.EngineEventToolPlanningProgress, ToolUseID: "toolu_w", ToolName: "Write", Bytes: 1234,
+		Type: types.EngineEventToolPlanningProgress, ToolUseID: "toolu_w", ToolName: "write", Bytes: 1234,
 	})
 
 	// 不应有任何 card.set（planning_args 或其他）
@@ -146,11 +146,11 @@ func TestTranslator_ToolQueued_OpensCard(t *testing.T) {
 
 	tr.Translate(em, "sess_q", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
 	tr.Translate(em, "sess_q", &types.EngineEvent{
-		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_q1", ToolName: "Bash",
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_q1", ToolName: "bash",
 	})
 	// 文字 replay（简化为无文字的纯工具轮次）
 	tr.Translate(em, "sess_q", &types.EngineEvent{
-		Type: types.EngineEventToolQueued, ToolUseID: "toolu_q1", ToolName: "Bash",
+		Type: types.EngineEventToolQueued, ToolUseID: "toolu_q1", ToolName: "bash",
 	})
 
 	// ToolQueued 应发 card.add(tool, phase=queued)，而非 card.set
@@ -163,7 +163,7 @@ func TestTranslator_ToolQueued_OpensCard(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if pl.Phase == emitv2.PhaseQueued && pl.Name == "Bash" {
+		if pl.Phase == emitv2.PhaseQueued && pl.Name == "bash" {
 			found = true
 		}
 	}
@@ -179,10 +179,10 @@ func TestTranslator_Retract_ClearsStateWithoutClosingCards(t *testing.T) {
 	// planning 阶段工具卡从未 card.add 到客户端，retract 只需清理内部状态。
 	tr.Translate(em, "sess_retract", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
 	tr.Translate(em, "sess_retract", &types.EngineEvent{
-		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_a", ToolName: "Bash",
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_a", ToolName: "bash",
 	})
 	tr.Translate(em, "sess_retract", &types.EngineEvent{
-		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_b", ToolName: "Read",
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_b", ToolName: "read",
 	})
 	tr.Translate(em, "sess_retract", &types.EngineEvent{
 		Type: types.EngineEventToolPlanningRetract,
@@ -197,7 +197,7 @@ func TestTranslator_Retract_ClearsStateWithoutClosingCards(t *testing.T) {
 
 	// 验证内部状态已清理：ToolQueued 发送 a/b 不应开卡（已被 retract 清除）
 	tr.Translate(em, "sess_retract", &types.EngineEvent{
-		Type: types.EngineEventToolQueued, ToolUseID: "toolu_a", ToolName: "Bash",
+		Type: types.EngineEventToolQueued, ToolUseID: "toolu_a", ToolName: "bash",
 	})
 	addCount := 0
 	for _, ev := range rec.Events() {
@@ -219,11 +219,11 @@ func TestTranslator_Retract_DoesNotCloseUpgradedTools(t *testing.T) {
 
 	tr.Translate(em, "sess_upg", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
 	tr.Translate(em, "sess_upg", &types.EngineEvent{
-		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_a", ToolName: "Bash",
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_a", ToolName: "bash",
 	})
 	// ToolStart 把 toolu_a 转正
 	tr.Translate(em, "sess_upg", &types.EngineEvent{
-		Type: types.EngineEventToolStart, ToolUseID: "toolu_a", ToolName: "Bash", ToolInput: `{"command":"ls"}`,
+		Type: types.EngineEventToolStart, ToolUseID: "toolu_a", ToolName: "bash", ToolInput: `{"command":"ls"}`,
 	})
 
 	// 现在发 Retract — 不应关掉 toolu_a
@@ -242,8 +242,8 @@ func TestTranslator_NextRoundThinking_PreOpensMessageCard(t *testing.T) {
 
 	// 走完一轮：MessageStart → ToolStart → ToolEnd → MessageStop
 	tr.Translate(em, "sess_m4", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
-	tr.Translate(em, "sess_m4", &types.EngineEvent{Type: types.EngineEventToolStart, ToolUseID: "toolu_1", ToolName: "Read", ToolInput: `{"path":"/x"}`})
-	tr.Translate(em, "sess_m4", &types.EngineEvent{Type: types.EngineEventToolEnd, ToolUseID: "toolu_1", ToolName: "Read", ToolResult: &types.ToolResult{Content: "ok"}})
+	tr.Translate(em, "sess_m4", &types.EngineEvent{Type: types.EngineEventToolStart, ToolUseID: "toolu_1", ToolName: "read", ToolInput: `{"path":"/x"}`})
+	tr.Translate(em, "sess_m4", &types.EngineEvent{Type: types.EngineEventToolEnd, ToolUseID: "toolu_1", ToolName: "read", ToolResult: &types.ToolResult{Content: "ok"}})
 	tr.Translate(em, "sess_m4", &types.EngineEvent{Type: types.EngineEventMessageStop})
 
 	// 现在发 NextRoundThinking — 应该开新 message card 带 hint
@@ -279,13 +279,13 @@ func TestTranslator_ToolStart_UpgradesPlanningCard(t *testing.T) {
 	// 真实事件顺序：ToolPlanning（流式）→ ToolQueued（文字 replay 后）→ ToolStart（执行）
 	tr.Translate(em, "sess_up", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
 	tr.Translate(em, "sess_up", &types.EngineEvent{
-		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_u", ToolName: "Bash",
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_u", ToolName: "bash",
 	})
 	tr.Translate(em, "sess_up", &types.EngineEvent{
-		Type: types.EngineEventToolQueued, ToolUseID: "toolu_u", ToolName: "Bash",
+		Type: types.EngineEventToolQueued, ToolUseID: "toolu_u", ToolName: "bash",
 	})
 	tr.Translate(em, "sess_up", &types.EngineEvent{
-		Type: types.EngineEventToolStart, ToolUseID: "toolu_u", ToolName: "Bash", ToolInput: `{"command":"ls"}`,
+		Type: types.EngineEventToolStart, ToolUseID: "toolu_u", ToolName: "bash", ToolInput: `{"command":"ls"}`,
 	})
 
 	// ToolQueued 开卡（phase=queued），ToolStart 升级（phase=executing）
@@ -320,7 +320,7 @@ func TestTranslator_ToolStart_OpensFreshCardIfNoPlanning(t *testing.T) {
 
 	tr.Translate(em, "sess_fresh", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
 	tr.Translate(em, "sess_fresh", &types.EngineEvent{
-		Type: types.EngineEventToolStart, ToolUseID: "toolu_f", ToolName: "Read", ToolInput: `{"path":"/x"}`,
+		Type: types.EngineEventToolStart, ToolUseID: "toolu_f", ToolName: "read", ToolInput: `{"path":"/x"}`,
 	})
 
 	adds := 0
@@ -365,10 +365,10 @@ func TestTranslator_PermissionRequest_SetsPhaseWait(t *testing.T) {
 
 	tr.Translate(em, "sess_perm", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_1"})
 	tr.Translate(em, "sess_perm", &types.EngineEvent{
-		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_pp", ToolName: "Bash",
+		Type: types.EngineEventToolPlanning, ToolUseID: "toolu_pp", ToolName: "bash",
 	})
 	tr.Translate(em, "sess_perm", &types.EngineEvent{
-		Type: types.EngineEventToolStart, ToolUseID: "toolu_pp", ToolName: "Bash", ToolInput: `{}`,
+		Type: types.EngineEventToolStart, ToolUseID: "toolu_pp", ToolName: "bash", ToolInput: `{}`,
 	})
 
 	tr.Translate(em, "sess_perm", &types.EngineEvent{
@@ -376,7 +376,7 @@ func TestTranslator_PermissionRequest_SetsPhaseWait(t *testing.T) {
 		PermissionRequest: &types.PermissionRequest{
 			RequestID: "perm_x",
 			ToolUseID: "toolu_pp",
-			ToolName:  "Bash",
+			ToolName:  "bash",
 			Message:   "Allow git?",
 			Options: []types.PermissionOption{
 				{Label: "Allow once", Scope: types.PermissionScopeOnce, Allow: true},

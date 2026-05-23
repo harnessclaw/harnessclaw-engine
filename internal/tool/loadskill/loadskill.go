@@ -14,7 +14,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-const ToolName = "LoadSkill"
+const ToolName = "load_skill"
 
 // maxBodyBytes caps a single skill's SKILL.md body to keep prompt size
 // bounded — spec §6 hard limit.
@@ -44,7 +44,7 @@ func (t *LoadSkillTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"skill": map[string]any{
 				"type":        "string",
-				"description": "要加载的 skill 名字（SearchSkill 返回结果里的 name 字段）。",
+				"description": "要加载的 skill 名字（search_skill 返回结果里的 name 字段）。",
 			},
 		},
 	}
@@ -78,7 +78,7 @@ func (t *LoadSkillTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 	if !ok {
 		t.logInfo(agentRunID, in.Skill, "tracker_missing", "non-freelancer caller", 0, 0, "")
 		return &types.ToolResult{
-			Content: "LoadSkill is only available to freelancer sub-agents",
+			Content: "load_skill is only available to freelancer sub-agents",
 			IsError: true,
 		}, nil
 	}
@@ -102,7 +102,7 @@ func (t *LoadSkillTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 			t.logInfo(agentRunID, in.Skill, "denied", "budget_full", 0, tracker.Count(), "")
 			active, _ := tracker.List()
 			return &types.ToolResult{
-				Content: fmt.Sprintf("skill budget full (%d/%d), active: %v — UnloadSkill one first",
+				Content: fmt.Sprintf("skill budget full (%d/%d), active: %v — unload_skill one first",
 					tracker.Count(), tracker.Max(), nameList(active)),
 				IsError: true,
 			}, nil
@@ -127,7 +127,7 @@ func (t *LoadSkillTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 		t.logInfo(agentRunID, in.Skill, "denied", "budget_full", 0, tracker.Count(), "")
 		active, _ := tracker.List()
 		return &types.ToolResult{
-			Content: fmt.Sprintf("skill budget full (%d/%d), active: %v — UnloadSkill one first",
+			Content: fmt.Sprintf("skill budget full (%d/%d), active: %v — unload_skill one first",
 				tracker.Count(), tracker.Max(), nameList(active)),
 			IsError: true,
 		}, nil
@@ -157,8 +157,8 @@ func (t *LoadSkillTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 	return reInjectMessage(in.Skill, full), nil
 }
 
-// logInfo emits the single end-of-Execute INFO line for LoadSkill. Every
-// branch funnels through it so operators see one record per LoadSkill call
+// logInfo emits the single end-of-Execute INFO line for load_skill. Every
+// branch funnels through it so operators see one record per load_skill call
 // with the same field schema regardless of outcome.
 func (t *LoadSkillTool) logInfo(agentRunID, skillName, outcome, reason string, bodyBytes, budgetUsed int, version string) {
 	fields := []zap.Field{
@@ -215,5 +215,5 @@ const description = `把指定的 skill 加载到当前任务上下文。
 - 上下文中并存 skill 数量上限 3（含 L2 预分配的 candidate）
 - 已加载且 active → 幂等
 - 已加载但 unloaded → 重新激活，仍受 budget 约束
-- 配额满 → 失败；先 UnloadSkill 一个再 Load 新的
+- 配额满 → 失败；先 unload_skill 一个再 Load 新的
 - body > 100KB → 拒绝`

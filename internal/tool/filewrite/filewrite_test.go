@@ -17,7 +17,7 @@ func enabledCfg() config.ToolConfig {
 
 func TestName(t *testing.T) {
 	ft := New(enabledCfg())
-	if ft.Name() != "Write" {
+	if ft.Name() != "write" {
 		t.Errorf("Name() = %q, want Write", ft.Name())
 	}
 }

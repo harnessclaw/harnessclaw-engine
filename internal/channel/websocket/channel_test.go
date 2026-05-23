@@ -206,7 +206,7 @@ func TestChannel_NameAndHealth(t *testing.T) {
 	}
 }
 
-// TestChannel_AskUserQuestionRoundTrip verifies that AskUserQuestion is
+// TestChannel_AskUserQuestionRoundTrip verifies that ask_user_question is
 // upgraded to prompt.user(kind=question) on the wire AND that the
 // engine's tool-result wait mechanism still works: the user's
 // prompt.user_response is bridged back to a tool.result IncomingMessage,
@@ -229,13 +229,13 @@ func TestChannel_AskUserQuestionRoundTrip(t *testing.T) {
 	send(t, ws, map[string]any{"type": "session.create", "session_id": "sess_aq"})
 	_ = recv(t, ws) // opened
 
-	// Engine emits a client-tool call for AskUserQuestion. Translator
+	// Engine emits a client-tool call for ask_user_question. Translator
 	// must upgrade to prompt.user(kind=question), NOT card.add(tool).
 	go func() {
 		time.Sleep(30 * time.Millisecond)
 		_ = ch.SendEvent(context.Background(), "sess_aq", &types.EngineEvent{
 			Type:      types.EngineEventToolCall,
-			ToolName:  "AskUserQuestion",
+			ToolName:  "ask_user_question",
 			ToolUseID: "toolu_q1",
 			ToolInput: `{"question":"Pick a color","options":[{"label":"red"},{"label":"blue"}],"allow_custom":true}`,
 		})
@@ -251,7 +251,7 @@ func TestChannel_AskUserQuestionRoundTrip(t *testing.T) {
 		}
 	}
 	if got["type"] != "prompt.user" {
-		t.Fatalf("expected prompt.user (AskUserQuestion upgraded); got type=%v", got["type"])
+		t.Fatalf("expected prompt.user (ask_user_question upgraded); got type=%v", got["type"])
 	}
 	pl := got["payload"].(map[string]any)
 	if pl["kind"] != "question" {
@@ -543,7 +543,7 @@ func TestChannel_PermissionRequestRoundTrip(t *testing.T) {
 			Type: types.EngineEventPermissionRequest,
 			PermissionRequest: &types.PermissionRequest{
 				RequestID: "perm_engine_99",
-				ToolName:  "Bash",
+				ToolName:  "bash",
 				ToolInput: "rm -rf /tmp/x",
 				Message:   "Allow shell?",
 				Options: []types.PermissionOption{
@@ -646,7 +646,7 @@ func TestChannel_AskUserQuestionCancelled(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 		_ = ch.SendEvent(context.Background(), "sess_cancel", &types.EngineEvent{
 			Type:      types.EngineEventToolCall,
-			ToolName:  "AskUserQuestion",
+			ToolName:  "ask_user_question",
 			ToolUseID: "toolu_q2",
 			ToolInput: `{"question":"go ahead?"}`,
 		})

@@ -1,5 +1,5 @@
 // Package orchestrate implements the Phase-2 multi-step task executor used by
-// the Orchestrate tool. It owns plan parsing, dependency-graph validation, and
+// the orchestrate tool. It owns plan parsing, dependency-graph validation, and
 // parallel execution of sub-agent steps with automatic context propagation.
 //
 // Design reference: docs/design/architecture/layered-architecture.md (§九).

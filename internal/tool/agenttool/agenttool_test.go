@@ -26,7 +26,7 @@ func (m *mockSpawner) SpawnSync(_ context.Context, cfg *agent.SpawnConfig) (*age
 
 func TestAgentTool_Name(t *testing.T) {
 	tool := New(&mockSpawner{}, zap.NewNop())
-	if tool.Name() != "Task" {
+	if tool.Name() != "task" {
 		t.Errorf("expected name 'Task', got %q", tool.Name())
 	}
 }
@@ -200,7 +200,7 @@ func TestAgentTool_Execute_DeniedTools(t *testing.T) {
 			Terminal:    &types.Terminal{Reason: types.TerminalCompleted, Turn: 2},
 			Usage:       &types.Usage{},
 			AgentID:     "agent_d",
-			DeniedTools: []string{"Bash", "Edit"},
+			DeniedTools: []string{"bash", "edit"},
 			NumTurns:    2,
 		},
 	}

@@ -39,7 +39,7 @@ func writeSkill(t *testing.T, root, name, fmYaml, body string) string {
 func TestReader_Search_ReturnsCardMetadata(t *testing.T) {
 	tmp := t.TempDir()
 	writeSkill(t, tmp, "notion-export",
-		"name: notion-export\ndescription: export to notion\nwhen_to_use: when user asks notion\nversion: 0.3\nallowed-tools:\n  - WebFetch",
+		"name: notion-export\ndescription: export to notion\nwhen_to_use: when user asks notion\nversion: 0.3\nallowed-tools:\n  - web_fetch",
 		"body content here")
 	r := NewReader([]string{tmp}, zap.NewNop())
 	got, err := r.Search("", 20)
@@ -62,7 +62,7 @@ func TestReader_Search_ReturnsCardMetadata(t *testing.T) {
 	if card.Version != "0.3" {
 		t.Errorf("Version = %q", card.Version)
 	}
-	if len(card.AllowedTools) != 1 || card.AllowedTools[0] != "WebFetch" {
+	if len(card.AllowedTools) != 1 || card.AllowedTools[0] != "web_fetch" {
 		t.Errorf("AllowedTools = %v", card.AllowedTools)
 	}
 	if card.Path == "" {

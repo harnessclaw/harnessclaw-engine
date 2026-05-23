@@ -8,7 +8,7 @@ import (
 
 func TestToolPayload_PhaseFields_MarshalsCorrectly(t *testing.T) {
 	p := ToolPayload{
-		Name:       "Bash",
+		Name:       "bash",
 		Phase:      PhasePlanning,
 		PhaseHint:  "梳理执行思路",
 		PhaseBytes: 1234,
@@ -30,7 +30,7 @@ func TestToolPayload_PhaseFields_MarshalsCorrectly(t *testing.T) {
 }
 
 func TestToolPayload_PhaseFields_OmitEmpty(t *testing.T) {
-	p := ToolPayload{Name: "Read"}
+	p := ToolPayload{Name: "read"}
 	b, _ := json.Marshal(p)
 	s := string(b)
 	for _, unwanted := range []string{"phase", "phase_hint", "phase_bytes"} {

@@ -23,15 +23,15 @@ import (
 //
 // Keep this list in lockstep with the dispatch surface: any new tool that
 // spawns work belongs here too.
-var dispatchToolNames = []string{"Task", "Specialists", "Orchestrate"}
+var dispatchToolNames = []string{"task", "scheduler"}
 
 // runSubAgentDriver is the dedicated L3 ReAct executor. It enforces every
 // invariant the user's L3 design called out:
 //
 //   - No further dispatch — dispatchToolNames pre-stripped from the pool.
 //   - Mandatory submission — TierSubAgent always has hasContract=true; the
-//     loop refuses to terminate without SubmitTaskResult OR EscalateToPlanner.
-//   - Stateless protocol — escalation goes via the EscalateToPlanner tool
+//     loop refuses to terminate without submit_task_result OR escalate_to_planner.
+//   - Stateless protocol — escalation goes via the escalate_to_planner tool
 //     and surfaces as subAgentLoopResult.NeedsPlanning, never through
 //     internal state pinned to the engine.
 //   - Bounded retries — same maxSubmitNudges / maxSubmitRejects ceilings
@@ -90,7 +90,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 	})
 	// AgentScope plumbing was previously only wired in runSubAgentLoop
 	// (the Coordinator path). TierSubAgent dispatches land here in
-	// runSubAgentDriver, which means L3 tools like MetaWrite / SubmitTaskResult
+	// runSubAgentDriver, which means L3 tools like meta_write / submit_task_result
 	// saw an empty SessionRoot in ctx and rejected with "SessionRoot missing
 	// in ctx — engine bug". Mirror the call here so the L3 driver gets the
 	// same per-spawn scope as the coordinator path.
@@ -103,8 +103,8 @@ func (qe *QueryEngine) runSubAgentDriver(
 	})
 
 	// L3 is contract-enforced unconditionally. Plain end_turn is never
-	// terminal — the loop exits only when SubmitTaskResult passes or
-	// EscalateToPlanner fires (or a hard cap trips).
+	// terminal — the loop exits only when submit_task_result passes or
+	// escalate_to_planner fires (or a hard cap trips).
 	var (
 		submitAccepted     bool
 		submitArtifacts    []types.ArtifactRef
@@ -218,7 +218,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 
 		// ---- Phase 5 (part A): No tool calls ----
 		// Plain end_turn is never terminal for L3 — the contract demands
-		// either SubmitTaskResult or EscalateToPlanner.
+		// either submit_task_result or escalate_to_planner.
 		if len(toolCalls) == 0 {
 			if submitAccepted {
 				return subAgentLoopResult{
@@ -258,7 +258,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 						Turn:    ls.turn,
 					},
 					ContractFailures: append(contractFailures,
-						fmt.Sprintf("missing SubmitTaskResult after %d nudges", maxSubmitNudges)),
+						fmt.Sprintf("missing submit_task_result after %d nudges", maxSubmitNudges)),
 				}
 			}
 			logger.Info("nudging sub-agent driver to submit",
@@ -344,7 +344,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 						return subAgentLoopResult{
 							Terminal: types.Terminal{
 								Reason:  types.TerminalMaxTurns,
-								Message: fmt.Sprintf("SubmitTaskResult rejected %d times — abandoning task", submitRejects),
+								Message: fmt.Sprintf("submit_task_result rejected %d times — abandoning task", submitRejects),
 								Turn:    ls.turn,
 							},
 							ContractFailures: contractFailures,
@@ -411,7 +411,7 @@ func strFromMeta(m map[string]any, key string) string {
 func buildDriverNudgeMessage(nudge int, outs []types.ExpectedOutput) types.Message {
 	var b []byte
 	b = append(b, fmt.Sprintf(
-		"[SYSTEM] 任务未终止 (%d/%d)。必须二选一：调 SubmitTaskResult 提交产物，或调 EscalateToPlanner 说明做不了。",
+		"[SYSTEM] 任务未终止 (%d/%d)。必须二选一：调 submit_task_result 提交产物，或调 escalate_to_planner 说明做不了。",
 		nudge, maxSubmitNudges)...)
 	if nudge >= maxSubmitNudges {
 		b = append(b, "\n（最后一次机会——再不调用即判失败。）"...)

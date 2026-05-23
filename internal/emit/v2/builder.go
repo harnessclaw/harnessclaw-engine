@@ -269,7 +269,7 @@ func (b *CardBuilder) Add(payload any, opts ...EmitOpt) {
 		switch {
 		case s.disableLifecyc && registryTimeout > 0:
 			// Explicitly opted out of the orphan watchdog while still
-			// being a lifecycle-tracked kind (e.g. Specialists / Task
+			// being a lifecycle-tracked kind (e.g. scheduler / task
 			// tool cards that wrap a multi-minute sub-agent run). We
 			// register a "chain-only" entry — timeout=0 tells the
 			// sweep loop to skip it, but Touch can still walk through

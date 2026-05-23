@@ -12,7 +12,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// Tool implements the SendMessage tool for agent-to-agent communication.
+// Tool implements the send_message tool for agent-to-agent communication.
 type Tool struct {
 	tool.BaseTool
 	broker    *agent.MessageBroker
@@ -21,7 +21,7 @@ type Tool struct {
 	logger    *zap.Logger
 }
 
-// New creates a SendMessage tool bound to a specific agent.
+// New creates a send_message tool bound to a specific agent.
 func New(broker *agent.MessageBroker, agentName, teamID string, logger *zap.Logger) *Tool {
 	return &Tool{
 		broker:    broker,
@@ -31,7 +31,7 @@ func New(broker *agent.MessageBroker, agentName, teamID string, logger *zap.Logg
 	}
 }
 
-func (t *Tool) Name() string            { return "SendMessage" }
+func (t *Tool) Name() string            { return "send_message" }
 func (t *Tool) Description() string      { return "向另一个 agent 发送消息。" }
 func (t *Tool) IsReadOnly() bool         { return false }
 func (t *Tool) IsConcurrencySafe() bool  { return true }

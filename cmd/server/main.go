@@ -63,7 +63,7 @@ import (
 	"harnessclaw-go/internal/tool/agenttool"
 	"harnessclaw-go/internal/tool/askuserquestion"
 	orchestratetool "harnessclaw-go/internal/tool/orchestrate"
-	"harnessclaw-go/internal/tool/specialists"
+	"harnessclaw-go/internal/tool/scheduler"
 	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/internal/tool/bash"
 	"harnessclaw-go/internal/tool/fileedit"
@@ -423,9 +423,9 @@ func main() {
 	// Register Task tool (post-engine: needs engine as AgentSpawner).
 	// ToolPool is rebuilt per query loop, so late registration is safe.
 	//
-	// In the 3-tier architecture the Task tool (formerly "Agent") is not in
+	// In the 3-tier architecture the task tool (formerly "Agent") is not in
 	// emma's tool palette (see L1Engine.AllowedTools). It is reachable from
-	// L2 Specialists, which declares "Task" in its AgentDefinition.AllowedTools
+	// the L2 scheduler, which declares "task" in its AgentDefinition.AllowedTools
 	// and bypasses the AgentType blacklist (see internal/engine/subagent.go
 	// filter logic).
 	if err := registry.Register(agenttool.New(eng, logger)); err != nil {
@@ -433,13 +433,13 @@ func main() {
 	}
 	logger.Info("task tool registered")
 
-	// Register Specialists tool — the L1→L2 dispatch entry point. emma sees
-	// this tool as her single delegation channel; Specialists itself spawns
-	// L3 sub-agents internally via the Task tool above.
-	if err := registry.Register(specialists.New(eng, logger)); err != nil {
-		logger.Fatal("failed to register specialists tool", zap.Error(err))
+	// Register scheduler tool — the L1→L2 dispatch entry point. emma sees
+	// this tool as her single delegation channel; the scheduler itself spawns
+	// L3 sub-agents internally via the task tool above.
+	if err := registry.Register(scheduler.New(eng, logger)); err != nil {
+		logger.Fatal("failed to register scheduler tool", zap.Error(err))
 	}
-	logger.Info("specialists tool registered")
+	logger.Info("scheduler tool registered")
 
 	// --- Step 8.5: Initialize multi-agent infrastructure ---
 	agentReg := agent.NewAgentRegistry()

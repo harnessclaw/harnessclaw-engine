@@ -87,7 +87,7 @@ func (c *PlanCoordinator) Run(
 	// scheduler.Run when a step needs subagent picking) live outside
 	// the standard sub-agent driver loop that normally supplies these
 	// fields directly. Without this, their heartbeats / retry-status
-	// events would have nowhere to land — the L2 specialists card
+	// events would have nowhere to land — the L2 scheduler card
 	// would sit silent during planning and per-step resolver calls.
 	ctx = WithRetryRouting(ctx, lc.agentID, out)
 	logger.Info("plan coordinator started",
@@ -174,7 +174,7 @@ func (c *PlanCoordinator) Run(
 
 		// Plan confirmation gate. When enabled (PlanConfirmation =
 		// "required"), pause and emit prompt.user(plan_review) → block
-		// on prompt.user_response. Treated identically to AskUserQuestion:
+		// on prompt.user_response. Treated identically to ask_user_question:
 		// no card.add, no orphan watchdog, ctx deadline stripped — the
 		// user gets all the time they need. Always-on cases (auto / empty)
 		// skip the round-trip and run the plan as-is.
@@ -203,7 +203,7 @@ func (c *PlanCoordinator) Run(
 		// Emit plan_created (first iteration) or plan_updated (re-plans)
 		// so the client opens the plan card and renders the step DAG.
 		// Deliberately fired AFTER confirmation: during the confirm wait
-		// no card exists, mirroring AskUserQuestion's prompt.user(question)
+		// no card exists, mirroring ask_user_question's prompt.user(question)
 		// path which never opens a card while waiting on the user. This
 		// is what keeps the lifecycle watchdog (CardPlan OrphanTimeoutMs
 		// = 10min) from killing a plan that's just sitting in the user's
@@ -412,9 +412,9 @@ func (c *PlanCoordinator) requestPlanConfirmation(
 		zap.Int("steps", len(proposal.Steps)),
 	)
 
-	// Strip the deadline inherited from the Specialists tool ctx
+	// Strip the deadline inherited from the scheduler tool ctx
 	// (15min) so the user gets all the time they need to review —
-	// same wait policy as AskUserQuestion, see
+	// same wait policy as ask_user_question, see
 	// queryloop.executeClientTools' humanInteractive branch.
 	// Cancel signals (session abort, user interrupt) propagate via
 	// the engine's separate cancel plumbing — those paths still call
@@ -709,7 +709,7 @@ func availableSubagentsForPlanner(deps *SharedDeps) []string {
 // plan-mode runs so the L1 layer doesn't fabricate filenames or copy
 // preview text.
 //
-// Format mirrors the worker / specialists summary contract:
+// Format mirrors the worker / scheduler summary contract:
 //   - leading <summary> tag
 //   - one line per artifact: "- [role] art_xxx — name"
 //   - optional fallback text (when plan failed and FallbackChain
@@ -759,7 +759,7 @@ func buildPlanSummary(plan *Plan, outcome *SchedulerOutcome, fallbackText string
 
 // extractGoal pulls the natural-language task seed from loopConfig.
 // originalPrompt is what cfg.Prompt was at SpawnSync time; for
-// Specialists this is exactly the task emma dispatched. Falls back to
+// the scheduler this is exactly the task emma dispatched. Falls back to
 // the subagent type label when prompt is empty (legacy / programmatic
 // spawns without a free-form task).
 func extractGoal(lc *loopConfig) string {

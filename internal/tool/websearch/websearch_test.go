@@ -70,7 +70,7 @@ func TestExtractResults_ErrCodeNonZero(t *testing.T) {
 }
 
 // TestExtractResults_SkipsEmptyURL: defensive — documents without a URL
-// are unusable for the two-stage retrieval flow (WebFetch needs a URL),
+// are unusable for the two-stage retrieval flow (web_fetch needs a URL),
 // so we drop them rather than emit zero-URL rows.
 func TestExtractResults_SkipsEmptyURL(t *testing.T) {
 	raw := []byte(`{
@@ -113,7 +113,7 @@ func formatResultsForLLM(query string, results []searchResult) string {
 	}
 	sb.WriteString("---\n")
 	sb.WriteString("Note: only summaries are shown above. If a result looks relevant ")
-	sb.WriteString("but the summary is not enough to answer, call the WebFetch tool ")
+	sb.WriteString("but the summary is not enough to answer, call the web_fetch tool ")
 	sb.WriteString("with that URL to retrieve the full page content.\n")
 	return sb.String()
 }
@@ -185,11 +185,11 @@ func TestFormat_IncludesTwoStageHint(t *testing.T) {
 	out := formatResultsForLLM("anything", []searchResult{
 		{Title: "t", URL: "https://x", Snippet: "s"},
 	})
-	// The two-stage hint is what trains the LLM to reach for WebFetch when
+	// The two-stage hint is what trains the LLM to reach for web_fetch when
 	// the summary is too thin. Without it the LLM tends to answer from
 	// summary alone — losing the whole point of the two-stage design.
-	if !strings.Contains(out, "WebFetch") {
-		t.Errorf("missing WebFetch hint in footer; LLM won't know to follow up. Got:\n%s", out)
+	if !strings.Contains(out, "web_fetch") {
+		t.Errorf("missing web_fetch hint in footer; LLM won't know to follow up. Got:\n%s", out)
 	}
 	if !strings.Contains(out, "only summaries are shown above") {
 		t.Errorf("missing summary-only disclaimer; got:\n%s", out)

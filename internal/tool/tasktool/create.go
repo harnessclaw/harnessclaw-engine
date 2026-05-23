@@ -20,7 +20,7 @@ func NewCreate(store task.Store, scopeID string) *CreateTool {
 	return &CreateTool{store: store, scopeID: scopeID}
 }
 
-func (t *CreateTool) Name() string             { return "TaskCreate" }
+func (t *CreateTool) Name() string             { return "task_create" }
 func (t *CreateTool) Description() string       { return "向任务列表中添加一个新任务。" }
 func (t *CreateTool) IsReadOnly() bool          { return false }
 func (t *CreateTool) IsConcurrencySafe() bool   { return true }

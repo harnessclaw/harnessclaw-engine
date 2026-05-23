@@ -298,12 +298,12 @@ func TestSpawnSync_ToolFiltering(t *testing.T) {
 	// Verify Task tool is filtered out for sync sub-agents by default.
 	reg := tool.NewRegistry()
 	_ = reg.Register(&subagentTestTool{})
-	_ = reg.Register(&fakeAgentToolForTest{}) // tool name = "Task"
+	_ = reg.Register(&fakeAgentToolForTest{}) // tool name = "task"
 
 	fullPool := tool.NewToolPool(reg, nil, nil)
 	filteredPool := fullPool.FilteredFor(tool.AgentTypeSync)
 
-	if filteredPool.Get("Task") != nil {
+	if filteredPool.Get("task") != nil {
 		t.Error("Task tool should be filtered out for sync sub-agents")
 	}
 	if filteredPool.Get("TestEcho") == nil {
@@ -314,22 +314,22 @@ func TestSpawnSync_ToolFiltering(t *testing.T) {
 // TestSpawnSync_AllowedToolsBypassesBlacklist verifies the 3-tier filter
 // contract: when an AgentDefinition declares an explicit AllowedTools
 // whitelist, the AgentType blacklist (which would otherwise block tools
-// like "Task" for sync sub-agents) is bypassed. This is what lets
-// Specialists (L2) re-enable the Task tool for L3 dispatch.
+// like "task" for sync sub-agents) is bypassed. This is what lets
+// scheduler (L2) re-enable the Task tool for L3 dispatch.
 func TestSpawnSync_AllowedToolsBypassesBlacklist(t *testing.T) {
 	reg := tool.NewRegistry()
 	_ = reg.Register(&subagentTestTool{})
-	_ = reg.Register(&fakeAgentToolForTest{}) // tool name = "Task"
+	_ = reg.Register(&fakeAgentToolForTest{}) // tool name = "task"
 
 	// Step 1 of subagent.go's filter pipeline: pool starts at full registry.
 	pool := tool.NewToolPool(reg, nil, nil)
 
 	// With an explicit whitelist, FilterByNames is applied directly to the
-	// full pool (no AgentType blacklist in the chain). "Task" survives.
-	whitelist := []string{"Task", "TestEcho"}
+	// full pool (no AgentType blacklist in the chain). "task" survives.
+	whitelist := []string{"task", "TestEcho"}
 	pool = pool.FilterByNames(whitelist)
 
-	if pool.Get("Task") == nil {
+	if pool.Get("task") == nil {
 		t.Error("Task tool should survive when explicitly whitelisted")
 	}
 	if pool.Get("TestEcho") == nil {
@@ -337,10 +337,10 @@ func TestSpawnSync_AllowedToolsBypassesBlacklist(t *testing.T) {
 	}
 
 	// Compare with the blacklist-only path: if we'd applied FilteredFor first,
-	// "Task" would be gone before FilterByNames runs.
+	// "task" would be gone before FilterByNames runs.
 	pool2 := tool.NewToolPool(reg, nil, nil).FilteredFor(tool.AgentTypeSync)
 	pool2 = pool2.FilterByNames(whitelist)
-	if pool2.Get("Task") != nil {
+	if pool2.Get("task") != nil {
 		t.Error("control path: Task should be blocked when blacklist precedes whitelist")
 	}
 	if pool2.Get("TestEcho") == nil {
@@ -352,7 +352,7 @@ type fakeAgentToolForTest struct {
 	tool.BaseTool
 }
 
-func (f *fakeAgentToolForTest) Name() string            { return "Task" }
+func (f *fakeAgentToolForTest) Name() string            { return "task" }
 func (f *fakeAgentToolForTest) Description() string     { return "Fake agent" }
 func (f *fakeAgentToolForTest) IsReadOnly() bool         { return false }
 func (f *fakeAgentToolForTest) InputSchema() map[string]any { return map[string]any{"type": "object"} }
@@ -410,9 +410,9 @@ func TestSpawnSync_Timeout(t *testing.T) {
 	t.Logf("terminal reason: %s (timeout test)", result.Terminal.Reason)
 }
 
-// TestBuildSubAgentSystemPrompt_SpecialistsKeepsStaticRole guards against the
-// regression where the L2 Specialists role section silently turned into a
-// generic "你叫Specialists，是 emma 团队的搭档" worker identity, dropping the
+// TestBuildSubAgentSystemPrompt_SchedulerKeepsStaticRole guards against the
+// regression where the L2 scheduler role section silently turned into a
+// generic "你叫scheduler，是 emma 团队的搭档" worker identity, dropping the
 // "L2 调度统筹者" methodology, the no-recursion guard, and the
 // "you cannot ask the user" rule.
 //
@@ -420,13 +420,13 @@ func TestSpawnSync_Timeout(t *testing.T) {
 // produced a SystemPromptOverride which the prompt builder treats as
 // strictly-higher-priority than profile.SectionOverrides["role"]. The fix
 // gates BuildWorkerIdentity on IsTeamMember=true.
-func TestBuildSubAgentSystemPrompt_SpecialistsKeepsStaticRole(t *testing.T) {
+func TestBuildSubAgentSystemPrompt_SchedulerKeepsStaticRole(t *testing.T) {
 	prov := &subagentMockProvider{}
 	eng := newSubagentTestEngine(prov)
 	eng.config.MainAgentDisplayName = "emma"
 
 	reg := agent.NewAgentDefinitionRegistry()
-	reg.RegisterBuiltins() // pulls in the real "specialists" + team-member defs
+	reg.RegisterBuiltins() // pulls in the real "scheduler" + team-member defs
 	eng.SetDefRegistry(reg)
 
 	sess := &session.Session{ID: "sess_test"}
@@ -434,30 +434,30 @@ func TestBuildSubAgentSystemPrompt_SpecialistsKeepsStaticRole(t *testing.T) {
 		context.Background(),
 		sess,
 		nil, // no prior messages
-		prompt.SpecialistsProfile,
-		"specialists",
+		prompt.SchedulerProfile,
+		"scheduler",
 		nil,
 		nil,
 		"",
 	)
 
-	// Must contain the methodology that lives only in SpecialistsRole.
+	// Must contain the methodology that lives only in SchedulerRole.
 	for _, want := range []string{
 		"纯粹的调度统筹者",
 		"不能向用户追问",
 		"不能递归调用",
 	} {
 		if !contains(got, want) {
-			t.Errorf("Specialists prompt missing %q — SpecialistsRole was dropped\nfull prompt:\n%s", want, got)
+			t.Errorf("scheduler prompt missing %q — SchedulerRole was dropped\nfull prompt:\n%s", want, got)
 		}
 	}
 
 	// Must NOT contain the BuildWorkerIdentity stub (the symptom string).
-	// BuildWorkerIdentity emits "你叫Specialists" with no space; the legitimate
-	// SpecialistsRole has "你叫 Specialists" WITH a space — that's the literal
+	// BuildWorkerIdentity emits "你叫scheduler" with no space; the legitimate
+	// SchedulerRole has "你叫 scheduler" WITH a space — that's the literal
 	// signature distinguishing the two paths.
-	if contains(got, "你叫Specialists，") {
-		t.Errorf("Specialists prompt contains the BuildWorkerIdentity stub — fix regressed\n%s", got)
+	if contains(got, "你叫scheduler，") {
+		t.Errorf("scheduler prompt contains the BuildWorkerIdentity stub — fix regressed\n%s", got)
 	}
 }
 
@@ -621,29 +621,29 @@ func TestSpawnSync_NoPreambleWhenInputsEmpty(t *testing.T) {
 // without parsing tool result JSON — which is exactly the coupling §10
 // is designed to remove.
 func TestSpawnSync_SurfacesArtifactsOnSubAgentEnd(t *testing.T) {
-	t.Skip("artifact store removed; deliverables flow via Promote (covered in promotetool)")
+	t.Skip("artifact store removed; deliverables flow via promote (covered in promotetool)")
 }
 
-// TestSpecialistsAllowedTools_IncludesWorkspaceTools is a regression guard:
-// the Specialists L2 AgentDefinition uses an explicit AllowedTools whitelist
+// TestSchedulerAllowedTools_IncludesWorkspaceTools is a regression guard:
+// the scheduler L2 AgentDefinition uses an explicit AllowedTools whitelist
 // that bypasses every other filter. Adding a tool to the registry doesn't
 // help if it isn't named here. Under the local-files-as-truth model L2 needs
-// PlanUpdate (plan.json state machine) and Promote (Deliverable surface) —
+// plan_update (plan.json state machine) and promote (Deliverable surface) —
 // without them L2 cannot drive the loop.
-func TestSpecialistsAllowedTools_IncludesWorkspaceTools(t *testing.T) {
+func TestSchedulerAllowedTools_IncludesWorkspaceTools(t *testing.T) {
 	reg := agent.NewAgentDefinitionRegistry()
 	reg.RegisterBuiltins()
-	def := reg.Get("specialists")
+	def := reg.Get("scheduler")
 	if def == nil {
-		t.Fatal("specialists definition missing")
+		t.Fatal("scheduler definition missing")
 	}
 	allowed := make(map[string]bool, len(def.AllowedTools))
 	for _, name := range def.AllowedTools {
 		allowed[name] = true
 	}
-	for _, want := range []string{"PlanUpdate", "Promote"} {
+	for _, want := range []string{"plan_update", "promote"} {
 		if !allowed[want] {
-			t.Errorf("Specialists AllowedTools missing %q — L2 cannot drive plan.json / promote deliverables", want)
+			t.Errorf("scheduler AllowedTools missing %q — L2 cannot drive plan.json / promote deliverables", want)
 		}
 	}
 }
@@ -659,7 +659,7 @@ func TestSpawnSync_ContractGated_HappyPath(t *testing.T) {
 
 // TestSpawnSync_ContractGated_NudgesThenFails covers the M2 (force tool
 // call closure) path: an L3 that keeps trying to end_turn without ever
-// calling SubmitTaskResult must be nudged up to maxSubmitNudges times,
+// calling submit_task_result must be nudged up to maxSubmitNudges times,
 // then the loop bails with a contract failure on the result.
 func TestSpawnSync_ContractGated_NudgesThenFails(t *testing.T) {
 	t.Skip("artifact-based contract removed; meta.json nudge behaviour covered in subagent_driver tests")
@@ -708,7 +708,7 @@ func writeInputJSON(role, content string) string {
 
 
 // silence unused-import warning in case texts ever stops being referenced
-var _ = texts.SpecialistsRole
+var _ = texts.SchedulerRole
 
 // Verify that the compile-time interface check passes.
 var _ agent.AgentSpawner = (*QueryEngine)(nil)
@@ -920,7 +920,7 @@ func TestSpawnSync_ForwardsToolEventsToParentOut(t *testing.T) {
 // during Execute() it pushes SubAgentStart / SubAgentEvent / Deliverable /
 // SubAgentEnd events onto the parent's EventOut channel. The L2 forwarding
 // loop must pass these through unchanged so the WebSocket client can render
-// L3 lifecycle even when L2 (Specialists) is what dispatched it.
+// L3 lifecycle even when L2 (scheduler) is what dispatched it.
 type l3EmittingTool struct{ tool.BaseTool }
 
 func (l3EmittingTool) Name() string                    { return "FakeTask" }
@@ -948,7 +948,7 @@ func (l3EmittingTool) Execute(ctx context.Context, _ json.RawMessage) (*types.To
 	// with L3's identity.
 	out <- types.EngineEvent{
 		Type:      types.EngineEventAgentIntent,
-		ToolName:  "WebSearch",
+		ToolName:  "web_search",
 		ToolUseID: "tu_L3",
 		Intent:    "正在搜索 vLLM 推理优化的最新论文",
 	}
@@ -958,7 +958,7 @@ func (l3EmittingTool) Execute(ctx context.Context, _ json.RawMessage) (*types.To
 		AgentName: "researcher",
 		SubAgentEvent: &types.SubAgentEventData{
 			EventType: "tool_start",
-			ToolName:  "WebSearch",
+			ToolName:  "web_search",
 			ToolUseID: "tu_L3",
 			ToolInput: `{"query":"x"}`,
 		},
@@ -984,7 +984,7 @@ func (l3EmittingTool) Execute(ctx context.Context, _ json.RawMessage) (*types.To
 }
 
 // TestSpawnSync_PassesThroughDeeperLayerEvents guards the L2-as-relay
-// behaviour: when L2 (e.g. Specialists) dispatches an L3 sub-agent, the
+// behaviour: when L2 (e.g. scheduler) dispatches an L3 sub-agent, the
 // resulting subagent_start / subagent_event / deliverable / subagent_end
 // events arrive at L2 already stamped by L3 — L2 must forward them as-is
 // so the WebSocket client sees the full chain. Before the fix only L2's
@@ -1010,9 +1010,9 @@ func TestSpawnSync_PassesThroughDeeperLayerEvents(t *testing.T) {
 	_, err := eng.SpawnSync(context.Background(), &agent.SpawnConfig{
 		Prompt:          "dispatch L3",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		Description:     "L3 passthrough test",
-		Name:            "specialists",
+		Name:            "scheduler",
 		ParentSessionID: "p_l3",
 		ParentOut:       parentOut,
 	})
@@ -1040,7 +1040,7 @@ func TestSpawnSync_PassesThroughDeeperLayerEvents(t *testing.T) {
 				l3Intent = true
 			}
 			if evt.SubAgentEvent.EventType == "tool_start" &&
-				evt.SubAgentEvent.ToolName == "WebSearch" {
+				evt.SubAgentEvent.ToolName == "web_search" {
 				l3Event = true
 			}
 		case types.EngineEventDeliverable:
@@ -1061,7 +1061,7 @@ func TestSpawnSync_PassesThroughDeeperLayerEvents(t *testing.T) {
 		t.Error("L3 agent_intent was not wrapped + forwarded as subagent_event{intent}")
 	}
 	if !l3Event {
-		t.Error("L3 SubAgentEvent (tool_start WebSearch) did not propagate through L2 to parentOut")
+		t.Error("L3 SubAgentEvent (tool_start web_search) did not propagate through L2 to parentOut")
 	}
 	if !l3Deliverable {
 		t.Error("L3 Deliverable did not propagate through L2 to parentOut")

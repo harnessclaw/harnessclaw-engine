@@ -42,7 +42,7 @@ func TestE2E_PlanModeOptInViaCtx(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "调研大模型推理优化进展，写一份对比报告",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_e2e_plan",
 		CoordinatorMode: "plan",
 	}
@@ -66,7 +66,7 @@ func TestE2E_PlanModeOptInViaCtx(t *testing.T) {
 }
 
 // TestE2E_ReActModeIsDefault confirms that without an explicit mode, a
-// Specialists spawn runs in ReAct mode — preserves the current default
+// scheduler spawn runs in ReAct mode — preserves the current default
 // behaviour unchanged.
 func TestE2E_ReActModeIsDefault(t *testing.T) {
 	prov := &subagentMockProvider{
@@ -83,7 +83,7 @@ func TestE2E_ReActModeIsDefault(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "翻译这段英文",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_e2e_react",
 		// No CoordinatorMode → ModeSelector picks based on goal; "翻译"
 		// is a simple task → ReAct.
@@ -122,7 +122,7 @@ func TestE2E_ModeSelectorAutoPicksPlan(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "调研三家电动车续航数据，写一份对比报告",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_e2e_auto",
 	}
 
@@ -156,7 +156,7 @@ func TestE2E_PlanModeBudgetSurfacesInResult(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "调研 X 写 Y",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_e2e_budget",
 		CoordinatorMode: "plan",
 	}
@@ -196,7 +196,7 @@ func TestE2E_UnknownModeFallsBackToReAct(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "翻译",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_e2e_bad_mode",
 		CoordinatorMode: "garbage-mode",
 	}
@@ -210,20 +210,20 @@ func TestE2E_UnknownModeFallsBackToReAct(t *testing.T) {
 	}
 }
 
-// TestE2E_ContextOverrideThreadsThroughSpecialistsTool confirms that the
+// TestE2E_ContextOverrideThreadsThroughSchedulerTool confirms that the
 // router-level WithCoordinatorMode lands on SpawnConfig.CoordinatorMode
-// after going through the Specialists tool — proves the WS → router →
+// after going through the scheduler tool — proves the WS → router →
 // tool ctx → SpawnConfig pipeline is connected end to end.
 //
-// We exercise it by calling specialists.Tool.Execute directly with a
+// We exercise it by calling scheduler.Tool.Execute directly with a
 // mode-tagged ctx, intercepting the SpawnSync invocation via the engine.
 // (A full WS test lives in the websocket package; this one is purely
 // the engine half of the wire.)
-func TestE2E_ContextOverrideThreadsThroughSpecialistsTool(t *testing.T) {
-	// We don't need a full Specialists tool here — what we want to
+func TestE2E_ContextOverrideThreadsThroughSchedulerTool(t *testing.T) {
+	// We don't need a full scheduler tool here — what we want to
 	// verify is that when SpawnSync receives CoordinatorMode="plan"
 	// in cfg, the resulting SpawnResult reports plan as the running
-	// mode. (The Specialists tool sets cfg.CoordinatorMode from the
+	// mode. (The scheduler tool sets cfg.CoordinatorMode from the
 	// ctx; that path is unit-tested in the tool package separately.)
 	prov := &subagentMockProvider{
 		responseFn: func(_ int) subagentMockResponse {
@@ -242,7 +242,7 @@ func TestE2E_ContextOverrideThreadsThroughSpecialistsTool(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "翻译这段英文",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_e2e_ctx",
 		CoordinatorMode: "plan",
 	}
@@ -264,7 +264,7 @@ func TestE2E_ContextOverrideThreadsThroughSpecialistsTool(t *testing.T) {
 // failure (TerminalContractFailure-equivalent: max-turns + non-empty
 // contract failures), then verify the SpawnResult shows the mode flip.
 //
-// The mechanism: the Specialists profile runs runSubAgentLoop which has
+// The mechanism: the scheduler profile runs runSubAgentLoop which has
 // no native way to fabricate ContractFailures from the test harness. So
 // we exercise the helpers directly — the function-level shouldEscalate
 // + buildReActEscalation + Plan re-run path is unit-tested separately;
@@ -298,7 +298,7 @@ func TestE2E_EscalationFromReActToPlan(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "调研 X 然后写一份分析报告",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		MaxTurns:        2, // small enough to hit MaxTurns quickly
 		ParentSessionID: "parent_e2e_escalate",
 		CoordinatorMode: "react", // explicit react to verify auto-escalation
@@ -336,7 +336,7 @@ func TestE2E_NoEscalationOnCleanReAct(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "翻译这段英文",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_e2e_clean",
 		CoordinatorMode: "react",
 	}
@@ -355,11 +355,11 @@ func TestE2E_NoEscalationOnCleanReAct(t *testing.T) {
 	}
 }
 
-// TestE2E_NonSpecialistsAgentNotEscalated confirms the safety bound:
-// only "specialists" is eligible for auto-escalation. Other coordinator-
+// TestE2E_NonSchedulerAgentNotEscalated confirms the safety bound:
+// only "scheduler" is eligible for auto-escalation. Other coordinator-
 // tier agents (e.g. general-purpose) hitting MaxTurns get TerminalMaxTurns,
 // not auto-promoted to Plan.
-func TestE2E_NonSpecialistsAgentNotEscalated(t *testing.T) {
+func TestE2E_NonSchedulerAgentNotEscalated(t *testing.T) {
 	prov := &subagentMockProvider{
 		responseFn: func(_ int) subagentMockResponse {
 			return subagentMockResponse{
@@ -389,21 +389,21 @@ func TestE2E_NonSpecialistsAgentNotEscalated(t *testing.T) {
 	}
 
 	if result.Terminal == nil || result.Terminal.Reason != types.TerminalMaxTurns {
-		t.Errorf("non-specialists hitting max-turns should bubble that reason; got %v",
+		t.Errorf("non-scheduler hitting max-turns should bubble that reason; got %v",
 			result.Terminal)
 	}
 	if result.EscalatedFromMode != "" {
-		t.Errorf("non-specialists should NOT auto-escalate; got escalated_from=%q",
+		t.Errorf("non-scheduler should NOT auto-escalate; got escalated_from=%q",
 			result.EscalatedFromMode)
 	}
 }
 
-// TestE2E_SpecialistsToolReadsModeFromContext is the seam test for the
-// router → tool integration. We construct a Specialists-shaped
+// TestE2E_SchedulerToolReadsModeFromContext is the seam test for the
+// router → tool integration. We construct a scheduler-shaped
 // SpawnConfig and verify that when ctx carries WithCoordinatorMode, the
 // resulting spawn picks up the mode. (The router-side test for
 // WithCoordinatorMode is in the router package.)
-func TestE2E_SpecialistsToolReadsModeFromContext(t *testing.T) {
+func TestE2E_SchedulerToolReadsModeFromContext(t *testing.T) {
 	prov := &subagentMockProvider{
 		responses: []subagentMockResponse{
 			{text: "<summary>ok</summary>", stopReason: "end_turn",
@@ -415,7 +415,7 @@ func TestE2E_SpecialistsToolReadsModeFromContext(t *testing.T) {
 	reg.RegisterBuiltins()
 	eng.SetDefRegistry(reg)
 
-	// Ctx carries a mode override — Specialists tool would normally
+	// Ctx carries a mode override — scheduler tool would normally
 	// read this and put it on SpawnConfig.CoordinatorMode. We bypass
 	// the tool layer here and confirm SpawnSync honours the field.
 	ctx := tool.WithCoordinatorMode(context.Background(), "plan")
@@ -427,9 +427,9 @@ func TestE2E_SpecialistsToolReadsModeFromContext(t *testing.T) {
 	cfg := &agent.SpawnConfig{
 		Prompt:          "翻译",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "specialists",
+		SubagentType:    "scheduler",
 		ParentSessionID: "parent_e2e_ctx_thread",
-		CoordinatorMode: mode, // simulating Specialists.Execute → SpawnConfig
+		CoordinatorMode: mode, // simulating scheduler.Execute → SpawnConfig
 	}
 	result, err := eng.SpawnSync(ctx, cfg)
 	if err != nil {

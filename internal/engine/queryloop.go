@@ -69,7 +69,7 @@ type QueryEngineConfig struct {
 
 	// MainAgentAllowedTools restricts the tools advertised to the main
 	// agent's LLM. Empty means no restriction (all enabled tools visible).
-	// L1Engine sets this to ["Agent","Orchestrate"] so emma can only delegate.
+	// L1Engine sets this to ["Agent","orchestrate"] so emma can only delegate.
 	MainAgentAllowedTools []string
 
 	// MainAgentMaxTurns overrides MaxTurns for the user-facing main agent
@@ -220,7 +220,7 @@ type QueryEngine struct {
 
 	// searchGapDetector emits a one-shot per-session CardSystem notice
 	// when a TierSubAgent spawns with declared search capability but
-	// neither WebSearch nor TavilySearch is registered at runtime.
+	// neither web_search nor tavily_search is registered at runtime.
 	// Nil-safe — production wire-up always sets this; tests that
 	// don't need the feature can leave it nil.
 	searchGapDetector *SearchGapDetector
@@ -260,7 +260,7 @@ type QueryEngine struct {
 	defRegistry    *agent.AgentDefinitionRegistry
 	mentionParser  *MentionParser
 
-	// skillReader provides runtime skill discovery for SearchSkill / LoadSkill
+	// skillReader provides runtime skill discovery for search_skill / load_skill
 	// tools (used by freelancer L3). nil disables those tools at runtime.
 	skillReader *skill.Reader
 
@@ -515,7 +515,7 @@ func (qe *QueryEngine) SubmitPlanResponse(_ context.Context, _ string, resp *typ
 // keyed by request_id, blocks on either user response or ctx
 // cancellation. Caller is expected to strip the inherited tool-ctx
 // deadline (context.WithoutCancel) so the user gets unbounded time —
-// same policy as plan_review and AskUserQuestion.
+// same policy as plan_review and ask_user_question.
 func (qe *QueryEngine) requestStepDecision(
 	ctx context.Context,
 	sessionID string,
@@ -706,8 +706,8 @@ func (qe *QueryEngine) SetDefRegistry(reg *agent.AgentDefinitionRegistry) {
 	qe.mentionParser = NewMentionParser(reg)
 }
 
-// SetSkillReader configures the runtime skill reader for SearchSkill /
-// LoadSkill tools. nil disables them.
+// SetSkillReader configures the runtime skill reader for search_skill /
+// load_skill tools. nil disables them.
 func (qe *QueryEngine) SetSkillReader(r *skill.Reader) {
 	qe.skillReader = r
 }
@@ -752,7 +752,7 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 	// Open a fresh trace for this user request. The trace_id rides on
 	// every emit envelope produced during this round so observers can
 	// stitch related events back together. Attach it to the request
-	// context so deeply-nested tools (Orchestrate, Specialists, Agent)
+	// context so deeply-nested tools (scheduler, task)
 	// can pull it back out and emit under the same trace.
 	traceID := emit.NewTraceID()
 	mainAgentRunID := emit.NewAgentRunID()
@@ -949,7 +949,7 @@ func (qe *QueryEngine) processWithAgent(
 		// look the AgentDefinition back up in the registry — passing the
 		// profile name silently misses the lookup, which then makes
 		// EffectiveTier() return the default TierCoordinator and bypass the
-		// L3 driver routing. Specialists / Agent tools already pass def.Name;
+		// L3 driver routing. scheduler / task tools already pass def.Name;
 		// this @-mention path was the odd one out.
 		cfg := &agent.SpawnConfig{
 			Prompt:          prompt,
@@ -1120,7 +1120,7 @@ func (qe *QueryEngine) requestPermissionApproval(
 // For other tools: returns the tool name as-is.
 func extractPermissionKey(toolName, toolInput string) string {
 	switch toolName {
-	case "Bash":
+	case "bash":
 		var input struct {
 			Command string `json:"command"`
 		}
@@ -1132,7 +1132,7 @@ func extractPermissionKey(toolName, toolInput string) string {
 		}
 		return toolName
 
-	case "Edit", "Write", "Read":
+	case "edit", "write", "read":
 		var input struct {
 			FilePath string `json:"file_path"`
 		}
@@ -1277,7 +1277,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 	pool := tool.NewToolPool(qe.registry, nil /*mcpTools*/, nil /*denyRules*/)
 
 	// Restrict the main-agent tool palette when configured. L1Engine uses
-	// this to expose only delegation tools (Agent, Orchestrate) — sub-agents
+	// this to expose only delegation tools (Agent, orchestrate) — sub-agents
 	// keep the full palette via the SpawnSync path, which builds its own
 	// pool independently in subagent.go.
 	if len(qe.config.MainAgentAllowedTools) > 0 {
@@ -1496,7 +1496,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 
 		// Per-tool routing: split the batch into client-routed and
 		// server-routed groups. A tool that implements ClientRoutedTool
-		// (e.g. AskUserQuestion) ALWAYS goes to the client. Everything
+		// (e.g. ask_user_question) ALWAYS goes to the client. Everything
 		// else follows the global ClientTools flag — true means
 		// delegate-everything (Claude Code CLI mode), false means
 		// run-server-side (web UI mode).
@@ -1560,7 +1560,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 // tool.call) or the server-side executor based on per-tool policy:
 //
 //   - Tools implementing tool.ClientRoutedTool with IsClientRouted()=true
-//     ALWAYS go to the client (e.g. AskUserQuestion — only the UI can ask
+//     ALWAYS go to the client (e.g. ask_user_question — only the UI can ask
 //     a human).
 //   - All other tools follow the global QueryEngineConfig.ClientTools
 //     flag: true delegates everything (CLI mode), false runs server-side
@@ -1621,7 +1621,7 @@ func (qe *QueryEngine) dispatchToolBatch(
 func (qe *QueryEngine) routeToClient(pool *tool.ToolPool, toolName string) bool {
 	// Per-tool override: tools that can ONLY work client-side opt in via
 	// ClientRoutedTool. This bypasses the global flag — even with
-	// ClientTools=false (web UI mode), AskUserQuestion still goes client.
+	// ClientTools=false (web UI mode), ask_user_question still goes client.
 	if t := pool.Get(toolName); t != nil {
 		if cr, ok := t.(tool.ClientRoutedTool); ok && cr.IsClientRouted() {
 			return true
@@ -1634,7 +1634,7 @@ func (qe *QueryEngine) routeToClient(pool *tool.ToolPool, toolName string) bool 
 // executeClientTools sends tool.call events to the client and waits for
 // tool.result responses. Wait semantics depend on the tool kind:
 //
-//   - Human-interactive tools (ClientRoutedTool, e.g. AskUserQuestion):
+//   - Human-interactive tools (ClientRoutedTool, e.g. ask_user_question):
 //     wait INDEFINITELY for the user. The only exits are session abort
 //     (ctx cancelled) or the client returning a result. Applying an
 //     artificial timeout to a human-in-the-loop call would silently

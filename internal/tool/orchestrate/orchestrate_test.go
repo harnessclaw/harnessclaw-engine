@@ -13,7 +13,7 @@ import (
 	"harnessclaw-go/internal/agent"
 )
 
-// scriptedSpawner is the test double for Orchestrate tool tests. It returns
+// scriptedSpawner is the test double for orchestrate tool tests. It returns
 // pre-programmed responses keyed by SpawnConfig.SubagentType + call count.
 type scriptedSpawner struct {
 	mu              sync.Mutex
@@ -286,7 +286,7 @@ func TestOrchestrate_RosterSkipsPlannerAndDedupes(t *testing.T) {
 
 func TestOrchestrate_ToolMetadata(t *testing.T) {
 	tool := New(newScriptedSpawner(), nil, zap.NewNop())
-	if tool.Name() != "Orchestrate" {
+	if tool.Name() != "orchestrate" {
 		t.Errorf("Name() = %q", tool.Name())
 	}
 	if !tool.IsLongRunning() {

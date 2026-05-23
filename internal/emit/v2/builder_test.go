@@ -101,12 +101,12 @@ func TestCardAdd_HintTitleFromRegistryTemplate(t *testing.T) {
 
 func TestCardAdd_HintIconFromRegistry(t *testing.T) {
 	em, rec := newTestEmitter(t)
-	em.Card(CardTool, "tool_1").Add(ToolPayload{Name: "Bash"})
+	em.Card(CardTool, "tool_1").Add(ToolPayload{Name: "bash"})
 	ev := rec.Events()[0]
 	if ev.Hint == nil || ev.Hint.Icon != "tool" {
 		t.Errorf("expected Tool default icon, got %v", ev.Hint)
 	}
-	if ev.Hint.Title != "Bash" {
+	if ev.Hint.Title != "bash" {
 		t.Errorf("expected Tool title=tool_name=Bash, got %q", ev.Hint.Title)
 	}
 }
@@ -114,7 +114,7 @@ func TestCardAdd_HintIconFromRegistry(t *testing.T) {
 func TestCardAdd_HintOverride(t *testing.T) {
 	em, rec := newTestEmitter(t)
 	em.Card(CardTool, "tool_1").Add(
-		ToolPayload{Name: "Bash"},
+		ToolPayload{Name: "bash"},
 		WithHint(Hint{Title: "Custom", Icon: "fire"}),
 	)
 	ev := rec.Events()[0]
@@ -146,7 +146,7 @@ func TestCardAdd_AutoParentFromStack(t *testing.T) {
 func TestCardAdd_ParentOverride(t *testing.T) {
 	em, rec := newTestEmitter(t)
 	em.Card(CardTurn, "turn_1").Add(TurnPayload{})
-	em.Card(CardTool, "tool_1").Add(ToolPayload{Name: "Bash"}, WithParent("explicit_parent"))
+	em.Card(CardTool, "tool_1").Add(ToolPayload{Name: "bash"}, WithParent("explicit_parent"))
 	tools := rec.FilterByType(EventCardAdd)
 	if got := tools[1].Envelope.ParentCardID; got != "explicit_parent" {
 		t.Errorf("explicit parent override failed, got %q", got)
@@ -170,7 +170,7 @@ func TestCardClose_PopsParentStack(t *testing.T) {
 
 func TestCardClose_FailedStatusSetsErrorSeverity(t *testing.T) {
 	em, rec := newTestEmitter(t)
-	em.Card(CardTool, "tool_1").Add(ToolPayload{Name: "Bash"})
+	em.Card(CardTool, "tool_1").Add(ToolPayload{Name: "bash"})
 	em.Card(CardTool, "tool_1").Close(StatusFailed,
 		WithError(NewError(ErrorTypeToolTimeout, "timed out")),
 	)
@@ -185,7 +185,7 @@ func TestCardClose_FailedStatusSetsErrorSeverity(t *testing.T) {
 
 func TestCardClose_OKStatusSetsInfoSeverity(t *testing.T) {
 	em, rec := newTestEmitter(t)
-	em.Card(CardTool, "tool_1").Add(ToolPayload{Name: "Bash"})
+	em.Card(CardTool, "tool_1").Add(ToolPayload{Name: "bash"})
 	em.Card(CardTool, "tool_1").Close(StatusOK)
 	closes := rec.FilterByType(EventCardClose)
 	if closes[0].Envelope.Severity != SeverityInfo {
@@ -195,7 +195,7 @@ func TestCardClose_OKStatusSetsInfoSeverity(t *testing.T) {
 
 func TestCardClose_PayloadCarriesError(t *testing.T) {
 	em, rec := newTestEmitter(t)
-	em.Card(CardTool, "tool_1").Add(ToolPayload{Name: "Bash"})
+	em.Card(CardTool, "tool_1").Add(ToolPayload{Name: "bash"})
 	em.Card(CardTool, "tool_1").Close(StatusFailed,
 		WithError(NewError(ErrorTypeToolTimeout, "timed out")),
 	)
@@ -255,7 +255,7 @@ func TestCardAppend_ToolInputUsesPartialJSON(t *testing.T) {
 
 func TestCardTick_Progress(t *testing.T) {
 	em, rec := newTestEmitter(t)
-	em.Card(CardTool, "tool_1").Add(ToolPayload{Name: "WebFetch"})
+	em.Card(CardTool, "tool_1").Add(ToolPayload{Name: "web_fetch"})
 	em.Card(CardTool, "tool_1").Tick(TickProgress, ProgressPayload{
 		ItemsProcessed: 12, ItemsTotal: 30, ETAMs: 3000,
 	})
@@ -297,7 +297,7 @@ func TestEmitter_Sub_BindsAgentIdentityAndKeepsTrace(t *testing.T) {
 
 	child := em.Sub("sub_e5", RoleWorker, "run_a")
 	child.Card(CardAgent, "sub_e5").Add(AgentPayload{Name: "researcher", AgentType: "sync"})
-	child.Card(CardTool, "tool_inner").Add(ToolPayload{Name: "Grep"})
+	child.Card(CardTool, "tool_inner").Add(ToolPayload{Name: "grep"})
 
 	allEvents := rec.Events()
 	if len(allEvents) != 3 {
@@ -332,7 +332,7 @@ func TestEmitter_Sub_BindsAgentIdentityAndKeepsTrace(t *testing.T) {
 
 func TestPromptUser_AllocatesRequestID(t *testing.T) {
 	em, rec := newTestEmitter(t)
-	id := em.PromptUser("permission", PermissionPromptPayload{ToolName: "Bash"})
+	id := em.PromptUser("permission", PermissionPromptPayload{ToolName: "bash"})
 	if !strings.HasPrefix(id, "req_") {
 		t.Errorf("request ID = %q, want req_ prefix", id)
 	}

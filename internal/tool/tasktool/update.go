@@ -20,7 +20,7 @@ func NewUpdate(store task.Store, scopeID string) *UpdateTool {
 	return &UpdateTool{store: store, scopeID: scopeID}
 }
 
-func (t *UpdateTool) Name() string             { return "TaskUpdate" }
+func (t *UpdateTool) Name() string             { return "task_update" }
 func (t *UpdateTool) Description() string       { return "更新任务的 status / owner 或其他字段。" }
 func (t *UpdateTool) IsReadOnly() bool          { return false }
 func (t *UpdateTool) IsConcurrencySafe() bool   { return true }

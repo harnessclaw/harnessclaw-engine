@@ -66,7 +66,7 @@ func RootSessionIDFromCtx(ctx context.Context) (string, bool) {
 
 // WithImmediateParentSessionID attaches the immediate parent's session id.
 // Distinct from RootSessionID: for an L3 agent root is the user-facing
-// emma session while immediate parent is the L2 (specialists) sub_session.
+// emma session while immediate parent is the L2 (scheduler) sub_session.
 // stats_provider writes token usage into all three trackers (self, immediate
 // parent, root) so each layer's metrics include its own subtree.
 func WithImmediateParentSessionID(ctx context.Context, parentID string) context.Context {

@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	toolName     = "Glob"
+	toolName     = "glob"
 	maxResults   = 1000
 	maxOutputLen = 30_000
 )

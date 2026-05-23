@@ -274,7 +274,7 @@ func TestClassifyStepErrorType(t *testing.T) {
 		{"resolver miss", []string{"subagent resolution: no L3 registered"}, emit.ErrorTypeDependencyFail},
 		{"upstream skip", []string{"upstream dep s0 did not succeed"}, emit.ErrorTypeDependencyFail},
 		{"contract", []string{"contract violation"}, emit.ErrorTypeInternal},
-		{"invalid schema", []string{"invalid schema for SubmitTaskResult"}, emit.ErrorTypeInternal},
+		{"invalid schema", []string{"invalid schema for submit_task_result"}, emit.ErrorTypeInternal},
 		{"unknown", []string{"weird thing"}, emit.ErrorTypeInternal},
 	}
 	for _, tc := range cases {

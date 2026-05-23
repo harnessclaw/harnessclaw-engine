@@ -12,7 +12,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// CreateTool implements the TeamCreate tool for creating agent teams.
+// CreateTool implements the team_create tool for creating agent teams.
 type CreateTool struct {
 	tool.BaseTool
 	teamMgr *agent.TeamManager
@@ -20,7 +20,7 @@ type CreateTool struct {
 	logger  *zap.Logger
 }
 
-// NewCreate creates a TeamCreate tool.
+// NewCreate creates a team_create tool.
 func NewCreate(teamMgr *agent.TeamManager, broker *agent.MessageBroker, logger *zap.Logger) *CreateTool {
 	return &CreateTool{
 		teamMgr: teamMgr,
@@ -29,7 +29,7 @@ func NewCreate(teamMgr *agent.TeamManager, broker *agent.MessageBroker, logger *
 	}
 }
 
-func (t *CreateTool) Name() string            { return "TeamCreate" }
+func (t *CreateTool) Name() string            { return "team_create" }
 func (t *CreateTool) Description() string      { return "新建一个 team，用来协调多个 agent。" }
 func (t *CreateTool) IsReadOnly() bool         { return false }
 func (t *CreateTool) IsConcurrencySafe() bool  { return true }

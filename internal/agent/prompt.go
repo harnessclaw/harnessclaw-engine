@@ -86,8 +86,8 @@ func RenderSubAgentContract(def *AgentDefinition) string {
 	var b strings.Builder
 	b.WriteString("<sub-agent-contract>\n")
 	b.WriteString("你是 L3 sub-agent（叶子执行者）。L3 独有的两条硬规则：\n\n")
-	b.WriteString("1. **不下派**：不能调用 Task / Specialists / Orchestrate 把活给其他 agent；遇到自己做不了的，走第 2 条。\n")
-	b.WriteString("2. **EscalateToPlanner 是合法出口**：任务确实做不了时（缺输入、超能力、约束矛盾），调 EscalateToPlanner({reason, suggested_next_steps}) 而不是硬写一个差产物。\n\n")
+	b.WriteString("1. **不下派**：不能调用 task / scheduler 把活给其他 agent；遇到自己做不了的，走第 2 条。\n")
+	b.WriteString("2. **escalate_to_planner 是合法出口**：任务确实做不了时（缺输入、超能力、约束矛盾），调 escalate_to_planner({reason, suggested_next_steps}) 而不是硬写一个差产物。\n\n")
 
 	if len(def.Skills) > 0 {
 		b.WriteString("能力标签：")
@@ -106,7 +106,7 @@ func RenderSubAgentContract(def *AgentDefinition) string {
 	}
 
 	if len(def.Limitations) > 0 {
-		b.WriteString("不做事项（命中即 EscalateToPlanner）：\n")
+		b.WriteString("不做事项（命中即 escalate_to_planner）：\n")
 		for _, l := range def.Limitations {
 			fmt.Fprintf(&b, "- %s\n", l)
 		}

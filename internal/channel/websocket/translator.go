@@ -88,7 +88,7 @@ type sessionState struct {
 	pendingPerm   map[string]string         // request_id → ⟨request_id⟩ (for prompt.reply correlation)
 
 	// askQuestion maps a v2.2 prompt.user request_id back to the
-	// originating engine tool_use_id. AskUserQuestion is a client-routed
+	// originating engine tool_use_id. ask_user_question is a client-routed
 	// tool: the engine's tool executor blocks on a tool.result. v2.2
 	// surfaces it as prompt.user(kind=question) instead of card.add(tool);
 	// when the user replies with prompt.user_response, conn.go uses this
@@ -113,7 +113,7 @@ type sessionState struct {
 
 	// pausedCards holds the orphan-watchdog suspension list for each
 	// outstanding prompt.user request. While the user is reviewing
-	// (plan_review, permission, AskUserQuestion), the surrounding
+	// (plan_review, permission, ask_user_question), the surrounding
 	// agent / message / turn cards are intentionally idle and must not
 	// fire orphan_timeout. We pause their watchdogs on emit and resume
 	// on response — design intent: prompt.user has no time limit.
@@ -155,7 +155,7 @@ func newSessionState() *sessionState {
 
 // askUserQuestionToolName mirrors internal/tool/askuserquestion.ToolName.
 // Hardcoded here to avoid an import cycle.
-const askUserQuestionToolName = "AskUserQuestion"
+const askUserQuestionToolName = "ask_user_question"
 
 // suspendForPrompt pauses the orphan watchdog up the chain rooted at the
 // most specific tracked card we know for the agent that triggered the
@@ -340,7 +340,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		// 只更新内部跟踪状态，不向客户端发送任何事件。
 		// 实际的 card.add 推迟到 EngineEventToolQueued（在 buffer-then-replay
 		// 的文字事件之后），确保文字先于工具卡出现在 wire 上。
-		// AskUserQuestion 经由 EngineEventToolCall 升级为 prompt.user，不需要工具卡。
+		// ask_user_question 经由 EngineEventToolCall 升级为 prompt.user，不需要工具卡。
 		t.openTurnIfNeeded(s, em)
 		if _, exists := s.tools[ev.ToolUseID]; exists {
 			return // 幂等
@@ -372,7 +372,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 
 	case types.EngineEventToolQueued:
 		// buffer-then-replay 的文字事件已经发出，现在安全地开工具卡。
-		// AskUserQuestion 走 prompt.user 路径，不需要工具卡。
+		// ask_user_question 走 prompt.user 路径，不需要工具卡。
 		toolName := s.toolNames[ev.ToolUseID]
 		if toolName == "" {
 			toolName = ev.ToolName
@@ -446,11 +446,11 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		s.tools[ev.ToolUseID] = toolCardID
 		s.toolNames[ev.ToolUseID] = ev.ToolName
 		opts := []emitv2.EmitOpt{emitv2.WithParent(parentForTool(s))}
-		// Agent-spawning tools (Specialists / Task) wrap entire sub-agent
+		// Agent-spawning tools (scheduler / task) wrap entire sub-agent
 		// runs that legitimately last tens of minutes. The 120s tool-card
 		// orphan_timeout was incorrect for them — once the inner agent
 		// stopped tick-ing its own card (e.g. after planner done, while
-		// scheduler is waiting on writer to finish), the watchdog would
+		// the step DAG runner waits on an L3 to finish), the watchdog would
 		// synthesise a failed close on the tool card even though the
 		// underlying work was healthy. Opt these out of the watchdog;
 		// they still get parent-chain tracking (chain-only mode) so
@@ -493,9 +493,9 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 				}
 				errInfo = emitv2.NewError(typ, ev.ToolResult.Content)
 			}
-			// Promote known metadata keys to typed fields; everything
+			// promote known metadata keys to typed fields; everything
 			// else flows through to ToolPayload.Metadata verbatim. This
-			// is what gives WebSearch / TavilySearch their {urls,
+			// is what gives web_search / tavily_search their {urls,
 			// query, result_count, has_raw} on the wire — without it
 			// the client only sees the formatted text Output.
 			inner.RenderHint, inner.Language, inner.FilePath, inner.Metadata =
@@ -509,7 +509,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 
 	case types.EngineEventToolCall:
 		// Client-side tool execution. Two paths:
-		//   (a) AskUserQuestion → upgrade to prompt.user(kind=question)
+		//   (a) ask_user_question → upgrade to prompt.user(kind=question)
 		//       per v2.2 §11. The engine's askUserQuestion tool blocks
 		//       on a tool.result, so we record the request_id →
 		//       tool_use_id mapping; conn.go converts the user's
@@ -548,7 +548,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		s.tools[ev.ToolUseID] = toolCardID
 		opts := []emitv2.EmitOpt{emitv2.WithParent(parentForTool(s))}
 		// Symmetry with EngineEventToolStart path (line 287): orchestration
-		// tools (Specialists / Task) wrap multi-minute sub-agent runs that
+		// tools (scheduler / task) wrap multi-minute sub-agent runs that
 		// legitimately outlast the CardTool 120s orphan watchdog. Opt them
 		// out here too — previously only the ToolStart path had this fix,
 		// leaving client-side tool calls (this case) subject to false-
@@ -999,7 +999,7 @@ func parentForSubAgent(s *sessionState, parentAgentID, parentStepID string) stri
 	if id := s.subAgentCard[parentAgentID]; id != "" {
 		return id
 	}
-	// Else attach to the most recent tool card (Agent/Specialists call).
+	// Else attach to the most recent tool card (task / scheduler call).
 	for _, id := range s.tools {
 		return id
 	}
@@ -1024,11 +1024,11 @@ func (t *Translator) translateSubAgentEvent(s *sessionState, ev *types.EngineEve
 		input := parseJSONObject(inner.ToolInput)
 		opts := []emitv2.EmitOpt{emitv2.WithParent(s.subAgentCard[ev.AgentID])}
 		// Symmetry with EngineEventToolStart (line 312) and EngineEventToolCall
-		// (line 402): orchestration tools (Specialists / Task) wrap multi-minute
+		// (line 402): orchestration tools (scheduler / task) wrap multi-minute
 		// sub-agent runs that legitimately outlast the CardTool 120s orphan
-		// watchdog. Without this, when a sub-agent (e.g. Specialists) dispatches
-		// Task, the inner tool_start arrives wrapped in SubAgentEvent and hits
-		// this path — previously skipping the opt-out, so the Task card got
+		// watchdog. Without this, when a sub-agent (e.g. scheduler) dispatches
+		// task, the inner tool_start arrives wrapped in SubAgentEvent and hits
+		// this path — previously skipping the opt-out, so the task card got
 		// killed at 120s while its inner plan-coord was still running for 8 min,
 		// surfacing as "执行超时了，我得放弃这步" mid-task.
 		if isOrchestrationTool(inner.ToolName) {
@@ -1102,13 +1102,13 @@ func (t *Translator) openPlan(s *sessionState, em *emitv2.Emitter, ev *types.Eng
 // eventually succeeds (the exact mis-report users have been seeing).
 //
 // Tool names are stable LLM-facing identifiers (declared as ToolName
-// constants in internal/tool/specialists and internal/tool/agenttool).
+// constants in internal/tool/scheduler and internal/tool/agenttool).
 // New orchestration tools added in the future need a one-line update
 // here — the alternative (introspecting a tool registry from inside
 // the translator) doesn't fit the wire-translator's scope.
 func isOrchestrationTool(name string) bool {
 	switch name {
-	case "Specialists", "Task":
+	case "scheduler", "task":
 		return true
 	default:
 		return false
@@ -1116,24 +1116,24 @@ func isOrchestrationTool(name string) bool {
 }
 
 // parentForPlan picks the right parent card_id for a plan card. The
-// plan is created by an L2 coordinator (typically the Specialists
+// plan is created by an L2 coordinator (typically the scheduler
 // agent), so it should sit UNDER that agent's card on the wire — not
 // beside it under the turn. Wrong parent topology was the root cause of
-// the orphan_timeout false-positives on the Specialists tool card:
-// the plan was a sibling of the tool card, so writer heartbeats walked
-// writer→step→plan→turn without ever touching tool, and the tool card
+// the orphan_timeout false-positives on the scheduler tool card:
+// the plan was a sibling of the tool card, so L3 heartbeats walked
+// L3→step→plan→turn without ever touching tool, and the tool card
 // (120s timeout) died as soon as the planner stopped tick-ing it.
 //
 // Precedence:
 //  1. emitting agent's CardAgent (subAgentCard[ev.AgentID]) — the
-//     specialists agent under whose roof this plan was produced
+//     scheduler agent under whose roof this plan was produced
 //  2. emitting agent's enclosing tool card — best-effort fallback when
 //     for some reason the agent card isn't tracked (transient state
 //     between agent_end / next agent_start)
 //  3. turn card — legacy behaviour, last resort
 //
 // With (1), the full chain becomes
-//   writer_agent → step → plan → specialists_agent → tool → turn
+//   l3_agent → step → plan → scheduler_agent → tool → turn
 // and any heartbeat anywhere in that subtree refreshes the tool card.
 func parentForPlan(s *sessionState, ev *types.EngineEvent) string {
 	if ev != nil && ev.AgentID != "" {
@@ -1317,7 +1317,7 @@ func safeTurnCount(ev *types.EngineEvent) int {
 // remains, so the wire frame omits the field rather than carrying an
 // empty object.
 //
-// Why this matters: WebSearch and TavilySearch hang structured data
+// Why this matters: web_search and tavily_search hang structured data
 // (urls / query / result_count / has_raw) off Metadata for the client
 // to render as URL chips. Without passthrough the wire would carry
 // only the formatted text Output and the client would fall back to
@@ -1432,7 +1432,7 @@ func buildPromptFrame(em *emitv2.Emitter, reqID, frameType, kind string, payload
 // prompt.user(kind=question) request_id corresponds to. conn.go calls
 // this on prompt.user_response to bridge back into a tool.result.
 // Returns "" when request_id is unknown (i.e. the response is for a
-// permission / plan_review prompt, not an upgraded AskUserQuestion).
+// permission / plan_review prompt, not an upgraded ask_user_question).
 //
 // Side effect: a successful lookup removes the entry so duplicate
 // replies cannot fire the engine twice.
@@ -1542,7 +1542,7 @@ func (t *Translator) pickCopy(s *sessionState, toolName string, phase emitv2.Too
 	return t.copyPicker.Pick(s.sessionID, toolName, phase, bytes, retry)
 }
 
-// decodeAskQuestionInput pulls fields out of an AskUserQuestion tool
+// decodeAskQuestionInput pulls fields out of an ask_user_question tool
 // input map (whatever shape the LLM produced) into the v2.2
 // QuestionPromptPayload schema. Defaults: allow_custom=true, multi=false.
 func decodeAskQuestionInput(in map[string]any) (question string, options []emitv2.QuestionOption, multi bool, allowCustom bool) {

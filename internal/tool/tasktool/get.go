@@ -20,7 +20,7 @@ func NewGet(store task.Store, scopeID string) *GetTool {
 	return &GetTool{store: store, scopeID: scopeID}
 }
 
-func (t *GetTool) Name() string             { return "TaskGet" }
+func (t *GetTool) Name() string             { return "task_get" }
 func (t *GetTool) Description() string       { return "按 ID 取一个任务。" }
 func (t *GetTool) IsReadOnly() bool          { return true }
 func (t *GetTool) IsConcurrencySafe() bool   { return true }
