@@ -22,7 +22,7 @@ type PromptContext struct {
 	// set for this agent (after AllowedTools whitelist / AgentType blacklist).
 	// ToolsSection prefers it over Tools.All() to keep the rendered "# 可用工具"
 	// list in sync with the schema list sent to the LLM. Sub-agents with an
-	// AllowedTools whitelist (e.g. Specialists) MUST populate this — otherwise
+	// AllowedTools whitelist (e.g. scheduler) MUST populate this — otherwise
 	// the prompt advertises tools the runtime will reject.
 	AvailableTools []tool.Tool
 

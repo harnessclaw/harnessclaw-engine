@@ -1,4 +1,4 @@
-package texts
+package principles
 
 import (
 	"strings"
@@ -9,17 +9,17 @@ import (
 // of D19 (no Bash mkdir/mv/cp for workspace management). The end-to-end
 // runtime test that would inspect captured LLM events lives in cmd/ and is
 // gitignored; this is the lightweight stand-in that fails fast if the
-// directive is removed from principles.go.
+// directive is removed from the per-role principles files.
 //
-// We assert on Worker AND Specialists because both layers can call Bash —
-// L3 directly (Read/Edit/Write users), L2 via specialists.
+// We assert on Worker AND scheduler because both layers can call Bash —
+// L3 directly (Read/Edit/Write users), L2 via scheduler.
 func TestPrinciples_D19_NoBashMkdirDirective(t *testing.T) {
 	cases := []struct {
 		name string
 		role Role
 	}{
 		{"worker", RoleWorker},
-		{"specialists", RoleSpecialists},
+		{"scheduler", RoleScheduler},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -30,7 +30,7 @@ func TestPrinciples_D19_NoBashMkdirDirective(t *testing.T) {
 					t.Errorf("principles[%s] missing %q — D19 directive removed?", c.role, want)
 				}
 			}
-			if !strings.Contains(text, "Bash") {
+			if !strings.Contains(text, "bash") {
 				t.Errorf("principles[%s] missing 'Bash' — directive must name the tool", c.role)
 			}
 		})

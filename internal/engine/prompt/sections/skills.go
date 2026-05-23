@@ -10,7 +10,7 @@ import (
 // token budget allocation and API-level prompt caching.
 //
 // The intro text adapts to the caller's available tools:
-//   - SearchSkill present (L2 Specialists) → guidance about freelancer dispatch
+//   - search_skill present (L2 scheduler) → guidance about freelancer dispatch
 //   - Skill present (L1 emma) → guidance about direct Skill tool invocation
 //   - Neither (e.g. a worker that somehow received a listing) → minimal text
 type SkillsSection struct{}
@@ -33,9 +33,9 @@ func (s *SkillsSection) Render(ctx *prompt.PromptContext, budget int) (string, e
 	hasDirect := false
 	for _, t := range ctx.AvailableTools {
 		switch t.Name() {
-		case "SearchSkill":
+		case "search_skill":
 			hasSearch = true
-		case "Skill":
+		case "skill":
 			hasDirect = true
 		}
 	}
@@ -43,18 +43,18 @@ func (s *SkillsSection) Render(ctx *prompt.PromptContext, budget int) (string, e
 	var intro string
 	switch {
 	case hasSearch:
-		// L2 Specialists: skills are routed through freelancer L3.
+		// L2 scheduler: skills are routed through freelancer L3.
 		intro = "# 可用技能（user-installed skills）\n\n" +
-			"以下 skill 是用户在本地 skills 目录下装载的。**任务匹配某 skill 时，请优先派 freelancer 处理**，不要默认派 developer 等固定搭档：\n\n" +
-			"1. 用 SearchSkill(query=\"...\") 验证当前状态（skill 可能已删除/新增）\n" +
-			"2. 调用 Task(subagent_type=\"freelancer\", candidate_skills=[匹配的 skill 名]) 派活\n\n" +
+			"以下 skill 是用户在本地 skills 目录下装载的。**任务匹配某 skill 时，请优先派 freelancer 处理**：\n\n" +
+			"1. 用 search_skill(query=\"...\") 验证当前状态（skill 可能已删除/新增）\n" +
+			"2. 调用 task(subagent_type=\"freelancer\", candidate_skills=[匹配的 skill 名]) 派活\n\n" +
 			"判断规则：\n" +
-			"- 任务里出现明确文件格式名（docx/pdf/xlsx/notion 等）→ 几乎必有对应 skill，先 SearchSkill\n" +
+			"- 任务里出现明确文件格式名（docx/pdf/xlsx/notion 等）→ 几乎必有对应 skill，先 search_skill\n" +
 			"- 任务匹配下方 skill description → 派 freelancer，**不要走 developer 跑通用脚本**\n\n"
 	case hasDirect:
-		// L1 emma path: direct Skill tool invocation (Claude Code style).
+		// L1 emma path: direct skill tool invocation (Claude Code style).
 		intro = "# 可用技能\n\n" +
-			"使用 Skill 工具调用以下技能。" +
+			"使用 skill 工具调用以下技能。" +
 			"当用户请求匹配某项技能时，先调用技能再生成其他回复。\n\n"
 	default:
 		// Fallback: agent received the listing but has no obvious entry tool.

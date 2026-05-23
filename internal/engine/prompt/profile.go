@@ -1,6 +1,9 @@
 package prompt
 
-import "harnessclaw-go/internal/engine/prompt/texts"
+import (
+	"harnessclaw-go/internal/engine/prompt/texts"
+	"harnessclaw-go/internal/engine/prompt/texts/principles"
+)
 
 // AgentProfile declares which Sections an agent type uses,
 // and how to customize them.
@@ -45,8 +48,8 @@ var (
 			"principles", // 判断规则 + 交付方式（Judgment + Delivery）
 			"memory",     // 用户偏好
 			// "team" intentionally NOT included — emma at L1 treats L2
-			// (Specialists) as a black box. The team roster is consumed
-			// internally by Specialists / Orchestrate, not by emma.
+			// (scheduler) as a black box. The team roster is consumed
+			// internally by scheduler, not by emma.
 		},
 	}
 
@@ -64,7 +67,7 @@ var (
 		},
 		SectionOverrides: map[string]string{
 			"role":       texts.ExploreRole,
-			"principles": texts.Principles(texts.RoleExplore),
+			"principles": principles.Principles(principles.RoleExplore),
 		},
 		TierWeights: map[string]float64{
 			"20-29": 0.60, // give more budget to tools
@@ -89,43 +92,44 @@ var (
 		},
 		SectionOverrides: map[string]string{
 			"role":       texts.PlanRole,
-			"principles": texts.Principles(texts.RolePlan),
+			"principles": principles.Principles(principles.RolePlan),
 		},
 	}
 
-	// SpecialistsProfile is the L2 coordinator. emma calls a Specialists
-	// tool which spawns this profile via SpawnSync. The Specialists agent
-	// runs its own LLM loop, using the Agent tool to dispatch L3 sub-agents
-	// (writer/researcher/analyst/...). It needs the team table to know
-	// which sub-agent codename handles what kind of task.
-	SpecialistsProfile = &AgentProfile{
-		Name:        "specialists",
+	// SchedulerProfile is the L2 coordinator. emma calls the scheduler
+	// tool which spawns this profile via SpawnSync. The scheduler agent
+	// runs its own LLM loop, using the task tool to dispatch the L3
+	// sub-agent (freelancer, whose capability comes from runtime-loaded
+	// user skills). It needs the team table + skills section to pick
+	// candidate_skills for each dispatch.
+	SchedulerProfile = &AgentProfile{
+		Name:        "scheduler",
 		Description: "L2 coordinator — plan / dispatch / integrate / check",
 		Sections: []string{
 			"currentdate",
 			"role",
-			"team", // Specialists needs to see the L3 roster to dispatch correctly
-			"skills", // user-installed skills: Specialists picks candidate_skills for freelancer
+			"team", // scheduler needs to see the L3 roster to dispatch correctly
+			"skills", // user-installed skills: scheduler picks candidate_skills for freelancer
 			"principles",
 			"tools",
 			"env",
 		},
 		ExcludeSections: []string{
-			"memory", // user prefs are emma's concern, not Specialists's
+			"memory", // user prefs are emma's concern, not scheduler's
 		},
 		SectionOverrides: map[string]string{
-			"role":       texts.SpecialistsRole,
-			"principles": texts.Principles(texts.RoleSpecialists),
+			"role":       texts.SchedulerRole,
+			"principles": principles.Principles(principles.RoleScheduler),
 		},
 	}
 
 	// PlannerProfile is the internal Phase-2 task decomposer used by the
-	// Orchestrate tool. It is NOT part of emma's roster — emma never calls
-	// it directly; Orchestrate spawns it to convert a natural-language intent
+	// orchestrate tool. It is NOT part of emma's roster — emma never calls
+	// it directly; orchestrate spawns it to convert a natural-language intent
 	// into a structured plan JSON describing dependent sub-agent steps.
 	PlannerProfile = &AgentProfile{
 		Name:        "planner",
-		Description: "Internal Orchestrate planner — turns intent into plan JSON",
+		Description: "Internal orchestrate planner — turns intent into plan JSON",
 		Sections: []string{
 			"currentdate",
 			"role",
@@ -140,7 +144,7 @@ var (
 		},
 		SectionOverrides: map[string]string{
 			"role":       texts.PlannerRole,
-			"principles": texts.Principles(texts.RolePlanner),
+			"principles": principles.Principles(principles.RolePlanner),
 		},
 	}
 
@@ -160,7 +164,7 @@ var (
 			"task",
 		},
 		SectionOverrides: map[string]string{
-			"principles": texts.Principles(texts.RoleWorker),
+			"principles": principles.Principles(principles.RoleWorker),
 		},
 	}
 )
@@ -174,7 +178,7 @@ var (
 func GetBuiltInProfiles() map[string]*AgentProfile {
 	return map[string]*AgentProfile{
 		"emma":        EmmaProfile,
-		"specialists": SpecialistsProfile,
+		"scheduler":   SchedulerProfile,
 		"explore":     ExploreProfile,
 		"plan":        PlanProfile,
 		"planner":     PlannerProfile,
@@ -277,15 +281,15 @@ func ResolveProfileByName(name string) *AgentProfile {
 //
 // Mapping:
 //
-//	"specialists" (L2)         → SpecialistsProfile
+//	"scheduler" (L2)           → SchedulerProfile
 //	"Explore" / "researcher"   → ExploreProfile (L3)
 //	"Plan"                     → PlanProfile (L3)
 //	"planner" (legacy)         → PlannerProfile
 //	everything else            → WorkerProfile (L3 default)
 func ResolveProfileBySubagentType(subagentType string) *AgentProfile {
 	switch subagentType {
-	case "Specialists", "specialists":
-		return SpecialistsProfile
+	case "scheduler":
+		return SchedulerProfile
 	case "Explore", "explore", "researcher":
 		return ExploreProfile
 	case "Plan", "plan":
