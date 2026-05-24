@@ -3,6 +3,8 @@
 package spec
 
 import (
+	"time"
+
 	"harnessclaw-go/internal/engine/scheduler/types"
 )
 
@@ -23,6 +25,9 @@ type TaskSpec struct {
 	Model        string   `json:"model,omitempty"`
 	AllowedTools []string `json:"allowed_tools,omitempty"`
 	Layout       string   `json:"layout,omitempty"` // "flat" | "per-task"
+
+	// Escalation carries context from a prior failed attempt to the next coordinator
+	Escalation *EscalationInfo `json:"escalation,omitempty"`
 }
 
 // Hint guides router.Select. Kind takes precedence when non-zero.
@@ -33,4 +38,20 @@ type Hint struct {
 // DepRef is a dependency reference: a LocalID (plan-internal sibling) or
 // an absolute TaskID (already-known parent/sibling).
 type DepRef string
+
+// EscalationInfo carries context from a prior failed attempt to the next coordinator.
+type EscalationInfo struct {
+	FromKind    string    `json:"from_kind"`
+	Reason      string    `json:"reason"`
+	Failures    []string  `json:"failures,omitempty"`
+	EscalatedAt time.Time `json:"escalated_at"`
+}
+
+// IsEmpty returns true if the EscalationInfo is nil or has no meaningful content.
+func (e *EscalationInfo) IsEmpty() bool {
+	if e == nil {
+		return true
+	}
+	return e.Reason == "" && len(e.Failures) == 0
+}
 
