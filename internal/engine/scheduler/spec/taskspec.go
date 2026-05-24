@@ -34,5 +34,3 @@ type Hint struct {
 // an absolute TaskID (already-known parent/sibling).
 type DepRef string
 
-// AgentDef placeholder—full type lives in agentdef.go (Task 6 fills fields)
-type AgentDef struct{}
