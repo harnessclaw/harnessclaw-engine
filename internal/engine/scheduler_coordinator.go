@@ -110,6 +110,11 @@ func NewSchedulerCoordinator(cfg SchedulerCoordinatorConfig) *SchedulerCoordinat
 	}
 }
 
+// CoordinatorTaskSpec builds a minimal TaskSpec for a coordinator-tier spawn.
+func CoordinatorTaskSpec(goal string) spec.TaskSpec {
+	return spec.TaskSpec{Goal: goal, Layout: "flat"}
+}
+
 // Start launches the scheduler and consumer pool goroutines.
 // ctx cancellation stops all background work.
 func (sc *SchedulerCoordinator) Start(ctx context.Context) {

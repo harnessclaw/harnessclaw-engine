@@ -17,6 +17,8 @@ import (
 	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/texts"
+	schedspec "harnessclaw-go/internal/engine/scheduler/spec"
+	schedulertypes "harnessclaw-go/internal/engine/scheduler/types"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/event"
@@ -662,20 +664,48 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		if isSubAgent {
 			loopResult = qe.runSubAgentDriver(ctx, sess, lc, out)
 		} else {
-			coord := qe.resolveCoordinator(cfg.CoordinatorMode, cfg.Prompt, logger)
-			logger.Info("coordinator resolved",
-				zap.String("requested_mode", cfg.CoordinatorMode),
-				zap.String("running_mode", coord.Mode().String()),
-			)
-			// Tag the loopResult with the running mode so the
-			// SpawnResult downstream can surface it. ReActCoordinator
-			// auto-escalates to Plan internally; we capture both modes
-			// (final + initial) by inspecting the result's
-			// EscalatedFromMode after Run returns.
-			runStart := coord.Mode()
-			loopResult = coord.Run(ctx, sess, lc, out)
-			if loopResult.CoordinatorMode == "" {
-				loopResult.CoordinatorMode = string(runStart)
+			if qe.schedulerCoord != nil {
+				// Phase 3 cutover: route through new L2 scheduler.
+				sp := schedspec.TaskSpec{
+					Goal:      cfg.Prompt,
+					Layout:    "flat",
+					SessionID: cfg.ParentSessionID,
+					Model:     cfg.Model,
+				}
+				if cfg.CoordinatorMode != "" {
+					sp.Hint.Kind = schedulertypes.Kind(cfg.CoordinatorMode)
+				}
+				ref, runErr := qe.schedulerCoord.RunLeaf(ctx, cfg.ParentSessionID, sp)
+				if runErr != nil {
+					loopResult = subAgentLoopResult{
+						Terminal: types.Terminal{
+							Reason:  types.TerminalModelError,
+							Message: runErr.Error(),
+						},
+					}
+				} else {
+					loopResult = metaRefToLoopResult(ref)
+					loopResult.CoordinatorMode = cfg.CoordinatorMode
+					if loopResult.CoordinatorMode == "" {
+						loopResult.CoordinatorMode = "react"
+					}
+				}
+			} else {
+				coord := qe.resolveCoordinator(cfg.CoordinatorMode, cfg.Prompt, logger)
+				logger.Info("coordinator resolved",
+					zap.String("requested_mode", cfg.CoordinatorMode),
+					zap.String("running_mode", coord.Mode().String()),
+				)
+				// Tag the loopResult with the running mode so the
+				// SpawnResult downstream can surface it. ReActCoordinator
+				// auto-escalates to Plan internally; we capture both modes
+				// (final + initial) by inspecting the result's
+				// EscalatedFromMode after Run returns.
+				runStart := coord.Mode()
+				loopResult = coord.Run(ctx, sess, lc, out)
+				if loopResult.CoordinatorMode == "" {
+					loopResult.CoordinatorMode = string(runStart)
+				}
 			}
 		}
 	}()
@@ -1676,6 +1706,16 @@ func joinNonEmpty(parts []string, sep string) string {
 		out += p
 	}
 	return out
+}
+
+// metaRefToLoopResult converts a successful SchedulerCoordinator result
+// into a subAgentLoopResult. Only the Terminal field is populated;
+// the caller fills CoordinatorMode.
+func metaRefToLoopResult(ref schedulertypes.MetaRef) subAgentLoopResult {
+	_ = ref // MetaRef is recorded in tstate; loopResult doesn't need to carry it
+	return subAgentLoopResult{
+		Terminal: types.Terminal{Reason: types.TerminalCompleted},
+	}
 }
 
 // countRequired returns how many ExpectedOutputs are marked Required.

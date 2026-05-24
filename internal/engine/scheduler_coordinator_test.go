@@ -17,6 +17,33 @@ func (f *engineFakeSpawner) SpawnSync(_ context.Context, _ *agent.SpawnConfig) (
 	return &agent.SpawnResult{Output: f.output}, nil
 }
 
+func TestSchedulerCoordinator_RunLeafWithCutover(t *testing.T) {
+	dir := t.TempDir()
+	spawner := &engineFakeSpawner{output: "cutover done"}
+
+	sc := engine.NewSchedulerCoordinator(engine.SchedulerCoordinatorConfig{
+		Spawner: spawner,
+		RootDir: dir,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sc.Start(ctx)
+
+	sp := spec.TaskSpec{
+		Goal:      "test goal",
+		Layout:    "flat",
+		SessionID: "sess-cutover",
+	}
+	ref, err := sc.RunLeaf(ctx, "sess-cutover", sp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ref == "" {
+		t.Fatal("expected non-empty MetaRef")
+	}
+}
+
 func TestSchedulerCoordinator_RunLeaf_ReturnsMetaRef(t *testing.T) {
 	dir := t.TempDir()
 	spawner := &engineFakeSpawner{output: "task done"}
