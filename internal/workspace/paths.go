@@ -55,6 +55,11 @@ func MetaPath(rootDir, sessionID, taskID string) string {
 	return filepath.Join(TaskDir(rootDir, sessionID, taskID), "meta.json")
 }
 
+// SessionMetaPath is {sessionRoot}/meta.json.
+func SessionMetaPath(rootDir, sessionID string) string {
+	return filepath.Join(SessionRoot(rootDir, sessionID), "meta.json")
+}
+
 // mustSafe panics if id is empty or contains path-traversal sequences.
 // IDs are engine-internal: a bad value is a programmer bug, not a runtime
 // condition, so panic surfaces it immediately instead of silently sanitising.
