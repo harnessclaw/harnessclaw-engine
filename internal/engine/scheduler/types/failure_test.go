@@ -25,3 +25,17 @@ func TestFailureRetryable(t *testing.T) {
 		}
 	}
 }
+
+func TestTransientFailureReasons(t *testing.T) {
+	transient := []types.FailureReason{
+		types.FailureReasonTimeout,
+		types.FailureReasonRateLimit,
+		types.FailureReasonOverloaded,
+		types.FailureReasonNetwork,
+	}
+	for _, r := range transient {
+		if !r.Retryable() {
+			t.Errorf("%s should be Retryable", r)
+		}
+	}
+}
