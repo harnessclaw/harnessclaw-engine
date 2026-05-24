@@ -70,3 +70,16 @@ type EscalateState struct {
 	// The Payload field contains the msgbus.ResultMessage.
 	Result msgbus.AgentMessage
 }
+
+// LeafFailedError is returned by react/plan strategies when a leaf sub-task
+// finishes with a non-"done" status.
+type LeafFailedError struct {
+	Reason string
+}
+
+func (e *LeafFailedError) Error() string {
+	if e.Reason == "" {
+		return "leaf task failed"
+	}
+	return "leaf task failed: " + e.Reason
+}
