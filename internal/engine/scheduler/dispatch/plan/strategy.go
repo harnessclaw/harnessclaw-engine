@@ -3,6 +3,7 @@ package plan
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,14 @@ import (
 	"harnessclaw-go/internal/workspace"
 )
 
+// Config holds all injectable dependencies for a Strategy.
+// Judge and Fallback are optional; nil values disable those features.
+type Config struct {
+	Caps     dispatch.Capabilities
+	Judge    *PlanJudge          // nil = skip plan validation
+	Fallback *FallbackAggregator // nil = skip fallback summary
+}
+
 // Strategy implements dispatch.Strategy for the "plan" kind (§5.3.3).
 // Phase 1 skeleton:
 //  1. Spawn a planner sub-agent that writes plan.json.
@@ -21,20 +30,27 @@ import (
 //     for all steps and wait for woken notify (parent parked by onLifecycle
 //     after lifecycle{spawned}).
 //  3. Spawn a summarizer sub-agent that aggregates results.
-type Strategy struct{ caps dispatch.Capabilities }
+type Strategy struct{ cfg Config }
+
+// NewWithConfig creates a Strategy with the given Config.
+// AllowSubmit is forced true so the plan strategy may dispatch children.
+func NewWithConfig(cfg Config) *Strategy {
+	if cfg.Caps.LeafKind == "" {
+		cfg.Caps.LeafKind = "react-leaf"
+	}
+	cfg.Caps.AllowSubmit = true
+	return &Strategy{cfg: cfg}
+}
 
 // New creates a Strategy with the given Capabilities.
 // AllowSubmit is forced true so the plan strategy may dispatch children.
+// This is a convenience wrapper around NewWithConfig.
 func New(caps dispatch.Capabilities) *Strategy {
-	if caps.LeafKind == "" {
-		caps.LeafKind = "react-leaf"
-	}
-	caps.AllowSubmit = true
-	return &Strategy{caps: caps}
+	return NewWithConfig(Config{Caps: caps})
 }
 
-func (Strategy) Kind() types.Kind                    { return types.KindPlan }
-func (p *Strategy) Capabilities() dispatch.Capabilities { return p.caps }
+func (Strategy) Kind() types.Kind                       { return types.KindPlan }
+func (p *Strategy) Capabilities() dispatch.Capabilities { return p.cfg.Caps }
 
 // planJSON is the output written by the planner sub-agent.
 type planJSON struct {
@@ -66,12 +82,19 @@ func (p *Strategy) Run(ctx context.Context, taskID types.TaskID, deps dispatch.D
 	// Derive the absolute plan.json path by replacing the "meta.json" suffix with
 	// "plan.json" and resolving against sessionRoot.
 	plan := planJSON{}
-	if p.caps.RootDir != "" {
-		sessionRoot := workspace.SessionRoot(p.caps.RootDir, task.SessionID)
+	if p.cfg.Caps.RootDir != "" {
+		sessionRoot := workspace.SessionRoot(p.cfg.Caps.RootDir, task.SessionID)
 		relPlanPath := strings.TrimSuffix(plannerRes.OutputFile, "meta.json") + "plan.json"
 		planPath := filepath.Join(sessionRoot, relPlanPath)
 		if b, readErr := os.ReadFile(planPath); readErr == nil {
 			_ = json.Unmarshal(b, &plan)
+		}
+	}
+
+	// ── 2a. judge ────────────────────────────────────────────────────────────
+	if p.cfg.Judge != nil && len(plan.Steps) > 0 {
+		if err := p.cfg.Judge.ReviewPlan(task.LeafSpec.Goal, plan.Steps); err != nil {
+			return "", fmt.Errorf("plan validation failed: %w", err)
 		}
 	}
 
