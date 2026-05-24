@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"harnessclaw-go/internal/engine/scheduler/dispatch"
 	"harnessclaw-go/internal/engine/scheduler/spec"
 	"harnessclaw-go/internal/engine/scheduler/types"
 	"harnessclaw-go/internal/msgbus"
+	"harnessclaw-go/internal/workspace"
 )
 
 // Strategy implements dispatch.Strategy for the "plan" kind (§5.3.3).
@@ -59,9 +62,17 @@ func (p *Strategy) Run(ctx context.Context, taskID types.TaskID, deps dispatch.D
 	}
 
 	// ── 2. parse plan.json (phase 1: empty unless planner writes it) ────────
+	// plannerRes.OutputFile is relative to sessionRoot (e.g. "tasks/<id>/meta.json").
+	// Derive the absolute plan.json path by replacing the "meta.json" suffix with
+	// "plan.json" and resolving against sessionRoot.
 	plan := planJSON{}
-	if b, readErr := os.ReadFile(plannerRes.OutputFile); readErr == nil {
-		_ = json.Unmarshal(b, &plan)
+	if p.caps.RootDir != "" {
+		sessionRoot := workspace.SessionRoot(p.caps.RootDir, task.SessionID)
+		relPlanPath := strings.TrimSuffix(plannerRes.OutputFile, "meta.json") + "plan.json"
+		planPath := filepath.Join(sessionRoot, relPlanPath)
+		if b, readErr := os.ReadFile(planPath); readErr == nil {
+			_ = json.Unmarshal(b, &plan)
+		}
 	}
 
 	if len(plan.Steps) > 0 {

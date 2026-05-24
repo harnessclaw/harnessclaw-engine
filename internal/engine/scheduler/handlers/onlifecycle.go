@@ -99,6 +99,20 @@ func (h *OnLifecycleHandler) Handle(ctx context.Context, msg msgbus.AgentMessage
 			Payload: msgbus.NotifyPayload{Event: msgbus.NotifySucceeded, TaskID: msg.TaskID},
 		})
 
+	case msgbus.EventSpawned:
+		// Transition running→waiting so the parent parks until all children finish.
+		// SpawnedIDs lists the child TaskIDs that must complete before the parent wakes.
+		waitingFor := make([]types.TaskID, len(p.SpawnedIDs))
+		for i, sid := range p.SpawnedIDs {
+			waitingFor[i] = types.TaskID(sid)
+		}
+		if err := h.writer.Park(ctx, id, waitingFor); err != nil {
+			h.audit.Log(ctx, "onlifecycle.park_failed",
+				slog.String("task_id", msg.TaskID),
+				slog.String("err", err.Error()),
+			)
+		}
+
 	case msgbus.EventFailed:
 		reason := types.FailureReason(p.FailureReason)
 		if reason == "" {

@@ -62,6 +62,10 @@ type Capabilities struct {
 
 	// IdempotentRun marks whether the strategy is idempotent, affecting retry policy.
 	IdempotentRun bool
+
+	// RootDir is the workspace root directory used to resolve file paths.
+	// Required by the plan strategy to derive the absolute path to plan.json.
+	RootDir string
 }
 
 // EscalateState provides context for the EscalateHook decision.
