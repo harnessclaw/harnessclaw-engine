@@ -39,15 +39,22 @@ func (r *Router) Handle(kind msgbus.Kind, fn HandlerFn) {
 }
 
 // Run subscribes to addr and dispatches messages until ctx is done or the
-// channel is closed.
+// channel is closed. If ready is non-nil it is closed immediately after the
+// bus subscription is established, allowing callers to synchronise startup.
 //
 // Self-review checklist:
 //   - ctx cancel → returns ctx.Err() cleanly
 //   - Unknown Kinds → silently skipped, no panic
 //   - Handler errors → logged but routing continues
-func (r *Router) Run(ctx context.Context, addr msgbus.Address) error {
+func (r *Router) Run(ctx context.Context, addr msgbus.Address, ready ...chan<- struct{}) error {
 	ch, cancel := r.bus.Subscribe(addr)
 	defer cancel()
+
+	// Signal readiness immediately after subscription is established so that
+	// callers waiting on the channel know messages will not be missed.
+	if len(ready) > 0 && ready[0] != nil {
+		close(ready[0])
+	}
 
 	for {
 		select {

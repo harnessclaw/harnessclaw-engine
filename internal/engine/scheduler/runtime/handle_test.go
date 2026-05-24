@@ -43,13 +43,12 @@ func TestHandleLifecycleRouting(t *testing.T) {
 	_ = k.Claim(ctx, id, "w-1", time.Minute, 0)
 
 	// Run Handle in a goroutine — it blocks until ctx is done
+	ready := make(chan struct{})
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runtime.Handle(ctx, k, bus, log, msgbus.AddrScheduler)
+		errCh <- runtime.Handle(ctx, k, bus, log, msgbus.AddrScheduler, ready)
 	}()
-
-	// Give Handle time to subscribe
-	time.Sleep(20 * time.Millisecond)
+	<-ready // wait for subscription to be established
 
 	// Publish a KindLifecycle{completed} message addressed to scheduler
 	_ = bus.Publish(ctx, msgbus.AgentMessage{
@@ -89,11 +88,12 @@ func TestHandleNotifySubrouting(t *testing.T) {
 	_ = k.MarkReady(ctx, id)
 	_ = k.Claim(ctx, id, "w-1", time.Minute, 0)
 
+	ready2 := make(chan struct{})
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- runtime.Handle(ctx, k, bus, log, msgbus.AddrScheduler)
+		errCh <- runtime.Handle(ctx, k, bus, log, msgbus.AddrScheduler, ready2)
 	}()
-	time.Sleep(20 * time.Millisecond)
+	<-ready2 // wait for subscription
 
 	_ = bus.Publish(ctx, msgbus.AgentMessage{
 		MsgID:  "test-expire-1",

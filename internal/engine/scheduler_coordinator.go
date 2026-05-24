@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"harnessclaw-go/internal/agent"
 	l2sched "harnessclaw-go/internal/engine/scheduler"
@@ -97,48 +98,36 @@ func (sc *SchedulerCoordinator) Start(ctx context.Context) {
 // RunLeaf submits a TaskSpec to the L2 scheduler and blocks until the task
 // reaches a terminal state (succeeded or failed).
 // Returns the MetaRef stored in tstate on success.
+//
+// Implementation note: this uses tstate polling rather than bus subscriptions
+// to avoid a startup race. The scheduler router goroutine (started by
+// sched.Start) may not have subscribed to the bus yet when the first lifecycle
+// message is published, causing the message to be lost. Polling tstate directly
+// is immune to that race and only requires the kernel, which is always ready.
 func (sc *SchedulerCoordinator) RunLeaf(ctx context.Context, _ string, sp spec.TaskSpec) (types.MetaRef, error) {
-	// Subscribe BEFORE Submit to avoid the race documented in msgbus.SubscribeOnce.
-	// We use a broad KindNotify filter first; once we have the taskID we can narrow,
-	// but since we only have one task in-flight here, any NotifySucceeded matches.
-
-	// Admit first to get the taskID, then set up a targeted subscription.
-	// Use a buffered regular Subscribe on AddrScheduler to catch the event.
-	ch, cancelSub := sc.bus.Subscribe(msgbus.AddrScheduler)
-	defer cancelSub()
-
 	taskID, err := sc.sched.Submit(ctx, sp)
 	if err != nil {
 		return "", fmt.Errorf("scheduler_coordinator: submit: %w", err)
 	}
 
-	// Wait for NotifySucceeded or NotifyFailed for our taskID.
+	// Poll tstate until the task reaches a terminal status.
+	// 5 ms is fast enough for tests and low enough overhead for production use.
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return "", fmt.Errorf("scheduler_coordinator: context cancelled waiting for task %s: %w", taskID, ctx.Err())
-		case msg, ok := <-ch:
-			if !ok {
-				return "", fmt.Errorf("scheduler_coordinator: subscription closed for task %s", taskID)
+		case <-ticker.C:
+			ts, err := sc.kernel.Get(ctx, taskID)
+			if err != nil {
+				return "", fmt.Errorf("scheduler_coordinator: get task %s: %w", taskID, err)
 			}
-			if msg.Kind != msgbus.KindNotify || msg.TaskID != string(taskID) {
-				continue
-			}
-			np, ok := msg.Payload.(msgbus.NotifyPayload)
-			if !ok {
-				continue
-			}
-			switch np.Event {
-			case msgbus.NotifySucceeded:
-				// Read the ResultRef from tstate.
-				ts, err := sc.kernel.Get(ctx, taskID)
-				if err != nil {
-					return "", fmt.Errorf("scheduler_coordinator: get task %s after succeeded: %w", taskID, err)
-				}
+			switch ts.Status {
+			case types.StatusSucceeded:
 				return types.MetaRef(ts.ResultRef), nil
-			case msgbus.NotifyFailed, msgbus.NotifyCancelled:
-				ts, _ := sc.kernel.Get(ctx, taskID)
-				return "", fmt.Errorf("scheduler_coordinator: task %s terminal: %s (last_error=%q)", taskID, np.Event, ts.LastError)
+			case types.StatusFailed, types.StatusCancelled:
+				return "", fmt.Errorf("scheduler_coordinator: task %s terminal: %s (last_error=%q)", taskID, ts.Status, ts.LastError)
 			}
 		}
 	}

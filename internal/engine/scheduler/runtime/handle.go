@@ -25,7 +25,9 @@ import (
 //	KindNotify   (cancelling_drained)      → onCancellingDrained
 //	KindNotify   (succeeded|failed|cancelled|woken) → onTerminal
 //	KindResult                             → onResult
-func Handle(ctx context.Context, kernel tstate.Kernel, bus msgbus.Bus, log audit.Logger, addr msgbus.Address) error {
+//
+// If ready is non-nil it is closed after the bus subscription is established.
+func Handle(ctx context.Context, kernel tstate.Kernel, bus msgbus.Bus, log audit.Logger, addr msgbus.Address, ready chan<- struct{}) error {
 	r := router.New(kernel, bus, log)
 
 	// --- build handlers ---
@@ -81,5 +83,5 @@ func Handle(ctx context.Context, kernel tstate.Kernel, bus msgbus.Bus, log audit
 		return nil
 	})
 
-	return r.Run(ctx, addr)
+	return r.Run(ctx, addr, ready)
 }

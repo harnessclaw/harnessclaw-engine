@@ -76,10 +76,13 @@ func New(cfg Config) *Scheduler {
 
 // Start subscribes all handlers to the bus via runtime.Handle.
 // It spawns a background goroutine that processes messages until ctx is cancelled.
+// Start blocks until the router has subscribed to the bus, ensuring that no
+// lifecycle messages published after Start returns are missed.
 // Call Start exactly once before any Submit calls.
 func (s *Scheduler) Start(ctx context.Context) {
+	ready := make(chan struct{})
 	go func() {
-		if err := runtime.Handle(ctx, s.cfg.Kernel, s.cfg.Bus, s.log, msgbus.AddrScheduler); err != nil {
+		if err := runtime.Handle(ctx, s.cfg.Kernel, s.cfg.Bus, s.log, msgbus.AddrScheduler, ready); err != nil {
 			if ctx.Err() == nil {
 				s.log.Log(ctx, "scheduler_runtime_error", slog.Attr{
 					Key:   "error",
@@ -88,6 +91,12 @@ func (s *Scheduler) Start(ctx context.Context) {
 			}
 		}
 	}()
+	// Wait for the router goroutine to subscribe before returning, so that
+	// callers can safely call Submit without risking missing lifecycle messages.
+	select {
+	case <-ready:
+	case <-ctx.Done():
+	}
 }
 
 // Submit admits a task and starts its strategy host goroutines.
