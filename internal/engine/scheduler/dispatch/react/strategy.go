@@ -8,6 +8,7 @@ import (
 	"harnessclaw-go/internal/engine/scheduler/dispatch"
 	"harnessclaw-go/internal/engine/scheduler/spec"
 	"harnessclaw-go/internal/engine/scheduler/types"
+	"harnessclaw-go/internal/msgbus"
 )
 
 // Strategy implements dispatch.Strategy for the "react" kind.
@@ -58,9 +59,16 @@ func (r *Strategy) Run(ctx context.Context, taskID types.TaskID, deps dispatch.D
 		return "", &dispatch.LeafFailedError{Reason: res.Reason}
 	}
 
-	// EscalateHook placeholder (phase 2.2 fills real escalation)
 	if r.caps.EscalateHook != nil {
-		_ = r.caps.EscalateHook(dispatch.EscalateState{})
+		if r.caps.EscalateHook(dispatch.EscalateState{
+			Result: msgbus.AgentMessage{
+				Kind:    msgbus.KindResult,
+				TaskID:  string(taskID),
+				Payload: res,
+			},
+		}) {
+			return "", &dispatch.EscalationRequestedError{TaskID: taskID}
+		}
 	}
 	return types.MetaRef(res.OutputFile), nil
 }

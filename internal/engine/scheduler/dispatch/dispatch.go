@@ -83,3 +83,13 @@ func (e *LeafFailedError) Error() string {
 	}
 	return "leaf task failed: " + e.Reason
 }
+
+// EscalationRequestedError is returned by react.Strategy when its EscalateHook
+// returns true, signalling the parent should re-dispatch via plan mode.
+type EscalationRequestedError struct {
+	TaskID types.TaskID
+}
+
+func (e *EscalationRequestedError) Error() string {
+	return "escalation requested for task " + string(e.TaskID)
+}
