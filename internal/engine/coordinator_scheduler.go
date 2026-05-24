@@ -1,5 +1,10 @@
 package engine
 
+// Deprecated: coordinator_scheduler.go is superseded by scheduler_coordinator.go
+// (Phase 2). Once all callers are confirmed migrated, this file and
+// coordinator_react.go / coordinator_plan.go will be deleted.
+// Do not add new features here.
+
 import (
 	"context"
 	"fmt"
