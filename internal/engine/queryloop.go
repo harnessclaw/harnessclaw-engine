@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"runtime"
 	"strings"
@@ -124,6 +125,10 @@ type QueryEngineConfig struct {
 	// client to answer the prompt set this to true to avoid hanging on
 	// the unanswered request.
 	DisableStepDecisionGate bool
+
+	// DisableNewScheduler disables routing through SchedulerCoordinator.
+	// Default false = new scheduler ON. Set true to use legacy coordinator path.
+	DisableNewScheduler bool
 }
 
 // retryConfigFromEngineCfg builds a *retry.Config from the engine
@@ -306,6 +311,11 @@ type QueryEngine struct {
 	// at trace lifecycle boundaries. Set via SetSessionManager from
 	// cmd/server/main.go.
 	sessionManager *session.Manager
+
+	// schedulerCoord is the L2 SchedulerCoordinator instance. Non-nil when
+	// cfg.DisableNewScheduler is false (the default). The coordinator is
+	// wired here but not yet invoked by any production path.
+	schedulerCoord *SchedulerCoordinator
 }
 
 // pendingPlanReq tracks one in-flight plan approval request. The
@@ -377,7 +387,7 @@ func NewQueryEngine(
 	coordReg := newCoordinatorRegistry()
 	registerBuiltinCoordinators(coordReg)
 
-	return &QueryEngine{
+	qe := &QueryEngine{
 		provider:          prov,
 		registry:          reg,
 		cmdRegistry:       cmdReg,
@@ -402,6 +412,15 @@ func NewQueryEngine(
 		retryer:              retry.New(retryConfigFromEngineCfg(cfg), logger),
 		searchGapDetector:    NewSearchGapDetector(logger),
 	}
+
+	if !cfg.DisableNewScheduler {
+		qe.schedulerCoord = NewSchedulerCoordinator(SchedulerCoordinatorConfig{
+			Spawner: qe,
+			Logger:  slog.Default(),
+		})
+	}
+
+	return qe
 }
 
 // requestPlanApproval registers a pending plan request, emits the
