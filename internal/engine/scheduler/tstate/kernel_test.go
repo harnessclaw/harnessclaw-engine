@@ -66,6 +66,41 @@ func TestFailOrRetryRetryable(t *testing.T) {
 	}
 }
 
+func TestConfirmSucceededFromStagingAttemptMismatch(t *testing.T) {
+	ctx := context.Background()
+	k := newKernel(t)
+	id, _ := k.Admit(ctx, spec.TaskSpec{Goal: "x", Budget: types.Budget{MaxFailures: 2}})
+	_ = k.MarkReady(ctx, id)
+	_ = k.Claim(ctx, id, "w-1", 0, 0)
+	// stale reaper saw attempt=0 and tries to confirm,
+	// but a retry has since bumped attempt to 1.
+	if err := k.FailOrRetry(ctx, id, types.FailLeaseExpired, "boom", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Claim(ctx, id, "w-2", 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	// stale confirm with attempt=0 must be rejected.
+	if err := k.ConfirmSucceededFromStaging(ctx, id, "old-meta.json", 0); err == nil {
+		t.Fatal("stale confirm with attempt=0 should error")
+	}
+	got, _ := k.Get(ctx, id)
+	if got.Status != types.StatusRunning {
+		t.Fatalf("status should remain running after rejected stale confirm, got %s", got.Status)
+	}
+	// fresh confirm with attempt=1 must succeed.
+	if err := k.ConfirmSucceededFromStaging(ctx, id, "fresh-meta.json", 1); err != nil {
+		t.Fatalf("fresh confirm should succeed: %v", err)
+	}
+	got, _ = k.Get(ctx, id)
+	if got.Status != types.StatusSucceeded {
+		t.Fatalf("status should be succeeded after fresh confirm, got %s", got.Status)
+	}
+	if got.ResultRef != "fresh-meta.json" {
+		t.Fatalf("ResultRef should be fresh-meta.json, got %s", got.ResultRef)
+	}
+}
+
 func TestStagingWriterWritesOnlyStagedRef(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemory()

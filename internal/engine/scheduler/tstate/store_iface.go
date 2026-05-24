@@ -6,6 +6,12 @@ import (
 	"harnessclaw-go/internal/engine/scheduler/types"
 )
 
+// Field name constants for Store.UpdateField. Keep this set as the only allowed
+// values — callers pass them by name and the Store implementation switches on them.
+const (
+	FieldStagedResultRef = "staged_result_ref"
+)
+
 // Mutation is a struct of optional fields to update on a row.
 // Nil pointer = field unchanged.
 type Mutation struct {

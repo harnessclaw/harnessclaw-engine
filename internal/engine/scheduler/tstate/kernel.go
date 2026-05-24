@@ -171,7 +171,9 @@ func (k *kernel) Cancel(ctx context.Context, id types.TaskID) error {
 			if c.Status.IsTerminal() || c.Status == types.StatusCancelling {
 				continue
 			}
-			_ = tx.CAS(c.ID, c.Status, types.StatusCancelling, Mutation{})
+			if err := tx.CAS(c.ID, c.Status, types.StatusCancelling, Mutation{}); err != nil {
+				return fmt.Errorf("kernel: Cancel: cascade child %s: %w", c.ID, err)
+			}
 		}
 		return nil
 	})
@@ -215,22 +217,26 @@ func (k *kernel) Claim(ctx context.Context, id types.TaskID, worker string, leas
 }
 
 // RenewLease re-stamps the ExpiresAt for a running task; worker must match.
+// Wrapped in InTx so the read-validate-write sequence is atomic — prevents
+// TOCTOU against a different worker claiming the row after lease-expiry+retry.
 func (k *kernel) RenewLease(ctx context.Context, id types.TaskID, worker string) error {
-	ts, err := k.s.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	if ts.Lease.WorkerID != worker {
-		return fmt.Errorf("kernel: RenewLease: worker mismatch got=%s want=%s", worker, ts.Lease.WorkerID)
-	}
-	if ts.Status != types.StatusRunning {
-		return fmt.Errorf("kernel: RenewLease: not running (status=%s)", ts.Status)
-	}
-	nl := types.Lease{
-		WorkerID:  worker,
-		ExpiresAt: time.Now().Add(k.cfg.DefaultLeaseTTL),
-	}
-	return k.s.CAS(ctx, id, types.StatusRunning, types.StatusRunning, Mutation{Lease: &nl})
+	return k.s.InTx(ctx, func(tx Tx) error {
+		ts, err := tx.Get(id)
+		if err != nil {
+			return fmt.Errorf("kernel: RenewLease: %w", err)
+		}
+		if ts.Status != types.StatusRunning {
+			return fmt.Errorf("kernel: RenewLease: not running (id=%s status=%s)", id, ts.Status)
+		}
+		if ts.Lease.WorkerID != worker {
+			return fmt.Errorf("kernel: RenewLease: lease owner mismatch (id=%s want=%s got=%s)", id, worker, ts.Lease.WorkerID)
+		}
+		nl := types.Lease{
+			WorkerID:  worker,
+			ExpiresAt: time.Now().Add(k.cfg.DefaultLeaseTTL),
+		}
+		return tx.CAS(id, types.StatusRunning, types.StatusRunning, Mutation{Lease: &nl})
+	})
 }
 
 // Park transitions running→waiting with the set of tasks being waited on.
@@ -317,10 +323,20 @@ func (k *kernel) ConfirmCancelled(ctx context.Context, id types.TaskID) error {
 	})
 }
 
-// ConfirmSucceededFromStaging is a single CAS running→succeeded with an externally staged ref.
+// ConfirmSucceededFromStaging promotes a running task to succeeded using an
+// externally staged ref. The `attempt` parameter is an epoch guard (spec R3):
+// rejects stale reaper confirms that arrive after a retry has incremented
+// ts.Attempt. Wrapped in InTx so the read-validate-write is atomic.
 func (k *kernel) ConfirmSucceededFromStaging(ctx context.Context, id types.TaskID, ref types.Ref, attempt int) error {
-	return k.s.CAS(ctx, id, types.StatusRunning, types.StatusSucceeded, Mutation{
-		ResultRef: &ref,
+	return k.s.InTx(ctx, func(tx Tx) error {
+		ts, err := tx.Get(id)
+		if err != nil {
+			return fmt.Errorf("kernel: ConfirmSucceededFromStaging: %w", err)
+		}
+		if ts.Attempt != attempt {
+			return fmt.Errorf("kernel: ConfirmSucceededFromStaging: attempt mismatch (id=%s want=%d got=%d)", id, attempt, ts.Attempt)
+		}
+		return tx.CAS(id, types.StatusRunning, types.StatusSucceeded, Mutation{ResultRef: &ref})
 	})
 }
 
@@ -336,5 +352,5 @@ func NewStagingWriter(s Store) StagingWriter {
 }
 
 func (sw *stagingWriter) StageResult(ctx context.Context, id types.TaskID, ref types.Ref, attempt int) error {
-	return sw.s.UpdateField(ctx, id, "staged_result_ref", ref, attempt)
+	return sw.s.UpdateField(ctx, id, FieldStagedResultRef, ref, attempt)
 }

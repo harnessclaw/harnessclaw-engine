@@ -11,12 +11,12 @@ import (
 
 func TestTaskStateJSONRoundtrip(t *testing.T) {
 	ts := tstate.TaskState{
-		ID:       "t-001",
+		ID:        "t-001",
 		SessionID: "sess-X",
-		Kind:     types.KindReact,
-		Status:   types.StatusReady,
-		Attempt:  0,
-		LeafSpec: spec.TaskSpec{Goal: "read README"},
+		Kind:      types.KindReact,
+		Status:    types.StatusReady,
+		Attempt:   0,
+		LeafSpec:  spec.TaskSpec{Goal: "read README"},
 	}
 	b, err := json.Marshal(ts)
 	if err != nil {

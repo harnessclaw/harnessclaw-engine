@@ -76,7 +76,7 @@ func (m *Memory) UpdateField(_ context.Context, id types.TaskID, field string, v
 		return fmt.Errorf("store: epoch mismatch: id=%s attempt=%d guard=%d", id, r.Attempt, attemptGuard)
 	}
 	switch field {
-	case "staged_result_ref":
+	case tstate.FieldStagedResultRef:
 		v, ok := value.(types.Ref)
 		if !ok {
 			return errors.New("store: staged_result_ref must be types.Ref")
