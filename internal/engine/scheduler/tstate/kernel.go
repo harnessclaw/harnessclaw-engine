@@ -87,6 +87,7 @@ func (k *kernel) Admit(ctx context.Context, sp spec.TaskSpec) (types.TaskID, err
 		ID:          id,
 		TeamID:      "", // populated by caller if needed
 		SessionID:   sp.SessionID,
+		Kind:        sp.Hint.Kind,
 		Status:      types.StatusPending,
 		Priority:    sp.Priority,
 		Deps:        deps,

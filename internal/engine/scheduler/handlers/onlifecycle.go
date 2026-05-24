@@ -61,6 +61,28 @@ func (h *OnLifecycleHandler) Handle(ctx context.Context, msg msgbus.AgentMessage
 	}
 
 	switch p.Event {
+	case msgbus.EventStarted:
+		// Transition ready→running by claiming the lease. The worker identity is
+		// derived from the From address ("agent:<task_id>"). Zero lease duration
+		// uses the kernel's DefaultLeaseTTL.
+		if err := h.writer.Claim(ctx, id, string(msg.From), 0, p.Attempt); err != nil {
+			h.audit.Log(ctx, "onlifecycle.claim_failed",
+				slog.String("task_id", msg.TaskID),
+				slog.String("err", err.Error()),
+			)
+			// Don't return — Claim may fail if already claimed (idempotency), which is fine.
+		}
+
+	case msgbus.EventHeartbeat:
+		// Renew the lease so the reaper doesn't evict an actively-running task.
+		if err := h.writer.RenewLease(ctx, id, string(msg.From)); err != nil {
+			// Lease renewal failure is not fatal; the reaper will handle expiry.
+			h.audit.Log(ctx, "onlifecycle.renew_lease_failed",
+				slog.String("task_id", msg.TaskID),
+				slog.String("err", err.Error()),
+			)
+		}
+
 	case msgbus.EventCompleted:
 		if err := h.writer.Succeed(ctx, id, types.Ref(p.ResultRef)); err != nil {
 			h.audit.Log(ctx, "onlifecycle.succeed_failed",
@@ -100,8 +122,5 @@ func (h *OnLifecycleHandler) Handle(ctx context.Context, msg msgbus.AgentMessage
 				Reason: string(reason),
 			},
 		})
-
-	default:
-		// EventStarted, EventHeartbeat, EventSpawned — no state mutation needed
 	}
 }
