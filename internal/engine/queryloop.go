@@ -281,12 +281,6 @@ type QueryEngine struct {
 	// global mutex.
 	emitSeq *emit.Sequencer
 
-	// coordinators routes coordinator-tier (L2) spawns through a
-	// Coordinator implementation chosen by CoordinatorMode. Built-in
-	// modes (react / plan) are registered in NewQueryEngine; tests can
-	// register additional modes post-construction.
-	coordinators *coordinatorRegistry
-
 	// pendingPlans tracks in-flight PlanCoordinator approval requests.
 	// Indexed by plan_id (server-generated). Each entry holds a result
 	// channel the coordinator is blocking on; SubmitPlanResponse looks
@@ -384,9 +378,6 @@ func NewQueryEngine(
 		promptProfile = prompt.WorkerProfile
 	}
 
-	coordReg := newCoordinatorRegistry()
-	registerBuiltinCoordinators(coordReg)
-
 	qe := &QueryEngine{
 		provider:          prov,
 		registry:          reg,
@@ -406,7 +397,6 @@ func NewQueryEngine(
 		promptCache:       make(map[string]*promptCacheEntry),
 		taskRegistry:      make(map[string]*agent.SpawnResult),
 		emitSeq:           emit.NewSequencer(),
-		coordinators:      coordReg,
 		pendingPlans:         make(map[string]*pendingPlanReq),
 		pendingStepDecisions: make(map[string]*pendingStepDecisionReq),
 		retryer:              retry.New(retryConfigFromEngineCfg(cfg), logger),
@@ -605,78 +595,6 @@ func (qe *QueryEngine) SubmitStepDecision(_ context.Context, _ string, resp *typ
 	}
 	pending.response <- resp
 	return nil
-}
-
-// resolveCoordinator picks the L2 Coordinator for this spawn. preference is
-// the raw mode string from SpawnConfig; empty values trigger the B-mode
-// ModeSelector which decides between ReAct (default) and Plan based on
-// the task's shape.
-//
-// Resolution order:
-//  1. preference is a known mode → use it directly (operator override)
-//  2. ModeSelector picks based on goal heuristics (B-mode of B+D scheme)
-//  3. Selected mode resolved through registry; unknown modes fall back
-//     to ReAct via registry policy
-//
-// Builds a fresh SharedDeps with task-scoped singletons:
-//   - BudgetTracker, Judge, Planner, Fallback: as before
-//   - ModeSelector: HeuristicModeSelector default
-//
-// Exposed as a method (not a free function) so tests can override the
-// mode selector by reaching into the dependency, and so the deps
-// construction stays close to where coordinators are actually used.
-func (qe *QueryEngine) resolveCoordinator(preference, goal string, logger *zap.Logger) Coordinator {
-	deps := &SharedDeps{
-		QE:           qe,
-		Logger:       logger,
-		Budget:       NewBudgetTracker(DefaultPlanBudget()).Start(),
-		Judge: NewJudge(logger).
-			WithLLM(qe.provider, qe.plannerModel()).
-			WithRetry(qe.retryer, qe.llmTimeouts()),
-		Planner: NewLLMPlanner(qe.provider, qe.plannerModel()).
-			WithRetry(qe.retryer, qe.llmTimeouts(), logger),
-		Fallback:     NewFallbackChain(logger),
-		ModeSelector: NewHeuristicModeSelector(),
-		// LLM-driven dispatch: each plan step gets one structured-output
-		// LLM call to pick the best sub-agent from available, with the
-		// keyword-based heuristic as fallback for nil-provider /
-		// network-error / out-of-set-pick paths. The extra per-step LLM
-		// cost is small (256 max tokens, single tool call) and the
-		// alternative — keyword-table guessing — silently mis-routes
-		// research tasks to developer when text contains "代码" / "脚本" /
-		// "code" substrings.
-		SubagentResolver: NewLLMSubagentResolver(
-			qe.provider,
-			qe.plannerModel(),
-			qe.defRegistry,
-			NewHeuristicSubagentResolver(),
-			logger,
-		).WithRetry(qe.retryer, qe.llmTimeouts()),
-	}
-
-	// B-mode: when no explicit preference, consult the selector. The
-	// selector itself respects operator overrides via ExplicitMode if
-	// the caller chose to thread one through; otherwise it heuristics.
-	chosen := CoordinatorMode(preference)
-	if !chosen.IsKnown() {
-		var skills []string
-		if qe.defRegistry != nil {
-			for _, l := range qe.defRegistry.ListForPlanner() {
-				skills = append(skills, l.Name)
-			}
-		}
-		out := deps.ModeSelector.Select(nil, ModeSelectorInput{
-			Goal:            goal,
-			AvailableSkills: skills,
-		})
-		chosen = out.Mode
-		logger.Info("mode selected by selector",
-			zap.String("mode", chosen.String()),
-			zap.String("reason", out.Reason),
-		)
-	}
-
-	return qe.coordinators.Resolve(chosen, deps)
 }
 
 // newEnvelope builds an emit envelope with the next seq number for the

@@ -690,22 +690,6 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 						loopResult.CoordinatorMode = "react"
 					}
 				}
-			} else {
-				coord := qe.resolveCoordinator(cfg.CoordinatorMode, cfg.Prompt, logger)
-				logger.Info("coordinator resolved",
-					zap.String("requested_mode", cfg.CoordinatorMode),
-					zap.String("running_mode", coord.Mode().String()),
-				)
-				// Tag the loopResult with the running mode so the
-				// SpawnResult downstream can surface it. ReActCoordinator
-				// auto-escalates to Plan internally; we capture both modes
-				// (final + initial) by inspecting the result's
-				// EscalatedFromMode after Run returns.
-				runStart := coord.Mode()
-				loopResult = coord.Run(ctx, sess, lc, out)
-				if loopResult.CoordinatorMode == "" {
-					loopResult.CoordinatorMode = string(runStart)
-				}
 			}
 		}
 	}()
@@ -1046,7 +1030,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		// L2 coordinator surface (Phase B+). Empty for L3 spawns.
 		CoordinatorMode:   loopResult.CoordinatorMode,
 		EscalatedFromMode: loopResult.EscalatedFromMode,
-		BudgetSpent:       budgetSnapshotToSpent(loopResult.BudgetSpent),
+		BudgetSpent:       loopResult.BudgetSpent,
 	}
 
 	// Record full result in TaskRegistry for future reference (context passing, debugging).
@@ -1669,7 +1653,7 @@ type subAgentLoopResult struct {
 	// can explain "我们一开始用的快路径，发现没把握就升级了 plan 模式".
 	CoordinatorMode   string
 	EscalatedFromMode string
-	BudgetSpent       BudgetSnapshot
+	BudgetSpent       agent.BudgetSpent
 
 	// Summary is the coordinator-level <summary> the parent agent (emma)
 	// quotes when speaking to the user. Plan mode populates this; ReAct
