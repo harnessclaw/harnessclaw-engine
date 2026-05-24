@@ -84,3 +84,22 @@ func TestSQLiteNackRetry(t *testing.T) {
 		t.Fatalf("nack retry failed to requeue: %+v err=%v", got, err)
 	}
 }
+
+func TestSQLitePayloadConcreteType(t *testing.T) {
+	ctx := context.Background()
+	s := newSQLiteForTest(t)
+	original := msgbus.TaskMessage{TaskID: "t-pl", TaskType: "leaf", Task: "concrete"}
+	_ = s.Enqueue(ctx, msgbus.AgentMessage{
+		MsgID: "m-pl", Kind: msgbus.KindTask, To: msgbus.AddrQueue("leaf"),
+		TaskID: "t-pl", Ts: time.Now(),
+		Payload: original,
+	})
+	got, _ := s.Dequeue(ctx, "leaf", "c-1")
+	tm, ok := got.Payload.(msgbus.TaskMessage)
+	if !ok {
+		t.Fatalf("expected msgbus.TaskMessage, got %T", got.Payload)
+	}
+	if tm.TaskID != "t-pl" || tm.Task != "concrete" {
+		t.Fatalf("payload fields lost: %+v", tm)
+	}
+}

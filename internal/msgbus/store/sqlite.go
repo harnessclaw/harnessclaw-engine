@@ -157,10 +157,14 @@ func (s *SQLite) tryDequeue(ctx context.Context, topic, consumerID string) (msgb
 		TaskID:    taskID.String,
 		SessionID: sessID.String,
 	}
-	// Unmarshal payload as raw JSON — callers can re-assert the concrete type.
+	// Unmarshal payload into concrete struct matching the Kind.
 	var raw json.RawMessage
 	if err := json.Unmarshal(blob, &raw); err == nil {
-		msg.Payload = raw
+		if payload, perr := unmarshalPayload(msg.Kind, raw); perr == nil {
+			msg.Payload = payload
+		} else {
+			msg.Payload = raw // fallback
+		}
 	}
 	return msg, true, nil
 }
@@ -251,7 +255,11 @@ func (s *SQLite) GetMessage(_ context.Context, msgID string) (msgbus.AgentMessag
 	}
 	var raw json.RawMessage
 	if err := json.Unmarshal(blob, &raw); err == nil {
-		msg.Payload = raw
+		if payload, perr := unmarshalPayload(msg.Kind, raw); perr == nil {
+			msg.Payload = payload
+		} else {
+			msg.Payload = raw // fallback
+		}
 	}
 
 	meta := msgbus.MessageMeta{
@@ -321,7 +329,11 @@ func (s *SQLite) ListByTaskID(_ context.Context, taskID string) ([]msgbus.Messag
 		}
 		var raw json.RawMessage
 		if err := json.Unmarshal(blob, &raw); err == nil {
-			msg.Payload = raw
+			if payload, perr := unmarshalPayload(msg.Kind, raw); perr == nil {
+				msg.Payload = payload
+			} else {
+				msg.Payload = raw // fallback
+			}
 		}
 		out = append(out, msgbus.MessageRecord{
 			Msg: msg, Status: msgbus.MsgStatus(status),
@@ -381,6 +393,53 @@ func (s *SQLite) QueueStats(_ context.Context) ([]msgbus.QueueStat, error) {
 
 // --- helpers ---
 
+// unmarshalPayload decodes the JSON payload blob into the concrete struct
+// matching the message Kind, so downstream callers can do
+// msg.Payload.(msgbus.TaskMessage) etc. directly.
+func unmarshalPayload(kind msgbus.Kind, raw json.RawMessage) (any, error) {
+	switch kind {
+	case msgbus.KindTask:
+		var p msgbus.TaskMessage
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		return p, nil
+	case msgbus.KindResult:
+		var p msgbus.ResultMessage
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		return p, nil
+	case msgbus.KindLifecycle:
+		var p msgbus.LifecyclePayload
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		return p, nil
+	case msgbus.KindControl:
+		var p msgbus.ControlPayload
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		return p, nil
+	case msgbus.KindAgentMsg:
+		var p msgbus.AgentMsgPayload
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		return p, nil
+	case msgbus.KindNotify:
+		var p msgbus.NotifyPayload
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		return p, nil
+	default:
+		// Unknown kind — pass through as raw bytes for forward compatibility
+		return raw, nil
+	}
+}
+
 func expectOneRow(res sql.Result, op, msgID string) error {
 	n, err := res.RowsAffected()
 	if err != nil {
@@ -417,7 +476,11 @@ func scanMessages(rows *sql.Rows) ([]msgbus.AgentMessage, error) {
 		}
 		var raw json.RawMessage
 		if err := json.Unmarshal(blob, &raw); err == nil {
-			msg.Payload = raw
+			if payload, perr := unmarshalPayload(msg.Kind, raw); perr == nil {
+				msg.Payload = payload
+			} else {
+				msg.Payload = raw // fallback
+			}
 		}
 		out = append(out, msg)
 	}
