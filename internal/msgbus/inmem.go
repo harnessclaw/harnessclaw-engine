@@ -57,10 +57,11 @@ func (b *InMemBus) Publish(ctx context.Context, msg AgentMessage) error {
 		return err
 	}
 
-	// Fan out to in-process subscribers (non-queue addresses)
-	if _, isQueue := msg.To.QueueName(); !isQueue {
-		b.fanout(msg)
-	}
+	// Fan out to in-process subscribers.
+	// Queue addresses are normally pull-only (Dequeue), but in-process Subscribe
+	// callers (tests, internal monitors) also register on queue addresses and
+	// must receive messages synchronously.
+	b.fanout(msg)
 	return nil
 }
 
