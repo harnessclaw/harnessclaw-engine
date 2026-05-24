@@ -10,6 +10,7 @@ import (
 	"harnessclaw-go/internal/agent"
 	l2sched "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/scheduler/dispatch"
+	"harnessclaw-go/internal/engine/scheduler/router"
 	"harnessclaw-go/internal/engine/scheduler/spec"
 	"harnessclaw-go/internal/engine/scheduler/tstate"
 	tstore "harnessclaw-go/internal/engine/scheduler/tstate/store"
@@ -29,6 +30,14 @@ type SchedulerCoordinatorConfig struct {
 
 	// Logger is optional; defaults to stderr at WarnLevel.
 	Logger *slog.Logger
+
+	// KindSelector decides which execution kind (react/plan) to use for a task.
+	// nil → HeuristicKindSelector.
+	KindSelector router.KindSelector
+
+	// AgentResolver picks which named agent executes a task step.
+	// nil → HeuristicAgentResolver.
+	AgentResolver router.AgentResolver
 }
 
 // SchedulerCoordinator wires the L2 scheduler, ConsumerPool, and
@@ -41,6 +50,7 @@ type SchedulerCoordinator struct {
 	bus     msgbus.Bus
 	kernel  tstate.Kernel
 	staging tstate.StagingWriter
+	kindSel router.KindSelector
 }
 
 // NewSchedulerCoordinator creates a SchedulerCoordinator backed by in-memory
@@ -73,9 +83,20 @@ func NewSchedulerCoordinator(cfg SchedulerCoordinatorConfig) *SchedulerCoordinat
 		PlanCaps: dispatch.Capabilities{AllowSubmit: true},
 	})
 
+	// --- KindSelector / AgentResolver defaults ---
+	kindSel := cfg.KindSelector
+	if kindSel == nil {
+		kindSel = router.NewHeuristicKindSelector()
+	}
+	agentRes := cfg.AgentResolver
+	if agentRes == nil {
+		agentRes = router.NewHeuristicAgentResolver()
+	}
+
 	// --- ConsumerPool via QueryEngineFactory ---
 	factory := subagent.NewQueryEngineFactory(cfg.Spawner, cfg.RootDir, "root").
-		WithStagingAndBus(staging, bus)
+		WithStagingAndBus(staging, bus).
+		WithAgentResolver(agentRes)
 	pool := subagent.NewConsumerPool(bus, kernel, factory, 4)
 
 	return &SchedulerCoordinator{
@@ -85,6 +106,7 @@ func NewSchedulerCoordinator(cfg SchedulerCoordinatorConfig) *SchedulerCoordinat
 		bus:     bus,
 		kernel:  kernel,
 		staging: staging,
+		kindSel: kindSel,
 	}
 }
 
@@ -105,6 +127,13 @@ func (sc *SchedulerCoordinator) Start(ctx context.Context) {
 // message is published, causing the message to be lost. Polling tstate directly
 // is immune to that race and only requires the kernel, which is always ready.
 func (sc *SchedulerCoordinator) RunLeaf(ctx context.Context, _ string, sp spec.TaskSpec) (types.MetaRef, error) {
+	if sp.Hint.Kind == "" && sc.kindSel != nil {
+		sp.Hint.Kind = sc.kindSel.Select(sp.Goal)
+	}
+	if sp.Hint.Kind == "" {
+		sp.Hint.Kind = types.KindReact
+	}
+
 	taskID, err := sc.sched.Submit(ctx, sp)
 	if err != nil {
 		return "", fmt.Errorf("scheduler_coordinator: submit: %w", err)

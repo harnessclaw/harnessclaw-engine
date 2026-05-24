@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/engine/scheduler/router"
 	"harnessclaw-go/internal/engine/scheduler/spec"
 	"harnessclaw-go/internal/engine/scheduler/tstate"
 	"harnessclaw-go/internal/engine/scheduler/types"
@@ -22,6 +23,7 @@ type QueryEngineFactory struct {
 	rootSessionID string
 	staging       tstate.StagingWriter
 	bus           msgbus.Bus
+	agentResolver router.AgentResolver // optional
 }
 
 // NewQueryEngineFactory creates a QueryEngineFactory.
@@ -43,6 +45,14 @@ func (f *QueryEngineFactory) WithStagingAndBus(staging tstate.StagingWriter, bus
 	return f
 }
 
+// WithAgentResolver attaches an optional AgentResolver that selects which
+// named subagent profile to use when the spec does not specify one.
+// Returns the same factory for fluent chaining.
+func (f *QueryEngineFactory) WithAgentResolver(r router.AgentResolver) *QueryEngineFactory {
+	f.agentResolver = r
+	return f
+}
+
 // Build implements ContextFactory.
 func (f *QueryEngineFactory) Build(taskID types.TaskID, sessionID string, sp spec.TaskSpec) LeafContext {
 	taskDir := workspace.TaskDir(f.rootDir, sessionID, string(taskID))
@@ -55,6 +65,13 @@ func (f *QueryEngineFactory) Build(taskID types.TaskID, sessionID string, sp spe
 
 	cfg := specToSpawnConfig(sp, f.rootSessionID)
 	cfg.TaskID = string(taskID)
+	// Use agent resolver to fill SubagentType if not already set.
+	if cfg.SubagentType == "" && f.agentResolver != nil {
+		cfg.SubagentType = f.agentResolver.Resolve(sp.Goal, knownAgents())
+	}
+	if cfg.SubagentType == "" {
+		cfg.SubagentType = "general-purpose"
+	}
 
 	spawner := f.spawner
 	spawnFn := SpawnFn(func(ctx context.Context) (*agent.SpawnResult, error) {
@@ -81,6 +98,11 @@ func specToSpawnConfig(sp spec.TaskSpec, rootSessionID string) *agent.SpawnConfi
 		ParentSessionID: sp.SessionID,
 		RootSessionID:   rootSessionID,
 	}
+}
+
+// knownAgents returns the list of named agent profiles understood by the system.
+func knownAgents() []string {
+	return []string{"researcher", "analyst", "writer", "developer", "general-purpose", "freelancer"}
 }
 
 // flatWorkspace implements WorkspaceHandle for a flat (per-session) layout.
