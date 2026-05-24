@@ -3,9 +3,6 @@ package msgbus
 
 import "time"
 
-// Address is the message sender/receiver identifier (stub; full type in address.go from Task 9)
-type Address string
-
 // AgentMessage is the unified envelope for all 6 Kind types.
 type AgentMessage struct {
 	MsgID       string    `json:"msg_id"`
