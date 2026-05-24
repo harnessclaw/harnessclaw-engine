@@ -26,6 +26,7 @@ type LeafContext struct {
 	Workspace WorkspaceHandle
 	Staging   tstate.StagingWriter
 	Bus       msgbus.Bus
+	SpawnFn   SpawnFn
 }
 
 // WorkspaceHandle is the filesystem-layer interface for a sub-agent.
