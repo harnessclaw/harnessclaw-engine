@@ -1,0 +1,72 @@
+// Package dispatch holds the pluggable scheduling strategies (react/plan/team/vote)
+// and their shared interfaces.
+package dispatch
+
+import (
+	"context"
+
+	"harnessclaw-go/internal/msgbus"
+	"harnessclaw-go/internal/engine/scheduler/tstate"
+	"harnessclaw-go/internal/engine/scheduler/types"
+)
+
+// Strategy is a pluggable scheduling strategy. Each implements a different approach
+// to dispatch and coordinate L3 sub-agents (e.g., react: 1 leaf, plan: N sagas).
+type Strategy interface {
+	// Kind returns the strategy kind (e.g., "react", "plan", "team", "vote").
+	Kind() types.Kind
+
+	// Capabilities returns the worker capability constraints for L3 (allowed tools,
+	// spawn depth, escalation hook, etc.).
+	Capabilities() Capabilities
+
+	// Run executes the strategy for the given task. Returns the MetaRef pointing to
+	// the result (e.g., "meta.json" for react, "tasks/<tid>/meta.json" for plan).
+	Run(ctx context.Context, taskID types.TaskID, deps Deps) (types.MetaRef, error)
+}
+
+// Deps holds the dependencies injected into every strategy.
+// v3.1-R2: Does NOT contain Kernel—dispatch.Strategy has no Writer permissions.
+// Strategies dispatch sub-agents via control{spawn} → onSpawn saga through the Bus.
+type Deps struct {
+	// Reader is the read-only view of tstate.
+	Reader tstate.Reader
+
+	// Bus is the message bus: dispatches children (control{spawn}), subscribes to
+	// KindResult and KindNotify, and sends control/notify messages.
+	// This is the ONLY path for sub-agent coordination.
+	Bus msgbus.Bus // msgbus.Publish, SubscribeOnce, Query used here
+
+	// Staging writes StagedResultRef before lifecycle{completed} is published,
+	// enabling the reaper fallback if the task crashes.
+	Staging tstate.StagingWriter
+}
+
+// Capabilities describes the runtime constraints and hooks for a strategy's L3 workers.
+type Capabilities struct {
+	// AllowedTools is the whitelist of tools passed to L3 as LeafContext.Tools.
+	AllowedTools []string
+
+	// AllowSubmit indicates whether the strategy (e.g., plan) can dispatch child sub-agents.
+	AllowSubmit bool
+
+	// MaxSpawnDepth limits nested spawning depth.
+	MaxSpawnDepth int
+
+	// LeafKind is the default kind for leaf tasks (e.g., "react-leaf").
+	LeafKind string
+
+	// EscalateHook is an optional extension point (used by react to promote results to plan).
+	// If present, called after L3 returns a result to decide escalation.
+	EscalateHook func(EscalateState) bool
+
+	// IdempotentRun marks whether the strategy is idempotent, affecting retry policy.
+	IdempotentRun bool
+}
+
+// EscalateState provides context for the EscalateHook decision.
+type EscalateState struct {
+	// Result is the KindResult AgentMessage from L3.
+	// The Payload field contains the msgbus.ResultMessage.
+	Result msgbus.AgentMessage
+}
