@@ -4,6 +4,7 @@ package react
 
 import (
 	"context"
+	"strings"
 
 	"harnessclaw-go/internal/engine/scheduler/dispatch"
 	"harnessclaw-go/internal/engine/scheduler/spec"
@@ -71,4 +72,32 @@ func (r *Strategy) Run(ctx context.Context, taskID types.TaskID, deps dispatch.D
 		}
 	}
 	return types.MetaRef(res.OutputFile), nil
+}
+
+// ShouldEscalateFromResult decides whether a leaf result warrants escalating
+// the task to a higher-level planner. It mirrors the logic of the old
+// shouldEscalate(subAgentLoopResult) but operates on msgbus.ResultMessage,
+// which is the only data available at the dispatch layer.
+//
+// Rules:
+//   - Status "done" → never escalate (clean success).
+//   - Status "cancelled" → never escalate (user-initiated abort).
+//   - Status "failed": parse the terminal reason code (left of ":"), then:
+//   - "max_turns", "model_error", "blocking_limit" → escalate.
+//   - "aborted_streaming", "aborted_tools", "prompt_too_long" → no escalate.
+//   - unknown codes → no escalate (conservative default).
+func ShouldEscalateFromResult(res msgbus.ResultMessage) bool {
+	if res.Status == msgbus.ResultStatusDone || res.Status == msgbus.ResultStatusCancelled {
+		return false
+	}
+	// Parse terminal reason code from "<code>: <free text>" or bare "<code>".
+	code := strings.TrimSpace(strings.SplitN(res.Reason, ":", 2)[0])
+	switch code {
+	case "max_turns", "model_error", "blocking_limit":
+		return true
+	case "aborted_streaming", "aborted_tools", "prompt_too_long":
+		return false
+	default:
+		return false
+	}
 }
