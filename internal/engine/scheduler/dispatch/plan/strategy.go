@@ -5,35 +5,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"harnessclaw-go/internal/engine/scheduler/dispatch"
-	"harnessclaw-go/internal/engine/scheduler/spec"
 	"harnessclaw-go/internal/engine/scheduler/types"
-	"harnessclaw-go/internal/msgbus"
 	"harnessclaw-go/internal/workspace"
 )
 
-// Config holds all injectable dependencies for a Strategy.
-// Judge and Fallback are optional; nil values disable those features.
+// Config holds injectable dependencies for a Strategy.
 type Config struct {
-	Caps     dispatch.Capabilities
-	Judge    *PlanJudge          // nil = skip plan validation
-	Fallback *FallbackAggregator // nil = skip fallback summary
+	Caps dispatch.Capabilities
 }
 
-// Strategy implements dispatch.Strategy for the "plan" kind (§5.3.3).
-// Phase 1 skeleton:
-//  1. Spawn a planner sub-agent that writes plan.json.
-//  2. Parse plan.json for step specs; if non-empty, publish control{spawn}
-//     for all steps and wait for woken notify (parent parked by onLifecycle
-//     after lifecycle{spawned}).
-//  3. Spawn a summarizer sub-agent that aggregates results.
+// Strategy implements dispatch.Strategy for the "plan" kind.
+// Phase 1: plan-agent writes task breakdown to plan.json.
+// Phase 2: plan-executor-agent dispatches tasks via freelance and updates plan.json.
 type Strategy struct{ cfg Config }
 
 // NewWithConfig creates a Strategy with the given Config.
-// AllowSubmit is forced true so the plan strategy may dispatch children.
 func NewWithConfig(cfg Config) *Strategy {
 	if cfg.Caps.LeafKind == "" {
 		cfg.Caps.LeafKind = "react-leaf"
@@ -43,8 +31,6 @@ func NewWithConfig(cfg Config) *Strategy {
 }
 
 // New creates a Strategy with the given Capabilities.
-// AllowSubmit is forced true so the plan strategy may dispatch children.
-// This is a convenience wrapper around NewWithConfig.
 func New(caps dispatch.Capabilities) *Strategy {
 	return NewWithConfig(Config{Caps: caps})
 }
@@ -52,139 +38,58 @@ func New(caps dispatch.Capabilities) *Strategy {
 func (Strategy) Kind() types.Kind                       { return types.KindPlan }
 func (p *Strategy) Capabilities() dispatch.Capabilities { return p.cfg.Caps }
 
-// planJSON is the output written by the planner sub-agent.
-type planJSON struct {
-	Steps []spec.TaskSpec `json:"steps"`
-}
-
 // Run executes the plan strategy:
-//  1. planner leaf → plan.json
-//  2. (phase 2) spawn steps + park parent + wait woken
-//  3. summarizer leaf → summary result
+//  1. plan-agent leaf → writes task breakdown to plan.json
+//  2. plan-executor-agent leaf → reads plan.json, dispatches tasks, updates status
 func (p *Strategy) Run(ctx context.Context, taskID types.TaskID, deps dispatch.Deps) (types.MetaRef, error) {
 	task, err := deps.Reader.Get(ctx, taskID)
 	if err != nil {
 		return "", err
 	}
 
-	// ── 1. planner ──────────────────────────────────────────────────────────
-	plannerRes, err := dispatch.SpawnAndWaitOne(ctx, deps.Bus, taskID,
-		buildPlannerSpec(task.LeafSpec.Goal, task.SessionID))
+	// ── Phase 1: plan-agent writes task breakdown ────────────────────────────
+	planRes, err := dispatch.SpawnAndWaitOne(ctx, deps.Bus, taskID,
+		buildPlanAgentSpec(task.LeafSpec.Goal, task.SessionID))
 	if err != nil {
 		return "", err
 	}
-	if plannerRes.Status != "done" {
-		return "", &dispatch.LeafFailedError{Reason: plannerRes.Reason}
+	if planRes.Status != "done" {
+		return "", &dispatch.LeafFailedError{Reason: "plan-agent: " + planRes.Reason}
 	}
 
-	// ── 2. parse plan.json (phase 1: empty unless planner writes it) ────────
-	// plannerRes.OutputFile is relative to sessionRoot (e.g. "tasks/<id>/meta.json").
-	// Derive the absolute plan.json path by replacing the "meta.json" suffix with
-	// "plan.json" and resolving against sessionRoot.
-	plan := planJSON{}
+	// Guard: verify plan.json has tasks (plan-agent may have failed silently).
 	if p.cfg.Caps.RootDir != "" {
-		sessionRoot := workspace.SessionRoot(p.cfg.Caps.RootDir, task.SessionID)
-		relPlanPath := strings.TrimSuffix(plannerRes.OutputFile, "meta.json") + "plan.json"
-		planPath := filepath.Join(sessionRoot, relPlanPath)
-		if b, readErr := os.ReadFile(planPath); readErr == nil {
-			_ = json.Unmarshal(b, &plan)
+		if err := p.requireNonEmptyPlan(task.SessionID); err != nil {
+			return "", &dispatch.LeafFailedError{Reason: err.Error()}
 		}
 	}
 
-	// ── 2a. judge ────────────────────────────────────────────────────────────
-	if p.cfg.Judge != nil && len(plan.Steps) > 0 {
-		if err := p.cfg.Judge.ReviewPlan(task.LeafSpec.Goal, plan.Steps); err != nil {
-			return "", fmt.Errorf("plan validation failed: %w", err)
-		}
-	}
-
-	if len(plan.Steps) > 0 {
-		// R6: subscribe BEFORE publishing so we never miss grant/woken.
-		msgCh, cancelSub := deps.Bus.Subscribe(msgbus.AddrScheduler)
-		defer cancelSub()
-
-		// Tag each step with session + per-task layout.
-		anySpecs := make([]any, len(plan.Steps))
-		for i, s := range plan.Steps {
-			s.Layout = "per-task"
-			s.SessionID = task.SessionID
-			anySpecs[i] = s
-		}
-
-		// Publish control{spawn} to the scheduler.
-		spawnMsgID := string(taskID) + ":plan-spawn"
-		_ = deps.Bus.Publish(ctx, msgbus.AgentMessage{
-			MsgID:   spawnMsgID,
-			Kind:    msgbus.KindControl,
-			From:    msgbus.AddrAgent(string(taskID)),
-			To:      msgbus.AddrScheduler,
-			TaskID:  string(taskID),
-			Payload: msgbus.ControlPayload{Cmd: msgbus.CmdSpawn, Body: msgbus.SpawnBody{Specs: anySpecs}},
-		})
-
-		// Phase 1: wait for spawn_granted to confirm children were created.
-		var spawnedIDs []string
-		for len(spawnedIDs) == 0 {
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case msg := <-msgCh:
-				if msg.Kind != msgbus.KindNotify {
-					continue
-				}
-				np, ok := msg.Payload.(msgbus.NotifyPayload)
-				if !ok || msg.TaskID != string(taskID) {
-					continue
-				}
-				if np.Event == msgbus.NotifySpawnGranted {
-					spawnedIDs = np.SpawnedIDs
-				} else if np.Event == msgbus.NotifySpawnFailed {
-					return "", &dispatch.LeafFailedError{Reason: "spawn failed: " + np.Reason}
-				}
-			}
-		}
-
-		// Publish lifecycle{spawned} so onLifecycle can park this parent task
-		// while child steps execute.
-		_ = deps.Bus.Publish(ctx, msgbus.AgentMessage{
-			MsgID:   string(taskID) + ":spawned",
-			Kind:    msgbus.KindLifecycle,
-			From:    msgbus.AddrAgent(string(taskID)),
-			To:      msgbus.AddrScheduler,
-			TaskID:  string(taskID),
-			Payload: msgbus.LifecyclePayload{
-				Event:      msgbus.EventSpawned,
-				Attempt:    task.Attempt,
-				SpawnedIDs: spawnedIDs,
-			},
-		})
-
-		// Wait for notify{woken} — published by onTerminal when all children finish.
-		for {
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case msg := <-msgCh:
-				if msg.Kind != msgbus.KindNotify || msg.TaskID != string(taskID) {
-					continue
-				}
-				np, ok := msg.Payload.(msgbus.NotifyPayload)
-				if ok && np.Event == msgbus.NotifyWoken {
-					goto afterWoken
-				}
-			}
-		}
-	afterWoken:
-	}
-
-	// ── 3. summarizer ────────────────────────────────────────────────────────
-	summRes, err := dispatch.SpawnAndWaitOne(ctx, deps.Bus, taskID,
-		buildSummarizerSpec(task.LeafSpec.Goal, task.SessionID, nil))
+	// ── Phase 2: plan-executor-agent executes the plan ───────────────────────
+	execRes, err := dispatch.SpawnAndWaitOne(ctx, deps.Bus, taskID,
+		buildPlanExecutorAgentSpec(task.LeafSpec.Goal, task.SessionID))
 	if err != nil {
 		return "", err
 	}
-	if summRes.Status != "done" {
-		return "", &dispatch.LeafFailedError{Reason: summRes.Reason}
+	if execRes.Status != "done" {
+		return "", &dispatch.LeafFailedError{Reason: "plan-executor-agent: " + execRes.Reason}
 	}
-	return types.MetaRef(summRes.OutputFile), nil
+
+	return types.MetaRef(execRes.OutputFile), nil
+}
+
+// requireNonEmptyPlan returns an error if plan.json exists but has no tasks.
+func (p *Strategy) requireNonEmptyPlan(sessionID string) error {
+	planPath := workspace.PlanPath(p.cfg.Caps.RootDir, sessionID)
+	b, err := os.ReadFile(planPath)
+	if err != nil {
+		return nil // file not found is not a guard violation
+	}
+	var plan workspace.Plan
+	if json.Unmarshal(b, &plan) != nil {
+		return nil // parse error is not a guard violation
+	}
+	if len(plan.Tasks) == 0 {
+		return fmt.Errorf("plan-agent wrote no tasks")
+	}
+	return nil
 }
