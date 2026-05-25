@@ -684,7 +684,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 						},
 					}
 				} else {
-					loopResult = metaRefToLoopResult(ref)
+					loopResult = metaRefToLoopResult(ref, workspaceRootDir(), cfg.ParentSessionID)
 					loopResult.CoordinatorMode = cfg.CoordinatorMode
 					if loopResult.CoordinatorMode == "" {
 						loopResult.CoordinatorMode = "react"
@@ -1695,11 +1695,23 @@ func joinNonEmpty(parts []string, sep string) string {
 // metaRefToLoopResult converts a successful SchedulerCoordinator result
 // into a subAgentLoopResult. Only the Terminal field is populated;
 // the caller fills CoordinatorMode.
-func metaRefToLoopResult(ref schedulertypes.MetaRef) subAgentLoopResult {
-	_ = ref // MetaRef is recorded in tstate; loopResult doesn't need to carry it
-	return subAgentLoopResult{
+func metaRefToLoopResult(ref schedulertypes.MetaRef, rootDir, sessionID string) subAgentLoopResult {
+	res := subAgentLoopResult{
 		Terminal: types.Terminal{Reason: types.TerminalCompleted},
 	}
+	// Read the meta.json written by the leaf runner to surface the summary
+	// and any outputs back to the L1 caller. Without this the parent sees
+	// an empty response.
+	if rootDir != "" && sessionID != "" && string(ref) != "" {
+		absPath := filepath.Join(workspace.SessionRoot(rootDir, sessionID), string(ref))
+		if b, err := os.ReadFile(absPath); err == nil {
+			var m workspace.Meta
+			if json.Unmarshal(b, &m) == nil {
+				res.Summary = m.Summary
+			}
+		}
+	}
+	return res
 }
 
 // countRequired returns how many ExpectedOutputs are marked Required.
