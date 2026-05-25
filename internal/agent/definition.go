@@ -186,7 +186,7 @@ func (d *AgentDefinition) Validate() error {
 			return fmt.Errorf("agent %q: TierSubAgent requires OutputSchema", d.Name)
 		}
 		for _, t := range d.AllowedTools {
-			if t == "task" || t == "scheduler" {
+			if t == "freelance" || t == "scheduler" {
 				return fmt.Errorf("agent %q: TierSubAgent cannot dispatch (tool %q forbidden)", d.Name, t)
 			}
 		}
@@ -415,7 +415,7 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 		Name:        "scheduler",
 		DisplayName: "scheduler",
 		Description: "L2 调度统筹者：拆解任务、派 L3 sub-agent、整合产出、检查质量",
-		AgentType:   tool.AgentTypeSync,
+		AgentType:   tool.AgentTypeCoordinator,
 		Profile:     "scheduler",
 		// scheduler needs an explicit tool whitelist so it can use the
 		// task tool to dispatch L3 sub-agents. The tool filter pipeline
@@ -428,7 +428,7 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 		// sole entry point for mutating plan.json (create/done/wipe); Promote
 		// is the sole Deliverable source. Without these two L2 cannot drive
 		// the local-files-as-truth state machine.
-		AllowedTools: []string{"task", "web_search", "tavily_search", "plan_update", "promote", "read", "edit", "write", "glob", "search_skill", "skill"},
+		AllowedTools: []string{"freelance", "web_search", "tavily_search", "plan_update", "promote", "read", "edit", "write", "glob", "search_skill", "skill"},
 	})
 	r.MustRegister(&AgentDefinition{
 		Name:        "general-purpose",

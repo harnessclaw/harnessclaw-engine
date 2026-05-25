@@ -90,7 +90,7 @@ var AllAgentDisallowed = map[string]bool{
 	"EnterPlanMode":     true,
 	"ask_user_question": true,
 	"TaskStop":          true,
-	"task":              true, // bypassed by AgentDefinition.AllowedTools whitelist (scheduler)
+	"freelance":         true, // bypassed by AgentDefinition.AllowedTools whitelist (scheduler)
 	"scheduler":         true, // L2 entry point — only emma may invoke
 }
 
@@ -132,9 +132,10 @@ var InProcessTeammateExtra = map[string]bool{
 // CoordinatorAllowed is the whitelist of tools for coordinator mode.
 // The coordinator only dispatches work to agents; it does not execute tools directly.
 var CoordinatorAllowed = map[string]bool{
+	"freelance":       true, // L2→L3 dispatch (mirrors how L1 uses "scheduler")
 	"Agent":           true,
 	"TaskStop":        true,
-	"send_message":     true,
+	"send_message":    true,
 	"SyntheticOutput": true,
 }
 

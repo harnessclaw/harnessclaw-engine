@@ -118,10 +118,10 @@ func TestRegister_RejectsSubAgentWithDispatchTool(t *testing.T) {
 		Tier:         TierSubAgent,
 		AgentType:    tool.AgentTypeSync,
 		OutputSchema: map[string]any{"type": "object"},
-		AllowedTools: []string{"task"},
+		AllowedTools: []string{"freelance"},
 	})
 	if err == nil {
-		t.Fatal("expected error: TierSubAgent with Task")
+		t.Fatal("expected error: TierSubAgent with coordinator")
 	}
 	if !strings.Contains(err.Error(), "dispatch") {
 		t.Errorf("error should mention dispatch, got: %v", err)

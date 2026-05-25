@@ -26,8 +26,8 @@ func (m *mockSpawner) SpawnSync(_ context.Context, cfg *agent.SpawnConfig) (*age
 
 func TestAgentTool_Name(t *testing.T) {
 	tool := New(&mockSpawner{}, zap.NewNop())
-	if tool.Name() != "task" {
-		t.Errorf("expected name 'Task', got %q", tool.Name())
+	if tool.Name() != "freelance" {
+		t.Errorf("expected name 'coordinator', got %q", tool.Name())
 	}
 }
 

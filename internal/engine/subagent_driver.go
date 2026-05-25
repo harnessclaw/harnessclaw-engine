@@ -23,7 +23,7 @@ import (
 //
 // Keep this list in lockstep with the dispatch surface: any new tool that
 // spawns work belongs here too.
-var dispatchToolNames = []string{"task", "scheduler"}
+var dispatchToolNames = []string{"freelance", "scheduler"}
 
 // runSubAgentDriver is the dedicated L3 ReAct executor. It enforces every
 // invariant the user's L3 design called out:

@@ -98,8 +98,8 @@ var (
 
 	// SchedulerProfile is the L2 coordinator. emma calls the scheduler
 	// tool which spawns this profile via SpawnSync. The scheduler agent
-	// runs its own LLM loop, using the task tool to dispatch the L3
-	// sub-agent (freelancer, whose capability comes from runtime-loaded
+	// runs its own LLM loop, using the freelance tool to dispatch L3
+	// agents (freelancer, whose capability comes from runtime-loaded
 	// user skills). It needs the team table + skills section to pick
 	// candidate_skills for each dispatch.
 	SchedulerProfile = &AgentProfile{
