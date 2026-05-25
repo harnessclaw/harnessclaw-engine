@@ -228,6 +228,7 @@ func main() {
 		// unchanged. Promote reads its event channel from ctx, so no
 		// per-session wiring is needed here.
 		{workspaceRootDir != "", func() tool.Tool { return plantool.NewPlanUpdateTool(planWriterReg, workspaceRootDir) }},
+		{workspaceRootDir != "", func() tool.Tool { return plantool.NewPlanReadTool(workspaceRootDir) }},
 		{workspaceRootDir != "", func() tool.Tool { return metatool.NewMetaWriteTool(workspaceRootDir) }},
 		{workspaceRootDir != "", func() tool.Tool { return promotetool.NewPromoteTool(planWriterReg, workspaceRootDir, nil) }},
 	}
@@ -475,13 +476,19 @@ func main() {
 
 	agentSvc := agent.NewAgentService(agentDefStore, agentDefReg, bus, logger)
 
-	// Sync built-in agent definitions to SQLite.
+	// Sync built-in agent definitions to SQLite (also prunes stale builtins).
 	if err := agentSvc.SyncBuiltins(context.Background()); err != nil {
 		logger.Warn("failed to sync builtin agent definitions", zap.Error(err))
 	}
 
+	// Sync project-level agent definitions from YAML directories.
+	for _, dir := range cfg.Agents.Dirs {
+		if _, err := agentSvc.SyncFromDirectory(context.Background(), dir); err != nil {
+			logger.Warn("failed to sync project agent definitions", zap.String("dir", dir), zap.Error(err))
+		}
+	}
+
 	// Load all persisted definitions from SQLite into in-memory registry.
-	// YAML is no longer auto-scanned; use POST /console/v1/agents/import to import.
 	if err := agentSvc.LoadAllToRegistry(context.Background()); err != nil {
 		logger.Warn("failed to load agent definitions to registry", zap.Error(err))
 	}
@@ -623,6 +630,8 @@ func main() {
 	// --- Step 10: Start channels ---
 	channelCtx, channelCancel := context.WithCancel(context.Background())
 	defer channelCancel()
+	// Start long-lived engine background goroutines (e.g. SchedulerCoordinator).
+	eng.Start(channelCtx)
 	channelErrCh := make(chan error, len(channels))
 	for name, ch := range channels {
 		go func(n string, c channel.Channel) {
