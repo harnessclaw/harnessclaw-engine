@@ -26,6 +26,16 @@ type TaskSpec struct {
 	AllowedTools []string `json:"allowed_tools,omitempty"`
 	Layout       string   `json:"layout,omitempty"` // "flat" | "per-task"
 
+	// InputPaths lists absolute file paths produced by upstream tasks.
+	// Passed verbatim into SpawnConfig.InputPaths so the leaf sees a
+	// <task-inputs> preamble pointing to the files instead of having
+	// the content re-embedded inline.
+	InputPaths []string `json:"input_paths,omitempty"`
+
+	// SubagentType pins the agent type for this leaf task, bypassing AgentResolver.
+	// Empty → AgentResolver selects based on goal text.
+	SubagentType string `json:"subagent_type,omitempty"`
+
 	// Escalation carries context from a prior failed attempt to the next coordinator
 	Escalation *EscalationInfo `json:"escalation,omitempty"`
 }

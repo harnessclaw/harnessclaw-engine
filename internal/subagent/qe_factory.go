@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/engine/scheduler/router"
@@ -12,6 +13,7 @@ import (
 	"harnessclaw-go/internal/engine/scheduler/types"
 	"harnessclaw-go/internal/msgbus"
 	"harnessclaw-go/internal/workspace"
+	pkgtypes "harnessclaw-go/pkg/types"
 )
 
 // QueryEngineFactory implements ContextFactory by wiring a real AgentSpawner
@@ -24,6 +26,24 @@ type QueryEngineFactory struct {
 	staging       tstate.StagingWriter
 	bus           msgbus.Bus
 	agentResolver router.AgentResolver // optional
+
+	outMu sync.RWMutex
+	outCh chan<- pkgtypes.EngineEvent // current Run's event sink; nil when idle
+}
+
+// SetOutCh registers the event channel for an active Run call so that L3
+// sub-agent events (tool calls, start/end) are forwarded to the client.
+// Call before sched.Submit; defer SetOutCh(nil) to clear after Run returns.
+func (f *QueryEngineFactory) SetOutCh(ch chan<- pkgtypes.EngineEvent) {
+	f.outMu.Lock()
+	defer f.outMu.Unlock()
+	f.outCh = ch
+}
+
+func (f *QueryEngineFactory) currentOutCh() chan<- pkgtypes.EngineEvent {
+	f.outMu.RLock()
+	defer f.outMu.RUnlock()
+	return f.outCh
 }
 
 // NewQueryEngineFactory creates a QueryEngineFactory.
@@ -72,6 +92,8 @@ func (f *QueryEngineFactory) Build(taskID types.TaskID, sessionID string, sp spe
 	if cfg.SubagentType == "" {
 		cfg.SubagentType = "general-purpose"
 	}
+	cfg.Name = cfg.SubagentType
+	cfg.ParentOut = f.currentOutCh()
 
 	spawner := f.spawner
 	spawnFn := SpawnFn(func(ctx context.Context) (*agent.SpawnResult, error) {
@@ -95,14 +117,18 @@ func specToSpawnConfig(sp spec.TaskSpec, rootSessionID string) *agent.SpawnConfi
 	return &agent.SpawnConfig{
 		Prompt:          sp.Goal,
 		Model:           sp.Model,
+		SubagentType:    sp.SubagentType,
 		ParentSessionID: sp.SessionID,
 		RootSessionID:   rootSessionID,
+		InputPaths:      sp.InputPaths,
 	}
 }
 
-// knownAgents returns the list of named agent profiles understood by the system.
+// knownAgents returns the registered agent types eligible for Phase 3 L3 dispatch.
+// IMPORTANT: only include names that are registered in AgentDefinitionRegistry.RegisterBuiltins().
+// Unregistered names resolve to agentDef=nil → isSubAgent=false → coordinator branch.
 func knownAgents() []string {
-	return []string{"researcher", "analyst", "writer", "developer", "general-purpose", "freelancer"}
+	return []string{"freelancer", "general-purpose", "plan-agent", "plan-executor-agent"}
 }
 
 // flatWorkspace implements WorkspaceHandle for a flat (per-session) layout.
