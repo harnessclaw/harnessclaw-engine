@@ -21,13 +21,15 @@ package principles
 type Role string
 
 const (
-	RoleEmma       Role = "emma"
-	RoleScheduler  Role = "scheduler"
-	RoleWorker     Role = "worker"
-	RoleExplore    Role = "explore"
-	RolePlan       Role = "plan"
-	RolePlanner    Role = "planner"
-	RoleFreelancer Role = "freelancer"
+	RoleEmma              Role = "emma"
+	RoleScheduler         Role = "scheduler"
+	RoleWorker            Role = "worker"
+	RoleExplore           Role = "explore"
+	RolePlan              Role = "plan"
+	RolePlanner           Role = "planner"
+	RoleFreelancer        Role = "freelancer"
+	RolePlanAgent         Role = "plan-agent"
+	RolePlanExecutorAgent Role = "plan-executor-agent"
 )
 
 // Principles returns the full principles text for the given role. Unknown
@@ -54,6 +56,10 @@ func Principles(role Role) string {
 		return plannerPrinciples
 	case RoleFreelancer:
 		return freelancerPrinciples
+	case RolePlanAgent:
+		return planAgentPrinciples
+	case RolePlanExecutorAgent:
+		return planExecutorAgentPrinciples
 	default:
 		return workerPrinciples
 	}
