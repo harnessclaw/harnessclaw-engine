@@ -3,6 +3,48 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
+## [0.1.0] - 2026-05-26
+
+### Added
+- L2 scheduler kernel (v3.1) under `internal/engine/scheduler/`: top-level `Scheduler.New` + `Submit` + `Start` wires bus, kernel, dispatch strategies, and runtime handlers (`onSpawn` / `onResult` / `onLifecycle` / `onTerminal` / `onExpire` / `onCancellingDrained` / `onCompletedFromStaging`) into a single message-driven L2
+- 8-state task state machine in `scheduler/tstate`: `Kernel` with `RollbackAdmit` + epoch guards, `Reader` / `Writer` / `StagingWriter` interfaces (R2/R4/R10), in-memory + SQLite `Store` implementations sharing the sessions `*sql.DB`, named-field UpdateField CAS path
+- Dispatch strategies in `scheduler/dispatch`: `react.Strategy` spawns one leaf via `SpawnAndWaitOne` (R1/R6 Subscribe-before-Publish); `plan.Strategy` runs the planner-agent + plan-executor-agent two-phase LLM pipeline, with `PlanJudge` rule-tier validation and `FallbackAggregator` graceful degradation
+- Routing layer in `scheduler/router`: `HeuristicKindSelector` (react vs plan, mode-select heuristics) + `HeuristicAgentResolver` (keyword-scored sub-agent selection); both pluggable via `Coordinator` config so the project can swap in LLM-based selectors later
+- `scheduler/runtime/host`: `StartStrategyHost` forks G1 + G2, stages refs, publishes lifecycle, runs a 3-pass reaper scan (lease / deadline / cancelling) with notify-on-expiry
+- Msgbus (`internal/msgbus`): in-process `Bus` with `Publish` / `Subscribe` / `SubscribeOnce` / `Dequeue` / `Ack` / `Nack`, six message kinds (`lifecycle` / `control` / `agent.msg` / `notify` / `task` / `result`), six typed payloads, in-memory + SQLite `Store` implementations with reaper requeue and per-kind typed-struct revival
+- L1 (`internal/engine/emma`) and L2 (`internal/engine/scheduler`) now sit in dedicated subpackages; new public accessors on `QueryEngine` — `ApplyMainAgentConfig` / `Config` / `PromptProfile` — let emma cross the package boundary without touching private fields
+- L2 dispatch tool `scheduler`: emma calls `scheduler(task)` to enter the L2 layer; `coordinator-mode` (react / plan) flows via `tool.WithCoordinatorMode` on the parent context, never via emma's input schema (ops-only knob, D-mode auto-escalation stays internal)
+- `plan_read` tool: read-only access to `plan.json` for plan-executor-agent; TDD-built with full coverage
+- Plan-mode profiles + agent definitions: `plan-agent` writes the task breakdown to `plan.json`, `plan-executor-agent` reads it back, dispatches step tasks via `freelance`, updates status; profiles include principles tailored to write/read responsibility split
+- `SubagentType` field on `spec.TaskSpec`: explicit agent pinning for plan-mode steps so the planner can request specific roles instead of relying on resolver heuristics
+- `EscalationInfo` on `TaskSpec` + transient failure reason constants (`timeout` / `rate_limit` / `overloaded` / `network`) with `Retryable` accessor for the react → plan D-mode escalation context
+- `cmd/test/` directory consolidates all local-only e2e probes (`ask_e2e` / `emit_e2e` / `l3_e2e` / `metrics_e2e` / `plan_e2e` / `sched_e2e` / `subagent_e2e` / `tool_catalog`); the entire subtree is gitignored — only `cmd/server/` ships in version control
+
+### Changed
+- L1 → L2 → L3 layering becomes visible in the directory tree: `internal/engine/` now exposes `emma/` (L1), `scheduler/` (L2 kernel + dispatch + coordinator), `worker/` (L3 placeholder), `loop/` (cross-cutting query-loop helpers — `SkillTracker` / retry context / drain channel)
+- L2 dispatch tool renamed from `task` to `freelance` (clearer intent: emma delegates a single piece of work to an L3 freelancer; multi-step orchestration uses `scheduler` instead)
+- Specialists tool renamed to `scheduler` with lowercase tool names project-wide (LLM-facing identifiers normalised)
+- Per-role principles split into `internal/engine/prompt/principles/{emma,specialists,worker,explorer,planner,plan-agent,plan-executor-agent}`; per-role packages replace the previous monolith so adding a new role no longer touches unrelated principle text
+- `SchedulerCoordinator` renamed to `scheduler.Coordinator` after moving into the scheduler subpackage (the `Scheduler` prefix was redundant inside the package)
+- `internal/engine/orchestrate` moved to `internal/engine/scheduler/legacy/` and marked DEPRECATED — Phase-1 plan executor still backs the `Orchestrate` tool until parity with the new plan strategy is reached
+- Coordinator-tier `SpawnSync` now routes through `Coordinator.Run` (traffic cutover): emma's `scheduler` tool hits the new scheduler internals by default; the engine wiring deletes the obsolete `coordinator_*.go` files (Phase 3 migration complete)
+- `QueryEngine` exposes only the three accessors the L1 wrapper needs; `MainAgentProfile` / `MainAgentDisplayName` / `MainAgentAllowedTools` / `MainAgentMaxTurns` are applied through `ApplyMainAgentConfig` instead of direct field assignment
+- L2 / L3 principles now instruct sub-agents to use scheduler-provided workspace tools (Promote / ArtifactWrite) instead of `Bash mkdir / mv / cp`; D13 path-scope boundary documented in the Bash tool description
+- `cmd/` reorganised to `cmd/server/` (production) + `cmd/test/` (local probes); `.gitignore` collapsed to a single `cmd/test/` rule with no exceptions
+
+### Fixed
+- Plan-mode E2E: tool stripping and session_id propagation for `plan-executor-agent` so spawned step tasks see the parent session and the executor's tool palette is correctly narrowed
+- `metaRefToLoopResult` reads `meta.json` to surface the L3 summary back to the L1 caller — previously the summary was lost when the engine routed through `Coordinator.Run` instead of the legacy direct path
+- `scheduler/tstate.RenewLease` runs `InTx`, surfaces cancel cascade errors, validates epoch, and references the lease column via a named field constant (no more silently dropped lease updates)
+- `msgbus/store` SQLite revives `Payload` as the concrete typed struct per `Kind` so queue consumers can rely on type assertions instead of map-fishing through `any`
+- `metatool` derives `task_id` + `agent` from context and stat-fills output bytes; `emit/v2` persists parent links across `Close` for ancestor heartbeat continuity
+- `server/bifrost` resolves provider quirks by YAML key first (matches user-visible config) instead of by manifest name
+- `translator` clears `toolNames` + `toolsFromPlanning` on `ToolEnd` so subsequent cards do not inherit stale state from a previous tool's lifecycle
+
+### Removed
+- `internal/engine/coordinator_*.go` files (Phase 3 migration): `coordinator_judge.go` / `coordinator_fallback.go` / `coordinator_subagent_resolver.go` / `coordinator_mode_select.go` / `coordinator_scheduler.go` etc. — their responsibilities are now owned by `scheduler/dispatch/{plan,react}` (judge + fallback aggregator) and `scheduler/router` (kind selector + agent resolver)
+- `cmd/test/` content is no longer tracked in git: `tool_catalog/main.go` and `metrics_e2e/main.go` reverted to local-only status (previously partially tracked); local copies preserved on disk for ad-hoc runs
+
 ## [0.0.14] - 2026-05-19
 
 ### Added
