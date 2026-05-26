@@ -7,13 +7,13 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
 )
 
 func TestListLoadedSkills_Empty(t *testing.T) {
-	tr := engine.NewSkillTracker(3)
+	tr := loop.NewSkillTracker(3)
 	ctx := tool.WithSkillTrackerValue(context.Background(), tr)
 	tl := New(zap.NewNop())
 	res, _ := tl.Execute(ctx, json.RawMessage(`{}`))
@@ -29,7 +29,7 @@ func TestListLoadedSkills_Empty(t *testing.T) {
 }
 
 func TestListLoadedSkills_ActiveAndUnloaded(t *testing.T) {
-	tr := engine.NewSkillTracker(3)
+	tr := loop.NewSkillTracker(3)
 	_ = tr.Preload([]*skill.SkillFull{{SkillCard: skill.SkillCard{Name: "cand", Version: "1"}, Body: "b"}})
 	_ = tr.Add(&skill.SkillFull{SkillCard: skill.SkillCard{Name: "rt", Version: "2"}, Body: "b"})
 	_ = tr.MarkUnloaded("cand")

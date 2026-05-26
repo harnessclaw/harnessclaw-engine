@@ -23,11 +23,10 @@ import (
 
 // ToolName is the registered name of the dispatch tool.
 //
-// Renamed from "Agent" to "task" to disambiguate from the L1/L2/L3 agent
-// concept in the architecture: this tool's job is to create a *task* and
-// hand it to a sub-agent. The package name (agenttool) is kept for
-// historical continuity — only the LLM-facing string changed.
-const ToolName = "task"
+// Named "freelance" to mirror the L1→L2 "scheduler" naming: just as L1
+// calls "scheduler" to hand off to L2, L2 calls "freelance" to hand off
+// to L3. The package name (agenttool) is kept for historical continuity.
+const ToolName = "freelance"
 
 // AgentTool spawns sub-agents to handle complex, multi-step tasks.
 type AgentTool struct {
@@ -169,7 +168,7 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 	// "L3 didn't write the right artifact" by comparing the contract
 	// the LLM passed against what came back in dispatch.out.
 	t.logger.Debug("dispatch.in",
-		zap.String("tool", "task"),
+		zap.String("tool", "freelance"),
 		zap.String("parent_session_id", cfg.ParentSessionID),
 		zap.String("subagent_type", input.SubagentType),
 		zap.String("name", input.Name),
@@ -343,7 +342,7 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 	// either the dispatch had no expected_outputs, or the framework's
 	// gating let it through inappropriately.
 	t.logger.Debug("dispatch.out",
-		zap.String("tool", "task"),
+		zap.String("tool", "freelance"),
 		zap.String("subagent_type", input.SubagentType),
 		zap.Bool("is_error", isError),
 		zap.Int("content_len", len(content)),
@@ -450,7 +449,7 @@ func resolveAgentType(subagentType string) tool.AgentType {
 
 const agentToolDescription = `创建一个任务并派给 sub-agent 自主执行。
 
-Task 工具会启动一个专业 sub-agent（worker / explore / plan 或具体团队成员），sub-agent 跑自己的 query loop，带受限工具集。各类型能力：
+freelance 工具会启动一个专业 sub-agent（worker / explore / plan 或具体团队成员），sub-agent 跑自己的 query loop，带受限工具集。各类型能力：
 
 - general-purpose：除递归 Task 外的全部工具。适用于需要文件编辑、shell 命令、多步推理的任务。
 - Explore / researcher：只读型 sub-agent，用于代码库探索 / 资料调研。

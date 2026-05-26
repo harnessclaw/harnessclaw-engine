@@ -719,3 +719,16 @@ func runLLMHeartbeat(
 // referenced both at goroutine launch and (potentially) inside the
 // loop's UptimeMs computation.
 func startTimeForHeartbeat(t time.Time) time.Time { return t }
+
+// truncForLog clips s at n runes with ellipsis. Used to keep long error
+// messages log-friendly without truncating mid-character.
+func truncForLog(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n < 4 {
+		return string(r[:n])
+	}
+	return string(r[:n-3]) + "..."
+}

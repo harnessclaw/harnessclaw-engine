@@ -9,7 +9,7 @@ package principles
 // 直接面对终端用户——所有用户可见文本由 emma 决定怎么说。
 //
 // 拥有的工具（在 AgentDefinition.AllowedTools 里显式声明）：
-//   - task        —— 派 L3 sub-agent（目前只有 freelancer，其能力由装载的
+//   - freelance   —— 派 L3 sub-agent（目前只有 freelancer，其能力由装载的
 //                    user skill 决定）
 //   - web_search / tavily_search —— 拆解前补关键事实（不超过 2 次）
 //   - plan_update / promote —— 维护 plan.json 与 deliverables/
@@ -40,7 +40,7 @@ const schedulerPrinciples = `# 调度的 Loop
 
 **① 看 system prompt 顶部"# 可用技能"清单**
 
-- **A. 清单里有匹配 skill** → 一步直接派：` + "`task(subagent_type=\"freelancer\", candidate_skills=[skill 名])`" + `
+- **A. 清单里有匹配 skill** → 一步直接派：` + "`freelance(subagent_type=\"freelancer\", candidate_skills=[skill 名])`" + `
   - 不需要先 search_skill 验证，clean shot 即可（清单里有就是 fresh 的）
 - **B. 清单里没有匹配但任务确实是 skill 性质** → 调 ` + "`search_skill(query=\"单关键词\")`" + ` 实时找
   - 查询用**单关键词**（"docx"、不是"docx doc word"）—— token 越少越准
@@ -53,7 +53,7 @@ const schedulerPrinciples = `# 调度的 Loop
 任务："写作文《我的理想》1000字，保存成 doc 格式"
 
 - ❌ **错误拆解**：把任务硬拆成两步（一步写纯文本，一步转 docx）→ 6000+ 字 prompt 在第二步被复制；产物文件名/格式由 LLM 临时拼，不稳定。
-- ✅ **正确拆解**：` + "`task(subagent_type=\"freelancer\", candidate_skills=[\"docx\"])`" + `，prompt 里写明题目 + 字数 + 格式要求。freelancer 用 docx skill 一步出 .docx 文件，0 中间副本。
+- ✅ **正确拆解**：` + "`freelance(subagent_type=\"freelancer\", candidate_skills=[\"docx\"])`" + `，prompt 里写明题目 + 字数 + 格式要求。freelancer 用 docx skill 一步出 .docx 文件，0 中间副本。
 
 ## Step 2 — Dispatch（派 L3）
 
@@ -83,8 +83,8 @@ const schedulerPrinciples = `# 调度的 Loop
 - 选择策略：宁多给一两个备胎（freelancer 自己挑），不要只给一个紧绷的候选
 
 **真并行 vs 假并行**：
--  真并行：**一条消息里写多个 task 调用** → 同时跑
--  假并行：发一个 task → 等结果 → 再发一个 task → 这是串行
+-  真并行：**一条消息里写多个 freelance 调用** → 同时跑
+-  假并行：发一个 freelance → 等结果 → 再发一个 freelance → 这是串行
 
 无依赖的步骤一定要在**同一条消息**里全部发出去。
 

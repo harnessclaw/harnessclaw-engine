@@ -32,12 +32,12 @@ func (f *fakeTool) Execute(_ context.Context, _ json.RawMessage) (*types.ToolRes
 // global registry. Otherwise the prompt advertises tools the LLM can't call.
 func TestToolsSection_PrefersAvailableTools(t *testing.T) {
 	registry := tool.NewRegistry()
-	for _, name := range []string{"bash", "edit", "read", "write", "task", "web_search", "tavily_search"} {
+	for _, name := range []string{"bash", "edit", "read", "write", "freelance", "web_search", "tavily_search"} {
 		_ = registry.Register(&fakeTool{name: name, desc: "stub"})
 	}
 
 	available := []tool.Tool{
-		&fakeTool{name: "task", desc: "spawn L3"},
+		&fakeTool{name: "freelance", desc: "spawn L3"},
 		&fakeTool{name: "web_search", desc: "search the web"},
 		&fakeTool{name: "tavily_search", desc: "tavily search"},
 	}
@@ -51,7 +51,7 @@ func TestToolsSection_PrefersAvailableTools(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 
-	for _, must := range []string{"task", "web_search", "tavily_search"} {
+	for _, must := range []string{"freelance", "web_search", "tavily_search"} {
 		if !strings.Contains(out, "**"+must+"**") {
 			t.Errorf("expected whitelisted tool %q in output, got:\n%s", must, out)
 		}

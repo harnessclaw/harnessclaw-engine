@@ -141,20 +141,83 @@ func (s *AgentService) ImportFromYAML(ctx context.Context, dir string) (int, []e
 
 // SyncBuiltins persists built-in agent definitions to the store.
 // Existing built-in entries are updated; new ones are created.
+// Stale entries (source=builtin but no longer in code) are deleted.
 func (s *AgentService) SyncBuiltins(ctx context.Context) error {
-	// Ensure builtins are registered in memory first
 	s.registry.RegisterBuiltins()
 
+	codeNames := make(map[string]bool)
 	for _, def := range s.registry.All() {
-		// Only sync definitions that look like builtins (no source path)
 		if def.Source != "" {
 			continue
 		}
+		codeNames[def.Name] = true
 		def.Source = "builtin"
 		def.IsBuiltin = true
 		_, err := s.store.Create(ctx, def)
 		if err != nil {
-			// Already exists — update it
+			updates := &AgentUpdate{
+				DisplayName:     &def.DisplayName,
+				Description:     &def.Description,
+				SystemPrompt:    &def.SystemPrompt,
+				Model:           &def.Model,
+				Profile:         &def.Profile,
+				MaxTurns:        &def.MaxTurns,
+				Tools:           def.Tools,
+				AllowedTools:    def.AllowedTools,
+				DisallowedTools: def.DisallowedTools,
+				// Builtins are code-authoritative: pass []string{} when nil
+				// so the store overwrites any stale skills written by older
+				// versions instead of leaving them in place.
+				Skills:          builtinSkills(def.Skills),
+				AutoTeam:        &def.AutoTeam,
+				SubAgents:       def.SubAgents,
+				Personality:     &def.Personality,
+				Triggers:        &def.Triggers,
+				IsTeamMember:    &def.IsTeamMember,
+			}
+			if _, err := s.store.Update(ctx, def.Name, updates); err != nil {
+				s.logger.Warn("failed to sync builtin agent definition",
+					zap.String("name", def.Name),
+					zap.Error(err),
+				)
+			}
+		}
+	}
+
+	// Prune stale builtins: delete SQLite entries with source=builtin
+	// that no longer exist in the code registry.
+	builtinSource := "builtin"
+	stored, err := s.store.List(ctx, &AgentFilter{Source: &builtinSource})
+	if err != nil {
+		s.logger.Warn("failed to list stored builtins for pruning", zap.Error(err))
+		return nil
+	}
+	for _, d := range stored {
+		if !codeNames[d.Name] {
+			if err := s.store.Delete(ctx, d.Name); err != nil {
+				s.logger.Warn("failed to prune stale builtin", zap.String("name", d.Name), zap.Error(err))
+			} else {
+				s.logger.Info("pruned stale builtin agent", zap.String("name", d.Name))
+			}
+		}
+	}
+	return nil
+}
+
+// SyncFromDirectory loads agent definitions from YAML files in dir and
+// upserts them to the store. YAML is authoritative: changes take effect
+// on the next server restart without recompilation.
+// The agent's Source is set to the YAML file path (not "builtin").
+func (s *AgentService) SyncFromDirectory(ctx context.Context, dir string) (int, error) {
+	tempReg := NewAgentDefinitionRegistry()
+	if err := tempReg.LoadFromDirectory(dir); err != nil {
+		return 0, fmt.Errorf("load directory %s: %w", dir, err)
+	}
+
+	synced := 0
+	for _, def := range tempReg.All() {
+		_, err := s.store.Create(ctx, def)
+		if err != nil {
 			updates := &AgentUpdate{
 				DisplayName:     &def.DisplayName,
 				Description:     &def.Description,
@@ -173,14 +236,25 @@ func (s *AgentService) SyncBuiltins(ctx context.Context) error {
 				IsTeamMember:    &def.IsTeamMember,
 			}
 			if _, err := s.store.Update(ctx, def.Name, updates); err != nil {
-				s.logger.Warn("failed to sync builtin agent definition",
+				s.logger.Warn("failed to sync project agent definition",
 					zap.String("name", def.Name),
+					zap.String("dir", dir),
 					zap.Error(err),
 				)
+				continue
 			}
 		}
+		synced++
+		s.logger.Info("synced project agent definition",
+			zap.String("name", def.Name),
+			zap.String("source", def.Source),
+		)
 	}
-	return nil
+	s.logger.Info("project agent definitions synced",
+		zap.String("dir", dir),
+		zap.Int("synced", synced),
+	)
+	return synced, nil
 }
 
 // LoadAllToRegistry loads all agent definitions from the store into the
@@ -279,4 +353,15 @@ func mergeMutableFields(dst, src *AgentDefinition) {
 	// IsTeamMember is a bool — always reflect the store value so
 	// "remove from team" updates take effect. Tier remains code-owned.
 	dst.IsTeamMember = src.IsTeamMember
+}
+
+// builtinSkills returns s if non-nil, or []string{} when nil. Used by
+// SyncBuiltins so that a builtin with no skills explicitly clears any
+// stale skills written by an older version of the code, rather than
+// leaving them in place (nil = "don't touch this field" in AgentUpdate).
+func builtinSkills(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }

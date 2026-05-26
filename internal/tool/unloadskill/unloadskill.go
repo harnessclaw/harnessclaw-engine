@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
@@ -84,7 +84,7 @@ func (t *UnloadSkillTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 			IsError: true,
 		}, nil
 	}
-	tracker, ok := trackerVal.(*engine.SkillTracker)
+	tracker, ok := trackerVal.(*loop.SkillTracker)
 	if !ok {
 		t.logger.Info("unload skill",
 			zap.String("agent_id", agentRunID),

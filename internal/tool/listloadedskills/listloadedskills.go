@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
@@ -43,8 +43,8 @@ type budget struct {
 }
 
 type output struct {
-	Active   []engine.LoadedRef `json:"active"`
-	Unloaded []engine.LoadedRef `json:"unloaded"`
+	Active   []loop.LoadedRef `json:"active"`
+	Unloaded []loop.LoadedRef `json:"unloaded"`
 	Budget   budget             `json:"budget"`
 }
 
@@ -63,7 +63,7 @@ func (t *ListLoadedSkillsTool) Execute(ctx context.Context, _ json.RawMessage) (
 			IsError: true,
 		}, nil
 	}
-	tracker, ok := trackerVal.(*engine.SkillTracker)
+	tracker, ok := trackerVal.(*loop.SkillTracker)
 	if !ok {
 		t.logger.Info("list loaded skills",
 			zap.String("agent_id", agentRunID),
@@ -74,10 +74,10 @@ func (t *ListLoadedSkillsTool) Execute(ctx context.Context, _ json.RawMessage) (
 
 	active, unloaded := tracker.List()
 	if active == nil {
-		active = []engine.LoadedRef{}
+		active = []loop.LoadedRef{}
 	}
 	if unloaded == nil {
-		unloaded = []engine.LoadedRef{}
+		unloaded = []loop.LoadedRef{}
 	}
 	out := output{
 		Active:   active,

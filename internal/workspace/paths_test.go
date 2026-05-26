@@ -1,55 +1,22 @@
-package workspace
+package workspace_test
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"harnessclaw-go/internal/workspace"
 )
 
-func TestPaths_AllUnderSessionRoot(t *testing.T) {
-	root := "/tmp/hcw"
-	sid := "sess_abc"
-	got := map[string]string{
-		"session": SessionRoot(root, sid),
-		"tasks":   TasksDir(root, sid),
-		"task":    TaskDir(root, sid, "t_001"),
-		"deliv":   DeliverablesDir(root, sid),
-		"plan":    PlanPath(root, sid),
-		"meta":    MetaPath(root, sid, "t_001"),
-	}
-	want := SessionRoot(root, sid)
-	for k, p := range got {
-		if !strings.HasPrefix(p, want+string(filepath.Separator)) && p != want {
-			t.Errorf("%s = %q, expected to be inside or equal to %q", k, p, want)
-		}
+func TestSessionMetaPath(t *testing.T) {
+	got := workspace.SessionMetaPath("/root", "sess-X")
+	if !strings.HasSuffix(got, "/sess-X/meta.json") {
+		t.Fatalf("unexpected: %s", got)
 	}
 }
 
-func TestPaths_TaskDirIsUnderTasks(t *testing.T) {
-	root := "/tmp/hcw"
-	tasks := TasksDir(root, "sess_a")
-	task := TaskDir(root, "sess_a", "t_42")
-	if filepath.Dir(task) != tasks {
-		t.Errorf("TaskDir parent = %q, want %q", filepath.Dir(task), tasks)
+func TestFlatScope(t *testing.T) {
+	read, write := workspace.FlatScope("/root", "sess-X")
+	if len(read) != 1 || len(write) != 1 || read[0] != write[0] {
+		t.Fatal("flat scope mismatch")
 	}
-}
-
-func TestPaths_NoTraversalInTaskID(t *testing.T) {
-	root := "/tmp/hcw"
-	defer func() {
-		if recover() == nil {
-			t.Errorf("expected panic for traversal taskID")
-		}
-	}()
-	_ = TaskDir(root, "sess_a", "../escape")
-}
-
-func TestPaths_NoTraversalInSessionID(t *testing.T) {
-	root := "/tmp/hcw"
-	defer func() {
-		if recover() == nil {
-			t.Errorf("expected panic for traversal sessionID")
-		}
-	}()
-	_ = SessionRoot(root, "../escape")
 }

@@ -298,13 +298,13 @@ func TestSpawnSync_ToolFiltering(t *testing.T) {
 	// Verify Task tool is filtered out for sync sub-agents by default.
 	reg := tool.NewRegistry()
 	_ = reg.Register(&subagentTestTool{})
-	_ = reg.Register(&fakeAgentToolForTest{}) // tool name = "task"
+	_ = reg.Register(&fakeAgentToolForTest{}) // tool name = "freelance"
 
 	fullPool := tool.NewToolPool(reg, nil, nil)
 	filteredPool := fullPool.FilteredFor(tool.AgentTypeSync)
 
-	if filteredPool.Get("task") != nil {
-		t.Error("Task tool should be filtered out for sync sub-agents")
+	if filteredPool.Get("freelance") != nil {
+		t.Error("coordinator tool should be filtered out for sync sub-agents")
 	}
 	if filteredPool.Get("TestEcho") == nil {
 		t.Error("TestEcho tool should be available for sync sub-agents")
@@ -314,34 +314,34 @@ func TestSpawnSync_ToolFiltering(t *testing.T) {
 // TestSpawnSync_AllowedToolsBypassesBlacklist verifies the 3-tier filter
 // contract: when an AgentDefinition declares an explicit AllowedTools
 // whitelist, the AgentType blacklist (which would otherwise block tools
-// like "task" for sync sub-agents) is bypassed. This is what lets
-// scheduler (L2) re-enable the Task tool for L3 dispatch.
+// like "freelance" for sync sub-agents) is bypassed. This is what lets
+// scheduler (L2) re-enable the coordinator tool for L3 dispatch.
 func TestSpawnSync_AllowedToolsBypassesBlacklist(t *testing.T) {
 	reg := tool.NewRegistry()
 	_ = reg.Register(&subagentTestTool{})
-	_ = reg.Register(&fakeAgentToolForTest{}) // tool name = "task"
+	_ = reg.Register(&fakeAgentToolForTest{}) // tool name = "freelance"
 
 	// Step 1 of subagent.go's filter pipeline: pool starts at full registry.
 	pool := tool.NewToolPool(reg, nil, nil)
 
 	// With an explicit whitelist, FilterByNames is applied directly to the
-	// full pool (no AgentType blacklist in the chain). "task" survives.
-	whitelist := []string{"task", "TestEcho"}
+	// full pool (no AgentType blacklist in the chain). "freelance" survives.
+	whitelist := []string{"freelance", "TestEcho"}
 	pool = pool.FilterByNames(whitelist)
 
-	if pool.Get("task") == nil {
-		t.Error("Task tool should survive when explicitly whitelisted")
+	if pool.Get("freelance") == nil {
+		t.Error("coordinator tool should survive when explicitly whitelisted")
 	}
 	if pool.Get("TestEcho") == nil {
 		t.Error("TestEcho tool should survive when explicitly whitelisted")
 	}
 
 	// Compare with the blacklist-only path: if we'd applied FilteredFor first,
-	// "task" would be gone before FilterByNames runs.
+	// "freelance" would be gone before FilterByNames runs.
 	pool2 := tool.NewToolPool(reg, nil, nil).FilteredFor(tool.AgentTypeSync)
 	pool2 = pool2.FilterByNames(whitelist)
-	if pool2.Get("task") != nil {
-		t.Error("control path: Task should be blocked when blacklist precedes whitelist")
+	if pool2.Get("freelance") != nil {
+		t.Error("control path: coordinator should be blocked when blacklist precedes whitelist")
 	}
 	if pool2.Get("TestEcho") == nil {
 		t.Error("control path: TestEcho should still be present")
@@ -352,7 +352,7 @@ type fakeAgentToolForTest struct {
 	tool.BaseTool
 }
 
-func (f *fakeAgentToolForTest) Name() string            { return "task" }
+func (f *fakeAgentToolForTest) Name() string            { return "freelance" }
 func (f *fakeAgentToolForTest) Description() string     { return "Fake agent" }
 func (f *fakeAgentToolForTest) IsReadOnly() bool         { return false }
 func (f *fakeAgentToolForTest) InputSchema() map[string]any { return map[string]any{"type": "object"} }

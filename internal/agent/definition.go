@@ -9,8 +9,8 @@ import (
 )
 
 // Tier classifies an agent's role in the L1 / L2 / L3 hierarchy. The engine
-// uses Tier to pick a driver: coordinators run the dispatch-capable
-// runSubAgentLoop, sub-agents run the leaf-only runSubAgentDriver.
+// uses Tier to pick a driver: coordinators route through SchedulerCoordinator,
+// sub-agents run the leaf-only runSubAgentDriver.
 //
 // Default for an empty AgentDefinition.Tier is TierCoordinator — backward
 // compatible with the pre-tier registrations.
@@ -19,7 +19,7 @@ type Tier string
 const (
 	// TierCoordinator can dispatch other agents and integrate their results.
 	// scheduler (the L2 entry point) and Plan / Explore / general-purpose
-	// fall into this tier. The runSubAgentLoop driver serves coordinators.
+	// fall into this tier. Coordinator spawns route through SchedulerCoordinator.
 	TierCoordinator Tier = "coordinator"
 
 	// TierSubAgent is a leaf executor — single responsibility, runs a pure
@@ -118,8 +118,16 @@ type AgentDefinition struct {
 
 	// Tier classifies the agent. Empty defaults to TierCoordinator. Setting
 	// TierSubAgent triggers strict registration (OutputSchema required) and
-	// routes spawns through runSubAgentDriver instead of runSubAgentLoop.
+	// routes spawns through runSubAgentDriver.
 	Tier Tier `json:"tier,omitempty"`
+
+	// RunAsLLMAgent causes this agent to run through the subagent LLM driver
+	// even when Tier is TierCoordinator. Use for coordinator-tier agents that
+	// make direct LLM calls (e.g. plan-agent, plan-executor-agent) but should
+	// not be subject to the TierSubAgent restrictions (OutputSchema required,
+	// dispatch tools forbidden). Dispatch tool stripping is NOT applied when
+	// RunAsLLMAgent is set without TierSubAgent.
+	RunAsLLMAgent bool `json:"run_as_llm_agent,omitempty"`
 
 	// OutputSchema is the JSON Schema the sub-agent's structured result must
 	// satisfy. Mandatory for TierSubAgent — Register rejects sub-agents
@@ -186,7 +194,7 @@ func (d *AgentDefinition) Validate() error {
 			return fmt.Errorf("agent %q: TierSubAgent requires OutputSchema", d.Name)
 		}
 		for _, t := range d.AllowedTools {
-			if t == "task" || t == "scheduler" {
+			if t == "freelance" || t == "scheduler" {
 				return fmt.Errorf("agent %q: TierSubAgent cannot dispatch (tool %q forbidden)", d.Name, t)
 			}
 		}
@@ -405,8 +413,7 @@ func (r *AgentDefinitionRegistry) ListForPlanner() []PlannerListing {
 // Tier policy:
 //   - Built-in workers are migrating to TierSubAgent one at a time. As
 //     each gets a hand-crafted OutputSchema / Limitations / Skills /
-//     CostTier, it flips. Workers still on TierCoordinator (the default)
-//     run the legacy runSubAgentLoop until promoted.
+//     CostTier, it flips.
 //   - System agents (scheduler / general-purpose / Plan / Explore) are
 //     coordinators by design — they may dispatch and integrate.
 func (r *AgentDefinitionRegistry) RegisterBuiltins() {
@@ -415,7 +422,7 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 		Name:        "scheduler",
 		DisplayName: "scheduler",
 		Description: "L2 调度统筹者：拆解任务、派 L3 sub-agent、整合产出、检查质量",
-		AgentType:   tool.AgentTypeSync,
+		AgentType:   tool.AgentTypeCoordinator,
 		Profile:     "scheduler",
 		// scheduler needs an explicit tool whitelist so it can use the
 		// task tool to dispatch L3 sub-agents. The tool filter pipeline
@@ -428,7 +435,7 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 		// sole entry point for mutating plan.json (create/done/wipe); Promote
 		// is the sole Deliverable source. Without these two L2 cannot drive
 		// the local-files-as-truth state machine.
-		AllowedTools: []string{"task", "web_search", "tavily_search", "plan_update", "promote", "read", "edit", "write", "glob", "search_skill", "skill"},
+		AllowedTools: []string{"freelance", "web_search", "tavily_search", "plan_update", "promote", "read", "edit", "write", "glob", "search_skill", "skill"},
 	})
 	r.MustRegister(&AgentDefinition{
 		Name:        "general-purpose",
@@ -520,6 +527,36 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 			"上下文中并存 skill body 数量上限 3（含 L2 预分配）",
 			"高危操作（Bash / FileWrite 等）每次需用户授权",
 			"skill 行为偏离不应硬走，应 EscalateToPlanner",
+		},
+	})
+	// --- Plan Mode Agents -----------------------------------------------
+	r.MustRegister(&AgentDefinition{
+		Name:          "plan-agent",
+		DisplayName:   "规划员",
+		Description:   "分析 goal，生成任务分解写入 plan.json，不执行任务",
+		Profile:       "plan-agent",
+		AgentType:     tool.AgentTypeSync,
+		RunAsLLMAgent: true,
+		AllowedTools: []string{
+			"plan_update",
+			"read",
+			"meta_write",
+			"submit_task_result",
+		},
+	})
+	r.MustRegister(&AgentDefinition{
+		Name:          "plan-executor-agent",
+		DisplayName:   "执行协调员",
+		Description:   "按 plan.json 任务清单调度 freelancer 执行，实时更新任务状态",
+		Profile:       "plan-executor-agent",
+		AgentType:     tool.AgentTypeSync,
+		RunAsLLMAgent: true,
+		AllowedTools: []string{
+			"plan_read",
+			"plan_update",
+			"freelance",
+			"meta_write",
+			"submit_task_result",
 		},
 	})
 	// Coordinator definition removed — orchestration logic moved to application code (Phase 2).

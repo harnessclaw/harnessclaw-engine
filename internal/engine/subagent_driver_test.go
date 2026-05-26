@@ -78,7 +78,7 @@ func TestSubAgentDriver_StripsDispatchTools(t *testing.T) {
 	}
 
 	// Register Task as a real tool so it WOULD show up if the strip didn't run.
-	taskTool := &fakeDispatchTool{name: "task"}
+	taskTool := &fakeDispatchTool{name: "freelance"}
 	schedulerTool := &fakeDispatchTool{name: "scheduler"}
 	orchestrateTool := &fakeDispatchTool{name: "orchestrate"}
 
@@ -117,7 +117,7 @@ func TestSubAgentDriver_StripsDispatchTools(t *testing.T) {
 	// directly, assert via the post-hoc tool-call test instead.
 	//
 	// Test plan: have the model TRY to call Task. The driver dispatches via
-	// pool.Get; with WithoutNames stripping, pool.Get("task") returns nil
+	// pool.Get; with WithoutNames stripping, pool.Get("freelance") returns nil
 	// and the executor reports "tool not found". So we can detect by
 	// running a follow-up that tries Task and observing failure.
 	//
@@ -474,11 +474,11 @@ func TestSubAgentDriver_AugmentSkipsCoordinator(t *testing.T) {
 	def := &agent.AgentDefinition{
 		Name:         "coord",
 		AgentType:    tool.AgentTypeSync,
-		AllowedTools: []string{"task", "web_search"},
+		AllowedTools: []string{"freelance", "web_search"},
 		// No Tier set — defaults to TierCoordinator.
 	}
 	got := def.MaybeAugmentForSubAgent()
-	if len(got) != 2 || got[0] != "task" || got[1] != "web_search" {
+	if len(got) != 2 || got[0] != "freelance" || got[1] != "web_search" {
 		t.Errorf("coordinator AllowedTools should be untouched, got %v", got)
 	}
 }

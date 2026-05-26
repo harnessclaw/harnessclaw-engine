@@ -98,8 +98,8 @@ var (
 
 	// SchedulerProfile is the L2 coordinator. emma calls the scheduler
 	// tool which spawns this profile via SpawnSync. The scheduler agent
-	// runs its own LLM loop, using the task tool to dispatch the L3
-	// sub-agent (freelancer, whose capability comes from runtime-loaded
+	// runs its own LLM loop, using the freelance tool to dispatch L3
+	// agents (freelancer, whose capability comes from runtime-loaded
 	// user skills). It needs the team table + skills section to pick
 	// candidate_skills for each dispatch.
 	SchedulerProfile = &AgentProfile{
@@ -167,6 +167,44 @@ var (
 			"principles": principles.Principles(principles.RoleWorker),
 		},
 	}
+
+	// PlanAgentProfile is for plan-agent sub-agents that analyze goals
+	// and decompose them into executable tasks via plan_update.
+	PlanAgentProfile = &AgentProfile{
+		Name:        "plan-agent",
+		Description: "Analyzes goal and writes task breakdown to plan.json via plan_update",
+		Sections: []string{
+			"currentdate",
+			"role",
+			"principles",
+			"tools",
+			"env",
+			"task",
+		},
+		ExcludeSections: []string{"memory", "team", "skills"},
+		SectionOverrides: map[string]string{
+			"principles": principles.Principles(principles.RolePlanAgent),
+		},
+	}
+
+	// PlanExecutorAgentProfile is for plan-executor-agent sub-agents that
+	// read plan.json, dispatch freelancers, and update task status in real-time.
+	PlanExecutorAgentProfile = &AgentProfile{
+		Name:        "plan-executor-agent",
+		Description: "Reads plan.json, dispatches freelancers, updates status in real-time",
+		Sections: []string{
+			"currentdate",
+			"role",
+			"principles",
+			"tools",
+			"env",
+			"task",
+		},
+		ExcludeSections: []string{"memory", "team", "skills"},
+		SectionOverrides: map[string]string{
+			"principles": principles.Principles(principles.RolePlanExecutorAgent),
+		},
+	}
 )
 
 // All role narratives and principles text live in the prompt/texts
@@ -177,12 +215,14 @@ var (
 // GetBuiltInProfiles returns all built-in profiles.
 func GetBuiltInProfiles() map[string]*AgentProfile {
 	return map[string]*AgentProfile{
-		"emma":        EmmaProfile,
-		"scheduler":   SchedulerProfile,
-		"explore":     ExploreProfile,
-		"plan":        PlanProfile,
-		"planner":     PlannerProfile,
-		"worker":      WorkerProfile,
+		"emma":                EmmaProfile,
+		"scheduler":           SchedulerProfile,
+		"explore":             ExploreProfile,
+		"plan":                PlanProfile,
+		"planner":             PlannerProfile,
+		"worker":              WorkerProfile,
+		"plan-agent":          PlanAgentProfile,
+		"plan-executor-agent": PlanExecutorAgentProfile,
 	}
 }
 
@@ -296,6 +336,10 @@ func ResolveProfileBySubagentType(subagentType string) *AgentProfile {
 		return PlanProfile
 	case "Planner", "planner":
 		return PlannerProfile
+	case "plan-agent":
+		return PlanAgentProfile
+	case "plan-executor-agent":
+		return PlanExecutorAgentProfile
 	default:
 		// All sub-agents use WorkerProfile by default.
 		// EmmaProfile is reserved for emma (the main agent).

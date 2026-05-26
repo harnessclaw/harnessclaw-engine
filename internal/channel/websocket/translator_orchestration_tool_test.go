@@ -84,7 +84,7 @@ func TestTranslator_TaskToolCardIsLifecycleExempt(t *testing.T) {
 	// Fire the orchestration tool event.
 	tr.Translate(em, "sess_task", &types.EngineEvent{
 		Type:      types.EngineEventToolStart,
-		ToolName:  "task",
+		ToolName:  "freelance",
 		ToolUseID: "toolu_task_1",
 		ToolInput: `{"goal":"write a report"}`,
 	})
@@ -182,7 +182,7 @@ func TestTranslator_TaskToolCardCallPathIsLifecycleExempt(t *testing.T) {
 	// Fire the orchestration tool via the ToolCall path (not ToolStart).
 	tr.Translate(em, "sess_task_call", &types.EngineEvent{
 		Type:      types.EngineEventToolCall,
-		ToolName:  "task",
+		ToolName:  "freelance",
 		ToolUseID: "toolu_task_call_1",
 		ToolInput: `{"goal":"write a report"}`,
 	})
@@ -241,7 +241,7 @@ func TestTranslator_TaskToolCardViaSubAgentEventIsLifecycleExempt(t *testing.T) 
 		AgentID: "agent_scheduler",
 		SubAgentEvent: &types.SubAgentEventData{
 			EventType: "tool_start",
-			ToolName:  "task",
+			ToolName:  "freelance",
 			ToolUseID: "toolu_nested_task",
 			ToolInput: `{"subagent_type":"general-purpose","prompt":"..."}`,
 		},

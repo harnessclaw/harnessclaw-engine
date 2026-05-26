@@ -40,8 +40,9 @@ import (
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/compact"
+	"harnessclaw-go/internal/engine/emma"
+	"harnessclaw-go/internal/engine/emma/resume"
 	"harnessclaw-go/internal/engine/prompter"
-	"harnessclaw-go/internal/engine/resume"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/event"
@@ -228,6 +229,7 @@ func main() {
 		// unchanged. Promote reads its event channel from ctx, so no
 		// per-session wiring is needed here.
 		{workspaceRootDir != "", func() tool.Tool { return plantool.NewPlanUpdateTool(planWriterReg, workspaceRootDir) }},
+		{workspaceRootDir != "", func() tool.Tool { return plantool.NewPlanReadTool(workspaceRootDir) }},
 		{workspaceRootDir != "", func() tool.Tool { return metatool.NewMetaWriteTool(workspaceRootDir) }},
 		{workspaceRootDir != "", func() tool.Tool { return promotetool.NewPromoteTool(planWriterReg, workspaceRootDir, nil) }},
 	}
@@ -412,7 +414,7 @@ func main() {
 	// Wrap the QueryEngine in an L1Engine. From this point on, the channel
 	// layer talks to `l1` (user-facing); Agent/Orchestrate tools continue to
 	// use `eng` directly to spawn L2 sub-agents.
-	l1 := engine.NewL1Engine(eng, engine.DefaultL1Config(), logger)
+	l1 := emma.NewL1Engine(eng, emma.DefaultL1Config(), logger)
 	logger.Info("L1 engine wrapped",
 		zap.String("profile", l1.Config().Profile.Name),
 		zap.String("display_name", l1.Config().DisplayName),
@@ -475,13 +477,19 @@ func main() {
 
 	agentSvc := agent.NewAgentService(agentDefStore, agentDefReg, bus, logger)
 
-	// Sync built-in agent definitions to SQLite.
+	// Sync built-in agent definitions to SQLite (also prunes stale builtins).
 	if err := agentSvc.SyncBuiltins(context.Background()); err != nil {
 		logger.Warn("failed to sync builtin agent definitions", zap.Error(err))
 	}
 
+	// Sync project-level agent definitions from YAML directories.
+	for _, dir := range cfg.Agents.Dirs {
+		if _, err := agentSvc.SyncFromDirectory(context.Background(), dir); err != nil {
+			logger.Warn("failed to sync project agent definitions", zap.String("dir", dir), zap.Error(err))
+		}
+	}
+
 	// Load all persisted definitions from SQLite into in-memory registry.
-	// YAML is no longer auto-scanned; use POST /console/v1/agents/import to import.
 	if err := agentSvc.LoadAllToRegistry(context.Background()); err != nil {
 		logger.Warn("failed to load agent definitions to registry", zap.Error(err))
 	}
@@ -623,6 +631,8 @@ func main() {
 	// --- Step 10: Start channels ---
 	channelCtx, channelCancel := context.WithCancel(context.Background())
 	defer channelCancel()
+	// Start long-lived engine background goroutines (e.g. SchedulerCoordinator).
+	eng.Start(channelCtx)
 	channelErrCh := make(chan error, len(channels))
 	for name, ch := range channels {
 		go func(n string, c channel.Channel) {

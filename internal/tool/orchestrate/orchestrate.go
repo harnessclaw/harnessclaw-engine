@@ -24,7 +24,7 @@ import (
 
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/emit"
-	exec "harnessclaw-go/internal/engine/orchestrate"
+	exec "harnessclaw-go/internal/engine/scheduler/legacy"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
 )

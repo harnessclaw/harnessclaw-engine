@@ -14,14 +14,15 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/emit"
+	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/texts"
+	schedspec "harnessclaw-go/internal/engine/scheduler/spec"
+	schedulertypes "harnessclaw-go/internal/engine/scheduler/types"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
-	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/submittool"
@@ -90,6 +91,9 @@ const maxSubAgentTurns = 30
 //  13. Emit subagent.end
 //  14. Return SpawnResult
 func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (result *agent.SpawnResult, err error) {
+	if cfg.Name == "" {
+		cfg.Name = cfg.SubagentType
+	}
 	agentID := "agent_" + uuid.New().String()[:8]
 	sessionID := cfg.ParentSessionID + "_sub_" + uuid.New().String()[:8]
 	startTime := time.Now()
@@ -244,7 +248,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// <loaded-skills> block. Fixed L3 agents (writer / developer / ...)
 	// that have been enhanced with skill tools just receive an empty
 	// tracker and use search_skill / load_skill at runtime themselves.
-	var freelancerTracker *SkillTracker
+	var freelancerTracker *loop.SkillTracker
 	if agentDef != nil && defHasSkillSelfMgmtTool(agentDef.AllowedTools) {
 		candidates := parseCandidateSkills(cfg.Inputs)
 		tracker, newPrompt, err := hydrateFreelancer(qe.skillReader, candidates, cfg.Prompt)
@@ -298,12 +302,32 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// terminate on plain end_turn (rejected by the driver as not-yet-done).
 	subAgentPreamble := agent.RenderSubAgentContract(agentDef)
 
+	// Step 5a''': <spawn-info> block — the only per-spawn block in the
+	// preamble. Gives the LLM its task_id + task_dir directly so it can
+	// route write/edit calls inside write_scope and pass the right
+	// meta_path to submit_task_result without guessing. Skipped when we
+	// don't have both task_id and a session root (legacy/freeform spawn).
+	spawnInfoPreamble := ""
+	if cfg.TaskID != "" && rootSID != "" {
+		if root := workspaceRootDir(); root != "" {
+			taskDir := workspace.TaskDir(root, rootSID, cfg.TaskID)
+			spawnInfoPreamble = "<spawn-info>\n" +
+				"task_id: " + cfg.TaskID + "\n" +
+				"task_dir: " + taskDir + "\n" +
+				"session_id: " + rootSID + "\n" +
+				"meta_path (传给 submit_task_result): tasks/" + cfg.TaskID + "/meta.json\n" +
+				"\n所有产物文件写到 task_dir/ 下；meta_write 与 submit_task_result 会按 ctx 自动校验。\n" +
+				"</spawn-info>"
+		}
+	}
+
 	// composeUserMessage stacks the framework-injected blocks above the
 	// per-mode body. Order matters — the LLM reads top-down:
 	//   1. <available-artifacts>     — what the L3 may consume
 	//   2. <sub-agent-contract>      — who I am + what shape I always produce
 	//   3. <expected-outputs>        — what THIS task additionally requires
-	//   4. <task> ... </task>        — the actual instruction
+	//   4. <spawn-info>              — my workspace coordinates (per-spawn)
+	//   5. <task> ... </task>        — the actual instruction
 	// Identity / contract come before task-specific overlay, matching the
 	// "general before specific" prompt-cache stability principle.
 	composeUserMessage := func(body string) string {
@@ -316,6 +340,9 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		}
 		if contractPreamble != "" {
 			parts = append(parts, contractPreamble)
+		}
+		if spawnInfoPreamble != "" {
+			parts = append(parts, spawnInfoPreamble)
 		}
 		parts = append(parts, body)
 		return joinNonEmpty(parts, "\n\n")
@@ -426,7 +453,13 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// L3 invariant: dispatch tools are always stripped, even when not in
 	// AllowedTools. Defense in depth — Validate now rejects them at
 	// registration, but stale stored definitions might predate that check.
+	// Only applies to TierSubAgent; RunAsLLMAgent agents manage their own
+	// tool whitelist via AllowedTools (see pool restriction block below).
 	isSubAgent := agentDef != nil && agentDef.EffectiveTier() == agent.TierSubAgent
+	// useSubAgentDriver: routes through the LLM driver instead of SchedulerCoordinator.
+	// True for TierSubAgent AND for coordinator-tier agents marked RunAsLLMAgent
+	// (plan-agent, plan-executor-agent).
+	useSubAgentDriver := isSubAgent || (agentDef != nil && agentDef.RunAsLLMAgent)
 	if isSubAgent {
 		pool = pool.WithoutNames(dispatchToolNames)
 		// P1-5: dangerous tools (Bash etc.) must be opt-in for sub-agents.
@@ -445,7 +478,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// to the user when this sub-agent declares search capability but
 	// neither web_search nor tavily_search is registered at runtime.
 	// nil-safe on detector or ParentOut.
-	if isSubAgent && qe.searchGapDetector != nil {
+	if useSubAgentDriver && qe.searchGapDetector != nil {
 		var declared []string
 		if agentDef != nil {
 			declared = agentDef.AllowedTools
@@ -549,6 +582,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		readScope:            cfg.ReadScope,
 		writeScope:           cfg.WriteScope,
 		sessionRoot:          deriveSessionRoot(cfg),
+		stripDispatchTools:   isSubAgent,
 	}
 
 	// Step 10: Emit subagent.start event.
@@ -646,36 +680,34 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	go func() {
 		defer close(done)
 		defer close(out)
-		// Tier-based driver routing.
-		//
-		// TierSubAgent → strict L3 driver (no further dispatch, mandatory
-		// submit-or-escalate). The L3 path doesn't go through the
-		// Coordinator abstraction because L3 has no "mode" — it's always
-		// the same strict ReAct.
-		//
-		// Coordinator tier → resolve via coordinator registry using the
-		// mode preference on SpawnConfig (string for cross-package
-		// hygiene; the registry maps unknown / empty values back to
-		// ReAct, the cheapest baseline). The chosen coordinator decides
-		// whether to delegate to runSubAgentLoop (ReAct), build a plan
-		// (Plan, when implemented), or run any future mode.
-		if isSubAgent {
+		// TierSubAgent / RunAsLLMAgent → strict LLM ReAct loop (no SchedulerCoordinator).
+		// Coordinator tier (without RunAsLLMAgent) → SchedulerCoordinator handles kind selection.
+		if useSubAgentDriver {
 			loopResult = qe.runSubAgentDriver(ctx, sess, lc, out)
 		} else {
-			coord := qe.resolveCoordinator(cfg.CoordinatorMode, cfg.Prompt, logger)
-			logger.Info("coordinator resolved",
-				zap.String("requested_mode", cfg.CoordinatorMode),
-				zap.String("running_mode", coord.Mode().String()),
-			)
-			// Tag the loopResult with the running mode so the
-			// SpawnResult downstream can surface it. ReActCoordinator
-			// auto-escalates to Plan internally; we capture both modes
-			// (final + initial) by inspecting the result's
-			// EscalatedFromMode after Run returns.
-			runStart := coord.Mode()
-			loopResult = coord.Run(ctx, sess, lc, out)
-			if loopResult.CoordinatorMode == "" {
-				loopResult.CoordinatorMode = string(runStart)
+			sp := schedspec.TaskSpec{
+				Goal:      cfg.Prompt,
+				Layout:    "flat",
+				SessionID: cfg.ParentSessionID,
+				Model:     cfg.Model,
+			}
+			if cfg.CoordinatorMode != "" {
+				sp.Hint.Kind = schedulertypes.Kind(cfg.CoordinatorMode)
+			}
+			ref, runErr := qe.schedulerCoord.Run(ctx, sp, out)
+			if runErr != nil {
+				loopResult = subAgentLoopResult{
+					Terminal: types.Terminal{
+						Reason:  types.TerminalModelError,
+						Message: runErr.Error(),
+					},
+				}
+			} else {
+				loopResult = metaRefToLoopResult(ref, workspaceRootDir(), cfg.ParentSessionID)
+				loopResult.CoordinatorMode = cfg.CoordinatorMode
+				if loopResult.CoordinatorMode == "" {
+					loopResult.CoordinatorMode = "react"
+				}
 			}
 		}
 	}()
@@ -1016,7 +1048,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		// L2 coordinator surface (Phase B+). Empty for L3 spawns.
 		CoordinatorMode:   loopResult.CoordinatorMode,
 		EscalatedFromMode: loopResult.EscalatedFromMode,
-		BudgetSpent:       budgetSnapshotToSpent(loopResult.BudgetSpent),
+		BudgetSpent:       loopResult.BudgetSpent,
 	}
 
 	// Record full result in TaskRegistry for future reference (context passing, debugging).
@@ -1108,325 +1140,19 @@ type loopConfig struct {
 	// AgentDefinition. The four skill self-management tools (load_skill /
 	// unload_skill / list_loaded_skills) pick it up via ctx. nil = not a
 	// freelancer spawn; those tools refuse to run.
-	skillTracker *SkillTracker
+	skillTracker *loop.SkillTracker
 	// readScope / writeScope / sessionRoot are the per-spawn filesystem
 	// scope plumbed onto every tool ctx via ToolExecutor.SetAgentScope.
 	// All empty means no restriction (legacy compat path).
 	readScope   []string
 	writeScope  []string
 	sessionRoot string
-}
-
-// runSubAgentLoop is a variant of runQueryLoop parameterized by loopConfig.
-// It uses the provided pool, profile, and permission checker instead of
-// the engine's defaults.
-//
-// When lc.expectedOutputs is non-empty the loop refuses to terminate
-// until submit_task_result has been called AND its M4 validation passed.
-// On end_turn without a passing submit, a SYSTEM reminder is appended
-// and the loop continues; bounded by maxSubmitNudges to avoid spinning.
-// Validation rejections from submit_task_result itself are bounded by
-// maxSubmitRejects independently.
-func (qe *QueryEngine) runSubAgentLoop(
-	ctx context.Context,
-	sess *session.Session,
-	lc *loopConfig,
-	out chan<- types.EngineEvent,
-) subAgentLoopResult {
-	ls := &loopState{}
-	logger := lc.logger
-
-	// Sub-agent approval function auto-approves everything.
-	approvalFn := func(_ context.Context, _ chan<- types.EngineEvent, req *types.PermissionRequest) *types.PermissionResponse {
-		return &types.PermissionResponse{
-			RequestID: req.RequestID,
-			Approved:  true,
-			Scope:     types.PermissionScopeOnce,
-			Message:   "sub-agent auto-approved",
-		}
-	}
-	executor := NewToolExecutor(lc.pool, lc.permChecker, logger, lc.config.ToolTimeout, approvalFn)
-	if qe.statsRegistry != nil {
-		executor.SetStatsRegistry(qe.statsRegistry)
-	}
-	subProducer := tool.ArtifactProducer{
-		AgentID:   lc.agentID,
-		SessionID: sess.ID,
-		// TaskID stamps every artifact this sub-agent writes with the
-		// orchestrator-assigned task identifier. submit_task_result's M4
-		// validation rejects artifacts whose producer.task_id ≠ this
-		// value, blocking failure mode #8 (claiming someone else's
-		// artifact as your output).
-		TaskID: lc.taskID,
-	}
-	if tc := emit.FromContext(ctx); tc != nil {
-		subProducer.TraceID = tc.TraceID
-	}
-	executor.SetArtifactProducer(subProducer)
-	executor.SetTaskContract(tool.TaskContract{
-		TaskID:          lc.taskID,
-		TaskStartedAt:   lc.taskStartedAt,
-		ExpectedOutputs: lc.expectedOutputs,
-		OutputSchema:    lc.outputSchema,
-	})
-	executor.SetAgentScope(tool.AgentScope{
-		ReadScope:   lc.readScope,
-		WriteScope:  lc.writeScope,
-		SessionRoot: lc.sessionRoot,
-	})
-
-	// Submission state. Tracked as the loop runs so we know whether
-	// end_turn is acceptable and whether to nudge / fail.
-	var (
-		submitAccepted     bool
-		submitArtifacts    []types.ArtifactRef
-		submitNudges       int
-		submitRejects      int
-		contractFailures   []string
-	)
-	hasContract := len(lc.expectedOutputs) > 0
-
-	for {
-		ls.turn++
-
-		// ---- Phase 1: Preprocess ----
-		messages := sess.GetMessages()
-
-		// Auto-compact if needed.
-		if qe.compactor != nil && qe.compactor.ShouldCompact(messages, effectiveContextWindow(lc.config.ContextWindow), lc.config.AutoCompactThreshold) {
-			logger.Info("sub-agent auto-compact triggered", zap.Int("msg_count", len(messages)))
-			compacted, err := qe.compactor.Compact(ctx, messages)
-			if err != nil {
-				logger.Warn("sub-agent auto-compact failed", zap.Error(err))
-			} else {
-				sess.SetMessages(compacted)
-				messages = compacted
-			}
-		}
-
-		// Check max turns.
-		if ls.turn > lc.config.MaxTurns {
-			return subAgentLoopResult{
-				Terminal: types.Terminal{
-					Reason:  types.TerminalMaxTurns,
-					Message: fmt.Sprintf("sub-agent reached max turns (%d)", lc.config.MaxTurns),
-					Turn:    ls.turn - 1,
-				},
-				ContractFailures: contractFailures,
-			}
-		}
-
-		// Build system prompt.
-		systemPrompt := lc.systemPromptOverride
-		if systemPrompt == "" {
-			systemPrompt = qe.buildSubAgentSystemPrompt(ctx, sess, messages, lc.profile, lc.subagentType, lc.allowedSkills, lc.pool, lc.sessionRoot)
-		}
-
-		req := &provider.ChatRequest{
-			Messages:      messages,
-			System:        systemPrompt,
-			Tools:         lc.pool.Schemas(),
-			MaxTokens:     lc.config.MaxTokens,
-			ContextWindow: effectiveContextWindow(lc.config.ContextWindow),
-		}
-		if lc.temperature != nil {
-			req.Temperature = *lc.temperature
-		}
-
-		logger.Debug("sub-agent LLM request",
-			zap.Int("turn", ls.turn),
-			zap.Int("message_count", len(messages)),
-			zap.Int("tool_count", lc.pool.Size()),
-		)
-
-		// ---- Phase 2: LLM Call with retry ----
-		msgID := "msg_" + uuid.New().String()[:8]
-		out <- types.EngineEvent{
-			Type:      types.EngineEventMessageStart,
-			MessageID: msgID,
-			Model:     qe.provider.Name(),
-		}
-
-		llmResult := callLLM(ctx, qe.provider, req, logger, qe.retryer, qe.llmTimeouts(), lc.agentID, out, out)
-
-		if llmResult.streamErr != nil {
-			llmErr := llmResult.streamErr
-			out <- types.EngineEvent{Type: types.EngineEventError, Error: llmErr}
-			out <- types.EngineEvent{Type: types.EngineEventMessageDelta, StopReason: "error", Error: llmErr}
-			out <- types.EngineEvent{Type: types.EngineEventMessageStop}
-
-			if ctx.Err() != nil {
-				return subAgentLoopResult{Terminal: types.Terminal{Reason: types.TerminalAbortedStreaming, Message: "sub-agent cancelled", Turn: ls.turn}, ContractFailures: contractFailures}
-			}
-			logger.Error("sub-agent LLM call failed after retries", zap.Error(llmErr))
-			return subAgentLoopResult{Terminal: types.Terminal{Reason: types.TerminalModelError, Message: llmErr.Error(), Turn: ls.turn}, ContractFailures: contractFailures}
-		}
-
-		// Events were already streamed in real-time by callLLM.
-		textBuf := llmResult.textBuf
-		toolCalls := llmResult.toolCalls
-
-		ls.stopReason = llmResult.stopReason
-		if llmResult.lastUsage != nil {
-			ls.lastUsage = llmResult.lastUsage
-			ls.cumulativeUsage.InputTokens += llmResult.lastUsage.InputTokens
-			ls.cumulativeUsage.OutputTokens += llmResult.lastUsage.OutputTokens
-			ls.cumulativeUsage.CacheRead += llmResult.lastUsage.CacheRead
-			ls.cumulativeUsage.CacheWrite += llmResult.lastUsage.CacheWrite
-		}
-
-		// Emit message lifecycle events.
-		stopReason := ls.stopReason
-		if stopReason == "" {
-			if len(toolCalls) > 0 {
-				stopReason = "tool_use"
-			} else {
-				stopReason = "end_turn"
-			}
-		}
-		out <- types.EngineEvent{Type: types.EngineEventMessageDelta, StopReason: stopReason, Usage: ls.lastUsage}
-		out <- types.EngineEvent{Type: types.EngineEventMessageStop}
-
-		// Append assistant message to session.
-		assistantMsg := buildAssistantMessage(textBuf, toolCalls, ls.lastUsage, llmResult.reasoning)
-		sess.AddMessage(assistantMsg)
-
-		// ---- Phase 5 (part A): No tool calls = LLM tried to terminate ----
-		if len(toolCalls) == 0 {
-			// Legacy / no-contract path: end_turn is terminal.
-			if !hasContract {
-				return subAgentLoopResult{
-					Terminal: types.Terminal{
-						Reason:  types.TerminalCompleted,
-						Message: "sub-agent finished",
-						Turn:    ls.turn,
-					},
-				}
-			}
-			// Contract path: only end_turn AFTER a passing submit terminates.
-			if submitAccepted {
-				return subAgentLoopResult{
-					Terminal: types.Terminal{
-						Reason:  types.TerminalCompleted,
-						Message: "sub-agent finished with passing submission",
-						Turn:    ls.turn,
-					},
-					SubmittedArtifacts: submitArtifacts,
-				}
-			}
-			// LLM tried to end without submitting → nudge (M2 from doc §3).
-			submitNudges++
-			if submitNudges > maxSubmitNudges {
-				logger.Warn("sub-agent end_turn without submission, exceeded nudge cap",
-					zap.Int("nudges", submitNudges),
-				)
-				return subAgentLoopResult{
-					Terminal: types.Terminal{
-						Reason:  types.TerminalMaxTurns,
-						Message: fmt.Sprintf("L3 declined to call submit_task_result after %d reminders", maxSubmitNudges),
-						Turn:    ls.turn,
-					},
-					ContractFailures: append(contractFailures,
-						fmt.Sprintf("missing submit_task_result after %d nudges", maxSubmitNudges)),
-				}
-			}
-			logger.Info("nudging sub-agent to call submit_task_result",
-				zap.Int("nudge", submitNudges),
-				zap.Int("cap", maxSubmitNudges),
-			)
-			sess.AddMessage(buildSubmitNudgeMessage(submitNudges, lc.expectedOutputs))
-			continue
-		}
-
-		// ---- Phase 4: Server-side tool execution ----
-		if ctx.Err() != nil {
-			return subAgentLoopResult{Terminal: types.Terminal{Reason: types.TerminalAbortedTools, Message: "sub-agent cancelled before tool execution", Turn: ls.turn}, ContractFailures: contractFailures}
-		}
-
-		// Inject allowed skills into context so SkillTool can enforce the whitelist.
-		execCtx := ctx
-		if lc.allowedSkills != nil {
-			execCtx = tool.WithAllowedSkills(execCtx, lc.allowedSkills)
-		}
-
-		// Sub-agents also honour per-tool client routing — ask_user_question
-		// is filtered out of sub-agent pools by the AllAgentDisallowed
-		// blacklist, but using the same dispatcher keeps the routing rule
-		// in one place and makes future "must-route-to-client" tools
-		// (e.g. user confirmations from a worker) work consistently.
-		results := qe.dispatchToolBatch(execCtx, executor, lc.pool, toolCalls, out)
-
-		if ctx.Err() != nil {
-			return subAgentLoopResult{Terminal: types.Terminal{Reason: types.TerminalAbortedTools, Message: "sub-agent cancelled during tool execution", Turn: ls.turn}, ContractFailures: contractFailures}
-		}
-
-		// Append tool results to session.
-		for i, tc := range toolCalls {
-			toolMsg := types.Message{
-				Role: types.RoleUser,
-				Content: []types.ContentBlock{{
-					Type:       types.ContentTypeToolResult,
-					ToolUseID:  tc.ID,
-					ToolName:   tc.Name,
-					ToolResult: results[i].Content,
-					IsError:    results[i].IsError,
-				}},
-				CreatedAt: time.Now(),
-			}
-			sess.AddMessage(toolMsg)
-
-			for _, nm := range results[i].NewMessages {
-				sess.AddMessage(nm)
-			}
-
-			// Observe submit_task_result outcomes — both accepted and
-			// rejected cases land here. Render hint is the unique signal
-			// the submit tool emits (decoupled from package import).
-			if hint, _ := results[i].Metadata["render_hint"].(string); hint == "task_submission" {
-				accepted, _ := results[i].Metadata["submission_accepted"].(bool)
-				if accepted {
-					submitAccepted = true
-					if refs, ok := results[i].Metadata["submitted_artifacts"].([]types.ArtifactRef); ok {
-						submitArtifacts = refs
-					}
-					logger.Info("submission accepted",
-						zap.Int("artifacts", len(submitArtifacts)),
-					)
-				} else {
-					submitRejects++
-					if reason, ok := results[i].Metadata["reason"].(string); ok {
-						contractFailures = append(contractFailures, reason)
-					}
-					logger.Info("submission rejected",
-						zap.Int("reject_count", submitRejects),
-						zap.Int("cap", maxSubmitRejects),
-					)
-					if submitRejects > maxSubmitRejects {
-						return subAgentLoopResult{
-							Terminal: types.Terminal{
-								Reason:  types.TerminalMaxTurns,
-								Message: fmt.Sprintf("submit_task_result rejected %d times — abandoning task", submitRejects),
-								Turn:    ls.turn,
-							},
-							ContractFailures: contractFailures,
-						}
-					}
-				}
-			}
-		}
-
-		// M4 — emit NextRoundThinking so the channel layer can pre-open
-		// a new message card with "正在解读结果" hint. Fires only when we're
-		// actually doing another LLM round (tools were called).
-		if len(toolCalls) > 0 {
-			out <- types.EngineEvent{
-				Type:    types.EngineEventNextRoundThinking,
-				AgentID: lc.agentID,
-			}
-		}
-
-		// ---- Phase 5 (part B): Continue loop ----
-	}
+	// stripDispatchTools instructs runSubAgentDriver to strip dispatchToolNames
+	// from the pool before the LLM loop. True for strict leaf agents (TierSubAgent)
+	// that must never call back into dispatch. False for RunAsLLMAgent agents
+	// (e.g. plan-executor-agent) whose AllowedTools whitelist already controls
+	// which dispatch tools are present in the pool.
+	stripDispatchTools bool
 }
 
 // buildSubmitNudgeMessage assembles the SYSTEM-style reminder injected
@@ -1439,7 +1165,7 @@ func buildSubmitNudgeMessage(nudge int, outs []types.ExpectedOutput) types.Messa
 	fmt.Fprintf(&b, "[SYSTEM] 你尚未调用 submit_task_result 提交产物。任务未完成，请立即调用 (提示 %d/%d)。\n",
 		nudge, maxSubmitNudges)
 	if nudge >= 2 {
-		b.WriteString("强制提示：先用 ArtifactWrite 把每份产出写入 store，再用 submit_task_result 提交 ID 列表。\n")
+		b.WriteString("强制提示：先用 write 把产物写到 {task_dir}/ 下 → meta_write 登记 outputs[] → submit_task_result({task_id, meta_path})。\n")
 	}
 	if nudge >= maxSubmitNudges {
 		b.WriteString("这是最后一次机会，再不提交将判定任务失败。\n")
@@ -1614,16 +1340,14 @@ func resolveSubAgentProfile(subagentType string) *prompt.AgentProfile {
 // parent agent gets a structured view of "what landed" without parsing
 // streamed events.
 //
-// The L3 driver (runSubAgentDriver) reuses this type and additionally
-// populates NeedsPlanning / EscalationReason / SuggestedNextSteps when an
-// escalate_to_planner call fired. The L2 path (runSubAgentLoop) leaves
-// those fields zero-valued.
+// NeedsPlanning / EscalationReason / SuggestedNextSteps are populated
+// only by runSubAgentDriver when escalate_to_planner fired.
 type subAgentLoopResult struct {
 	Terminal           types.Terminal
 	SubmittedArtifacts []types.ArtifactRef
 	ContractFailures   []string
 
-	// L3-only fields. Empty when the loop ran an L2 coordinator.
+	// Populated by runSubAgentDriver on escalate_to_planner; zero otherwise.
 	NeedsPlanning      bool
 	EscalationReason   string
 	SuggestedNextSteps string
@@ -1639,7 +1363,7 @@ type subAgentLoopResult struct {
 	// can explain "我们一开始用的快路径，发现没把握就升级了 plan 模式".
 	CoordinatorMode   string
 	EscalatedFromMode string
-	BudgetSpent       BudgetSnapshot
+	BudgetSpent       agent.BudgetSpent
 
 	// Summary is the coordinator-level <summary> the parent agent (emma)
 	// quotes when speaking to the user. Plan mode populates this; ReAct
@@ -1676,6 +1400,48 @@ func joinNonEmpty(parts []string, sep string) string {
 		out += p
 	}
 	return out
+}
+
+// metaRefToLoopResult converts a successful SchedulerCoordinator result
+// into a subAgentLoopResult. Only the Terminal field is populated;
+// the caller fills CoordinatorMode.
+func metaRefToLoopResult(ref schedulertypes.MetaRef, rootDir, sessionID string) subAgentLoopResult {
+	res := subAgentLoopResult{
+		Terminal: types.Terminal{Reason: types.TerminalCompleted},
+	}
+	// Read the meta.json written by the leaf runner to surface the summary
+	// and any outputs back to the L1 caller. Without this the parent sees
+	// an empty response.
+	if rootDir != "" && sessionID != "" && string(ref) != "" {
+		absPath := filepath.Join(workspace.SessionRoot(rootDir, sessionID), string(ref))
+		if b, err := os.ReadFile(absPath); err == nil {
+			var m workspace.Meta
+			if json.Unmarshal(b, &m) == nil {
+				var sb strings.Builder
+				sb.WriteString(m.Summary)
+				if len(m.Outputs) > 0 {
+					sb.WriteString("\n产出文件：\n")
+					for _, o := range m.Outputs {
+						if o.Path != "" {
+							sb.WriteString("- ")
+							sb.WriteString(o.Path)
+							sb.WriteString("\n")
+						}
+					}
+				}
+				// Surface the deliverables directory so L1 (emma) can present
+				// a single stable path to the user instead of per-task paths.
+				delivDir := workspace.DeliverablesDir(rootDir, sessionID)
+				if entries, err := os.ReadDir(delivDir); err == nil && len(entries) > 0 {
+					sb.WriteString("\n交付目录（已整理至此）：")
+					sb.WriteString(delivDir)
+					sb.WriteString("\n")
+				}
+				res.Summary = sb.String()
+			}
+		}
+	}
+	return res
 }
 
 // countRequired returns how many ExpectedOutputs are marked Required.
@@ -1857,8 +1623,8 @@ func parseCandidateSkills(inputs map[string]any) []string {
 //
 // On error (missing skill, too many candidates) returns (nil, "", err) so
 // SpawnSync can fail fast before any LLM call.
-func hydrateFreelancer(reader *skill.Reader, candidates []string, prompt string) (*SkillTracker, string, error) {
-	tracker := NewSkillTracker(3)
+func hydrateFreelancer(reader *skill.Reader, candidates []string, prompt string) (*loop.SkillTracker, string, error) {
+	tracker := loop.NewSkillTracker(3)
 
 	if len(candidates) == 0 {
 		return tracker, prompt, nil

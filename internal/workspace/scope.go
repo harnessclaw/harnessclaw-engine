@@ -153,3 +153,14 @@ func ReconcileSpawnReturn(ctx context.Context, writer *PlanWriter, rootDir, root
 	}
 	return true, nil
 }
+
+// FlatScope returns read and write scope paths for a flat layout session
+// (no task subdivision). Both read and write scopes point to the session root.
+// Returns empty slices when rootDir or sessionID is empty.
+func FlatScope(rootDir, sessionID string) (readScope, writeScope []string) {
+	if rootDir == "" || sessionID == "" {
+		return nil, nil
+	}
+	root := SessionRoot(rootDir, sessionID)
+	return []string{root}, []string{root}
+}
