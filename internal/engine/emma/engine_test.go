@@ -1,17 +1,65 @@
-package engine
+package emma
 
 import (
 	"context"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/command"
+	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/event"
+	"harnessclaw-go/internal/permission"
+	"harnessclaw-go/internal/provider"
+	"harnessclaw-go/internal/storage/memory"
+	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
 )
 
+// --- Minimal mock provider ---
+//
+// L1Engine tests verify configuration application only — they never drive a
+// Chat() call, so the mock just satisfies the provider.Provider interface
+// without any response wiring.
+
+type emmaMockProvider struct{}
+
+func (m *emmaMockProvider) Name() string { return "mock-emma" }
+
+func (m *emmaMockProvider) Chat(_ context.Context, _ *provider.ChatRequest) (*provider.ChatStream, error) {
+	return nil, nil
+}
+
+func (m *emmaMockProvider) CountTokens(_ context.Context, _ []types.Message) (int, error) {
+	return 0, nil
+}
+
+func newTestInner() *engine.QueryEngine {
+	logger := zap.NewNop()
+	store := memory.New()
+	bus := event.NewBus()
+	mgr := session.NewManager(store, logger, 30*time.Minute)
+	cmdReg := command.NewRegistry()
+	reg := tool.NewRegistry()
+
+	cfg := engine.QueryEngineConfig{
+		MaxTurns:                50,
+		AutoCompactThreshold:    0.8,
+		ToolTimeout:             30 * time.Second,
+		MaxTokens:               4096,
+		SystemPrompt:            "You are a test assistant.",
+		ClientTools:             false,
+		DisableStepDecisionGate: true,
+	}
+
+	return engine.NewQueryEngine(&emmaMockProvider{}, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, cmdReg)
+}
+
 func TestL1Engine_DefaultConfig(t *testing.T) {
-	inner := newSubagentTestEngine(&subagentMockProvider{})
+	inner := newTestInner()
 	l1 := NewL1Engine(inner, L1Config{}, zap.NewNop())
 
 	cfg := l1.Config()
@@ -21,9 +69,6 @@ func TestL1Engine_DefaultConfig(t *testing.T) {
 	if cfg.DisplayName != "emma" {
 		t.Errorf("default DisplayName = %q, want emma", cfg.DisplayName)
 	}
-	// AllowedTools length & exact membership are asserted in
-	// TestL1Engine_DefaultL1Config — here we just sanity-check non-empty
-	// and that the single delegation entry (scheduler) is present.
 	if len(cfg.AllowedTools) < 2 {
 		t.Errorf("default AllowedTools = %v, want at least scheduler + a search tool", cfg.AllowedTools)
 	}
@@ -45,8 +90,8 @@ func TestL1Engine_DefaultConfig(t *testing.T) {
 }
 
 func TestL1Engine_AppliesToInnerConfig(t *testing.T) {
-	inner := newSubagentTestEngine(&subagentMockProvider{})
-	originalMaxTurns := inner.config.MaxTurns
+	inner := newTestInner()
+	originalMaxTurns := inner.Config().MaxTurns
 
 	_ = NewL1Engine(inner, L1Config{
 		Profile:      prompt.EmmaProfile,
@@ -55,30 +100,31 @@ func TestL1Engine_AppliesToInnerConfig(t *testing.T) {
 		MaxTurns:     7,
 	}, zap.NewNop())
 
-	if inner.config.MainAgentProfile != prompt.EmmaProfile {
+	innerCfg := inner.Config()
+	if innerCfg.MainAgentProfile != prompt.EmmaProfile {
 		t.Errorf("inner.config.MainAgentProfile not set")
 	}
-	if inner.config.MainAgentDisplayName != "emma" {
-		t.Errorf("inner.config.MainAgentDisplayName = %q", inner.config.MainAgentDisplayName)
+	if innerCfg.MainAgentDisplayName != "emma" {
+		t.Errorf("inner.config.MainAgentDisplayName = %q", innerCfg.MainAgentDisplayName)
 	}
-	if got := inner.config.MainAgentAllowedTools; len(got) != 2 || got[0] != "Agent" {
+	if got := innerCfg.MainAgentAllowedTools; len(got) != 2 || got[0] != "Agent" {
 		t.Errorf("inner.config.MainAgentAllowedTools = %v", got)
 	}
-	if inner.config.MainAgentMaxTurns != 7 {
-		t.Errorf("inner.config.MainAgentMaxTurns = %d, want 7", inner.config.MainAgentMaxTurns)
+	if innerCfg.MainAgentMaxTurns != 7 {
+		t.Errorf("inner.config.MainAgentMaxTurns = %d, want 7", innerCfg.MainAgentMaxTurns)
 	}
-	if inner.config.MaxTurns != originalMaxTurns {
+	if innerCfg.MaxTurns != originalMaxTurns {
 		t.Errorf("inner.config.MaxTurns mutated: was %d, now %d (sub-agents would be impacted)",
-			originalMaxTurns, inner.config.MaxTurns)
+			originalMaxTurns, innerCfg.MaxTurns)
 	}
-	if inner.promptProfile != prompt.EmmaProfile {
+	if inner.PromptProfile() != prompt.EmmaProfile {
 		t.Errorf("inner.promptProfile not updated to emma")
 	}
 }
 
 func TestL1Engine_CustomProfile(t *testing.T) {
 	custom := &prompt.AgentProfile{Name: "custom-leader", Description: "test"}
-	inner := newSubagentTestEngine(&subagentMockProvider{})
+	inner := newTestInner()
 
 	l1 := NewL1Engine(inner, L1Config{
 		Profile:     custom,
@@ -91,16 +137,16 @@ func TestL1Engine_CustomProfile(t *testing.T) {
 	if l1.Config().DisplayName != "Sara" {
 		t.Errorf("custom display name not honored: %q", l1.Config().DisplayName)
 	}
-	if inner.promptProfile != custom {
+	if inner.PromptProfile() != custom {
 		t.Error("inner.promptProfile should reflect custom profile")
 	}
-	if inner.config.MainAgentDisplayName != "Sara" {
-		t.Errorf("inner display name not propagated: %q", inner.config.MainAgentDisplayName)
+	if inner.Config().MainAgentDisplayName != "Sara" {
+		t.Errorf("inner display name not propagated: %q", inner.Config().MainAgentDisplayName)
 	}
 }
 
 func TestL1Engine_ConfigReturnsCopy(t *testing.T) {
-	inner := newSubagentTestEngine(&subagentMockProvider{})
+	inner := newTestInner()
 	l1 := NewL1Engine(inner, L1Config{
 		AllowedTools: []string{"Agent", "orchestrate"},
 	}, zap.NewNop())
@@ -115,7 +161,7 @@ func TestL1Engine_ConfigReturnsCopy(t *testing.T) {
 }
 
 func TestL1Engine_Inner(t *testing.T) {
-	inner := newSubagentTestEngine(&subagentMockProvider{})
+	inner := newTestInner()
 	l1 := NewL1Engine(inner, L1Config{}, zap.NewNop())
 	if l1.Inner() != inner {
 		t.Error("Inner() should return the wrapped QueryEngine")
@@ -130,19 +176,14 @@ func TestL1Engine_DefaultL1Config(t *testing.T) {
 	if cfg.DisplayName != "emma" {
 		t.Error("DefaultL1Config DisplayName mismatch")
 	}
-	// L1 palette in the 3-tier architecture: a single delegation entry
-	// (scheduler), light search for context (web_search/tavily_search),
-	// clarification (ask_user_question), and lightweight local file access
-	// (Read/Glob/Grep) for workspace inspection without spawning L2.
-	// Agent / orchestrate are NOT in this list — they are L2-internal.
 	wantTools := map[string]bool{
-		"scheduler":     true,
-		"web_search":       true,
-		"tavily_search":    true,
+		"scheduler":         true,
+		"web_search":        true,
+		"tavily_search":     true,
 		"ask_user_question": true,
-		"read":            true,
-		"glob":            true,
-		"grep":            true,
+		"read":              true,
+		"glob":              true,
+		"grep":              true,
 	}
 	if len(cfg.AllowedTools) != len(wantTools) {
 		t.Errorf("DefaultL1Config AllowedTools length = %d, want %d",
@@ -157,7 +198,6 @@ func TestL1Engine_DefaultL1Config(t *testing.T) {
 	if len(wantTools) > 0 {
 		t.Errorf("default L1 palette missing tools: %v", wantTools)
 	}
-	// Agent / orchestrate must NOT be exposed at L1.
 	for _, n := range cfg.AllowedTools {
 		if n == "Agent" || n == "orchestrate" {
 			t.Errorf("L1 palette must not expose %q (L2-internal)", n)
@@ -171,27 +211,18 @@ func TestL1Engine_DefaultL1Config(t *testing.T) {
 // TestL1Engine_ImplementsEngineInterface confirms the wrapper satisfies the
 // engine.Engine contract that the router relies on.
 func TestL1Engine_ImplementsEngineInterface(t *testing.T) {
-	var _ Engine = (*L1Engine)(nil)
+	var _ engine.Engine = (*L1Engine)(nil)
 }
 
 // TestL1Engine_PassthroughMethods exercises the trivial passthroughs to
-// ensure compile-time wiring is correct (any signature drift would fail
-// here at build time, and runtime correctness is delegated to the inner
-// engine's own tests).
+// ensure compile-time wiring is correct.
 func TestL1Engine_PassthroughMethods(t *testing.T) {
-	inner := newSubagentTestEngine(&subagentMockProvider{})
+	inner := newTestInner()
 	l1 := NewL1Engine(inner, L1Config{}, zap.NewNop())
 
-	// AbortSession is a passthrough — whether the inner engine returns nil
-	// or "no active query" for a non-existent session is its concern. We
-	// only verify the call compiles and reaches inner.
 	_ = l1.AbortSession(context.Background(), "no-such-session")
-
-	// SubmitToolResult on a non-pending tool_use_id returns no error today
-	// (silently dropped); we just verify the call compiles and reaches inner.
 	_ = l1.SubmitToolResult(context.Background(), "no-such-session",
 		&types.ToolResultPayload{ToolUseID: "missing"})
-
 	_ = l1.SubmitPermissionResult(context.Background(), "no-such-session",
 		&types.PermissionResponse{RequestID: "missing", Approved: false})
 }

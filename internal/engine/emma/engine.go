@@ -1,10 +1,11 @@
-package engine
+package emma
 
 import (
 	"context"
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
@@ -31,7 +32,7 @@ import (
 // L2 sub-agents (workers, planner, etc.) bypass L1 restrictions because
 // SpawnSync builds its own ToolPool from the registry independently.
 type L1Engine struct {
-	inner  *QueryEngine
+	inner  *engine.QueryEngine
 	config L1Config
 	logger *zap.Logger
 }
@@ -103,7 +104,7 @@ func DefaultL1Config() L1Config {
 //  3. Hand the L1Engine to the router/channel layer
 //  4. Register the task / scheduler tools using the inner QueryEngine as
 //     the AgentSpawner — they call SpawnSync directly to launch L2/L3 workers.
-func NewL1Engine(inner *QueryEngine, cfg L1Config, logger *zap.Logger) *L1Engine {
+func NewL1Engine(inner *engine.QueryEngine, cfg L1Config, logger *zap.Logger) *L1Engine {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -137,11 +138,7 @@ func NewL1Engine(inner *QueryEngine, cfg L1Config, logger *zap.Logger) *L1Engine
 	// Apply L1 settings to the inner QueryEngine. This MUST happen before
 	// the engine processes any message; the L1Engine owns these fields
 	// from this point on.
-	inner.config.MainAgentProfile = cfg.Profile
-	inner.config.MainAgentDisplayName = cfg.DisplayName
-	inner.config.MainAgentAllowedTools = cfg.AllowedTools
-	inner.config.MainAgentMaxTurns = cfg.MaxTurns
-	inner.promptProfile = cfg.Profile
+	inner.ApplyMainAgentConfig(cfg.Profile, cfg.DisplayName, cfg.AllowedTools, cfg.MaxTurns)
 
 	return &L1Engine{
 		inner:  inner,
@@ -163,7 +160,7 @@ func (l *L1Engine) Config() L1Config {
 // Inner exposes the underlying QueryEngine so the wiring layer can pass it
 // to Agent / orchestrate tools as the AgentSpawner. Sub-agent spawning
 // bypasses L1 — that is by design (L2 workers need the full tool palette).
-func (l *L1Engine) Inner() *QueryEngine {
+func (l *L1Engine) Inner() *engine.QueryEngine {
 	return l.inner
 }
 
@@ -183,7 +180,7 @@ func (l *L1Engine) ProcessMessage(
 	sessionID string,
 	msg *types.Message,
 ) (<-chan types.EngineEvent, error) {
-	if root := workspaceRootDir(); root != "" {
+	if root := workspace.DefaultRootDir(); root != "" {
 		if err := workspace.EnsureSession(root, sessionID); err != nil {
 			l.logger.Warn("ensure session workspace",
 				zap.String("session_id", sessionID),

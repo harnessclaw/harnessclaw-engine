@@ -408,6 +408,39 @@ func NewQueryEngine(
 	return qe
 }
 
+// ApplyMainAgentConfig sets the user-facing main-agent fields on the
+// underlying QueryEngineConfig and updates the active prompt profile.
+// Used by emma.NewEngine (the L1 wrapper) to install its persona, tool
+// palette, and loop cap without exposing internal fields.
+//
+// Must be called BEFORE the engine processes any message; the L1
+// wrapper takes ownership of these fields after construction.
+func (qe *QueryEngine) ApplyMainAgentConfig(
+	profile *prompt.AgentProfile,
+	displayName string,
+	allowedTools []string,
+	maxTurns int,
+) {
+	qe.config.MainAgentProfile = profile
+	qe.config.MainAgentDisplayName = displayName
+	qe.config.MainAgentAllowedTools = allowedTools
+	qe.config.MainAgentMaxTurns = maxTurns
+	qe.promptProfile = profile
+}
+
+// Config returns the active QueryEngineConfig by value. Useful for the
+// L1 wrapper and tests that verify configuration was applied.
+func (qe *QueryEngine) Config() QueryEngineConfig {
+	return qe.config
+}
+
+// PromptProfile returns the prompt profile currently driving the main-
+// agent loop. Returns the profile installed by ApplyMainAgentConfig, or
+// the default chosen at NewQueryEngine time when no L1 wrapper applied.
+func (qe *QueryEngine) PromptProfile() *prompt.AgentProfile {
+	return qe.promptProfile
+}
+
 // Start launches background goroutines that require a long-lived context.
 // Must be called once after NewQueryEngine, before the first query.
 // ctx should be cancelled when the server shuts down.

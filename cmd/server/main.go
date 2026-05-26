@@ -40,8 +40,9 @@ import (
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/compact"
+	"harnessclaw-go/internal/engine/emma"
+	"harnessclaw-go/internal/engine/emma/resume"
 	"harnessclaw-go/internal/engine/prompter"
-	"harnessclaw-go/internal/engine/resume"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/event"
@@ -413,7 +414,7 @@ func main() {
 	// Wrap the QueryEngine in an L1Engine. From this point on, the channel
 	// layer talks to `l1` (user-facing); Agent/Orchestrate tools continue to
 	// use `eng` directly to spawn L2 sub-agents.
-	l1 := engine.NewL1Engine(eng, engine.DefaultL1Config(), logger)
+	l1 := emma.NewL1Engine(eng, emma.DefaultL1Config(), logger)
 	logger.Info("L1 engine wrapped",
 		zap.String("profile", l1.Config().Profile.Name),
 		zap.String("display_name", l1.Config().DisplayName),
