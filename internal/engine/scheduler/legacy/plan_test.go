@@ -1,4 +1,4 @@
-package orchestrate
+package legacy
 
 import (
 	"strings"

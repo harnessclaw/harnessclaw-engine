@@ -3,7 +3,7 @@
 // parallel execution of sub-agent steps with automatic context propagation.
 //
 // Design reference: docs/design/architecture/layered-architecture.md (§九).
-package orchestrate
+package legacy
 
 import (
 	"encoding/json"

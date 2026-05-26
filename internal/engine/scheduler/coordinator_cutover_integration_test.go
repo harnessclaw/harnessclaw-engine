@@ -1,4 +1,4 @@
-package engine_test
+package scheduler_test
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/scheduler/spec"
 	"harnessclaw-go/internal/engine/scheduler/types"
 	"harnessclaw-go/internal/workspace"
@@ -44,11 +44,11 @@ func (s *planWritingFakeSpawner) SpawnSync(ctx context.Context, cfg *agent.Spawn
 	return &agent.SpawnResult{Output: "spawner call " + strconv.FormatInt(n, 10)}, nil
 }
 
-// TestCutover_ReactKind verifies that SchedulerCoordinator completes a
+// TestCutover_ReactKind verifies that Coordinator completes a
 // KindReact task when an explicit hint is provided.
 func TestCutover_ReactKind(t *testing.T) {
 	dir := t.TempDir()
-	sc := engine.NewSchedulerCoordinator(engine.SchedulerCoordinatorConfig{
+	sc := scheduler.NewCoordinator(scheduler.CoordinatorConfig{
 		Spawner: &engineFakeSpawner{output: "react done"},
 		RootDir: dir,
 	})
@@ -74,7 +74,7 @@ func TestCutover_ReactKind(t *testing.T) {
 // routes a simple goal to KindReact and the task completes successfully.
 func TestCutover_AutoKindSelection_React(t *testing.T) {
 	dir := t.TempDir()
-	sc := engine.NewSchedulerCoordinator(engine.SchedulerCoordinatorConfig{
+	sc := scheduler.NewCoordinator(scheduler.CoordinatorConfig{
 		Spawner: &engineFakeSpawner{output: "auto react done"},
 		RootDir: dir,
 	})
@@ -103,7 +103,7 @@ func TestCutover_AutoKindSelection_React(t *testing.T) {
 func TestCutover_KindSelectorPlanGoal(t *testing.T) {
 	dir := t.TempDir()
 	spawner := &planWritingFakeSpawner{rootDir: dir}
-	sc := engine.NewSchedulerCoordinator(engine.SchedulerCoordinatorConfig{
+	sc := scheduler.NewCoordinator(scheduler.CoordinatorConfig{
 		Spawner: spawner,
 		RootDir: dir,
 	})

@@ -1,4 +1,4 @@
-package engine_test
+package scheduler_test
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/scheduler/spec"
 	"harnessclaw-go/internal/engine/scheduler/types"
 )
@@ -21,7 +21,7 @@ func TestSchedulerCoordinator_RunLeafWithCutover(t *testing.T) {
 	dir := t.TempDir()
 	spawner := &engineFakeSpawner{output: "cutover done"}
 
-	sc := engine.NewSchedulerCoordinator(engine.SchedulerCoordinatorConfig{
+	sc := scheduler.NewCoordinator(scheduler.CoordinatorConfig{
 		Spawner: spawner,
 		RootDir: dir,
 	})
@@ -48,7 +48,7 @@ func TestSchedulerCoordinator_RunLeaf_ReturnsMetaRef(t *testing.T) {
 	dir := t.TempDir()
 	spawner := &engineFakeSpawner{output: "task done"}
 
-	sc := engine.NewSchedulerCoordinator(engine.SchedulerCoordinatorConfig{
+	sc := scheduler.NewCoordinator(scheduler.CoordinatorConfig{
 		Spawner: spawner,
 		RootDir: dir,
 	})

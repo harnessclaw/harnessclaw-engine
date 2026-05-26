@@ -1,11 +1,11 @@
-package engine_test
+package scheduler_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/scheduler/spec"
 	"harnessclaw-go/internal/engine/scheduler/types"
 )
@@ -14,7 +14,7 @@ func TestSchedulerCoordinator_Integration_FakeSpawner(t *testing.T) {
 	dir := t.TempDir()
 	spawner := &engineFakeSpawner{output: "integration done"}
 
-	sc := engine.NewSchedulerCoordinator(engine.SchedulerCoordinatorConfig{
+	sc := scheduler.NewCoordinator(scheduler.CoordinatorConfig{
 		Spawner: spawner,
 		RootDir: dir,
 	})

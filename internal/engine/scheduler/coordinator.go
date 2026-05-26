@@ -1,4 +1,4 @@
-package engine
+package scheduler
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"harnessclaw-go/internal/agent"
-	l2sched "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/scheduler/dispatch"
 	"harnessclaw-go/internal/engine/scheduler/router"
 	"harnessclaw-go/internal/engine/scheduler/spec"
@@ -26,8 +25,8 @@ import (
 	pkgtypes "harnessclaw-go/pkg/types"
 )
 
-// SchedulerCoordinatorConfig holds dependencies for NewSchedulerCoordinator.
-type SchedulerCoordinatorConfig struct {
+// CoordinatorConfig holds dependencies for NewCoordinator.
+type CoordinatorConfig struct {
 	// Spawner is the real (or fake) AgentSpawner used by QueryEngineFactory.
 	Spawner agent.AgentSpawner
 
@@ -51,12 +50,12 @@ type SchedulerCoordinatorConfig struct {
 	AgentResolver router.AgentResolver
 }
 
-// SchedulerCoordinator wires the L2 scheduler, ConsumerPool, and
+// Coordinator wires the L2 scheduler, ConsumerPool, and
 // QueryEngineFactory together into a single callable object.
-// Create with NewSchedulerCoordinator; call Start before Run.
-type SchedulerCoordinator struct {
-	cfg     SchedulerCoordinatorConfig
-	sched   *l2sched.Scheduler
+// Create with NewCoordinator; call Start before Run.
+type Coordinator struct {
+	cfg     CoordinatorConfig
+	sched   *Scheduler
 	pool    *subagent.ConsumerPool
 	factory *subagent.QueryEngineFactory
 	bus     msgbus.Bus
@@ -65,9 +64,9 @@ type SchedulerCoordinator struct {
 	kindSel router.KindSelector
 }
 
-// NewSchedulerCoordinator creates a SchedulerCoordinator backed by in-memory
+// NewCoordinator creates a Coordinator backed by in-memory
 // bus and tstate stores. The caller must invoke Start(ctx) before Run.
-func NewSchedulerCoordinator(cfg SchedulerCoordinatorConfig) *SchedulerCoordinator {
+func NewCoordinator(cfg CoordinatorConfig) *Coordinator {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -85,7 +84,7 @@ func NewSchedulerCoordinator(cfg SchedulerCoordinatorConfig) *SchedulerCoordinat
 	staging := tstate.NewStagingWriter(tst)
 
 	// --- L2 scheduler ---
-	sched := l2sched.New(l2sched.Config{
+	sched := New(Config{
 		Logger:  logger,
 		Bus:     bus,
 		Kernel:  kernel,
@@ -116,7 +115,7 @@ func NewSchedulerCoordinator(cfg SchedulerCoordinatorConfig) *SchedulerCoordinat
 		WithAgentResolver(agentRes)
 	pool := subagent.NewConsumerPool(bus, kernel, factory, 4)
 
-	return &SchedulerCoordinator{
+	return &Coordinator{
 		cfg:     cfg,
 		sched:   sched,
 		pool:    pool,
@@ -135,7 +134,7 @@ func CoordinatorTaskSpec(goal string) spec.TaskSpec {
 
 // Start launches the scheduler and consumer pool goroutines.
 // ctx cancellation stops all background work.
-func (sc *SchedulerCoordinator) Start(ctx context.Context) {
+func (sc *Coordinator) Start(ctx context.Context) {
 	sc.sched.Start(ctx)
 	sc.pool.Start(ctx)
 }
@@ -154,7 +153,7 @@ func (sc *SchedulerCoordinator) Start(ctx context.Context) {
 // sched.Start) may not have subscribed to the bus yet when the first lifecycle
 // message is published, causing the message to be lost. Polling tstate directly
 // is immune to that race and only requires the kernel, which is always ready.
-func (sc *SchedulerCoordinator) Run(ctx context.Context, sp spec.TaskSpec, outCh chan<- pkgtypes.EngineEvent) (types.MetaRef, error) {
+func (sc *Coordinator) Run(ctx context.Context, sp spec.TaskSpec, outCh chan<- pkgtypes.EngineEvent) (types.MetaRef, error) {
 	if sp.Hint.Kind == "" && sc.kindSel != nil {
 		sp.Hint.Kind = sc.kindSel.Select(sp.Goal)
 	}
@@ -204,7 +203,7 @@ func (sc *SchedulerCoordinator) Run(ctx context.Context, sp spec.TaskSpec, outCh
 // meta.json into {sessionRoot}/deliverables/ so L1 (emma) has a single,
 // stable directory to point the user at. Errors are best-effort: a missing
 // source file or a write failure is logged but never propagates to the caller.
-func (sc *SchedulerCoordinator) promoteToDeliverables(sessionID string, ref types.MetaRef) {
+func (sc *Coordinator) promoteToDeliverables(sessionID string, ref types.MetaRef) {
 	if sc.cfg.RootDir == "" || sessionID == "" || ref == "" {
 		return
 	}

@@ -19,6 +19,7 @@ import (
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/sections"
+	enginesched "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/event"
@@ -303,8 +304,8 @@ type QueryEngine struct {
 	// cmd/server/main.go.
 	sessionManager *session.Manager
 
-	// schedulerCoord is the L2 SchedulerCoordinator instance.
-	schedulerCoord *SchedulerCoordinator
+	// schedulerCoord is the L2 scheduler.Coordinator instance.
+	schedulerCoord *enginesched.Coordinator
 }
 
 // pendingPlanReq tracks one in-flight plan approval request. The
@@ -398,7 +399,7 @@ func NewQueryEngine(
 		searchGapDetector:    NewSearchGapDetector(logger),
 	}
 
-	qe.schedulerCoord = NewSchedulerCoordinator(SchedulerCoordinatorConfig{
+	qe.schedulerCoord = enginesched.NewCoordinator(enginesched.CoordinatorConfig{
 		Spawner:  qe,
 		Logger:   slog.Default(),
 		Provider: qe.provider,
