@@ -9,12 +9,8 @@
 *.dylib
 /server
 
-# E2E probes — local-only, never committed (source + compiled binaries)
+# E2E probes & local tooling — never committed (source + compiled binaries)
 cmd/test/
-!cmd/test/tool_catalog/
-!cmd/test/tool_catalog/**
-!cmd/test/metrics_e2e/
-!cmd/test/metrics_e2e/**
 
 # Build output
 dist/
