@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
 )
@@ -26,7 +26,7 @@ func writeSkill(t *testing.T, root, name, body string) {
 	}
 }
 
-func mkCtx(tracker *engine.SkillTracker) context.Context {
+func mkCtx(tracker *loop.SkillTracker) context.Context {
 	return tool.WithSkillTrackerValue(context.Background(), tracker)
 }
 
@@ -43,7 +43,7 @@ func TestLoadSkill_NoTracker(t *testing.T) {
 func TestLoadSkill_Success(t *testing.T) {
 	tmp := t.TempDir()
 	writeSkill(t, tmp, "echo", "Echo skill body")
-	tracker := engine.NewSkillTracker(3)
+	tracker := loop.NewSkillTracker(3)
 	reader := skill.NewReader([]string{tmp}, zap.NewNop())
 	tl := New(reader, zap.NewNop())
 	raw, _ := json.Marshal(map[string]any{"skill": "echo"})
@@ -78,7 +78,7 @@ func TestLoadSkill_Success(t *testing.T) {
 func TestLoadSkill_Idempotent_Active(t *testing.T) {
 	tmp := t.TempDir()
 	writeSkill(t, tmp, "echo", "body")
-	tracker := engine.NewSkillTracker(3)
+	tracker := loop.NewSkillTracker(3)
 	tl := New(skill.NewReader([]string{tmp}, zap.NewNop()), zap.NewNop())
 	raw, _ := json.Marshal(map[string]any{"skill": "echo"})
 	_, _ = tl.Execute(mkCtx(tracker), raw)
@@ -96,7 +96,7 @@ func TestLoadSkill_BudgetFull_NewSkill(t *testing.T) {
 	for _, n := range []string{"a", "b", "c", "d"} {
 		writeSkill(t, tmp, n, "body "+n)
 	}
-	tracker := engine.NewSkillTracker(3)
+	tracker := loop.NewSkillTracker(3)
 	tl := New(skill.NewReader([]string{tmp}, zap.NewNop()), zap.NewNop())
 	for _, n := range []string{"a", "b", "c"} {
 		raw, _ := json.Marshal(map[string]any{"skill": n})
@@ -115,7 +115,7 @@ func TestLoadSkill_BudgetFull_NewSkill(t *testing.T) {
 func TestLoadSkill_Reactivate_Unloaded(t *testing.T) {
 	tmp := t.TempDir()
 	writeSkill(t, tmp, "echo", "body")
-	tracker := engine.NewSkillTracker(3)
+	tracker := loop.NewSkillTracker(3)
 	tl := New(skill.NewReader([]string{tmp}, zap.NewNop()), zap.NewNop())
 	raw, _ := json.Marshal(map[string]any{"skill": "echo"})
 	_, _ = tl.Execute(mkCtx(tracker), raw)
@@ -136,7 +136,7 @@ func TestLoadSkill_BodyTooLarge(t *testing.T) {
 	tmp := t.TempDir()
 	big := strings.Repeat("x", 105*1024) // >100KB
 	writeSkill(t, tmp, "huge", big)
-	tracker := engine.NewSkillTracker(3)
+	tracker := loop.NewSkillTracker(3)
 	tl := New(skill.NewReader([]string{tmp}, zap.NewNop()), zap.NewNop())
 	raw, _ := json.Marshal(map[string]any{"skill": "huge"})
 	res, _ := tl.Execute(mkCtx(tracker), raw)
@@ -147,7 +147,7 @@ func TestLoadSkill_BodyTooLarge(t *testing.T) {
 
 func TestLoadSkill_NotFound(t *testing.T) {
 	tmp := t.TempDir()
-	tracker := engine.NewSkillTracker(3)
+	tracker := loop.NewSkillTracker(3)
 	tl := New(skill.NewReader([]string{tmp}, zap.NewNop()), zap.NewNop())
 	raw, _ := json.Marshal(map[string]any{"skill": "ghost"})
 	res, _ := tl.Execute(mkCtx(tracker), raw)

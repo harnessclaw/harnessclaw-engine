@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
@@ -82,7 +83,7 @@ func (t *LoadSkillTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 			IsError: true,
 		}, nil
 	}
-	tracker, ok := trackerVal.(*engine.SkillTracker)
+	tracker, ok := trackerVal.(*loop.SkillTracker)
 	if !ok {
 		t.logInfo(agentRunID, in.Skill, "tracker_type_error", "", 0, 0, "")
 		return &types.ToolResult{Content: "tracker type assertion failed", IsError: true}, nil
@@ -196,7 +197,7 @@ func reInjectMessage(name string, full *skill.SkillFull) *types.ToolResult {
 	}
 }
 
-func nameList(refs []engine.LoadedRef) []string {
+func nameList(refs []loop.LoadedRef) []string {
 	out := make([]string, 0, len(refs))
 	for _, r := range refs {
 		out = append(out, r.Name)

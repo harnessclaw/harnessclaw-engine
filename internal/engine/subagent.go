@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/texts"
 	schedspec "harnessclaw-go/internal/engine/scheduler/spec"
@@ -247,7 +248,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// <loaded-skills> block. Fixed L3 agents (writer / developer / ...)
 	// that have been enhanced with skill tools just receive an empty
 	// tracker and use search_skill / load_skill at runtime themselves.
-	var freelancerTracker *SkillTracker
+	var freelancerTracker *loop.SkillTracker
 	if agentDef != nil && defHasSkillSelfMgmtTool(agentDef.AllowedTools) {
 		candidates := parseCandidateSkills(cfg.Inputs)
 		tracker, newPrompt, err := hydrateFreelancer(qe.skillReader, candidates, cfg.Prompt)
@@ -1139,7 +1140,7 @@ type loopConfig struct {
 	// AgentDefinition. The four skill self-management tools (load_skill /
 	// unload_skill / list_loaded_skills) pick it up via ctx. nil = not a
 	// freelancer spawn; those tools refuse to run.
-	skillTracker *SkillTracker
+	skillTracker *loop.SkillTracker
 	// readScope / writeScope / sessionRoot are the per-spawn filesystem
 	// scope plumbed onto every tool ctx via ToolExecutor.SetAgentScope.
 	// All empty means no restriction (legacy compat path).
@@ -1622,8 +1623,8 @@ func parseCandidateSkills(inputs map[string]any) []string {
 //
 // On error (missing skill, too many candidates) returns (nil, "", err) so
 // SpawnSync can fail fast before any LLM call.
-func hydrateFreelancer(reader *skill.Reader, candidates []string, prompt string) (*SkillTracker, string, error) {
-	tracker := NewSkillTracker(3)
+func hydrateFreelancer(reader *skill.Reader, candidates []string, prompt string) (*loop.SkillTracker, string, error) {
+	tracker := loop.NewSkillTracker(3)
 
 	if len(candidates) == 0 {
 		return tracker, prompt, nil
