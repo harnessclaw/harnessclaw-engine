@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/), and versions are published to GitHub Releases.
 
-## [0.1.0] - 2026-05-26
+## [0.0.15] - 2026-05-26
 
 ### Added
 - L2 scheduler kernel (v3.1) under `internal/engine/scheduler/`: top-level `Scheduler.New` + `Submit` + `Start` wires bus, kernel, dispatch strategies, and runtime handlers (`onSpawn` / `onResult` / `onLifecycle` / `onTerminal` / `onExpire` / `onCancellingDrained` / `onCompletedFromStaging`) into a single message-driven L2
