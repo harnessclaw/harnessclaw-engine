@@ -35,7 +35,7 @@ func TestSchedulerCoordinator_RunLeafWithCutover(t *testing.T) {
 		Layout:    "flat",
 		SessionID: "sess-cutover",
 	}
-	ref, err := sc.RunLeaf(ctx, "sess-cutover", sp)
+	ref, err := sc.Run(ctx, sp, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestSchedulerCoordinator_RunLeaf_ReturnsMetaRef(t *testing.T) {
 		SessionID: "sess-test",
 		Layout:    "flat",
 	}
-	ref, err := sc.RunLeaf(ctx, "sess-test", sp)
+	ref, err := sc.Run(ctx, sp, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

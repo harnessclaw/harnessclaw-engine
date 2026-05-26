@@ -50,6 +50,7 @@ func (r *Strategy) Run(ctx context.Context, taskID types.TaskID, deps dispatch.D
 		Layout:       "flat",
 		AgentDef:     task.LeafSpec.AgentDef,
 		SessionID:    task.SessionID,
+		InputPaths:   task.LeafSpec.InputPaths,
 	}
 
 	res, err := dispatch.SpawnAndWaitOne(ctx, deps.Bus, taskID, leafSpec)

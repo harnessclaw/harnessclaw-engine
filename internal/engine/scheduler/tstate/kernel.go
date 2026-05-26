@@ -13,11 +13,16 @@ import (
 // IDGen generates a fresh TaskID on each call.
 type IDGen func() types.TaskID
 
-// SequentialIDs returns an IDGen that produces prefix + monotonically incrementing counter.
-func SequentialIDs(prefix string) IDGen {
-	var counter uint64
+// SequentialIDs returns an IDGen that produces prefix + monotonically incrementing counter
+// starting at 1 (first call → "prefix1").
+func SequentialIDs(prefix string) IDGen { return SequentialIDsFrom(prefix, 1) }
+
+// SequentialIDsFrom returns an IDGen that starts at startFrom.
+// First call returns "prefix{startFrom}", second returns "prefix{startFrom+1}", etc.
+func SequentialIDsFrom(prefix string, startFrom uint64) IDGen {
+	next := startFrom
 	return func() types.TaskID {
-		n := atomic.AddUint64(&counter, 1)
+		n := atomic.AddUint64(&next, 1) - 1
 		return types.TaskID(fmt.Sprintf("%s%d", prefix, n))
 	}
 }

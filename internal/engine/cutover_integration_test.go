@@ -56,12 +56,12 @@ func TestCutover_ReactKind(t *testing.T) {
 	defer cancel()
 	sc.Start(ctx)
 
-	ref, err := sc.RunLeaf(ctx, "sess-react", spec.TaskSpec{
+	ref, err := sc.Run(ctx, spec.TaskSpec{
 		Goal:      "write a hello world script",
 		Hint:      spec.Hint{Kind: types.KindReact},
 		SessionID: "sess-react",
 		Layout:    "flat",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("RunLeaf: %v", err)
 	}
@@ -83,12 +83,12 @@ func TestCutover_AutoKindSelection_React(t *testing.T) {
 	sc.Start(ctx)
 
 	// Simple goal → HeuristicKindSelector should pick KindReact.
-	ref, err := sc.RunLeaf(ctx, "sess-auto", spec.TaskSpec{
+	ref, err := sc.Run(ctx, spec.TaskSpec{
 		Goal:      "fix this bug",
 		SessionID: "sess-auto",
 		Layout:    "flat",
 		// No Hint.Kind set — relies on auto-selection.
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("RunLeaf: %v", err)
 	}
@@ -112,12 +112,12 @@ func TestCutover_KindSelectorPlanGoal(t *testing.T) {
 	sc.Start(ctx)
 
 	// "step by step" triggers HeuristicKindSelector → KindPlan.
-	ref, err := sc.RunLeaf(ctx, "sess-plan", spec.TaskSpec{
+	ref, err := sc.Run(ctx, spec.TaskSpec{
 		Goal:      "step by step migrate the database schema",
 		SessionID: "sess-plan",
 		Layout:    "flat",
 		// No hint — relies on KindSelector.
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("RunLeaf: %v", err)
 	}

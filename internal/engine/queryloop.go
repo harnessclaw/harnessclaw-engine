@@ -126,9 +126,6 @@ type QueryEngineConfig struct {
 	// the unanswered request.
 	DisableStepDecisionGate bool
 
-	// DisableNewScheduler disables routing through SchedulerCoordinator.
-	// Default false = new scheduler ON. Set true to use legacy coordinator path.
-	DisableNewScheduler bool
 }
 
 // retryConfigFromEngineCfg builds a *retry.Config from the engine
@@ -306,9 +303,7 @@ type QueryEngine struct {
 	// cmd/server/main.go.
 	sessionManager *session.Manager
 
-	// schedulerCoord is the L2 SchedulerCoordinator instance. Non-nil when
-	// cfg.DisableNewScheduler is false (the default). The coordinator is
-	// wired here but not yet invoked by any production path.
+	// schedulerCoord is the L2 SchedulerCoordinator instance.
 	schedulerCoord *SchedulerCoordinator
 }
 
@@ -403,14 +398,22 @@ func NewQueryEngine(
 		searchGapDetector:    NewSearchGapDetector(logger),
 	}
 
-	if !cfg.DisableNewScheduler {
-		qe.schedulerCoord = NewSchedulerCoordinator(SchedulerCoordinatorConfig{
-			Spawner: qe,
-			Logger:  slog.Default(),
-		})
-	}
+	qe.schedulerCoord = NewSchedulerCoordinator(SchedulerCoordinatorConfig{
+		Spawner:  qe,
+		Logger:   slog.Default(),
+		Provider: qe.provider,
+		RootDir:  workspaceRootDir(),
+	})
 
 	return qe
+}
+
+// Start launches background goroutines that require a long-lived context.
+// Must be called once after NewQueryEngine, before the first query.
+// ctx should be cancelled when the server shuts down.
+func (qe *QueryEngine) Start(ctx context.Context) {
+	qe.schedulerCoord.Start(ctx)
+	qe.logger.Info("scheduler_coordinator started")
 }
 
 // requestPlanApproval registers a pending plan request, emits the
@@ -1261,7 +1264,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 
 		// Check max turns. The main-agent loop honours MainAgentMaxTurns
 		// when set (L1Engine uses it to enforce a small L1 loop); sub-agents
-		// continue to use MaxTurns directly via runSubAgentLoop.
+		// use MaxTurns directly via runSubAgentDriver.
 		mainMax := qe.config.MaxTurns
 		if qe.config.MainAgentMaxTurns > 0 {
 			mainMax = qe.config.MainAgentMaxTurns

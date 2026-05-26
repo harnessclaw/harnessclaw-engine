@@ -205,6 +205,7 @@ type Config struct {
 	Tools      ToolsConfig      `mapstructure:"tools"`
 	Permission PermissionConfig `mapstructure:"permission"`
 	Skills     SkillsConfig     `mapstructure:"skills"`
+	Agents     AgentsConfig     `mapstructure:"agents"`
 	Console    ConsoleConfig    `mapstructure:"console"`
 
 	// SourcePath is the absolute path of the yaml file viper
@@ -295,6 +296,14 @@ type SkillsConfig struct {
 	// Dirs is the list of directories to load skills from.
 	// Each directory is scanned for SKILL.md (directory format) or *.md (flat format).
 	// Earlier entries have higher priority on name conflict.
+	Dirs []string `mapstructure:"dirs"`
+}
+
+// AgentsConfig holds project-level agent definition settings.
+type AgentsConfig struct {
+	// Dirs lists directories containing agent YAML files. Each directory is
+	// scanned for *.yaml / *.yml files at server startup; definitions are
+	// upserted to the store so changes take effect without recompilation.
 	Dirs []string `mapstructure:"dirs"`
 }
 
@@ -739,6 +748,9 @@ func Load(configPath string) (*Config, error) {
 	// Expand ~ in skill dirs to the user's home directory.
 	expandSkillDirs(&cfg)
 
+	// Expand ~ in agent dirs to the user's home directory.
+	expandAgentDirs(&cfg)
+
 	// Expand ~ in database paths to the user's home directory.
 	expandHomePath(&cfg.Session.DBPath)
 
@@ -784,5 +796,26 @@ func expandSkillDirs(cfg *Config) {
 		}
 		// Normalize any forward slashes in explicit paths (e.g. from yaml on Windows)
 		cfg.Skills.Dirs[i] = filepath.FromSlash(dir)
+	}
+}
+
+// expandAgentDirs applies the same ~ expansion and path normalization to
+// cfg.Agents.Dirs as expandSkillDirs does for skill directories.
+func expandAgentDirs(cfg *Config) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	for i, dir := range cfg.Agents.Dirs {
+		if dir == "~" {
+			cfg.Agents.Dirs[i] = home
+			continue
+		}
+		if strings.HasPrefix(dir, "~/") || strings.HasPrefix(dir, "~\\") {
+			rel := filepath.FromSlash(dir[2:])
+			cfg.Agents.Dirs[i] = filepath.Join(home, rel)
+			continue
+		}
+		cfg.Agents.Dirs[i] = filepath.FromSlash(dir)
 	}
 }

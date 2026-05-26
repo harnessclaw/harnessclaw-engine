@@ -121,6 +121,14 @@ type AgentDefinition struct {
 	// routes spawns through runSubAgentDriver.
 	Tier Tier `json:"tier,omitempty"`
 
+	// RunAsLLMAgent causes this agent to run through the subagent LLM driver
+	// even when Tier is TierCoordinator. Use for coordinator-tier agents that
+	// make direct LLM calls (e.g. plan-agent, plan-executor-agent) but should
+	// not be subject to the TierSubAgent restrictions (OutputSchema required,
+	// dispatch tools forbidden). Dispatch tool stripping is NOT applied when
+	// RunAsLLMAgent is set without TierSubAgent.
+	RunAsLLMAgent bool `json:"run_as_llm_agent,omitempty"`
+
 	// OutputSchema is the JSON Schema the sub-agent's structured result must
 	// satisfy. Mandatory for TierSubAgent — Register rejects sub-agents
 	// without one. Drives the SubmitTaskResult tool's validation: the L3
@@ -523,11 +531,12 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 	})
 	// --- Plan Mode Agents -----------------------------------------------
 	r.MustRegister(&AgentDefinition{
-		Name:        "plan-agent",
-		DisplayName: "规划员",
-		Description: "分析 goal，生成任务分解写入 plan.json，不执行任务",
-		Profile:     "plan-agent",
-		AgentType:   tool.AgentTypeSync,
+		Name:          "plan-agent",
+		DisplayName:   "规划员",
+		Description:   "分析 goal，生成任务分解写入 plan.json，不执行任务",
+		Profile:       "plan-agent",
+		AgentType:     tool.AgentTypeSync,
+		RunAsLLMAgent: true,
 		AllowedTools: []string{
 			"plan_update",
 			"read",
@@ -536,11 +545,12 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 		},
 	})
 	r.MustRegister(&AgentDefinition{
-		Name:        "plan-executor-agent",
-		DisplayName: "执行协调员",
-		Description: "按 plan.json 任务清单调度 freelancer 执行，实时更新任务状态",
-		Profile:     "plan-executor-agent",
-		AgentType:   tool.AgentTypeSync,
+		Name:          "plan-executor-agent",
+		DisplayName:   "执行协调员",
+		Description:   "按 plan.json 任务清单调度 freelancer 执行，实时更新任务状态",
+		Profile:       "plan-executor-agent",
+		AgentType:     tool.AgentTypeSync,
+		RunAsLLMAgent: true,
 		AllowedTools: []string{
 			"plan_read",
 			"plan_update",

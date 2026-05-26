@@ -34,8 +34,7 @@ var dispatchToolNames = []string{"freelance", "scheduler"}
 //   - Stateless protocol — escalation goes via the escalate_to_planner tool
 //     and surfaces as subAgentLoopResult.NeedsPlanning, never through
 //     internal state pinned to the engine.
-//   - Bounded retries — same maxSubmitNudges / maxSubmitRejects ceilings
-//     used by runSubAgentLoop, so a stuck L3 fails fast.
+//   - Bounded retries — maxSubmitNudges / maxSubmitRejects ceilings keep a stuck L3 from spinning.
 //
 // What this driver intentionally does NOT do:
 //
@@ -43,8 +42,8 @@ var dispatchToolNames = []string{"freelance", "scheduler"}
 //   - Mailbox handling (L1 concept; L3 is synchronous from L2's POV)
 //   - Permission UI (L3 inherits parent's session-approved tools at most)
 //
-// The 5-phase shape (preprocess / LLM / error / tool / continuation) is
-// the same as runSubAgentLoop — what changes is the termination policy
+// The 5-phase shape (preprocess / LLM / error / tool / continuation)
+// matches the main query loop — what changes is the termination policy
 // and the post-tool result inspection. Helpers callLLM,
 // dispatchToolBatch, buildAssistantMessage are reused unchanged.
 func (qe *QueryEngine) runSubAgentDriver(
@@ -56,11 +55,13 @@ func (qe *QueryEngine) runSubAgentDriver(
 	ls := &loopState{}
 	logger := lc.logger
 
-	// L3 invariant: strip dispatch tools defensively. Even if a custom
-	// AgentDefinition listed Task in AllowedTools (which Validate now
-	// rejects, but stale stored definitions might still exist), the driver
-	// refuses to expose them. Belt + suspenders.
-	pool := lc.pool.WithoutNames(dispatchToolNames)
+	// Strip dispatch tools for strict leaf agents (TierSubAgent). Agents with
+	// RunAsLLMAgent (e.g. plan-executor-agent) control their dispatch tools
+	// via AllowedTools — their pool is already correctly filtered upstream.
+	pool := lc.pool
+	if lc.stripDispatchTools {
+		pool = pool.WithoutNames(dispatchToolNames)
+	}
 
 	// Sub-agent approval function auto-approves. L3 has no UI to ask;
 	// permission decisions belong to the L1 main loop, not the leaf.
@@ -88,12 +89,8 @@ func (qe *QueryEngine) runSubAgentDriver(
 		ExpectedOutputs: lc.expectedOutputs,
 		OutputSchema:    lc.outputSchema,
 	})
-	// AgentScope plumbing was previously only wired in runSubAgentLoop
-	// (the Coordinator path). TierSubAgent dispatches land here in
-	// runSubAgentDriver, which means L3 tools like meta_write / submit_task_result
-	// saw an empty SessionRoot in ctx and rejected with "SessionRoot missing
-	// in ctx — engine bug". Mirror the call here so the L3 driver gets the
-	// same per-spawn scope as the coordinator path.
+	// AgentScope provides SessionRoot so L3 tools (meta_write / submit_task_result)
+	// can validate their scope rather than seeing an empty context.
 	executor.SetAgentScope(tool.AgentScope{
 		ReadScope:   lc.readScope,
 		WriteScope:  lc.writeScope,

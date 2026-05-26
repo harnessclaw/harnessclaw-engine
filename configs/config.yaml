@@ -258,6 +258,14 @@ tools:
     api_key: ""          # set via CLAUDE_TOOLS_TAVILY_SEARCH_API_KEY or config_self.yaml
     # max_results: 5
 
+# --- Agents ---
+# Project-level agent definitions loaded from YAML files at startup.
+# YAML is authoritative: edits take effect on next restart (no recompile).
+# Each directory is scanned for *.yaml / *.yml agent definition files.
+agents:
+  dirs:
+    - "configs/agents"
+
 # --- Skills ---
 # Skills are loaded from the directories listed below, in order.
 # Earlier directories have higher priority on name conflicts.

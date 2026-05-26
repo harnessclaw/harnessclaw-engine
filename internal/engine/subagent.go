@@ -452,7 +452,13 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// L3 invariant: dispatch tools are always stripped, even when not in
 	// AllowedTools. Defense in depth — Validate now rejects them at
 	// registration, but stale stored definitions might predate that check.
+	// Only applies to TierSubAgent; RunAsLLMAgent agents manage their own
+	// tool whitelist via AllowedTools (see pool restriction block below).
 	isSubAgent := agentDef != nil && agentDef.EffectiveTier() == agent.TierSubAgent
+	// useSubAgentDriver: routes through the LLM driver instead of SchedulerCoordinator.
+	// True for TierSubAgent AND for coordinator-tier agents marked RunAsLLMAgent
+	// (plan-agent, plan-executor-agent).
+	useSubAgentDriver := isSubAgent || (agentDef != nil && agentDef.RunAsLLMAgent)
 	if isSubAgent {
 		pool = pool.WithoutNames(dispatchToolNames)
 		// P1-5: dangerous tools (Bash etc.) must be opt-in for sub-agents.
@@ -471,7 +477,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// to the user when this sub-agent declares search capability but
 	// neither web_search nor tavily_search is registered at runtime.
 	// nil-safe on detector or ParentOut.
-	if isSubAgent && qe.searchGapDetector != nil {
+	if useSubAgentDriver && qe.searchGapDetector != nil {
 		var declared []string
 		if agentDef != nil {
 			declared = agentDef.AllowedTools
@@ -575,6 +581,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		readScope:            cfg.ReadScope,
 		writeScope:           cfg.WriteScope,
 		sessionRoot:          deriveSessionRoot(cfg),
+		stripDispatchTools:   isSubAgent,
 	}
 
 	// Step 10: Emit subagent.start event.
@@ -672,9 +679,9 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	go func() {
 		defer close(done)
 		defer close(out)
-		// TierSubAgent → strict L3 ReAct loop (no delegation).
-		// Coordinator tier → SchedulerCoordinator handles kind selection and task dispatch.
-		if isSubAgent {
+		// TierSubAgent / RunAsLLMAgent → strict LLM ReAct loop (no SchedulerCoordinator).
+		// Coordinator tier (without RunAsLLMAgent) → SchedulerCoordinator handles kind selection.
+		if useSubAgentDriver {
 			loopResult = qe.runSubAgentDriver(ctx, sess, lc, out)
 		} else {
 			sp := schedspec.TaskSpec{
@@ -1139,6 +1146,12 @@ type loopConfig struct {
 	readScope   []string
 	writeScope  []string
 	sessionRoot string
+	// stripDispatchTools instructs runSubAgentDriver to strip dispatchToolNames
+	// from the pool before the LLM loop. True for strict leaf agents (TierSubAgent)
+	// that must never call back into dispatch. False for RunAsLLMAgent agents
+	// (e.g. plan-executor-agent) whose AllowedTools whitelist already controls
+	// which dispatch tools are present in the pool.
+	stripDispatchTools bool
 }
 
 // buildSubmitNudgeMessage assembles the SYSTEM-style reminder injected

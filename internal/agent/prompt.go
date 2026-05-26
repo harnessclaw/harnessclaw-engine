@@ -26,7 +26,7 @@ func RenderExpectedOutputs(outs []types.ExpectedOutput) string {
 	}
 	var b strings.Builder
 	b.WriteString("<expected-outputs>\n")
-	b.WriteString("本任务必须通过 ArtifactWrite 写入以下产物，并在结束时调用 SubmitTaskResult 声明 ID 列表。每条 role 一对一对应一份 artifact。\n\n")
+	b.WriteString("本任务必须产出下列文件，并在 meta_write 的 outputs[] 中登记，最后 submit_task_result。每条 role 一对一对应一份产物文件。\n\n")
 
 	for _, o := range outs {
 		req := "(可选)"
@@ -51,9 +51,9 @@ func RenderExpectedOutputs(outs []types.ExpectedOutput) string {
 		}
 	}
 	b.WriteString("\n硬要求：\n")
-	b.WriteString("1. 必须用 ArtifactWrite 把每份产出写进 store；不能只在文本里给出。\n")
-	b.WriteString("2. 全部产出写完后，必须调用 SubmitTaskResult 一次，提交 {role, artifact_id} 列表 + ≤200 字总结。\n")
-	b.WriteString("3. SubmitTaskResult 之外的最终文本不要重复正文 —— 数据已在 artifact，summary 只写过程要点。\n")
+	b.WriteString("1. 必须用 write 把每份产出写到 {task_dir}/ 下；不能只在文本里给出。\n")
+	b.WriteString("2. 全部产出写完后，调 meta_write({status, summary, outputs:[{path, type?}]})，再调 submit_task_result({task_id, meta_path})。\n")
+	b.WriteString("3. meta_write.summary ≤ 500 字，只写过程要点 / 产物形态，不要重复正文——数据已在产物文件里。\n")
 	b.WriteString("</expected-outputs>")
 	return b.String()
 }

@@ -25,7 +25,7 @@ import (
 const ToolName = "submit_task_result"
 
 // MetadataRenderHint is the value Execute writes to ToolResult.Metadata
-// "render_hint" on success. runSubAgentLoop matches on this to flag
+// "render_hint" on success. The driver loop matches on this to flag
 // terminal acceptance — string compare keeps detection O(1).
 const MetadataRenderHint = "task_submission"
 
@@ -128,16 +128,27 @@ func (*Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResul
 		return rejected(fmt.Sprintf("meta.task_id (%q) != submitted task_id (%q); meta.json belongs to a different task", m.TaskID, s.TaskID))
 	}
 
+	type outputRef struct {
+		Path string `json:"path"`
+		Type string `json:"type,omitempty"`
+	}
+	outRefs := make([]outputRef, 0, len(m.Outputs))
+	for _, o := range m.Outputs {
+		outRefs = append(outRefs, outputRef{Path: o.Path, Type: o.Type})
+	}
+
 	body, _ := json.Marshal(struct {
-		Status   string `json:"status"`
-		TaskID   string `json:"task_id"`
-		MetaPath string `json:"meta_path"`
-		Summary  string `json:"summary"`
+		Status   string      `json:"status"`
+		TaskID   string      `json:"task_id"`
+		MetaPath string      `json:"meta_path"`
+		Summary  string      `json:"summary"`
+		Outputs  []outputRef `json:"outputs,omitempty"`
 	}{
 		Status:   "accepted",
 		TaskID:   s.TaskID,
 		MetaPath: s.MetaPath,
 		Summary:  m.Summary,
+		Outputs:  outRefs,
 	})
 	return &types.ToolResult{
 		Content: string(body),
@@ -147,6 +158,7 @@ func (*Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResul
 			"task_id":           s.TaskID,
 			"meta_path":         s.MetaPath,
 			"summary":           m.Summary,
+			"outputs":           outRefs,
 		},
 	}, nil
 }

@@ -147,10 +147,9 @@ func (t *Tool) ValidateInput(raw json.RawMessage) error {
 }
 
 // IsClientRouted marks this tool as MUST-route-to-client. The engine's
-// dispatch step (runQueryLoop / runSubAgentLoop) sees this and sends a
-// tool.call wire message regardless of QueryEngineConfig.ClientTools —
-// because there is no human on the server side to ask. See
-// internal/tool.ClientRoutedTool for the contract.
+// dispatch step sees this and sends a tool.call wire message regardless
+// of QueryEngineConfig.ClientTools — there is no human on the server
+// side to ask. See internal/tool.ClientRoutedTool for the contract.
 func (t *Tool) IsClientRouted() bool { return true }
 
 // Execute is the server-side fallback path. With IsClientRouted=true

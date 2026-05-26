@@ -1,9 +1,13 @@
 package router
 
 import (
+	"context"
 	"strings"
+	"time"
 
 	"harnessclaw-go/internal/engine/scheduler/types"
+	"harnessclaw-go/internal/provider"
+	pkgtypes "harnessclaw-go/pkg/types"
 )
 
 // KindSelector decides between KindReact and KindPlan based on goal text.
@@ -54,9 +58,8 @@ func (s *HeuristicKindSelector) Select(goal string) types.Kind {
 		return types.KindPlan
 	}
 
-	// Long task heuristic — >200 runes usually means the user wrote out
-	// constraints / deliverable structure / format requirements, all
-	// signs of a Plan-worthy job.
+	// Long task heuristic — fire when goal exceeds 200 runes. Tasks that
+	// are this long tend to be multi-deliverable rather than single-step.
 	if runeLen(goal) > 200 {
 		return types.KindPlan
 	}
@@ -82,4 +85,84 @@ func runeLen(s string) int {
 		n++
 	}
 	return n
+}
+
+// LLMKindSelector classifies tasks via a lightweight LLM call instead of
+// keyword heuristics. Uses MaxTokens=10 so the call is cheap (~1 API round
+// trip). Falls back to HeuristicKindSelector on any error so routing is
+// always deterministic even when the provider is unavailable.
+type LLMKindSelector struct {
+	p        provider.Provider
+	fallback *HeuristicKindSelector
+}
+
+// NewLLMKindSelector creates an LLMKindSelector backed by p.
+func NewLLMKindSelector(p provider.Provider) *LLMKindSelector {
+	return &LLMKindSelector{p: p, fallback: NewHeuristicKindSelector()}
+}
+
+const llmSelectorSystem = `You are a task classifier. Given a task description, decide the execution mode:
+
+- "react": ONE agent can complete the entire task end-to-end, even if the task has detailed requirements
+           or produces multiple related files (e.g. a document + a usage guide = still "react").
+- "plan":  the task genuinely requires SEPARATE INDEPENDENT subtasks that must be executed and then
+           synthesised — e.g. research multiple independent sources then write a report, build several
+           unrelated components that are later integrated, or a workflow where step B cannot start until
+           step A's unknown output is known.
+
+Key rule: judge by the complexity of the GOAL (does it need truly independent parallel/sequential agents?)
+NOT by the length of the requirements list or the number of output files.
+When in doubt, choose "react".
+
+Reply with exactly ONE word: react or plan. No explanation, no punctuation.`
+
+// Select implements KindSelector using an LLM call with a 15-second timeout.
+// Falls back to HeuristicKindSelector on timeout or any provider error.
+func (s *LLMKindSelector) Select(goal string) types.Kind {
+	if goal == "" {
+		return types.KindReact
+	}
+	classifyGoal := goal
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	stream, err := s.p.Chat(ctx, &provider.ChatRequest{
+		System: llmSelectorSystem,
+		Messages: []pkgtypes.Message{
+			{
+				Role:    pkgtypes.RoleUser,
+				Content: []pkgtypes.ContentBlock{{Type: pkgtypes.ContentTypeText, Text: classifyGoal}},
+			},
+		},
+		MaxTokens: 10,
+	})
+	if err != nil {
+		return s.fallback.Select(goal)
+	}
+
+	var sb strings.Builder
+loop:
+	for {
+		select {
+		case <-ctx.Done():
+			return s.fallback.Select(goal)
+		case ev, ok := <-stream.Events:
+			if !ok {
+				break loop
+			}
+			if ev.Type == pkgtypes.StreamEventText {
+				sb.WriteString(ev.Text)
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return s.fallback.Select(goal)
+	}
+
+	word := strings.ToLower(strings.TrimSpace(sb.String()))
+	if strings.Contains(word, "plan") {
+		return types.KindPlan
+	}
+	return types.KindReact
 }

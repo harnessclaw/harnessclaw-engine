@@ -30,7 +30,7 @@ func TestSchedulerCoordinator_Integration_FakeSpawner(t *testing.T) {
 			SessionID: "sess-int",
 			Layout:    "flat",
 		}
-		ref, err := sc.RunLeaf(ctx, "sess-int", sp)
+		ref, err := sc.Run(ctx, sp, nil)
 		if err != nil {
 			t.Fatalf("kind=%s RunLeaf error: %v", kind, err)
 		}
