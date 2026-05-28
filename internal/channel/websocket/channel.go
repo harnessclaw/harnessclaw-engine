@@ -28,7 +28,7 @@ import (
 	"harnessclaw-go/internal/config"
 	copypkg "harnessclaw-go/internal/copy"
 	emitv2 "harnessclaw-go/internal/emit/v2"
-	"harnessclaw-go/internal/engine/prompter"
+	"harnessclaw-go/internal/engine/userprompt"
 	"harnessclaw-go/internal/engine/wait"
 	"harnessclaw-go/pkg/types"
 )
@@ -52,7 +52,7 @@ type Channel struct {
 	// Both are optional: when nil the channel skips persistence and
 	// recovery (matches the alpha-without-recovery behaviour). Wire
 	// them in through SetPrompter / SetResumer.
-	prompter *prompter.Prompter
+	prompter *userprompt.Prompter
 	resumer  wait.Resumer
 
 	handler channel.MessageHandler // engine inbound dispatch (set by Start)
@@ -92,7 +92,7 @@ func New(cfg config.WSChannelConfig, _ func(context.Context, string) error, logg
 // the translator persists every wait before emitting, and conn falls
 // through to the persisted-wait path when a user reply arrives for an
 // in-memory miss. Call before Start.
-func (c *Channel) SetPrompter(p *prompter.Prompter) { c.prompter = p }
+func (c *Channel) SetPrompter(p *userprompt.Prompter) { c.prompter = p }
 
 // SetResumer wires the engine-side resume callback. Without a Resumer
 // the channel can persist waits and re-emit them on reconnect, but

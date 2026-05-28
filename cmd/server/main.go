@@ -42,7 +42,7 @@ import (
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/emma"
 	"harnessclaw-go/internal/engine/emma/resume"
-	"harnessclaw-go/internal/engine/prompter"
+	"harnessclaw-go/internal/engine/userprompt"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/event"
@@ -600,7 +600,7 @@ func main() {
 		if err != nil {
 			logger.Fatal("failed to initialise wait store", zap.Error(err))
 		}
-		waitPrompter := prompter.New(prompter.Config{Store: waitStore})
+		waitPrompter := userprompt.New(userprompt.Config{Store: waitStore})
 
 		wsCh := wsch.New(cfg.Channel.WebSocket, nil, logger)
 		wsCh.SetPrompter(waitPrompter)
@@ -941,7 +941,7 @@ func runIdleCleanup(ctx context.Context, mgr *session.Manager, logger *zap.Logge
 // Frequency is intentionally modest (1 hour): with a 15-day TTL a
 // hour of slack past nominal expiry is irrelevant, and hourly DELETE
 // is cheap on the single-writer SQLite (one indexed range delete).
-func runWaitJanitor(ctx context.Context, p *prompter.Prompter, logger *zap.Logger) {
+func runWaitJanitor(ctx context.Context, p *userprompt.Prompter, logger *zap.Logger) {
 	const interval = time.Hour
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

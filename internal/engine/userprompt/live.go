@@ -1,4 +1,4 @@
-package prompter
+package userprompt
 
 import (
 	"sync"

@@ -16,7 +16,7 @@
 // Prompter. The channel layer (translator + conn) wires Prompter into
 // the prompt.user / prompt.user_response flow. Tool code stays focused
 // on its work — recovery is fully transparent.
-package prompter
+package userprompt
 
 import (
 	"context"

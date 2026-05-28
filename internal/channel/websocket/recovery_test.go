@@ -15,7 +15,7 @@ import (
 	"nhooyr.io/websocket"
 
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/engine/prompter"
+	"harnessclaw-go/internal/engine/userprompt"
 	"harnessclaw-go/internal/engine/wait"
 	"harnessclaw-go/internal/storage/sqlite"
 	"harnessclaw-go/pkg/types"
@@ -66,7 +66,7 @@ func startRecoveryChannel(t *testing.T, dbPath string, handler func(ctx context.
 	if err != nil {
 		t.Fatalf("NewWaitStore: %v", err)
 	}
-	p := prompter.New(prompter.Config{Store: ws})
+	p := userprompt.New(userprompt.Config{Store: ws})
 	rec := &recordingResumer{}
 
 	cfg := config.WSChannelConfig{Host: "127.0.0.1", Port: 0, Path: "/v1/ws"}
