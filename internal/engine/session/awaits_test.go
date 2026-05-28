@@ -206,6 +206,21 @@ func TestAwaits_ForgetPlan_Missing(t *testing.T) {
 	a.ForgetPlan("unknown") // must not panic
 }
 
+func TestAwaits_ForgetStepDecision(t *testing.T) {
+	a := session.NewAwaits()
+	a.PushStepDecision("req_1", "sess_1")
+	a.ForgetStepDecision("req_1")
+	err := a.ResolveStepDecision("req_1", &types.StepDecisionResponse{RequestID: "req_1"})
+	if !errors.Is(err, session.ErrAwaitNotFound) {
+		t.Errorf("after ForgetStepDecision, Resolve returned %v; want ErrAwaitNotFound", err)
+	}
+}
+
+func TestAwaits_ForgetStepDecision_Missing(t *testing.T) {
+	a := session.NewAwaits()
+	a.ForgetStepDecision("unknown") // must not panic
+}
+
 func TestAwaits_AbortAll_All4Kinds(t *testing.T) {
 	a := session.NewAwaits()
 	toolAw := a.PushTool("u1", "Read")

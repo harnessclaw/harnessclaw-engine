@@ -265,12 +265,6 @@ type QueryEngine struct {
 	// global mutex.
 	emitSeq *emit.Sequencer
 
-	// pendingStepDecisions tracks in-flight step-decision requests
-	// (continue / retry / cancel after a step or plan-level failure).
-	// Indexed by request_id (server-generated). Mirrors pendingPlans.
-	stepDecisionMu       sync.Mutex
-	pendingStepDecisions map[string]*pendingStepDecisionReq
-
 	// statsRegistry, when non-nil, lets the engine read cumulative stats
 	// (see cumulativeUsageFor) and lets sub-agent hooks/tool hooks ping
 	// the right Tracker. Set via SetStatsRegistry from cmd/server/main.go;
@@ -279,15 +273,6 @@ type QueryEngine struct {
 
 	// schedulerCoord is the L2 scheduler.Coordinator instance.
 	schedulerCoord *enginesched.Coordinator
-}
-
-// pendingStepDecisionReq is the step-decision counterpart of the
-// (now-migrated) pendingPlanReq; see Session.Awaits for plans.
-type pendingStepDecisionReq struct {
-	requestID string
-	sessionID string
-	response  chan *types.StepDecisionResponse
-	createdAt time.Time
 }
 
 // promptCacheEntry stores a cached system prompt and the conditions under which it was built.
@@ -352,8 +337,7 @@ func NewQueryEngine(
 		sessionAllowTools: make(map[string]map[string]bool),
 		promptCache:       make(map[string]*promptCacheEntry),
 		emitSeq:           emit.NewSequencer(),
-		pendingStepDecisions: make(map[string]*pendingStepDecisionReq),
-		retryer:              retry.New(retryConfigFromEngineCfg(cfg), logger),
+		retryer:           retry.New(retryConfigFromEngineCfg(cfg), logger),
 	}
 
 	// Apply optional config-injected dependencies. Replaces the previous
@@ -529,20 +513,12 @@ func (qe *QueryEngine) requestStepDecision(
 		return nil, fmt.Errorf("step decision: empty request_id")
 	}
 
-	pending := &pendingStepDecisionReq{
-		requestID: req.RequestID,
-		sessionID: sessionID,
-		response:  make(chan *types.StepDecisionResponse, 1),
-		createdAt: time.Now(),
+	sess := qe.sessionMgr.Get(sessionID)
+	if sess == nil {
+		return nil, fmt.Errorf("session %s not found for step decision", sessionID)
 	}
-	qe.stepDecisionMu.Lock()
-	qe.pendingStepDecisions[req.RequestID] = pending
-	qe.stepDecisionMu.Unlock()
-	defer func() {
-		qe.stepDecisionMu.Lock()
-		delete(qe.pendingStepDecisions, req.RequestID)
-		qe.stepDecisionMu.Unlock()
-	}()
+	aw := sess.Awaits.PushStepDecision(req.RequestID, sessionID)
+	defer sess.Awaits.ForgetStepDecision(req.RequestID)
 
 	if out != nil {
 		select {
@@ -557,7 +533,7 @@ func (qe *QueryEngine) requestStepDecision(
 	}
 
 	select {
-	case resp := <-pending.response:
+	case resp := <-aw.Response:
 		return resp, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -565,26 +541,18 @@ func (qe *QueryEngine) requestStepDecision(
 }
 
 // SubmitStepDecision routes a user's step-decision reply back to the
-// coordinator that's blocked in requestStepDecision. Mirrors
-// SubmitPlanResponse: stale / unknown request_id is a warn, not an
-// error (client may retry; engine no longer cares about that decision).
-func (qe *QueryEngine) SubmitStepDecision(_ context.Context, _ string, resp *types.StepDecisionResponse) error {
+// coordinator that's blocked in requestStepDecision via sess.Awaits.
+func (qe *QueryEngine) SubmitStepDecision(_ context.Context, sessionID string, resp *types.StepDecisionResponse) error {
 	if resp == nil || resp.RequestID == "" {
 		return fmt.Errorf("step decision response: missing request_id")
 	}
-	qe.stepDecisionMu.Lock()
-	pending, ok := qe.pendingStepDecisions[resp.RequestID]
-	if ok {
-		delete(qe.pendingStepDecisions, resp.RequestID)
+	sess := qe.sessionMgr.Get(sessionID)
+	if sess == nil {
+		return fmt.Errorf("session %s not found for step decision", sessionID)
 	}
-	qe.stepDecisionMu.Unlock()
-	if !ok {
-		qe.logger.Warn("step decision response for unknown request_id (stale or duplicate)",
-			zap.String("request_id", resp.RequestID),
-		)
-		return nil
+	if err := sess.Awaits.ResolveStepDecision(resp.RequestID, resp); err != nil {
+		return fmt.Errorf("no pending step decision for request_id %s: %w", resp.RequestID, err)
 	}
-	pending.response <- resp
 	return nil
 }
 

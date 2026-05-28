@@ -234,6 +234,14 @@ func (a *Awaits) ResolveStepDecision(reqID string, resp *types.StepDecisionRespo
 	return nil
 }
 
+// ForgetStepDecision removes a pending StepDecisionAwait without
+// delivering a response. Mirror of ForgetTool / ForgetPerm / ForgetPlan.
+func (a *Awaits) ForgetStepDecision(reqID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.stepDecisions, reqID)
+}
+
 // --- Abort ---
 
 // AbortAll closes every pending channel in this Awaits and clears
