@@ -1,4 +1,4 @@
-package engine
+package toolexec
 
 import (
 	"context"
@@ -165,7 +165,7 @@ func (te *ToolExecutor) executeSingle(
 	// the convention. If the model didn't supply intent (validation
 	// would normally have rejected it, but providers sometimes relax
 	// constraints), we still execute — silence is better than a hard fail.
-	cleanInput, intent := stripIntent(tc.Input)
+	cleanInput, intent := StripIntent(tc.Input)
 	tc.Input = cleanInput
 	if intent != "" {
 		out <- types.EngineEvent{
@@ -653,7 +653,7 @@ func contractFailureSample(failures []string, n int) []string {
 // fields the tool's own schema might have. Note that JSON object key
 // order is not preserved across this round-trip — fine for tool inputs
 // since Go's json package treats object property order as insignificant.
-func stripIntent(raw string) (string, string) {
+func StripIntent(raw string) (string, string) {
 	if raw == "" {
 		return raw, ""
 	}
@@ -680,4 +680,129 @@ func stripIntent(raw string) (string, string) {
 		return raw, intent
 	}
 	return string(cleaned), strings.TrimSpace(intent)
+}
+
+// extractPermissionKey derives a fine-grained key for session-level approval.
+//
+// For Bash: parses the command field and extracts "program + subcommand",
+// e.g. input `{"command":"git status"}` → key "Bash:git status".
+// This ensures approving "git status" doesn't auto-approve "git push".
+//
+// For file tools (Edit/Write/Read): extracts the file_path,
+// e.g. input `{"file_path":"/src/main.go",...}` → key "Edit:/src/main.go".
+//
+// For other tools: returns the tool name as-is.
+func extractPermissionKey(toolName, toolInput string) string {
+	switch toolName {
+	case "bash":
+		var input struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal([]byte(toolInput), &input); err == nil && input.Command != "" {
+			cmdID := extractCommandIdentity(input.Command)
+			if cmdID != "" {
+				return "Bash:" + cmdID
+			}
+		}
+		return toolName
+
+	case "edit", "write", "read":
+		var input struct {
+			FilePath string `json:"file_path"`
+		}
+		if err := json.Unmarshal([]byte(toolInput), &input); err == nil && input.FilePath != "" {
+			return toolName + ":" + input.FilePath
+		}
+		return toolName
+
+	default:
+		return toolName
+	}
+}
+
+// extractCommandIdentity extracts "program + subcommand" from a shell command.
+// The result is used as the session-level approval key.
+//
+// It returns the program name plus the first non-flag token (subcommand),
+// so that different subcommands require separate approval:
+//
+//	"git status"                → "git status"
+//	"git push --force"          → "git push"
+//	"git add file.go"           → "git add"
+//	"sudo npm install foo"      → "npm install"
+//	"ENV=val go build ./..."    → "go build"
+//	"rm -rf /tmp"               → "rm"
+//	"ls -la"                    → "ls"
+//	"cd /tmp && make test"      → "make test"
+//	"cat foo | grep bar"        → "cat"
+//	"docker compose up -d"      → "docker compose"
+func extractCommandIdentity(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return ""
+	}
+
+	// Split on pipes/chains — take the first segment.
+	for _, sep := range []string{"&&", "||", "|", ";"} {
+		if idx := strings.Index(cmd, sep); idx >= 0 {
+			cmd = strings.TrimSpace(cmd[:idx])
+			break
+		}
+	}
+
+	tokens := strings.Fields(cmd)
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	// Skip leading env-var assignments (FOO=bar) and sudo/env/nohup wrappers.
+	for len(tokens) > 0 {
+		t := tokens[0]
+		if strings.Contains(t, "=") && !strings.HasPrefix(t, "-") {
+			tokens = tokens[1:]
+			continue
+		}
+		if t == "sudo" || t == "env" || t == "nohup" || t == "nice" || t == "time" {
+			tokens = tokens[1:]
+			continue
+		}
+		break
+	}
+
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	// First token is the program name (strip path: /usr/bin/git → git).
+	program := tokens[0]
+	if idx := strings.LastIndex(program, "/"); idx >= 0 {
+		program = program[idx+1:]
+	}
+
+	// Look for a subcommand: the first token after the program that is
+	// neither a flag (starts with -) nor looks like a file path.
+	for _, t := range tokens[1:] {
+		if strings.HasPrefix(t, "-") {
+			continue // flag
+		}
+		if looksLikePath(t) {
+			break // argument, not subcommand
+		}
+		// Found a subcommand token.
+		return program + " " + t
+	}
+
+	return program
+}
+
+// looksLikePath returns true if the token appears to be a file path or glob
+// rather than a subcommand name.
+func looksLikePath(t string) bool {
+	return strings.HasPrefix(t, "/") ||
+		strings.HasPrefix(t, "./") ||
+		strings.HasPrefix(t, "../") ||
+		strings.HasPrefix(t, "~") ||
+		strings.Contains(t, "/") ||
+		strings.HasPrefix(t, "*.") ||
+		strings.HasPrefix(t, ".")
 }

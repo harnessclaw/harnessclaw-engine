@@ -11,6 +11,7 @@ import (
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/llmcall"
 	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/toolexec"
 	enginesched "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
@@ -150,7 +151,7 @@ func (qe *QueryEngine) NewToolExecutor(
 	timeout time.Duration,
 	approvalFn spawn.ToolApprovalFunc,
 ) spawn.ToolExecutor {
-	te := NewToolExecutor(pool, perm, logger, timeout, PermissionApprovalFunc(approvalFn))
+	te := toolexec.NewToolExecutor(pool, perm, logger, timeout, toolexec.PermissionApprovalFunc(approvalFn))
 	if qe.statsRegistry != nil {
 		te.SetStatsRegistry(qe.statsRegistry)
 	}
@@ -167,13 +168,13 @@ func (qe *QueryEngine) DispatchToolBatch(
 	toolCalls []types.ToolCall,
 	out chan<- types.EngineEvent,
 ) []types.ToolResult {
-	te, ok := executor.(*ToolExecutor)
+	te, ok := executor.(*toolexec.ToolExecutor)
 	if !ok {
 		// Defensive: if spawn ever returns a stub the production wiring
 		// would never produce, fall through to a fresh executor so the
 		// loop doesn't crash mid-tool-call. This branch is unreachable
 		// from real callers.
-		te = NewToolExecutor(pool, qe.permChecker, qe.logger, qe.config.ToolTimeout, nil)
+		te = toolexec.NewToolExecutor(pool, qe.permChecker, qe.logger, qe.config.ToolTimeout, nil)
 	}
 	return qe.dispatchToolBatch(ctx, te, pool, toolCalls, out)
 }

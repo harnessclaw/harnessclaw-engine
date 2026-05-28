@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,6 +18,7 @@ import (
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/llmcall"
 	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/toolexec"
 	"harnessclaw-go/internal/engine/prompt/sections"
 	enginesched "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
@@ -1072,130 +1072,6 @@ func (qe *QueryEngine) requestPermissionApproval(
 	return resp
 }
 
-// extractPermissionKey derives a fine-grained key for session-level approval.
-//
-// For Bash: parses the command field and extracts "program + subcommand",
-// e.g. input `{"command":"git status"}` → key "Bash:git status".
-// This ensures approving "git status" doesn't auto-approve "git push".
-//
-// For file tools (Edit/Write/Read): extracts the file_path,
-// e.g. input `{"file_path":"/src/main.go",...}` → key "Edit:/src/main.go".
-//
-// For other tools: returns the tool name as-is.
-func extractPermissionKey(toolName, toolInput string) string {
-	switch toolName {
-	case "bash":
-		var input struct {
-			Command string `json:"command"`
-		}
-		if err := json.Unmarshal([]byte(toolInput), &input); err == nil && input.Command != "" {
-			cmdID := extractCommandIdentity(input.Command)
-			if cmdID != "" {
-				return "Bash:" + cmdID
-			}
-		}
-		return toolName
-
-	case "edit", "write", "read":
-		var input struct {
-			FilePath string `json:"file_path"`
-		}
-		if err := json.Unmarshal([]byte(toolInput), &input); err == nil && input.FilePath != "" {
-			return toolName + ":" + input.FilePath
-		}
-		return toolName
-
-	default:
-		return toolName
-	}
-}
-
-// extractCommandIdentity extracts "program + subcommand" from a shell command.
-// The result is used as the session-level approval key.
-//
-// It returns the program name plus the first non-flag token (subcommand),
-// so that different subcommands require separate approval:
-//
-//	"git status"                → "git status"
-//	"git push --force"          → "git push"
-//	"git add file.go"           → "git add"
-//	"sudo npm install foo"      → "npm install"
-//	"ENV=val go build ./..."    → "go build"
-//	"rm -rf /tmp"               → "rm"
-//	"ls -la"                    → "ls"
-//	"cd /tmp && make test"      → "make test"
-//	"cat foo | grep bar"        → "cat"
-//	"docker compose up -d"      → "docker compose"
-func extractCommandIdentity(cmd string) string {
-	cmd = strings.TrimSpace(cmd)
-	if cmd == "" {
-		return ""
-	}
-
-	// Split on pipes/chains — take the first segment.
-	for _, sep := range []string{"&&", "||", "|", ";"} {
-		if idx := strings.Index(cmd, sep); idx >= 0 {
-			cmd = strings.TrimSpace(cmd[:idx])
-			break
-		}
-	}
-
-	tokens := strings.Fields(cmd)
-	if len(tokens) == 0 {
-		return ""
-	}
-
-	// Skip leading env-var assignments (FOO=bar) and sudo/env/nohup wrappers.
-	for len(tokens) > 0 {
-		t := tokens[0]
-		if strings.Contains(t, "=") && !strings.HasPrefix(t, "-") {
-			tokens = tokens[1:]
-			continue
-		}
-		if t == "sudo" || t == "env" || t == "nohup" || t == "nice" || t == "time" {
-			tokens = tokens[1:]
-			continue
-		}
-		break
-	}
-
-	if len(tokens) == 0 {
-		return ""
-	}
-
-	// First token is the program name (strip path: /usr/bin/git → git).
-	program := tokens[0]
-	if idx := strings.LastIndex(program, "/"); idx >= 0 {
-		program = program[idx+1:]
-	}
-
-	// Look for a subcommand: the first token after the program that is
-	// neither a flag (starts with -) nor looks like a file path.
-	for _, t := range tokens[1:] {
-		if strings.HasPrefix(t, "-") {
-			continue // flag
-		}
-		if looksLikePath(t) {
-			break // argument, not subcommand
-		}
-		// Found a subcommand token.
-		return program + " " + t
-	}
-
-	return program
-}
-
-// looksLikePath returns true if the token appears to be a file path or glob
-// rather than a subcommand name.
-func looksLikePath(t string) bool {
-	return strings.HasPrefix(t, "/") ||
-		strings.HasPrefix(t, "./") ||
-		strings.HasPrefix(t, "../") ||
-		strings.HasPrefix(t, "~") ||
-		strings.Contains(t, "/") ||
-		strings.HasPrefix(t, "*.") ||
-		strings.HasPrefix(t, ".")
-}
 
 // AbortSession implements Engine. Cancels the in-flight query for a session.
 func (qe *QueryEngine) AbortSession(_ context.Context, sessionID string) error {
@@ -1252,7 +1128,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 	approvalFn := func(ctx context.Context, evtOut chan<- types.EngineEvent, req *types.PermissionRequest) *types.PermissionResponse {
 		return qe.requestPermissionApproval(ctx, evtOut, sess.ID, req)
 	}
-	executor := NewToolExecutor(pool, qe.permChecker, qe.logger, qe.config.ToolTimeout, approvalFn)
+	executor := toolexec.NewToolExecutor(pool, qe.permChecker, qe.logger, qe.config.ToolTimeout, approvalFn)
 	if qe.statsRegistry != nil {
 		executor.SetStatsRegistry(qe.statsRegistry)
 	}
@@ -1535,7 +1411,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 // sees results aligned with its tool_use indices.
 func (qe *QueryEngine) dispatchToolBatch(
 	ctx context.Context,
-	executor *ToolExecutor,
+	executor *toolexec.ToolExecutor,
 	pool *tool.ToolPool,
 	toolCalls []types.ToolCall,
 	out chan<- types.EngineEvent,
