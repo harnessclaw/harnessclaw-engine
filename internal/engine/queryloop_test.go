@@ -506,3 +506,86 @@ func TestQueryLoop_MultiToolChain(t *testing.T) {
 		t.Logf("terminal: reason=%s turn=%d", terminal.Reason, terminal.Turn)
 	}
 }
+
+func TestAbortSession_UnblocksPendingAwaits(t *testing.T) {
+	// Create engine and session.
+	eng, sess := newDispatchTestEngine(t, time.Second)
+
+	// Initialize the cancels map (newDispatchTestEngine doesn't do it for minimal tests).
+	eng.cancels = make(map[string]context.CancelFunc)
+
+	// Simulate an active query by registering a cancel function.
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eng.mu.Lock()
+	eng.cancels[sess.ID] = cancel
+	eng.mu.Unlock()
+
+	// Push a pending tool await.
+	aw := sess.Awaits.PushTool("use_1", "Read")
+
+	// Abort the session.
+	if err := eng.AbortSession(context.Background(), sess.ID); err != nil {
+		t.Fatalf("AbortSession: %v", err)
+	}
+
+	// Verify ToolAwait result channel closes within 10ms.
+	select {
+	case _, ok := <-aw.Result:
+		if ok {
+			t.Error("Result delivered a value; want closed channel")
+		}
+	case <-time.After(10 * time.Millisecond):
+		t.Fatal("Result not closed within 10ms after AbortSession")
+	}
+}
+
+func TestAbortSession_NoActiveQuery(t *testing.T) {
+	eng, _ := newDispatchTestEngine(t, time.Second)
+
+	err := eng.AbortSession(context.Background(), "no_such_session")
+	if err == nil {
+		t.Error("AbortSession on unknown session: got nil, want error")
+	}
+}
+
+func TestAbortSession_DeletesFromCancels(t *testing.T) {
+	eng, sess := newDispatchTestEngine(t, time.Second)
+
+	// Initialize the cancels map.
+	eng.cancels = make(map[string]context.CancelFunc)
+
+	// Register a cancel function.
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eng.mu.Lock()
+	eng.cancels[sess.ID] = cancel
+	eng.mu.Unlock()
+
+	// Verify entry exists before abort.
+	eng.mu.Lock()
+	_, existsBefore := eng.cancels[sess.ID]
+	eng.mu.Unlock()
+	if !existsBefore {
+		t.Fatal("session cancel should exist before abort")
+	}
+
+	// Abort.
+	if err := eng.AbortSession(context.Background(), sess.ID); err != nil {
+		t.Fatalf("AbortSession: %v", err)
+	}
+
+	// Verify entry was deleted.
+	eng.mu.Lock()
+	_, existsAfter := eng.cancels[sess.ID]
+	eng.mu.Unlock()
+	if existsAfter {
+		t.Error("session cancel should be deleted after abort")
+	}
+
+	// Verify second abort returns "no active query".
+	err := eng.AbortSession(context.Background(), sess.ID)
+	if err == nil {
+		t.Error("second AbortSession should return error")
+	}
+}

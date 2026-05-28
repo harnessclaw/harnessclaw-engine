@@ -946,12 +946,23 @@ func (qe *QueryEngine) requestPermissionApproval(
 func (qe *QueryEngine) AbortSession(_ context.Context, sessionID string) error {
 	qe.mu.Lock()
 	cancel, ok := qe.cancels[sessionID]
+	if ok {
+		delete(qe.cancels, sessionID)
+	}
 	qe.mu.Unlock()
 
 	if !ok {
 		return fmt.Errorf("no active query for session %s", sessionID)
 	}
 	cancel()
+
+	// GC pending awaits so any waiters blocked on result channels
+	// unblock immediately (closed-channel signal) instead of only via
+	// the slower ctx.Done() path. Best-effort: session may have been
+	// GC'd between cancel and lookup.
+	if sess := qe.sessionMgr.Get(sessionID); sess != nil && sess.Awaits != nil {
+		sess.Awaits.AbortAll("aborted")
+	}
 	return nil
 }
 
