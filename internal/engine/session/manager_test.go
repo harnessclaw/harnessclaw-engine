@@ -64,7 +64,7 @@ func TestManager_CreatesStatsTrackerAndWorker(t *testing.T) {
 func TestManager_ReloadHydratesTracker(t *testing.T) {
 	reg := sessionstats.NewRegistry()
 	store := &reloadStub{
-		loaded: &Session{ID: "sess_old", State: StateActive, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		loaded: &Session{ID: "sess_old", State: StateActive, CreatedAt: time.Now(), UpdatedAt: time.Now(), Awaits: NewAwaits(), allowedTools: make(map[string]bool)},
 		stats:  types.SessionStats{SessionID: "sess_old", InputTokens: 999, LLMCalls: 5},
 	}
 	m := NewManager(store, zap.NewNop(), time.Hour)

@@ -41,6 +41,27 @@ type Session struct {
 	// Set by Manager after session creation/restoration. Must NOT be called
 	// under s.mu to avoid deadlock (SaveSession acquires RLock via GetMessages).
 	onChange func()
+
+	// --- Runtime state (NOT persisted; rebuilt on session restore) ---
+
+	// Awaits holds session-scoped pending channels for tool calls,
+	// permission requests, plan approvals, and step-decision prompts.
+	// Replaces 4 cross-session maps previously on QueryEngine.
+	//
+	// Marshalled as `-` so JSON persistence ignores it; reconstructed
+	// when the session is loaded back into memory.
+	Awaits *Awaits `json:"-"`
+
+	// allowedTools tracks tools the user has whitelisted "allow always
+	// in this session". Guarded by runtimeMu.
+	allowedTools map[string]bool
+
+	// promptCache stores the most recent system-prompt cache entry for
+	// this session. Guarded by runtimeMu.
+	promptCache *PromptCacheEntry
+
+	// runtimeMu guards allowedTools + promptCache.
+	runtimeMu sync.Mutex
 }
 
 // SetOnChange sets the auto-persistence callback. Called once by Manager.
@@ -118,4 +139,54 @@ type SessionFilter struct {
 	UserID      *string `json:"user_id,omitempty"`
 	Limit       int     `json:"limit,omitempty"`
 	Offset      int     `json:"offset,omitempty"`
+}
+
+// ensureRuntime initializes runtime fields (Awaits, allowedTools) that
+// are not persisted. Called by the Manager during session
+// creation/restoration. Idempotent — safe to call multiple times.
+func (s *Session) ensureRuntime() {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if s.Awaits == nil {
+		s.Awaits = NewAwaits()
+	}
+	if s.allowedTools == nil {
+		s.allowedTools = make(map[string]bool)
+	}
+}
+
+// IsToolAllowed reports whether the user has whitelisted the named
+// tool for this session ("allow always in this session" choice).
+func (s *Session) IsToolAllowed(toolName string) bool {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	return s.allowedTools[toolName]
+}
+
+// RememberAllowedTool records the user's "allow always" choice for
+// the named tool. Subsequent IsToolAllowed calls return true.
+func (s *Session) RememberAllowedTool(toolName string) {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if s.allowedTools == nil {
+		s.allowedTools = make(map[string]bool)
+	}
+	s.allowedTools[toolName] = true
+}
+
+// PromptCache returns the cached system prompt entry, or nil if
+// none has been stored. Callers must validate the entry's
+// invalidation conditions before using.
+func (s *Session) PromptCache() *PromptCacheEntry {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	return s.promptCache
+}
+
+// SetPromptCache stores a fresh PromptCacheEntry, replacing any
+// previous entry. Passing nil clears the cache.
+func (s *Session) SetPromptCache(e *PromptCacheEntry) {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	s.promptCache = e
 }

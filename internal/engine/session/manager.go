@@ -87,6 +87,7 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID string, channelName
 	if err == nil && stored != nil {
 		stored.State = StateActive
 		stored.UpdatedAt = time.Now()
+		stored.ensureRuntime()
 		m.active[sessionID] = stored
 		m.bindOnChange(stored)
 		m.bindStatsLocked(ctx, stored)
@@ -104,6 +105,8 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID string, channelName
 		ChannelName: channelName,
 		UserID:      userID,
 		Metadata:    make(map[string]any),
+		Awaits:      NewAwaits(),
+		allowedTools: make(map[string]bool),
 	}
 	if s.ID == "" {
 		s.ID = uuid.New().String()
