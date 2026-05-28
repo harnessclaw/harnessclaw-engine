@@ -18,6 +18,7 @@ import (
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/llmcall"
 	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/queryloop"
 	"harnessclaw-go/internal/engine/toolexec"
 	"harnessclaw-go/internal/engine/prompt/sections"
 	enginesched "harnessclaw-go/internal/engine/scheduler"
@@ -239,7 +240,7 @@ type QueryEngine struct {
 	agentRegistry  *agent.AgentRegistry
 	messageBroker  *agent.MessageBroker
 	defRegistry    *agent.AgentDefinitionRegistry
-	mentionParser  *MentionParser
+	mentionParser  *queryloop.MentionParser
 
 	// skillReader provides runtime skill discovery for search_skill / load_skill
 	// tools (used by freelancer L3). nil disables those tools at runtime.
@@ -323,7 +324,7 @@ func NewQueryEngine(
 	// (the mention parser depends on it).
 	if cfg.DefRegistry != nil {
 		qe.defRegistry = cfg.DefRegistry
-		qe.mentionParser = NewMentionParser(cfg.DefRegistry)
+		qe.mentionParser = queryloop.NewMentionParser(cfg.DefRegistry)
 	}
 	if cfg.SkillReader != nil {
 		qe.skillReader = cfg.SkillReader
@@ -762,7 +763,7 @@ func (qe *QueryEngine) processWithAgent(
 	ctx context.Context,
 	sessionID string,
 	sess *session.Session,
-	mention *MentionResult,
+	mention *queryloop.MentionResult,
 	def *agent.AgentDefinition,
 ) (<-chan types.EngineEvent, error) {
 	out := make(chan types.EngineEvent, 64)

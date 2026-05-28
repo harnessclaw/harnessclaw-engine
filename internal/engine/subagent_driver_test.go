@@ -8,6 +8,7 @@ import (
 
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/queryloop"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/internal/tool"
@@ -41,7 +42,7 @@ func registerSubAgentDef(t *testing.T, eng *QueryEngine, def *agent.AgentDefinit
 	if eng.defRegistry == nil {
 		reg := agent.NewAgentDefinitionRegistry()
 		eng.defRegistry = reg
-		eng.mentionParser = NewMentionParser(reg)
+		eng.mentionParser = queryloop.NewMentionParser(reg)
 	}
 	if err := eng.defRegistry.Register(def); err != nil {
 		t.Fatalf("Register(%s): %v", def.Name, err)
@@ -304,7 +305,7 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("session: %v", err)
 	}
-	mention := &MentionResult{
+	mention := &queryloop.MentionResult{
 		AgentName: "writer",
 		Prompt:    "do something",
 	}
@@ -359,7 +360,7 @@ func TestBuildSubAgentSystemPrompt_NoEmmaForSubAgent(t *testing.T) {
 	reg := agent.NewAgentDefinitionRegistry()
 	reg.RegisterBuiltins()
 	eng.defRegistry = reg
-	eng.mentionParser = NewMentionParser(reg)
+	eng.mentionParser = queryloop.NewMentionParser(reg)
 
 	sess := &session.Session{ID: "sess_test"}
 	got := eng.Spawner().BuildSubAgentSystemPrompt(

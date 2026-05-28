@@ -15,6 +15,7 @@ import (
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/texts"
+	"harnessclaw-go/internal/engine/queryloop"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/internal/event"
@@ -429,7 +430,7 @@ func TestBuildSubAgentSystemPrompt_SchedulerKeepsStaticRole(t *testing.T) {
 	reg := agent.NewAgentDefinitionRegistry()
 	reg.RegisterBuiltins() // pulls in the real "scheduler" + team-member defs
 	eng.defRegistry = reg
-	eng.mentionParser = NewMentionParser(reg)
+	eng.mentionParser = queryloop.NewMentionParser(reg)
 
 	sess := &session.Session{ID: "sess_test"}
 	got := eng.Spawner().BuildSubAgentSystemPrompt(
@@ -482,7 +483,7 @@ func TestBuildSubAgentSystemPrompt_GeneralPurposeDoesNotLeakEmma(t *testing.T) {
 	reg := agent.NewAgentDefinitionRegistry()
 	reg.RegisterBuiltins()
 	eng.defRegistry = reg
-	eng.mentionParser = NewMentionParser(reg)
+	eng.mentionParser = queryloop.NewMentionParser(reg)
 
 	sess := &session.Session{ID: "sess_test"}
 	got := eng.Spawner().BuildSubAgentSystemPrompt(
