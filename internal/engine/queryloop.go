@@ -138,10 +138,6 @@ type QueryEngineConfig struct {
 	// StatsRegistry, when non-nil, lets the engine attribute LLM /
 	// sub-agent / tool activity to the correct Tracker. nil disables stats wiring.
 	StatsRegistry *sessionstats.Registry
-
-	// SessionManager, when non-nil, lets the engine reach Manager.FlushStats
-	// at trace lifecycle boundaries. nil disables stats flush.
-	SessionManager *session.Manager
 }
 
 // retryConfigFromEngineCfg builds a *retry.Config from the engine
@@ -314,11 +310,6 @@ type QueryEngine struct {
 	// tests that don't enable metrics leave it nil.
 	statsRegistry *sessionstats.Registry
 
-	// sessionManager, when non-nil, lets the engine reach Manager.FlushStats
-	// at trace lifecycle boundaries. Set via SetSessionManager from
-	// cmd/server/main.go.
-	sessionManager *session.Manager
-
 	// schedulerCoord is the L2 scheduler.Coordinator instance.
 	schedulerCoord *enginesched.Coordinator
 }
@@ -426,9 +417,6 @@ func NewQueryEngine(
 	}
 	if cfg.StatsRegistry != nil {
 		qe.statsRegistry = cfg.StatsRegistry
-	}
-	if cfg.SessionManager != nil {
-		qe.sessionManager = cfg.SessionManager
 	}
 
 	qe.schedulerCoord = enginesched.NewCoordinator(enginesched.CoordinatorConfig{
@@ -805,8 +793,8 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 		// Force-flush the stats persist worker so HTTP fetches after this
 		// point see the trace's final numbers without waiting for the next
 		// debounce window. Best-effort — failure is logged inside the worker.
-		if qe.sessionManager != nil {
-			qe.sessionManager.FlushStats(qCtx, sess.ID)
+		if qe.sessionMgr != nil {
+			qe.sessionMgr.FlushStats(qCtx, sess.ID)
 		}
 
 		// Choose between trace.finished (success) and trace.failed (any

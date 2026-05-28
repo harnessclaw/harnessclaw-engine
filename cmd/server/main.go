@@ -407,10 +407,9 @@ func main() {
 		LLMFirstByteTimeout: cfg.LLM.FirstByteTimeout,
 		// Optional dependencies previously injected via SetX() after
 		// construction. Engine treats nil as "feature disabled".
-		DefRegistry:    agentDefReg,
-		SkillReader:    skillReader,
-		StatsRegistry:  statsRegistry,
-		SessionManager: sessionMgr,
+		DefRegistry:   agentDefReg,
+		SkillReader:   skillReader,
+		StatsRegistry: statsRegistry,
 		// MainAgentProfile / DisplayName / AllowedTools / MaxTurns are filled
 		// in by NewL1Engine; setting non-default values here would be
 		// overwritten anyway.
