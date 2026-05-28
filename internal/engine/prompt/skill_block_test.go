@@ -1,4 +1,4 @@
-package engine
+package prompt
 
 import (
 	"strings"
@@ -8,7 +8,7 @@ import (
 )
 
 func TestBuildLoadedSkillsBlock_Empty(t *testing.T) {
-	got := buildLoadedSkillsBlock(nil)
+	got := BuildLoadedSkillsBlock(nil)
 	if got != "" {
 		t.Errorf("empty input → %q, want empty", got)
 	}
@@ -19,7 +19,7 @@ func TestBuildLoadedSkillsBlock_WrapsAllSkills(t *testing.T) {
 		{SkillCard: skill.SkillCard{Name: "a", Version: "1", Path: "/skills/a"}, Body: "body A"},
 		{SkillCard: skill.SkillCard{Name: "b", Path: "/skills/b"}, Body: "body B"},
 	}
-	got := buildLoadedSkillsBlock(fulls)
+	got := BuildLoadedSkillsBlock(fulls)
 	if !strings.Contains(got, "<loaded-skills>") || !strings.Contains(got, "</loaded-skills>") {
 		t.Errorf("missing wrapper tag: %s", got)
 	}

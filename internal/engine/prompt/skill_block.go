@@ -1,4 +1,4 @@
-package engine
+package prompt
 
 import (
 	"strings"
@@ -6,7 +6,7 @@ import (
 	"harnessclaw-go/internal/skill"
 )
 
-// buildLoadedSkillsBlock renders the <loaded-skills> XML container that
+// BuildLoadedSkillsBlock renders the <loaded-skills> XML container that
 // SpawnSync prepends to a freelancer's first user message. Returns "" when
 // the input is empty so callers don't have to nil-check.
 //
@@ -19,7 +19,7 @@ import (
 //   </skill>
 //   <skill ...>...</skill>
 //   </loaded-skills>
-func buildLoadedSkillsBlock(fulls []*skill.SkillFull) string {
+func BuildLoadedSkillsBlock(fulls []*skill.SkillFull) string {
 	if len(fulls) == 0 {
 		return ""
 	}

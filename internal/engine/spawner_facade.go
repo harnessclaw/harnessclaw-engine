@@ -220,7 +220,7 @@ func (qe *QueryEngine) GetSessionApprovedTools(sessionID string) []string {
 
 // BuildLoadedSkillsBlock implements spawn.Deps.
 func (qe *QueryEngine) BuildLoadedSkillsBlock(fulls []*skill.SkillFull) string {
-	return buildLoadedSkillsBlock(fulls)
+	return prompt.BuildLoadedSkillsBlock(fulls)
 }
 
 // --- agent.AgentSpawner facade. spawn does the real work.

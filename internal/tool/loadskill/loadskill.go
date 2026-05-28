@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/loop"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
@@ -181,7 +181,7 @@ func (t *LoadSkillTool) logInfo(agentRunID, skillName, outcome, reason string, b
 }
 
 func reInjectMessage(name string, full *skill.SkillFull) *types.ToolResult {
-	block := engine.BuildSingleSkillBlock(full)
+	block := prompt.BuildSingleSkillBlock(full)
 	return &types.ToolResult{
 		Content: fmt.Sprintf("skill %q loaded", name),
 		NewMessages: []types.Message{
