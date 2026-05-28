@@ -701,3 +701,23 @@ func (qe *QueryEngine) AbortSession(_ context.Context, sessionID string) error {
 	}
 	return nil
 }
+
+// requestPlanApproval delegates to queryloop.Runner.RequestPlanApproval.
+func (qe *QueryEngine) requestPlanApproval(
+	ctx context.Context,
+	sessionID string,
+	out chan<- types.EngineEvent,
+	proposal *types.PlanProposal,
+) (*types.PlanResponse, error) {
+	return qe.loopRunner.RequestPlanApproval(ctx, sessionID, out, proposal)
+}
+
+// requestStepDecision delegates to queryloop.Runner.RequestStepDecision.
+func (qe *QueryEngine) requestStepDecision(
+	ctx context.Context,
+	sessionID string,
+	out chan<- types.EngineEvent,
+	req *types.StepDecisionRequest,
+) (*types.StepDecisionResponse, error) {
+	return qe.loopRunner.RequestStepDecision(ctx, sessionID, out, req)
+}
