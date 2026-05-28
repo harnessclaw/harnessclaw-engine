@@ -176,6 +176,21 @@ func TestAwaits_ForgetTool_Missing(t *testing.T) {
 	a.ForgetTool("unknown")
 }
 
+func TestAwaits_ForgetPerm(t *testing.T) {
+	a := session.NewAwaits()
+	a.PushPerm("req_1")
+	a.ForgetPerm("req_1")
+	err := a.ResolvePerm("req_1", &types.PermissionResponse{RequestID: "req_1"})
+	if !errors.Is(err, session.ErrAwaitNotFound) {
+		t.Errorf("after ForgetPerm, ResolvePerm returned %v; want ErrAwaitNotFound", err)
+	}
+}
+
+func TestAwaits_ForgetPerm_Missing(t *testing.T) {
+	a := session.NewAwaits()
+	a.ForgetPerm("unknown") // must not panic
+}
+
 func TestAwaits_AbortAll_All4Kinds(t *testing.T) {
 	a := session.NewAwaits()
 	toolAw := a.PushTool("u1", "Read")

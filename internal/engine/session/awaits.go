@@ -150,6 +150,14 @@ func (a *Awaits) ResolvePerm(reqID string, resp *types.PermissionResponse) error
 	return nil
 }
 
+// ForgetPerm removes a pending PermAwait without delivering a response.
+// Mirror of ForgetTool; used by callers that abandon a wait.
+func (a *Awaits) ForgetPerm(reqID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.perms, reqID)
+}
+
 // --- Plan ---
 
 // PushPlan registers a new PlanAwait and returns it.

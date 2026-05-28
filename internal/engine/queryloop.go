@@ -205,11 +205,6 @@ func effectiveContextWindow(configured int) int {
 	return 200000
 }
 
-// pendingPermission tracks a permission request awaiting client approval.
-type pendingPermission struct {
-	resultCh chan *types.PermissionResponse
-}
-
 // QueryEngine is the concrete Engine implementation that runs the 5-phase query loop.
 type QueryEngine struct {
 	provider     provider.Provider
@@ -239,10 +234,6 @@ type QueryEngine struct {
 	// In-flight session tracking for abort support.
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
-
-	// Pending permission requests awaiting client approval.
-	permMu       sync.Mutex
-	pendingPerms map[string]*pendingPermission // request_id → pending
 
 	// Session-level tool allow list. When a user chooses "allow always in this session",
 	// the tool name is recorded here and subsequent invocations auto-approve.
@@ -377,7 +368,6 @@ func NewQueryEngine(
 		promptBuilder:     promptBuilder,
 		promptProfile:     promptProfile,
 		cancels:           make(map[string]context.CancelFunc),
-		pendingPerms:      make(map[string]*pendingPermission),
 		sessionAllowTools: make(map[string]map[string]bool),
 		promptCache:       make(map[string]*promptCacheEntry),
 		emitSeq:           emit.NewSequencer(),
@@ -955,22 +945,16 @@ func (qe *QueryEngine) SubmitToolResult(_ context.Context, sessionID string, res
 }
 
 // SubmitPermissionResult implements Engine. It delivers a permission approval/denial
-// from the client to the waiting tool executor.
-func (qe *QueryEngine) SubmitPermissionResult(_ context.Context, _ string, resp *types.PermissionResponse) error {
-	qe.permMu.Lock()
-	pending, ok := qe.pendingPerms[resp.RequestID]
-	qe.permMu.Unlock()
-
-	if !ok {
-		return fmt.Errorf("no pending permission request for request_id %s", resp.RequestID)
+// from the client to the waiting tool executor via sess.Awaits.
+func (qe *QueryEngine) SubmitPermissionResult(_ context.Context, sessionID string, resp *types.PermissionResponse) error {
+	sess := qe.sessionMgr.Get(sessionID)
+	if sess == nil {
+		return fmt.Errorf("session lookup for permission result: session %s not found", sessionID)
 	}
-
-	select {
-	case pending.resultCh <- resp:
-		return nil
-	default:
-		return fmt.Errorf("permission response channel full for %s", resp.RequestID)
+	if err := sess.Awaits.ResolvePerm(resp.RequestID, resp); err != nil {
+		return fmt.Errorf("no pending permission request for request_id %s: %w", resp.RequestID, err)
 	}
+	return nil
 }
 
 // requestPermissionApproval registers a pending permission request, emits the
@@ -1007,16 +991,20 @@ func (qe *QueryEngine) requestPermissionApproval(
 	}
 	qe.sessionAllowMu.RUnlock()
 
-	ch := make(chan *types.PermissionResponse, 1)
-	qe.permMu.Lock()
-	qe.pendingPerms[req.RequestID] = &pendingPermission{resultCh: ch}
-	qe.permMu.Unlock()
+	sess := qe.sessionMgr.Get(sessionID)
+	if sess == nil {
+		qe.logger.Warn("requestPermissionApproval: session not found",
+			zap.String("session_id", sessionID),
+		)
+		return &types.PermissionResponse{
+			RequestID: req.RequestID,
+			Approved:  false,
+			Message:   "session expired",
+		}
+	}
 
-	defer func() {
-		qe.permMu.Lock()
-		delete(qe.pendingPerms, req.RequestID)
-		qe.permMu.Unlock()
-	}()
+	aw := sess.Awaits.PushPerm(req.RequestID)
+	defer sess.Awaits.ForgetPerm(req.RequestID)
 
 	// Emit permission_request event to the client.
 	out <- types.EngineEvent{
@@ -1036,7 +1024,7 @@ func (qe *QueryEngine) requestPermissionApproval(
 			Approved:  false,
 			Message:   "request cancelled",
 		}
-	case resp = <-ch:
+	case resp = <-aw.Response:
 	}
 
 	// If approved with session scope, record for future auto-approval.
