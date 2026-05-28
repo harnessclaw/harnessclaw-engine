@@ -11,11 +11,12 @@ import (
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/llmcall"
 	"harnessclaw-go/internal/engine/prompt"
-	"harnessclaw-go/internal/engine/toolexec"
+	"harnessclaw-go/internal/engine/queryloop"
 	enginesched "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/engine/spawn"
+	"harnessclaw-go/internal/engine/toolexec"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
@@ -221,6 +222,38 @@ func (qe *QueryEngine) GetSessionApprovedTools(sessionID string) []string {
 // BuildLoadedSkillsBlock implements spawn.Deps.
 func (qe *QueryEngine) BuildLoadedSkillsBlock(fulls []*skill.SkillFull) string {
 	return prompt.BuildLoadedSkillsBlock(fulls)
+}
+
+// --- queryloop.Deps implementation. QueryEngine hosts these so the
+// prompt-building helpers (now living on queryloop.Runner) can read
+// engine state through a narrow interface rather than touching qe.X
+// fields directly.
+
+// PromptConfig implements queryloop.Deps. Returns a value snapshot of the
+// prompt-relevant engine config fields. ContextWindow is the resolved
+// effective value (200k fallback applied) so Runner never sees a zero
+// budget when the operator left ContextWindow unset.
+func (qe *QueryEngine) PromptConfig() queryloop.PromptConfig {
+	return queryloop.PromptConfig{
+		SystemPrompt:  qe.config.SystemPrompt,
+		ContextWindow: qe.contextWindow(),
+	}
+}
+
+// RegisterCancel implements queryloop.Deps. Stores the per-session cancel
+// func so AbortSession can reach it. Currently unused by Runner — wired
+// ahead of substep 5.4e when runQueryLoop migrates.
+func (qe *QueryEngine) RegisterCancel(sid string, cancel context.CancelFunc) {
+	qe.mu.Lock()
+	qe.cancels[sid] = cancel
+	qe.mu.Unlock()
+}
+
+// DeregisterCancel implements queryloop.Deps.
+func (qe *QueryEngine) DeregisterCancel(sid string) {
+	qe.mu.Lock()
+	delete(qe.cancels, sid)
+	qe.mu.Unlock()
 }
 
 // --- agent.AgentSpawner facade. spawn does the real work.

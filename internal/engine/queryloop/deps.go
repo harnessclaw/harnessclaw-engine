@@ -2,13 +2,34 @@ package queryloop
 
 import (
 	"context"
+	"sync"
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/command"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/internal/event"
+	"harnessclaw-go/internal/skill"
+	"harnessclaw-go/internal/tool"
 )
+
+// PromptConfig is the engine-side configuration snapshot that the prompt-
+// building helpers consume. Runner reads through Deps.PromptConfig() so
+// queryloop never imports engine and never touches engine's mutable
+// QueryEngineConfig struct directly.
+type PromptConfig struct {
+	// SystemPrompt is the static fallback used when promptBuilder fails
+	// or is not configured.
+	SystemPrompt string
+	// ContextWindow is the effective context-window budget the prompt
+	// builder reports to PromptContext. Should be the resolved value
+	// (engine.contextWindow() output), not raw config.
+	ContextWindow int
+}
 
 // Deps is the dependency surface QueryEngine implements so queryloop.Runner
 // can do its work.
@@ -27,6 +48,20 @@ type Deps interface {
 	// Cancellation registry — Runner manages per-session cancel context.
 	RegisterCancel(sid string, cancel context.CancelFunc)
 	DeregisterCancel(sid string)
+
+	// Prompt-building accessors (added in Task 5.4b).
+	PromptBuilder() *prompt.Builder
+	PromptProfile() *prompt.AgentProfile
+	SkillReader() *skill.Reader
+	DefRegistry() *agent.AgentDefinitionRegistry
+	StatsRegistry() *sessionstats.Registry
+	CmdRegistry() *command.Registry
+	Registry() *tool.Registry
+
+	// PromptConfig is a snapshot of the engine-side configuration fields
+	// the prompt builders read. Returns a value so Runner never holds a
+	// pointer into engine state.
+	PromptConfig() PromptConfig
 }
 
 // Runner drives one user turn. Constructed once per engine, reused across
@@ -34,6 +69,11 @@ type Deps interface {
 // session, not on Runner.
 type Runner struct {
 	deps Deps
+
+	// skillListingOnce gates the lazy computation of skillListing; the
+	// listing is reused across every turn for the lifetime of the engine.
+	skillListingOnce sync.Once
+	skillListing     string
 }
 
 // NewRunner constructs a Runner backed by the given Deps. Deps must remain
@@ -41,7 +81,3 @@ type Runner struct {
 func NewRunner(deps Deps) *Runner {
 	return &Runner{deps: deps}
 }
-
-// Compile-time guard: prevents unused-import errors when the file is new
-// and Runner has no methods yet. Removed in Task 5.4 when real methods land.
-var _ context.Context = context.Background()

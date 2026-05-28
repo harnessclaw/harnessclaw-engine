@@ -191,8 +191,10 @@ type QueryEngine struct {
 	promptBuilder *prompt.Builder
 	promptProfile *prompt.AgentProfile
 
-	// Cached skill listing (computed once, reused per query).
-	skillListing string
+	// loopRunner owns the prompt-building helpers (and, eventually, the
+	// whole runQueryLoop). Constructed once after the spawn/llmcall/
+	// toolexec wiring lands so QE fully satisfies queryloop.Deps.
+	loopRunner *queryloop.Runner
 
 	// In-flight session tracking for abort support.
 	mu      sync.Mutex
@@ -361,6 +363,12 @@ func NewQueryEngine(
 	// after the optional config-injected deps land — DefRegistry,
 	// SkillReader, StatsRegistry are read through Deps from the spawner.
 	qe.spawner = spawn.NewSpawner(qe)
+
+	// loopRunner needs QE to fully satisfy queryloop.Deps, which
+	// includes the spawn handle just constructed above. Wired here so
+	// the buildSystemPrompt / getSkillListing wrappers below can dispatch
+	// to the runner from day one.
+	qe.loopRunner = queryloop.NewRunner(qe)
 
 	qe.schedulerCoord = enginesched.NewCoordinator(enginesched.CoordinatorConfig{
 		Spawner:  qe,

@@ -3,26 +3,21 @@ package engine
 import (
 	"context"
 	"fmt"
-	"os"
-	"runtime"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/internal/engine/llmcall"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/queryloop"
-	"harnessclaw-go/internal/engine/toolexec"
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/engine/toolexec"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/tool"
-	"harnessclaw-go/internal/tool/skilltool"
-	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -885,223 +880,30 @@ func buildAssistantMessage(text string, toolCalls []types.ToolCall, usage *types
 	}
 }
 
-// getSkillListing returns the cached skill listing string.
-// Computed once on first call using FormatCommandsWithinBudget (lazy init).
-// The listing is passed into PromptContext.SkillListing for the SkillsSection to render.
+// getSkillListing delegates to the queryloop.Runner. Kept as a thin
+// wrapper so existing engine-package callers (buildSystemPrompt and
+// friends) don't need to thread the runner through every call site.
 func (qe *QueryEngine) getSkillListing() string {
-	if qe.skillListing != "" {
-		return qe.skillListing
-	}
-	if qe.cmdRegistry == nil {
-		return ""
-	}
-	cmds := qe.cmdRegistry.GetSkillToolCommands()
-	if len(cmds) == 0 {
-		return ""
-	}
-	// Use 200k context window as default budget reference.
-	qe.skillListing = skilltool.FormatCommandsWithinBudget(cmds, 200000)
-	qe.logger.Info("skill listing generated for injection",
-		zap.Int("skill_count", len(cmds)),
-		zap.Int("listing_len", len(qe.skillListing)),
-	)
-	return qe.skillListing
+	return qe.loopRunner.GetSkillListing()
 }
 
-// getSkillListingFiltered returns the skill listing filtered by an allowed set.
-// When allowedSkills is nil, returns the full listing (same as getSkillListing).
-// When non-nil, only skills whose names are in the map are included.
+// getSkillListingFiltered delegates to the queryloop.Runner.
 func (qe *QueryEngine) getSkillListingFiltered(allowedSkills map[string]bool) string {
-	if allowedSkills == nil {
-		return qe.getSkillListing()
-	}
-	if qe.cmdRegistry == nil {
-		return ""
-	}
-	allCmds := qe.cmdRegistry.GetSkillToolCommands()
-	if len(allCmds) == 0 {
-		return ""
-	}
-	filtered := make([]*command.PromptCommand, 0, len(allowedSkills))
-	for _, cmd := range allCmds {
-		if allowedSkills[cmd.Name] {
-			filtered = append(filtered, cmd)
-		}
-	}
-	if len(filtered) == 0 {
-		return ""
-	}
-	return skilltool.FormatCommandsWithinBudget(filtered, 200000)
+	return qe.loopRunner.GetSkillListingFiltered(allowedSkills)
 }
 
-// buildSystemPrompt constructs the system prompt using the prompt builder.
-// Uses per-session whole-output caching: only rebuilds when inputs change.
-// Falls back to config.SystemPrompt if builder fails.
+// buildSystemPrompt delegates to the queryloop.Runner. Kept here so the
+// remaining runQueryLoop body (substep 5.4e will move it) compiles
+// unchanged.
 func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Session, messages []types.Message) string {
-	// If prompt builder is not initialized, use static prompt
-	if qe.promptBuilder == nil {
-		return qe.config.SystemPrompt
-	}
-
-	// Estimate tokens used by conversation
-	totalTokens := 0
-	for _, msg := range messages {
-		totalTokens += msg.Tokens
-	}
-
-	// Compute budget early for cache comparison
-	budget := prompt.ComputeSystemPromptBudget(200000, totalTokens, 16384, prompt.DefaultSafetyMargin)
-
-	// Check if we have a valid cached prompt for this session
-	cached := sess.PromptCache()
-
-	if cached != nil {
-		// Determine if cache is still valid:
-		// - budget hasn't dropped by more than 10% (no section would be skipped)
-		// - task state hasn't changed
-		// - memory hasn't changed
-		// - date hasn't changed (cross-midnight)
-		today := time.Now().Format("2006-01-02")
-		budgetDrift := float64(cached.Budget-budget) / float64(cached.Budget)
-		hasTask := false // TODO: populate from session metadata when available
-		memoryLen := 0   // TODO: populate when memory loading is implemented
-
-		if budgetDrift < 0.1 && cached.HasTask == hasTask && cached.MemoryLen == memoryLen && cached.Date == today {
-			qe.logger.Debug("prompt cache hit",
-				zap.String("session_id", sess.ID),
-				zap.String("version", cached.Output.(*prompt.PromptOutput).Version),
-				zap.Int("budget_cached", cached.Budget),
-				zap.Int("budget_current", budget),
-			)
-			return cached.Prompt
-		}
-
-		qe.logger.Debug("prompt cache invalidated",
-			zap.String("session_id", sess.ID),
-			zap.Float64("budget_drift", budgetDrift),
-			zap.Bool("task_changed", cached.HasTask != hasTask),
-			zap.Bool("memory_changed", cached.MemoryLen != memoryLen),
-			zap.Bool("date_changed", cached.Date != today),
-		)
-	}
-
-	// Cache miss or invalidated — full build
-	promptCtx := &prompt.PromptContext{
-		SessionID:         sess.ID,
-		Turn:              len(messages),
-		Session:           sess,
-		Tools:             qe.registry,
-		TotalTokensUsed:   totalTokens,
-		ContextWindowSize: qe.contextWindow(),
-		Memory:            make(map[string]string),
-		EnvInfo:           qe.getEnvSnapshot(workspace.SessionRoot(workspaceRootDir(), sess.ID)),
-		SkillListing:      qe.getSkillListing(),
-		TeamMembers:       qe.getTeamMembers(),
-	}
-
-	activeProfile := qe.promptProfile
-
-	output, err := qe.promptBuilder.Build(promptCtx, activeProfile)
-	if err != nil {
-		qe.logger.Error("prompt build failed, using fallback",
-			zap.Error(err),
-			zap.String("session_id", sess.ID),
-		)
-		return qe.config.SystemPrompt
-	}
-
-	// --- Prompt observability: dump full prompt structure ---
-	qe.logger.Debug("========== PROMPT DUMP START ==========")
-	qe.logger.Debug(output.Dump())
-	qe.logger.Debug("========== PROMPT DUMP END ==========",
-		zap.String("session_id", sess.ID),
-		zap.Int("turn", promptCtx.Turn),
-		zap.String("version", output.Version),
-		zap.Int("total_tokens", output.Metadata.TotalTokens),
-		zap.Int("budget", output.Metadata.TokenBudget),
-		zap.Int("block_count", len(output.Blocks)),
-		zap.Int("skipped_count", len(output.Metadata.SkippedSections)),
-		zap.Float64("cacheable_ratio", output.Metadata.CacheMetrics.CacheableRatio),
-	)
-	for _, b := range output.Blocks {
-		qe.logger.Debug("prompt block",
-			zap.String("section", b.Name),
-			zap.Int("tokens", b.EstimatedTokens),
-			zap.Bool("cacheable", b.Cacheable),
-			zap.Int("content_len", len(b.Content)),
-		)
-	}
-	for _, s := range output.Metadata.SkippedSections {
-		qe.logger.Debug("prompt section skipped",
-			zap.String("section", s.Section),
-			zap.String("reason", s.Reason),
-		)
-	}
-
-	// Log the final system prompt text sent to the LLM.
-	result := output.ToSystemPrompt()
-	qe.logger.Debug("========== FINAL SYSTEM PROMPT START ==========\n" + result + "\n========== FINAL SYSTEM PROMPT END ==========",
-		zap.String("session_id", sess.ID),
-		zap.Int("char_count", len(result)),
-		zap.Int("estimated_tokens", prompt.EstimateTokens(result)),
-	)
-
-	// Cache the result for this session
-	sess.SetPromptCache(&session.PromptCacheEntry{
-		Prompt:    result,
-		Output:    output,
-		Budget:    budget,
-		HasTask:   false, // TODO: update when task state is populated
-		MemoryLen: 0,     // TODO: update when memory is populated
-		Date:      time.Now().Format("2006-01-02"),
-	})
-
-	return result
+	return qe.loopRunner.BuildSystemPrompt(ctx, sess, messages)
 }
 
-// getTeamMembers builds the dynamic team member list from the agent definition registry.
-func (qe *QueryEngine) getTeamMembers() []prompt.TeamMember {
-	if qe.defRegistry == nil {
-		return nil
-	}
-	defs := qe.defRegistry.TeamMembers()
-	members := make([]prompt.TeamMember, 0, len(defs))
-	for _, d := range defs {
-		members = append(members, prompt.TeamMember{
-			DisplayName: d.DisplayName,
-			CodeName:    d.Name,
-			Description: d.Description,
-			Personality: d.Personality,
-			Triggers:    d.Triggers,
-		})
-	}
-	return members
-}
-
-// getEnvSnapshot captures current environment information dynamically.
-// sessionRoot, when non-empty, is used as the CWD so agents see the
-// session-specific workspace path rather than the generic root.
+// getEnvSnapshot delegates to the queryloop.Runner. Spawn-side Deps
+// (spawner_facade.go's GetEnvSnapshot) reaches the same code through this
+// wrapper, so behaviour stays identical.
 func (qe *QueryEngine) getEnvSnapshot(sessionRoot string) prompt.EnvSnapshot {
-	snap := prompt.EnvSnapshot{
-		OS:       runtime.GOOS,
-		Platform: runtime.GOOS + "/" + runtime.GOARCH,
-		Date:     time.Now().Format("2006-01-02"),
-	}
-
-	if sessionRoot != "" {
-		snap.CWD = sessionRoot
-	} else {
-		snap.CWD = "~/.harnessclaw/workspace"
-	}
-
-	// Shell
-	if shell := os.Getenv("SHELL"); shell != "" {
-		snap.Shell = shell
-	} else if comspec := os.Getenv("COMSPEC"); comspec != "" {
-		snap.Shell = comspec
-	}
-
-	return snap
+	return qe.loopRunner.GetEnvSnapshot(sessionRoot)
 }
 
 // shouldWaitForAsyncAgents returns true if the query loop should block on
