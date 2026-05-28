@@ -178,13 +178,13 @@ func (qe *QueryEngine) DispatchToolBatch(
 		// from real callers.
 		te = toolexec.NewToolExecutor(pool, qe.permChecker, qe.logger, qe.config.ToolTimeout, nil)
 	}
-	return qe.dispatchToolBatch(ctx, sess, te, pool, toolCalls, out)
+	return qe.loopRunner.DispatchToolBatch(ctx, sess, te, pool, toolCalls, out)
 }
 
-// BuildAssistantMessage implements spawn.Deps. Wraps the engine helper
+// BuildAssistantMessage implements spawn.Deps. Wraps the queryloop helper
 // of the same name so spawn assembles assistant messages identically.
 func (qe *QueryEngine) BuildAssistantMessage(text string, toolCalls []types.ToolCall, usage *types.Usage, reasoning string) types.Message {
-	return buildAssistantMessage(text, toolCalls, usage, reasoning)
+	return queryloop.BuildAssistantMessage(text, toolCalls, usage, reasoning)
 }
 
 // EffectiveContextWindow implements spawn.Deps.
@@ -237,6 +237,23 @@ func (qe *QueryEngine) PromptConfig() queryloop.PromptConfig {
 	return queryloop.PromptConfig{
 		SystemPrompt:  qe.config.SystemPrompt,
 		ContextWindow: qe.contextWindow(),
+	}
+}
+
+// LoopConfig implements queryloop.Deps. Returns a value snapshot of the
+// loop-relevant config fields. Runner reads these to drive turn caps,
+// tool routing, and LLM timeouts without touching qe.config directly.
+func (qe *QueryEngine) LoopConfig() queryloop.LoopConfig {
+	return queryloop.LoopConfig{
+		MaxTurns:              qe.config.MaxTurns,
+		MainAgentMaxTurns:     qe.config.MainAgentMaxTurns,
+		MaxTokens:             qe.config.MaxTokens,
+		AutoCompactThreshold:  qe.config.AutoCompactThreshold,
+		ToolTimeout:           qe.config.ToolTimeout,
+		ClientTools:           qe.config.ClientTools,
+		MainAgentAllowedTools: qe.config.MainAgentAllowedTools,
+		LLMAPITimeout:         qe.config.LLMAPITimeout,
+		LLMFirstByteTimeout:   qe.config.LLMFirstByteTimeout,
 	}
 }
 

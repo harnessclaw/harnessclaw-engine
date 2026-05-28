@@ -310,7 +310,7 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 		Prompt:    "do something",
 	}
 	def := eng.defRegistry.Get("writer")
-	out, err := eng.processWithAgent(context.Background(), "sess_gap5", sess, mention, def)
+	out, err := eng.loopRunner.ProcessWithAgent(context.Background(), "sess_gap5", sess, mention, def)
 	if err != nil {
 		t.Fatalf("processWithAgent: %v", err)
 	}

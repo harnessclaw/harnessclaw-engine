@@ -3,16 +3,21 @@ package queryloop
 import (
 	"context"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/command"
+	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/internal/event"
+	"harnessclaw-go/internal/permission"
+	"harnessclaw-go/internal/provider"
+	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
 )
@@ -31,11 +36,23 @@ type PromptConfig struct {
 	ContextWindow int
 }
 
+// LoopConfig is the engine-side configuration snapshot consumed by the
+// main query loop. Returned by value so Runner never holds a pointer
+// into the engine's mutable config.
+type LoopConfig struct {
+	MaxTurns              int
+	MainAgentMaxTurns     int
+	MaxTokens             int
+	AutoCompactThreshold  float64
+	ToolTimeout           time.Duration
+	ClientTools           bool
+	MainAgentAllowedTools []string
+	LLMAPITimeout         time.Duration
+	LLMFirstByteTimeout   time.Duration
+}
+
 // Deps is the dependency surface QueryEngine implements so queryloop.Runner
 // can do its work.
-//
-// First-draft scope: methods listed below cover the bare minimum identified
-// during scaffolding. Task 5.4 widens this as code migrates in.
 type Deps interface {
 	Logger() *zap.Logger
 	EventBus() *event.Bus
@@ -62,6 +79,37 @@ type Deps interface {
 	// the prompt builders read. Returns a value so Runner never holds a
 	// pointer into engine state.
 	PromptConfig() PromptConfig
+
+	// --- Added in 5.4e for runQueryLoop ---
+
+	// LoopConfig is a snapshot of the loop-relevant config fields.
+	LoopConfig() LoopConfig
+
+	// ContextWindow returns the engine's effective context window (operator
+	// value or 200k fallback) so Runner doesn't need to duplicate the
+	// resolution rule.
+	ContextWindow() int
+
+	// Provider returns the LLM provider driving Chat() calls.
+	Provider() provider.Provider
+
+	// Retryer drives the per-LLM-call retry loop with backoff + jitter.
+	Retryer() *retry.Retryer
+
+	// Compactor decides when to auto-compact and produces the compacted
+	// message history. May be nil — Runner gates on nil before calling.
+	Compactor() compact.Compactor
+
+	// PermChecker is the permission gate handed to the ToolExecutor.
+	PermChecker() permission.Checker
+
+	// AgentRegistry, when non-nil, lets the loop check whether any
+	// async sub-agents from this session are still running.
+	AgentRegistry() *agent.AgentRegistry
+
+	// MessageBroker, when non-nil, lets the loop register a mailbox for
+	// inbound async-agent notifications.
+	MessageBroker() *agent.MessageBroker
 }
 
 // Runner drives one user turn. Constructed once per engine, reused across

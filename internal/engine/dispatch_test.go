@@ -9,6 +9,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/engine/queryloop"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/storage/memory"
 	"harnessclaw-go/internal/tool"
@@ -63,7 +64,12 @@ func newDispatchTestEngine(t *testing.T, toolTimeout time.Duration) (*QueryEngin
 	qe := &QueryEngine{
 		config:     QueryEngineConfig{ToolTimeout: toolTimeout, ClientTools: true},
 		sessionMgr: mgr,
+		logger:     zap.NewNop(),
 	}
+	// Build the runner that the production engine constructs in
+	// NewQueryEngine — these tests reach the dispatch branch through
+	// the runner's exported wrapper.
+	qe.loopRunner = queryloop.NewRunner(qe)
 	return qe, sess
 }
 
@@ -102,7 +108,7 @@ func TestExecuteClientTools_HumanInteractiveWaitsPastTimeout(t *testing.T) {
 	start := time.Now()
 	go func() {
 		defer wg.Done()
-		got = qe.executeClientTools(context.Background(), sess, pool, calls, out)
+		got = qe.loopRunner.ExecuteClientTools(context.Background(), sess, pool, calls, out)
 	}()
 
 	// Wait LONGER than toolTimeout to prove the timeout doesn't fire.
@@ -148,7 +154,7 @@ func TestExecuteClientTools_DelegatedToolStillTimesOut(t *testing.T) {
 	}
 
 	start := time.Now()
-	got := qe.executeClientTools(context.Background(), sess, pool, calls, out)
+	got := qe.loopRunner.ExecuteClientTools(context.Background(), sess, pool, calls, out)
 	elapsed := time.Since(start)
 
 	if elapsed < 80*time.Millisecond || elapsed > 500*time.Millisecond {
@@ -178,7 +184,7 @@ func TestExecuteClientTools_HumanInteractiveCancelledByContext(t *testing.T) {
 	var got []types.ToolResult
 	done := make(chan struct{})
 	go func() {
-		got = qe.executeClientTools(ctx, sess, pool, calls, out)
+		got = qe.loopRunner.ExecuteClientTools(ctx, sess, pool, calls, out)
 		close(done)
 	}()
 

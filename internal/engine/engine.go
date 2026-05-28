@@ -504,13 +504,13 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 
 	// @-mention routing: detect @agent_name at the start of the user message.
 	if qe.mentionParser != nil && qe.defRegistry != nil {
-		msgText := extractMessageText(msg)
+		msgText := queryloop.ExtractMessageText(msg)
 		if mention := qe.mentionParser.Parse(msgText); mention.AgentName != "" {
 			def := qe.defRegistry.Get(mention.AgentName)
 			if def != nil {
 				// Record the user message before routing to preserve session history.
 				sess.AddMessage(*msg)
-				return qe.processWithAgent(ctx, sessionID, sess, mention, def)
+				return qe.loopRunner.ProcessWithAgent(ctx, sessionID, sess, mention, def)
 			}
 		}
 	}
@@ -525,7 +525,7 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 	traceID := emit.NewTraceID()
 	mainAgentRunID := emit.NewAgentRunID()
 	startedAt := time.Now()
-	userInputSummary := truncateForDisplay(extractMessageText(msg), 240)
+	userInputSummary := queryloop.TruncateForDisplay(queryloop.ExtractMessageText(msg), 240)
 
 	traceCtx := &emit.TraceContext{
 		TraceID:   traceID,
@@ -580,14 +580,17 @@ func (qe *QueryEngine) ProcessMessage(ctx context.Context, sessionID string, msg
 			},
 		}
 
-		terminal := qe.runQueryLoop(qCtx, sess, out)
+		approvalFn := func(ctx context.Context, evtOut chan<- types.EngineEvent, req *types.PermissionRequest) *types.PermissionResponse {
+			return qe.requestPermissionApproval(ctx, evtOut, sess.ID, req)
+		}
+		terminal := qe.loopRunner.Run(qCtx, sess, out, approvalFn)
 
 		qe.eventBus.Publish(event.Event{
 			Topic:   event.TopicQueryCompleted,
 			Payload: map[string]any{"session_id": sessionID, "reason": terminal.Reason, "message": terminal.Message},
 		})
 
-		cumUsage := qe.cumulativeUsageFor(sess.ID)
+		cumUsage := qe.loopRunner.CumulativeUsageFor(sess.ID)
 		duration := time.Since(startedAt).Milliseconds()
 
 		// Force-flush the stats persist worker so HTTP fetches after this
