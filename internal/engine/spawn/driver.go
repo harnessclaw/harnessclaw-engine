@@ -1,4 +1,4 @@
-package engine
+package spawn
 
 import (
 	"context"
@@ -25,6 +25,16 @@ import (
 // spawns work belongs here too.
 var dispatchToolNames = []string{"freelance", "scheduler"}
 
+// loopState tracks the per-turn LLM call state. Local copy of the engine
+// package's loopState — spawn keeps an independent copy so it doesn't
+// have to import engine (which would create a cycle).
+type loopState struct {
+	turn            int
+	stopReason      string
+	lastUsage       *types.Usage
+	cumulativeUsage types.Usage
+}
+
 // runSubAgentDriver is the dedicated L3 ReAct executor. It enforces every
 // invariant the user's L3 design called out:
 //
@@ -45,8 +55,8 @@ var dispatchToolNames = []string{"freelance", "scheduler"}
 // The 5-phase shape (preprocess / LLM / error / tool / continuation)
 // matches the main query loop — what changes is the termination policy
 // and the post-tool result inspection. Helpers callLLM,
-// dispatchToolBatch, buildAssistantMessage are reused unchanged.
-func (qe *QueryEngine) runSubAgentDriver(
+// dispatchToolBatch, buildAssistantMessage are reused unchanged via Deps.
+func (s *Spawner) runSubAgentDriver(
 	ctx context.Context,
 	sess *session.Session,
 	lc *loopConfig,
@@ -73,7 +83,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 			Message:   "sub-agent auto-approved",
 		}
 	}
-	executor := NewToolExecutor(pool, lc.permChecker, logger, lc.config.ToolTimeout, approvalFn)
+	executor := s.deps.NewToolExecutor(pool, lc.permChecker, logger, lc.config.ToolTimeout, approvalFn)
 	subProducer := tool.ArtifactProducer{
 		AgentID:   lc.agentID,
 		SessionID: sess.ID,
@@ -120,9 +130,9 @@ func (qe *QueryEngine) runSubAgentDriver(
 		// ---- Phase 1: Preprocess ----
 		messages := sess.GetMessages()
 
-		if qe.compactor != nil && qe.compactor.ShouldCompact(messages, effectiveContextWindow(lc.config.ContextWindow), lc.config.AutoCompactThreshold) {
+		if comp := s.deps.Compactor(); comp != nil && comp.ShouldCompact(messages, s.deps.EffectiveContextWindow(lc.config.ContextWindow), lc.config.AutoCompactThreshold) {
 			logger.Info("sub-agent driver auto-compact triggered", zap.Int("msg_count", len(messages)))
-			compacted, err := qe.compactor.Compact(ctx, messages)
+			compacted, err := comp.Compact(ctx, messages)
 			if err != nil {
 				logger.Warn("sub-agent driver auto-compact failed", zap.Error(err))
 			} else {
@@ -144,7 +154,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 
 		systemPrompt := lc.systemPromptOverride
 		if systemPrompt == "" {
-			systemPrompt = qe.buildSubAgentSystemPrompt(ctx, sess, messages, lc.profile, lc.subagentType, lc.allowedSkills, pool, lc.sessionRoot)
+			systemPrompt = s.buildSubAgentSystemPrompt(ctx, sess, messages, lc.profile, lc.subagentType, lc.allowedSkills, pool, lc.sessionRoot)
 		}
 
 		req := &provider.ChatRequest{
@@ -152,7 +162,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 			System:        systemPrompt,
 			Tools:         pool.Schemas(),
 			MaxTokens:     lc.config.MaxTokens,
-			ContextWindow: effectiveContextWindow(lc.config.ContextWindow),
+			ContextWindow: s.deps.EffectiveContextWindow(lc.config.ContextWindow),
 		}
 		if lc.temperature != nil {
 			req.Temperature = *lc.temperature
@@ -169,13 +179,13 @@ func (qe *QueryEngine) runSubAgentDriver(
 		out <- types.EngineEvent{
 			Type:      types.EngineEventMessageStart,
 			MessageID: msgID,
-			Model:     qe.provider.Name(),
+			Model:     s.deps.Provider().Name(),
 		}
 
-		llmResult := callLLM(ctx, qe.provider, req, logger, qe.retryer, qe.llmTimeouts(), lc.agentID, out, out)
+		llmResult := s.deps.CallLLM(ctx, req, logger, lc.agentID, out, out)
 
-		if llmResult.streamErr != nil {
-			llmErr := llmResult.streamErr
+		if llmResult.StreamErr != nil {
+			llmErr := llmResult.StreamErr
 			out <- types.EngineEvent{Type: types.EngineEventError, Error: llmErr}
 			out <- types.EngineEvent{Type: types.EngineEventMessageDelta, StopReason: "error", Error: llmErr}
 			out <- types.EngineEvent{Type: types.EngineEventMessageStop}
@@ -187,16 +197,16 @@ func (qe *QueryEngine) runSubAgentDriver(
 			return subAgentLoopResult{Terminal: types.Terminal{Reason: types.TerminalModelError, Message: llmErr.Error(), Turn: ls.turn}, ContractFailures: contractFailures}
 		}
 
-		textBuf := llmResult.textBuf
-		toolCalls := llmResult.toolCalls
+		textBuf := llmResult.TextBuf
+		toolCalls := llmResult.ToolCalls
 
-		ls.stopReason = llmResult.stopReason
-		if llmResult.lastUsage != nil {
-			ls.lastUsage = llmResult.lastUsage
-			ls.cumulativeUsage.InputTokens += llmResult.lastUsage.InputTokens
-			ls.cumulativeUsage.OutputTokens += llmResult.lastUsage.OutputTokens
-			ls.cumulativeUsage.CacheRead += llmResult.lastUsage.CacheRead
-			ls.cumulativeUsage.CacheWrite += llmResult.lastUsage.CacheWrite
+		ls.stopReason = llmResult.StopReason
+		if llmResult.LastUsage != nil {
+			ls.lastUsage = llmResult.LastUsage
+			ls.cumulativeUsage.InputTokens += llmResult.LastUsage.InputTokens
+			ls.cumulativeUsage.OutputTokens += llmResult.LastUsage.OutputTokens
+			ls.cumulativeUsage.CacheRead += llmResult.LastUsage.CacheRead
+			ls.cumulativeUsage.CacheWrite += llmResult.LastUsage.CacheWrite
 		}
 
 		stopReason := ls.stopReason
@@ -210,7 +220,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 		out <- types.EngineEvent{Type: types.EngineEventMessageDelta, StopReason: stopReason, Usage: ls.lastUsage}
 		out <- types.EngineEvent{Type: types.EngineEventMessageStop}
 
-		assistantMsg := buildAssistantMessage(textBuf, toolCalls, ls.lastUsage, llmResult.reasoning)
+		assistantMsg := s.deps.BuildAssistantMessage(textBuf, toolCalls, ls.lastUsage, llmResult.Reasoning)
 		sess.AddMessage(assistantMsg)
 
 		// ---- Phase 5 (part A): No tool calls ----
@@ -279,7 +289,7 @@ func (qe *QueryEngine) runSubAgentDriver(
 			execCtx = tool.WithSkillTrackerValue(execCtx, lc.skillTracker)
 		}
 
-		results := qe.dispatchToolBatch(execCtx, executor, pool, toolCalls, out)
+		results := s.deps.DispatchToolBatch(execCtx, executor, pool, toolCalls, out)
 
 		if ctx.Err() != nil {
 			return subAgentLoopResult{Terminal: types.Terminal{Reason: types.TerminalAbortedTools, Message: "sub-agent driver cancelled during tool execution", Turn: ls.turn}, ContractFailures: contractFailures}
@@ -395,6 +405,13 @@ func strFromMeta(m map[string]any, key string) string {
 		return v
 	}
 	return ""
+}
+
+// BuildDriverNudgeMessage is the exported wrapper around the package-
+// private buildDriverNudgeMessage. Tests in the engine package call
+// this to verify the nudge wording and length contract.
+func BuildDriverNudgeMessage(nudge int, outs []types.ExpectedOutput) types.Message {
+	return buildDriverNudgeMessage(nudge, outs)
 }
 
 // buildDriverNudgeMessage is the L3-specific reminder injected when the

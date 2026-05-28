@@ -1,4 +1,4 @@
-package engine
+package spawn
 
 import (
 	"os"
@@ -8,6 +8,28 @@ import (
 
 	"harnessclaw-go/internal/skill"
 )
+
+// testBuildLoadedSkillsBlock mirrors the engine package's buildLoadedSkillsBlock
+// well enough for these unit tests — they only care that the wrapper tags
+// and skill body strings land in the output, not that the formatting is
+// byte-identical to the engine implementation.
+func testBuildLoadedSkillsBlock(fulls []*skill.SkillFull) string {
+	if len(fulls) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("<loaded-skills>\n")
+	for _, f := range fulls {
+		sb.WriteString(`<skill name="`)
+		sb.WriteString(f.Name)
+		sb.WriteString(`">`)
+		sb.WriteString("\n")
+		sb.WriteString(f.Body)
+		sb.WriteString("\n</skill>\n")
+	}
+	sb.WriteString("</loaded-skills>")
+	return sb.String()
+}
 
 func TestParseCandidateSkills_Strings(t *testing.T) {
 	inputs := map[string]any{"candidate_skills": []any{"a", "b"}}
@@ -35,7 +57,7 @@ func TestParseCandidateSkills_WrongType(t *testing.T) {
 func TestHydrateFreelancer_NoCandidates(t *testing.T) {
 	reader := skill.NewReader([]string{t.TempDir()}, nil)
 	prompt := "do the task"
-	tracker, newPrompt, err := hydrateFreelancer(reader, nil, prompt)
+	tracker, newPrompt, err := hydrateFreelancer(reader, testBuildLoadedSkillsBlock, nil, prompt)
 	if err != nil {
 		t.Fatalf("hydrateFreelancer: %v", err)
 	}
@@ -59,7 +81,7 @@ func TestHydrateFreelancer_WithCandidates(t *testing.T) {
 	}
 	reader := skill.NewReader([]string{tmp}, nil)
 	prompt := "task body"
-	tracker, newPrompt, err := hydrateFreelancer(reader, []string{"echo"}, prompt)
+	tracker, newPrompt, err := hydrateFreelancer(reader, testBuildLoadedSkillsBlock, []string{"echo"}, prompt)
 	if err != nil {
 		t.Fatalf("hydrateFreelancer: %v", err)
 	}
@@ -79,7 +101,7 @@ func TestHydrateFreelancer_WithCandidates(t *testing.T) {
 
 func TestHydrateFreelancer_MissingCandidate(t *testing.T) {
 	reader := skill.NewReader([]string{t.TempDir()}, nil)
-	_, _, err := hydrateFreelancer(reader, []string{"ghost"}, "task")
+	_, _, err := hydrateFreelancer(reader, testBuildLoadedSkillsBlock, []string{"ghost"}, "task")
 	if err == nil {
 		t.Fatal("missing candidate should error")
 	}
@@ -87,7 +109,7 @@ func TestHydrateFreelancer_MissingCandidate(t *testing.T) {
 
 func TestHydrateFreelancer_TooManyCandidates(t *testing.T) {
 	reader := skill.NewReader([]string{t.TempDir()}, nil)
-	_, _, err := hydrateFreelancer(reader, []string{"a", "b", "c", "d"}, "task")
+	_, _, err := hydrateFreelancer(reader, testBuildLoadedSkillsBlock, []string{"a", "b", "c", "d"}, "task")
 	if err == nil {
 		t.Fatal("4 candidates should fail (max 3)")
 	}

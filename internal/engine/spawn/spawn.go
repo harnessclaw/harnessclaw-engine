@@ -1,4 +1,4 @@
-package engine
+package spawn
 
 import (
 	"context"
@@ -90,7 +90,7 @@ const maxSubAgentTurns = 30
 //  12. Collect output
 //  13. Emit subagent.end
 //  14. Return SpawnResult
-func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (result *agent.SpawnResult, err error) {
+func (s *Spawner) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (result *agent.SpawnResult, err error) {
 	if cfg.Name == "" {
 		cfg.Name = cfg.SubagentType
 	}
@@ -98,7 +98,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	sessionID := cfg.ParentSessionID + "_sub_" + uuid.New().String()[:8]
 	startTime := time.Now()
 
-	logger := qe.logger.With(
+	logger := s.deps.Logger().With(
 		zap.String("agent_id", agentID),
 		zap.String("sub_session_id", sessionID),
 		zap.String("parent_session_id", cfg.ParentSessionID),
@@ -195,7 +195,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// Step 2: Cap MaxTurns.
 	maxTurns := cfg.MaxTurns
 	if maxTurns <= 0 {
-		maxTurns = qe.config.MaxTurns / 2
+		maxTurns = s.deps.SpawnerConfig().MaxTurns / 2
 		if maxTurns < 5 {
 			maxTurns = 5
 		}
@@ -224,8 +224,8 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// Limitations) for TierSubAgent. The lookup is reused below for tool
 	// pool filtering and profile resolution, so this is just hoisting it.
 	var agentDef *agent.AgentDefinition
-	if qe.defRegistry != nil && cfg.SubagentType != "" {
-		agentDef = qe.defRegistry.Get(cfg.SubagentType)
+	if defReg := s.deps.DefRegistry(); defReg != nil && cfg.SubagentType != "" {
+		agentDef = defReg.Get(cfg.SubagentType)
 	}
 
 	// InputSchema validation: when the definition declares an input contract
@@ -251,7 +251,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	var freelancerTracker *loop.SkillTracker
 	if agentDef != nil && defHasSkillSelfMgmtTool(agentDef.AllowedTools) {
 		candidates := parseCandidateSkills(cfg.Inputs)
-		tracker, newPrompt, err := hydrateFreelancer(qe.skillReader, candidates, cfg.Prompt)
+		tracker, newPrompt, err := hydrateFreelancer(s.deps.SkillReader(), s.deps.BuildLoadedSkillsBlock, candidates, cfg.Prompt)
 		if err != nil {
 			return nil, fmt.Errorf("skill hydration failed for %q: %w", cfg.SubagentType, err)
 		}
@@ -427,7 +427,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// agentDef was looked up above (step 5 — we hoisted it so the preamble
 	// composer could render the per-definition sub-agent contract).
 
-	pool := tool.NewToolPool(qe.registry, nil, nil)
+	pool := tool.NewToolPool(s.deps.Registry(), nil, nil)
 
 	// L3 sub-agents get their AllowedTools (when set) augmented with the
 	// always-required terminal tools — submit_task_result and escalate_to_planner.
@@ -478,12 +478,12 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// to the user when this sub-agent declares search capability but
 	// neither web_search nor tavily_search is registered at runtime.
 	// nil-safe on detector or ParentOut.
-	if useSubAgentDriver && qe.searchGapDetector != nil {
+	if useSubAgentDriver && s.searchGapDetector != nil {
 		var declared []string
 		if agentDef != nil {
 			declared = agentDef.AllowedTools
 		}
-		qe.searchGapDetector.CheckAndEmit(
+		s.searchGapDetector.CheckAndEmit(
 			ctx, cfg.ParentSessionID, cfg.SubagentType,
 			declared, pool.Names(),
 			func(ctx context.Context, ev types.EngineEvent) error {
@@ -514,7 +514,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// Step 8: Build permission checker.
 	// Use InheritedChecker with parent's session-approved tools.
 	var permChecker permission.Checker
-	approvedTools := qe.getSessionApprovedTools(cfg.ParentSessionID)
+	approvedTools := s.deps.GetSessionApprovedTools(cfg.ParentSessionID)
 	if len(approvedTools) > 0 {
 		permChecker = permission.NewInheritedChecker(approvedTools)
 	} else {
@@ -522,19 +522,20 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	}
 
 	// Step 9: Build sub-agent engine config.
-	subConfig := QueryEngineConfig{
+	parentCfg := s.deps.SpawnerConfig()
+	subConfig := SpawnConfig{
 		MaxTurns:             maxTurns,
-		AutoCompactThreshold: qe.config.AutoCompactThreshold,
-		ToolTimeout:          qe.config.ToolTimeout,
-		MaxTokens:             qe.config.MaxTokens,
-		ContextWindow:         qe.config.ContextWindow,
-		SystemPrompt:          qe.config.SystemPrompt,
-		ClientTools:           false, // sub-agents always server-side
-		MaxPlanReplans:        qe.config.MaxPlanReplans,
-		MaxStepAttempts:       qe.config.MaxStepAttempts,
-		LLMMaxRetries:         qe.config.LLMMaxRetries,
-		LLMAPITimeout:         qe.config.LLMAPITimeout,
-		LLMFirstByteTimeout:   qe.config.LLMFirstByteTimeout,
+		AutoCompactThreshold: parentCfg.AutoCompactThreshold,
+		ToolTimeout:          parentCfg.ToolTimeout,
+		MaxTokens:            parentCfg.MaxTokens,
+		ContextWindow:        parentCfg.ContextWindow,
+		SystemPrompt:         parentCfg.SystemPrompt,
+		ClientTools:          false, // sub-agents always server-side
+		MaxPlanReplans:       parentCfg.MaxPlanReplans,
+		MaxStepAttempts:      parentCfg.MaxStepAttempts,
+		LLMMaxRetries:        parentCfg.LLMMaxRetries,
+		LLMAPITimeout:        parentCfg.LLMAPITimeout,
+		LLMFirstByteTimeout:  parentCfg.LLMFirstByteTimeout,
 	}
 
 	// Build allowed skills map.
@@ -629,8 +630,8 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// tracker so the dashboard sees a "running" entry as soon as the
 	// start event hits the wire. Skipped silently when stats aren't
 	// wired in (tests) or when the parent session id is missing.
-	if qe.statsRegistry != nil && cfg.ParentSessionID != "" {
-		if tr := qe.statsRegistry.Get(cfg.ParentSessionID); tr != nil {
+	if statsReg := s.deps.StatsRegistry(); statsReg != nil && cfg.ParentSessionID != "" {
+		if tr := statsReg.Get(cfg.ParentSessionID); tr != nil {
 			tr.StartSubAgent(agentID, agentID, string(cfg.AgentType), cfg.SubagentType, "")
 		}
 	}
@@ -638,8 +639,8 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// row on the root tracker too so GET /sessions/{root_id}/metrics shows
 	// this sub-agent as one of its descendants — flat list of all L1/L2/L3
 	// agents, keyed by agentID. Skipped when root == parent (the L2 case).
-	if qe.statsRegistry != nil && rootSID != "" && rootSID != cfg.ParentSessionID {
-		if tr := qe.statsRegistry.Get(rootSID); tr != nil {
+	if statsReg := s.deps.StatsRegistry(); statsReg != nil && rootSID != "" && rootSID != cfg.ParentSessionID {
+		if tr := statsReg.Get(rootSID); tr != nil {
 			tr.StartSubAgent(agentID, agentID, string(cfg.AgentType), cfg.SubagentType, "")
 			logger.Debug("sub-agent row opened on root tracker too",
 				zap.String("root_session", rootSID),
@@ -647,8 +648,8 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			)
 		}
 	}
-	if qe.eventBus != nil {
-		qe.eventBus.Publish(event.Event{
+	if bus := s.deps.EventBus(); bus != nil {
+		bus.Publish(event.Event{
 			Topic: event.TopicSubAgentStarted,
 			Payload: map[string]any{
 				"agent_id":       agentID,
@@ -683,7 +684,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 		// TierSubAgent / RunAsLLMAgent → strict LLM ReAct loop (no SchedulerCoordinator).
 		// Coordinator tier (without RunAsLLMAgent) → SchedulerCoordinator handles kind selection.
 		if useSubAgentDriver {
-			loopResult = qe.runSubAgentDriver(ctx, sess, lc, out)
+			loopResult = s.runSubAgentDriver(ctx, sess, lc, out)
 		} else {
 			sp := schedspec.TaskSpec{
 				Goal:      cfg.Prompt,
@@ -694,7 +695,7 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 			if cfg.CoordinatorMode != "" {
 				sp.Hint.Kind = schedulertypes.Kind(cfg.CoordinatorMode)
 			}
-			ref, runErr := qe.schedulerCoord.Run(ctx, sp, out)
+			ref, runErr := s.deps.SchedulerCoord().Run(ctx, sp, out)
 			if runErr != nil {
 				loopResult = subAgentLoopResult{
 					Terminal: types.Terminal{
@@ -904,20 +905,20 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// Tracker hook: mark this sub-agent row finished with the same
 	// status/duration the wire event carries. Symmetric with the
 	// StartSubAgent call above; same nil-guards apply.
-	if qe.statsRegistry != nil && cfg.ParentSessionID != "" {
-		if tr := qe.statsRegistry.Get(cfg.ParentSessionID); tr != nil {
+	if statsReg := s.deps.StatsRegistry(); statsReg != nil && cfg.ParentSessionID != "" {
+		if tr := statsReg.Get(cfg.ParentSessionID); tr != nil {
 			tr.FinishSubAgent(agentID, agentStatus, elapsed.Milliseconds())
 		}
 	}
 	// Plan B dual-write: finish the root tracker row too when root differs
 	// from immediate parent — mirrors the StartSubAgent dual-write above.
-	if qe.statsRegistry != nil && rootSID != "" && rootSID != cfg.ParentSessionID {
-		if tr := qe.statsRegistry.Get(rootSID); tr != nil {
+	if statsReg := s.deps.StatsRegistry(); statsReg != nil && rootSID != "" && rootSID != cfg.ParentSessionID {
+		if tr := statsReg.Get(rootSID); tr != nil {
 			tr.FinishSubAgent(agentID, agentStatus, elapsed.Milliseconds())
 		}
 	}
-	if qe.eventBus != nil {
-		qe.eventBus.Publish(event.Event{
+	if bus := s.deps.EventBus(); bus != nil {
+		bus.Publish(event.Event{
 			Topic: event.TopicSubAgentEnded,
 			Payload: map[string]any{
 				"agent_id":    agentID,
@@ -1055,9 +1056,9 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	// Store the full output separately — the spawning parent only sees the summary.
 	fullResult := *spawnResult
 	fullResult.Output = fullOutput // preserve full sub-agent output
-	qe.taskRegistryMu.Lock()
-	qe.taskRegistry[agentID] = &fullResult
-	qe.taskRegistryMu.Unlock()
+	s.taskRegistryMu.Lock()
+	s.taskRegistry[agentID] = &fullResult
+	s.taskRegistryMu.Unlock()
 
 	// DEBUG: spawn.end data-flow snapshot — pair with `spawn.start` to
 	// see one full sub-agent run. parent_visible_preview shows EXACTLY
@@ -1082,27 +1083,12 @@ func (qe *QueryEngine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (r
 	return spawnResult, nil
 }
 
-// getSessionApprovedTools returns the list of tool names approved for a session.
-func (qe *QueryEngine) getSessionApprovedTools(sessionID string) []string {
-	qe.sessionAllowMu.RLock()
-	defer qe.sessionAllowMu.RUnlock()
-	tools, ok := qe.sessionAllowTools[sessionID]
-	if !ok {
-		return nil
-	}
-	result := make([]string, 0, len(tools))
-	for k := range tools {
-		result = append(result, k)
-	}
-	return result
-}
-
 // loopConfig parameterizes the query loop for both main and sub-agent execution.
 type loopConfig struct {
 	pool                 *tool.ToolPool
 	profile              *prompt.AgentProfile
 	permChecker          permission.Checker
-	config               QueryEngineConfig
+	config               SpawnConfig
 	systemPromptOverride string
 	subagentType         string          // agent definition name (e.g., "developer", "researcher")
 	allowedSkills        map[string]bool // nil = all skills; non-nil = whitelist
@@ -1196,7 +1182,23 @@ func buildSubmitNudgeMessage(nudge int, outs []types.ExpectedOutput) types.Messa
 // pool is the filtered ToolPool whose schemas the LLM actually sees — passed
 // in so the rendered "# 可用工具" block matches the callable set rather than
 // the global registry.
-func (qe *QueryEngine) buildSubAgentSystemPrompt(
+// BuildSubAgentSystemPrompt is the test-friendly export of the
+// internal prompt assembler. Production callers use the unexported
+// path inside runSubAgentDriver.
+func (s *Spawner) BuildSubAgentSystemPrompt(
+	ctx context.Context,
+	sess *session.Session,
+	messages []types.Message,
+	profile *prompt.AgentProfile,
+	subagentType string,
+	allowedSkills map[string]bool,
+	pool *tool.ToolPool,
+	sessionRoot string,
+) string {
+	return s.buildSubAgentSystemPrompt(ctx, sess, messages, profile, subagentType, allowedSkills, pool, sessionRoot)
+}
+
+func (s *Spawner) buildSubAgentSystemPrompt(
 	_ context.Context,
 	sess *session.Session,
 	messages []types.Message,
@@ -1206,8 +1208,11 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 	pool *tool.ToolPool,
 	sessionRoot string,
 ) string {
-	if qe.promptBuilder == nil {
-		return qe.config.SystemPrompt
+	cfg := s.deps.SpawnerConfig()
+	pb := s.deps.PromptBuilder()
+	logger := s.deps.Logger()
+	if pb == nil {
+		return cfg.SystemPrompt
 	}
 
 	totalTokens := 0
@@ -1216,7 +1221,7 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 	}
 
 	// Build skill listing, filtering by allowedSkills if set.
-	skillListing := qe.getSkillListingFiltered(allowedSkills)
+	skillListing := s.deps.GetSkillListingFiltered(allowedSkills)
 
 	// Look up agent definition to build worker identity, tool filter, and skills.
 	//
@@ -1240,8 +1245,8 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 	// IdentitySection content into the L3 role section.
 	var workerIdentity string
 	var def *agent.AgentDefinition
-	if qe.defRegistry != nil && subagentType != "" {
-		def = qe.defRegistry.Get(subagentType)
+	if defReg := s.deps.DefRegistry(); defReg != nil && subagentType != "" {
+		def = defReg.Get(subagentType)
 	}
 	if def != nil {
 		profileHasRoleOverride := profile != nil &&
@@ -1255,7 +1260,7 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 		// emma 团队的搭档". For coordinators (scheduler / Plan / etc.)
 		// we still surface the leader because they DO need to coordinate
 		// with the user-facing agent.
-		leaderName := qe.config.MainAgentDisplayName
+		leaderName := cfg.MainAgentDisplayName
 		if def.EffectiveTier() == agent.TierSubAgent {
 			leaderName = ""
 		}
@@ -1301,24 +1306,24 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 		SessionID:            sess.ID,
 		Turn:                 len(messages),
 		Session:              sess,
-		Tools:                qe.registry,
+		Tools:                s.deps.Registry(),
 		AvailableTools:       availableTools,
 		TotalTokensUsed:      totalTokens,
-		ContextWindowSize:    qe.contextWindow(),
+		ContextWindowSize:    s.deps.ContextWindow(),
 		Memory:               make(map[string]string),
-		EnvInfo:              qe.getEnvSnapshot(sessionRoot),
+		EnvInfo:              s.deps.GetEnvSnapshot(sessionRoot),
 		SkillListing:         skillListing,
 		SystemPromptOverride: workerIdentity,
 	}
 
-	output, err := qe.promptBuilder.Build(promptCtx, profile)
+	output, err := pb.Build(promptCtx, profile)
 	if err != nil {
-		qe.logger.Warn("sub-agent prompt build failed, using fallback", zap.Error(err))
-		return qe.config.SystemPrompt
+		logger.Warn("sub-agent prompt build failed, using fallback", zap.Error(err))
+		return cfg.SystemPrompt
 	}
 
 	result := output.ToSystemPrompt()
-	qe.logger.Debug("========== SUB-AGENT SYSTEM PROMPT START ==========\n"+result+"\n========== SUB-AGENT SYSTEM PROMPT END ==========",
+	logger.Debug("========== SUB-AGENT SYSTEM PROMPT START ==========\n"+result+"\n========== SUB-AGENT SYSTEM PROMPT END ==========",
 		zap.String("session_id", sess.ID),
 		zap.String("profile", profile.Name),
 		zap.Int("char_count", len(result)),
@@ -1329,9 +1334,17 @@ func (qe *QueryEngine) buildSubAgentSystemPrompt(
 	return result
 }
 
-// resolveSubAgentProfile maps a subagent_type string to a prompt profile.
-func resolveSubAgentProfile(subagentType string) *prompt.AgentProfile {
+// ResolveSubAgentProfile maps a subagent_type string to a prompt profile.
+// Exported so tests in the engine package can verify the mapping without
+// reaching into spawn-private state.
+func ResolveSubAgentProfile(subagentType string) *prompt.AgentProfile {
 	return prompt.ResolveProfileBySubagentType(subagentType)
+}
+
+// resolveSubAgentProfile is the in-package alias kept for the existing
+// call site in SpawnSync. New callers should use the exported name.
+func resolveSubAgentProfile(subagentType string) *prompt.AgentProfile {
+	return ResolveSubAgentProfile(subagentType)
 }
 
 // subAgentLoopResult bundles the loop's terminal state with the
@@ -1623,7 +1636,7 @@ func parseCandidateSkills(inputs map[string]any) []string {
 //
 // On error (missing skill, too many candidates) returns (nil, "", err) so
 // SpawnSync can fail fast before any LLM call.
-func hydrateFreelancer(reader *skill.Reader, candidates []string, prompt string) (*loop.SkillTracker, string, error) {
+func hydrateFreelancer(reader *skill.Reader, buildLoadedSkillsBlock func(fulls []*skill.SkillFull) string, candidates []string, prompt string) (*loop.SkillTracker, string, error) {
 	tracker := loop.NewSkillTracker(3)
 
 	if len(candidates) == 0 {
@@ -1650,4 +1663,37 @@ func hydrateFreelancer(reader *skill.Reader, candidates []string, prompt string)
 	block := buildLoadedSkillsBlock(fulls)
 	newPrompt := block + "\n\n" + prompt
 	return tracker, newPrompt, nil
+}
+
+// truncateForLog clips s to at most n bytes (rune-safe) for log output.
+// Local copy of the engine package's helper so spawn doesn't need to
+// import engine. Keep behaviour identical — tests assert byte-equal
+// outputs.
+func truncateForLog(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	// Drop trailing partial rune if we sliced mid-codepoint.
+	cut := n
+	for cut > 0 && (s[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	if cut == 0 {
+		return ""
+	}
+	return s[:cut] + "...[truncated]"
+}
+
+// contractFailureSample returns up to n contract-failure strings, each
+// rune-safely capped at 120 chars. Local copy of the engine helper.
+func contractFailureSample(failures []string, n int) []string {
+	limit := n
+	if len(failures) < limit {
+		limit = len(failures)
+	}
+	out := make([]string, limit)
+	for i := 0; i < limit; i++ {
+		out[i] = truncateForLog(failures[i], 120)
+	}
+	return out
 }

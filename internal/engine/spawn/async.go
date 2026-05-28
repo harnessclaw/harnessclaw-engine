@@ -1,4 +1,4 @@
-package engine
+package spawn
 
 import (
 	"context"
@@ -17,8 +17,9 @@ var ErrNoAgentRegistry = errors.New("agent registry not configured")
 // SpawnAsync implements agent.AsyncSpawner. It launches a sub-agent in a
 // background goroutine and returns its agent ID immediately. The result can
 // be retrieved from the AgentRegistry once the agent completes.
-func (qe *QueryEngine) SpawnAsync(ctx context.Context, cfg *agent.SpawnConfig) (string, error) {
-	if qe.agentRegistry == nil {
+func (s *Spawner) SpawnAsync(ctx context.Context, cfg *agent.SpawnConfig) (string, error) {
+	reg := s.deps.AgentRegistry()
+	if reg == nil {
 		return "", ErrNoAgentRegistry
 	}
 
@@ -41,9 +42,10 @@ func (qe *QueryEngine) SpawnAsync(ctx context.Context, cfg *agent.SpawnConfig) (
 		Cancel:    cancel,
 	}
 
-	qe.agentRegistry.Register(asyncAgent)
+	reg.Register(asyncAgent)
 
-	qe.logger.Info("spawning async sub-agent",
+	logger := s.deps.Logger()
+	logger.Info("spawning async sub-agent",
 		zap.String("agent_id", agentID),
 		zap.String("name", cfg.Name),
 		zap.String("subagent_type", cfg.SubagentType),
@@ -52,25 +54,25 @@ func (qe *QueryEngine) SpawnAsync(ctx context.Context, cfg *agent.SpawnConfig) (
 	go func() {
 		defer cancel()
 
-		result, err := qe.SpawnSync(agentCtx, cfg)
+		result, err := s.SpawnSync(agentCtx, cfg)
 
-		qe.agentRegistry.SetResult(agentID, result, err)
+		reg.SetResult(agentID, result, err)
 		if err != nil {
-			qe.agentRegistry.SetStatus(agentID, agent.AgentStatusFailed)
-			qe.logger.Error("async sub-agent failed",
+			reg.SetStatus(agentID, agent.AgentStatusFailed)
+			logger.Error("async sub-agent failed",
 				zap.String("agent_id", agentID),
 				zap.Error(err),
 			)
 		} else {
-			qe.agentRegistry.SetStatus(agentID, agent.AgentStatusCompleted)
-			qe.logger.Info("async sub-agent completed",
+			reg.SetStatus(agentID, agent.AgentStatusCompleted)
+			logger.Info("async sub-agent completed",
 				zap.String("agent_id", agentID),
 				zap.Int("turns", result.NumTurns),
 			)
 		}
 
 		// Notify parent via message broker if available.
-		if qe.messageBroker != nil && cfg.Name != "" {
+		if broker := s.deps.MessageBroker(); broker != nil && cfg.Name != "" {
 			status := "completed"
 			if err != nil {
 				status = "failed"
@@ -91,7 +93,7 @@ func (qe *QueryEngine) SpawnAsync(ctx context.Context, cfg *agent.SpawnConfig) (
 				}
 			}
 			content, _ := json.Marshal(notif)
-			_ = qe.messageBroker.Send(&agent.AgentMessage{
+			_ = broker.Send(&agent.AgentMessage{
 				From:    cfg.Name,
 				To:      cfg.ParentSessionID,
 				Type:    agent.MessageTypePlain,
@@ -101,14 +103,4 @@ func (qe *QueryEngine) SpawnAsync(ctx context.Context, cfg *agent.SpawnConfig) (
 	}()
 
 	return agentID, nil
-}
-
-// SetAgentRegistry configures the agent registry for async agent support.
-func (qe *QueryEngine) SetAgentRegistry(reg *agent.AgentRegistry) {
-	qe.agentRegistry = reg
-}
-
-// SetMessageBroker configures the message broker for inter-agent communication.
-func (qe *QueryEngine) SetMessageBroker(broker *agent.MessageBroker) {
-	qe.messageBroker = broker
 }

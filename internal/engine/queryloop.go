@@ -22,6 +22,7 @@ import (
 	enginesched "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
+	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
@@ -232,13 +233,6 @@ type QueryEngine struct {
 	// connections to the same gateway share the same upstream health.
 	retryer *retry.Retryer
 
-	// searchGapDetector emits a one-shot per-session CardSystem notice
-	// when a TierSubAgent spawns with declared search capability but
-	// neither web_search nor tavily_search is registered at runtime.
-	// Nil-safe — production wire-up always sets this; tests that
-	// don't need the feature can leave it nil.
-	searchGapDetector *SearchGapDetector
-
 	// Prompt builder for structured system prompt assembly.
 	promptBuilder *prompt.Builder
 	promptProfile *prompt.AgentProfile
@@ -278,12 +272,10 @@ type QueryEngine struct {
 	// tools (used by freelancer L3). nil disables those tools at runtime.
 	skillReader *skill.Reader
 
-	// TaskRegistry stores completed sub-agent results by agentID.
-	// Full output is kept here; emma only receives summaries via tool_result.
-	// Used for context passing (depends_on) and debugging.
-	// TODO(phase2): add TTL or LRU eviction to prevent unbounded growth on long-running servers.
-	taskRegistryMu sync.RWMutex
-	taskRegistry   map[string]*agent.SpawnResult // agentID → full result
+	// spawner owns the sub-agent lifecycle: taskRegistry, searchGapDetector,
+	// and the 14-step SpawnSync pipeline. Constructed at engine init from
+	// the QE itself (QE implements spawn.Deps).
+	spawner *spawn.Spawner
 
 	// emitSeq dispenses per-trace sequence numbers for the emit envelope.
 	// Backed by sync.Map internally so concurrent traces don't contend on a
@@ -397,12 +389,10 @@ func NewQueryEngine(
 		pendingPerms:      make(map[string]*pendingPermission),
 		sessionAllowTools: make(map[string]map[string]bool),
 		promptCache:       make(map[string]*promptCacheEntry),
-		taskRegistry:      make(map[string]*agent.SpawnResult),
 		emitSeq:           emit.NewSequencer(),
 		pendingPlans:         make(map[string]*pendingPlanReq),
 		pendingStepDecisions: make(map[string]*pendingStepDecisionReq),
 		retryer:              retry.New(retryConfigFromEngineCfg(cfg), logger),
-		searchGapDetector:    NewSearchGapDetector(logger),
 	}
 
 	// Apply optional config-injected dependencies. Replaces the previous
@@ -418,6 +408,11 @@ func NewQueryEngine(
 	if cfg.StatsRegistry != nil {
 		qe.statsRegistry = cfg.StatsRegistry
 	}
+
+	// Spawner depends on QE (via spawn.Deps), so it must be constructed
+	// after the optional config-injected deps land — DefRegistry,
+	// SkillReader, StatsRegistry are read through Deps from the spawner.
+	qe.spawner = spawn.NewSpawner(qe)
 
 	qe.schedulerCoord = enginesched.NewCoordinator(enginesched.CoordinatorConfig{
 		Spawner:  qe,

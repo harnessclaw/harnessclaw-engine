@@ -16,6 +16,7 @@ import (
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/texts"
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
@@ -374,9 +375,9 @@ func TestSpawnSync_ProfileResolution(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		profile := resolveSubAgentProfile(tt.subagentType)
+		profile := spawn.ResolveSubAgentProfile(tt.subagentType)
 		if profile.Name != tt.wantProfile {
-			t.Errorf("resolveSubAgentProfile(%q) = %q, want %q", tt.subagentType, profile.Name, tt.wantProfile)
+			t.Errorf("ResolveSubAgentProfile(%q) = %q, want %q", tt.subagentType, profile.Name, tt.wantProfile)
 		}
 	}
 }
@@ -431,7 +432,7 @@ func TestBuildSubAgentSystemPrompt_SchedulerKeepsStaticRole(t *testing.T) {
 	eng.mentionParser = NewMentionParser(reg)
 
 	sess := &session.Session{ID: "sess_test"}
-	got := eng.buildSubAgentSystemPrompt(
+	got := eng.Spawner().BuildSubAgentSystemPrompt(
 		context.Background(),
 		sess,
 		nil, // no prior messages
@@ -484,7 +485,7 @@ func TestBuildSubAgentSystemPrompt_GeneralPurposeDoesNotLeakEmma(t *testing.T) {
 	eng.mentionParser = NewMentionParser(reg)
 
 	sess := &session.Session{ID: "sess_test"}
-	got := eng.buildSubAgentSystemPrompt(
+	got := eng.Spawner().BuildSubAgentSystemPrompt(
 		context.Background(),
 		sess,
 		nil,

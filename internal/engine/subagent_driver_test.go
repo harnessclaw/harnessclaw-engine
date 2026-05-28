@@ -9,6 +9,7 @@ import (
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/pkg/types"
@@ -209,7 +210,7 @@ func TestSubAgentDriver_Escalation(t *testing.T) {
 // surfaces escalate_to_planner — that's what distinguishes the L3 driver from
 // the L2 loop's nudge (which only mentions submit_task_result).
 func TestSubAgentDriver_NudgeMentionsEscalate(t *testing.T) {
-	msg := buildDriverNudgeMessage(1, []types.ExpectedOutput{
+	msg := spawn.BuildDriverNudgeMessage(1, []types.ExpectedOutput{
 		{Role: "draft", Required: true},
 	})
 	if len(msg.Content) == 0 {
@@ -361,7 +362,7 @@ func TestBuildSubAgentSystemPrompt_NoEmmaForSubAgent(t *testing.T) {
 	eng.mentionParser = NewMentionParser(reg)
 
 	sess := &session.Session{ID: "sess_test"}
-	got := eng.buildSubAgentSystemPrompt(
+	got := eng.Spawner().BuildSubAgentSystemPrompt(
 		context.Background(),
 		sess,
 		nil,
