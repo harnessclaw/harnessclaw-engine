@@ -56,6 +56,13 @@ type Config struct {
 	// LLMAPITimeout.
 	LLMFirstByteTimeout time.Duration
 
+	// TaskContract and ArtifactProducer are attached to server-side tool
+	// execution contexts. submit_task_result uses TaskContract for
+	// structured result validation; artifact-producing tools use the
+	// producer stamp for lineage metadata.
+	TaskContract     tool.TaskContract
+	ArtifactProducer tool.ArtifactProducer
+
 	Out     chan<- types.EngineEvent
 	AgentID string
 

@@ -99,8 +99,19 @@ func (*Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResul
 	if strings.TrimSpace(s.TaskID) == "" {
 		return rejected("task_id missing: framework did not inject TaskID via ctx — engine configuration error")
 	}
-	if strings.TrimSpace(s.MetaPath) == "" {
-		return rejected("meta_path missing and cannot be derived")
+	if strings.TrimSpace(s.MetaPath) == "" && s.Result == nil {
+		return rejected("either meta_path or result is required")
+	}
+
+	contract, hasContract := tool.GetTaskContract(ctx)
+	if hasContract && contract.TaskID != "" && s.TaskID != contract.TaskID {
+		return rejected(fmt.Sprintf("submitted task_id (%q) does not match task contract (%q)", s.TaskID, contract.TaskID))
+	}
+	if scope.TaskID != "" && s.TaskID != scope.TaskID {
+		return rejected(fmt.Sprintf("submitted task_id (%q) does not match agent scope (%q)", s.TaskID, scope.TaskID))
+	}
+	if s.Result != nil {
+		return submitStructuredResult(s.TaskID, s.Result, contract, hasContract)
 	}
 
 	// Resolve meta_path against the spawn's SessionRoot. scope was
@@ -161,6 +172,53 @@ func (*Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResul
 			"outputs":           outRefs,
 		},
 	}, nil
+}
+
+func submitStructuredResult(taskID string, result map[string]any, contract tool.TaskContract, hasContract bool) (*types.ToolResult, error) {
+	if !hasContract || len(contract.OutputSchema) == 0 {
+		return rejected("result payload submitted but no output_schema is attached to this task")
+	}
+	if failures := ValidateAgainstSchema(contract.OutputSchema, result); len(failures) > 0 {
+		return rejected("result invalid: " + strings.Join(failures, "; "))
+	}
+
+	summary := summaryFromResult(result)
+	body, _ := json.Marshal(struct {
+		Status  string         `json:"status"`
+		TaskID  string         `json:"task_id"`
+		Summary string         `json:"summary,omitempty"`
+		Result  map[string]any `json:"result"`
+	}{
+		Status:  "accepted",
+		TaskID:  taskID,
+		Summary: summary,
+		Result:  result,
+	})
+	return &types.ToolResult{
+		Content: string(body),
+		Metadata: map[string]any{
+			"render_hint":       MetadataRenderHint,
+			MetadataKeyAccepted: true,
+			"task_id":           taskID,
+			"summary":           summary,
+			"result":            result,
+		},
+	}, nil
+}
+
+func summaryFromResult(result map[string]any) string {
+	for _, key := range []string{"summary", "content"} {
+		if raw, ok := result[key].(string); ok {
+			if trimmed := strings.TrimSpace(raw); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	body, err := json.Marshal(result)
+	if err != nil {
+		return ""
+	}
+	return string(body)
 }
 
 // utf8Len counts runes (not bytes). Shared with EscalateTool so both

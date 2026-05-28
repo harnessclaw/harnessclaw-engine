@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"harnessclaw-go/internal/engine/agent/common"
+	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -201,5 +202,32 @@ func TestContractEnforcer_ContinuesOnOtherTool(t *testing.T) {
 	}
 	if len(d.Inject) != 0 {
 		t.Errorf("should not inject when LLM is using other tools; got %d injects", len(d.Inject))
+	}
+}
+
+func TestSubmitResultEnforcer_AcceptsStructuredSubmitToolResult(t *testing.T) {
+	enforcer := common.SubmitResultEnforcer(nil, map[string]any{
+		"type":     "object",
+		"required": []string{"content", "source"},
+	}, 2)
+	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ToolUseID: "s1", ToolName: "submit_task_result", ToolInput: `{"task_id":"browser_1","result":{"content":"done","source":"direct_access"}}`},
+	}}
+	results := []types.ToolResult{{
+		Content: `{"status":"accepted"}`,
+		Metadata: map[string]any{
+			"render_hint":                  submittool.MetadataRenderHint,
+			submittool.MetadataKeyAccepted: true,
+			"task_id":                      "browser_1",
+			"result":                       map[string]any{"content": "done", "source": "direct_access"},
+		},
+	}}
+
+	d := enforcer(1, msg, results)
+	if d.Terminate == nil {
+		t.Fatal("expected accepted submit result to terminate")
+	}
+	if d.Terminate.Reason != types.TerminalCompleted {
+		t.Fatalf("Reason = %v, want completed", d.Terminate.Reason)
 	}
 }

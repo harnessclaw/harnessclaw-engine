@@ -3,8 +3,10 @@ package common
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"harnessclaw-go/internal/engine/loop"
+	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -68,14 +70,25 @@ func StopOnSubmitResult() loop.TurnHook {
 // to 1 so callers cannot accidentally disable enforcement. maxTurns ≤ 0
 // disables the budget-exhaustion nudge (legacy "no cap" behaviour).
 func ContractEnforcer(expected []types.ExpectedOutput, maxRetries, maxTurns int) loop.TurnHook {
+	return submitResultEnforcer(expected, nil, maxRetries, maxTurns)
+}
+
+// SubmitResultEnforcer validates submit_task_result completion.
+// expected covers file-producing agents; outputSchema covers
+// structured-result agents such as browser-agent.
+func SubmitResultEnforcer(expected []types.ExpectedOutput, outputSchema map[string]any, maxRetries int) loop.TurnHook {
+	return submitResultEnforcer(expected, outputSchema, maxRetries, 0)
+}
+
+func submitResultEnforcer(expected []types.ExpectedOutput, outputSchema map[string]any, maxRetries, maxTurns int) loop.TurnHook {
 	if maxRetries < 1 {
 		maxRetries = 1
 	}
 	failures := 0
 	hardNudgeSent := false
 
-	return func(turn int, msg types.Message, _ []types.ToolResult) loop.Decision {
-		submitCall := findSubmitCall(msg)
+	return func(turn int, msg types.Message, toolResults []types.ToolResult) loop.Decision {
+		submitCall, submitResult := findSubmitCall(msg, toolResults)
 		if submitCall == nil {
 			// No submit yet. If the LLM also issued no tool calls at all,
 			// it has likely stopped — nudge it back toward submitting.
@@ -116,7 +129,57 @@ func ContractEnforcer(expected []types.ExpectedOutput, maxRetries, maxTurns int)
 			return loop.Decision{}
 		}
 
+		if accepted, ok := submitAccepted(submitResult); ok {
+			if accepted {
+				return loop.Decision{Terminate: &types.Terminal{
+					Reason: types.TerminalCompleted, Turn: turn,
+				}}
+			}
+			failures++
+			if failures > maxRetries {
+				return loop.Decision{Terminate: &types.Terminal{
+					Reason:  types.TerminalCompleted,
+					Message: "contract validation exhausted retries: " + submitRejectionReason(submitResult),
+					Turn:    turn,
+				}}
+			}
+			return loop.Decision{Inject: []types.Message{{
+				Role: types.RoleUser,
+				Content: []types.ContentBlock{{
+					Type:       types.ContentTypeToolResult,
+					ToolUseID:  submitCall.ToolUseID,
+					ToolName:   "submit_task_result",
+					ToolResult: "submit_task_result rejected: " + submitRejectionReason(submitResult) + ". Please call submit_task_result again with the required fields.",
+					IsError:    true,
+				}},
+			}}}
+		}
+
 		if err := validateSubmitInput(submitCall.ToolInput, expected); err != nil {
+			failures++
+			if failures > maxRetries {
+				return loop.Decision{Terminate: &types.Terminal{
+					Reason:  types.TerminalCompleted,
+					Message: "contract validation exhausted retries: " + err.Error(),
+					Turn:    turn,
+				}}
+			}
+			correction := fmt.Sprintf(
+				"submit_task_result rejected: %s. Please call submit_task_result again with the required fields.",
+				err.Error(),
+			)
+			return loop.Decision{Inject: []types.Message{{
+				Role: types.RoleUser,
+				Content: []types.ContentBlock{{
+					Type:       types.ContentTypeToolResult,
+					ToolUseID:  submitCall.ToolUseID,
+					ToolName:   "submit_task_result",
+					ToolResult: correction,
+					IsError:    true,
+				}},
+			}}}
+		}
+		if err := validateStructuredResultInput(submitCall.ToolInput, outputSchema); err != nil {
 			failures++
 			if failures > maxRetries {
 				return loop.Decision{Terminate: &types.Terminal{
@@ -160,14 +223,50 @@ func hasToolCalls(msg types.Message) bool {
 }
 
 // findSubmitCall returns a pointer to the first submit_task_result
-// tool_use block in the message, or nil if none exists.
-func findSubmitCall(msg types.Message) *types.ContentBlock {
+// tool_use block in the message plus its aligned tool result, when the
+// tool was executed in this turn.
+func findSubmitCall(msg types.Message, toolResults []types.ToolResult) (*types.ContentBlock, *types.ToolResult) {
+	toolResultIdx := 0
 	for i, b := range msg.Content {
-		if b.Type == types.ContentTypeToolUse && b.ToolName == "submit_task_result" {
-			return &msg.Content[i]
+		if b.Type != types.ContentTypeToolUse {
+			continue
+		}
+		var result *types.ToolResult
+		if toolResultIdx < len(toolResults) {
+			result = &toolResults[toolResultIdx]
+		}
+		toolResultIdx++
+		if b.ToolName == "submit_task_result" {
+			return &msg.Content[i], result
 		}
 	}
-	return nil
+	return nil, nil
+}
+
+func submitAccepted(result *types.ToolResult) (bool, bool) {
+	if result == nil || result.Metadata == nil {
+		return false, false
+	}
+	if hint, _ := result.Metadata["render_hint"].(string); hint != submittool.MetadataRenderHint {
+		return false, false
+	}
+	accepted, ok := result.Metadata[submittool.MetadataKeyAccepted].(bool)
+	return accepted, ok
+}
+
+func submitRejectionReason(result *types.ToolResult) string {
+	if result == nil {
+		return "missing submit_task_result tool result"
+	}
+	if result.Metadata != nil {
+		if reason, _ := result.Metadata["reason"].(string); strings.TrimSpace(reason) != "" {
+			return strings.TrimSpace(reason)
+		}
+	}
+	if strings.TrimSpace(result.Content) != "" {
+		return strings.TrimSpace(result.Content)
+	}
+	return "unknown rejection"
 }
 
 // validateSubmitInput parses the submit_task_result tool input (a JSON
@@ -219,6 +318,25 @@ func validateSubmitInput(rawInput string, expected []types.ExpectedOutput) error
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required artifact roles: %v", missing)
+	}
+	return nil
+}
+
+func validateStructuredResultInput(rawInput string, outputSchema map[string]any) error {
+	if len(outputSchema) == 0 {
+		return nil
+	}
+	if rawInput == "" {
+		return fmt.Errorf("submit input is empty")
+	}
+	var parsed struct {
+		Result map[string]any `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(rawInput), &parsed); err != nil {
+		return fmt.Errorf("submit input not valid JSON: %w", err)
+	}
+	if failures := submittool.ValidateAgainstSchema(outputSchema, parsed.Result); len(failures) > 0 {
+		return fmt.Errorf("%s", strings.Join(failures, "; "))
 	}
 	return nil
 }

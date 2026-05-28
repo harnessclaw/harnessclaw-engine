@@ -260,6 +260,16 @@ tools:
     enabled: false
     api_key: ""          # set via CLAUDE_TOOLS_TAVILY_SEARCH_API_KEY or config_self.yaml
     # max_results: 5
+  browser_agent:
+    enabled: false
+    binary_path: "agent-browser"
+    default_visibility: "visible"
+    max_steps: 30
+    preferred_search_engine: "duckduckgo"
+    blocked_domains: []
+    human_takeover_timeout: "120s"
+    session_persistence: true
+    cli_timeout: "25s"
 
 # --- Agents ---
 # Project-level agent definitions loaded from YAML files at startup.

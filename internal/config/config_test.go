@@ -96,3 +96,87 @@ llm:
 		t.Errorf("gpt-3 group = %q, want \"\" (omitted)", got)
 	}
 }
+
+func TestBrowserAgentConfig_DefaultsDisabled(t *testing.T) {
+	tmp := t.TempDir()
+	p := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(p, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Tools.BrowserAgent.Enabled {
+		t.Fatal("browser agent should default to disabled")
+	}
+	if cfg.Tools.BrowserAgent.MaxSteps != 30 {
+		t.Errorf("max_steps = %d, want 30", cfg.Tools.BrowserAgent.MaxSteps)
+	}
+	if cfg.Tools.BrowserAgent.DefaultVisibility != "visible" {
+		t.Errorf("default_visibility = %q, want visible", cfg.Tools.BrowserAgent.DefaultVisibility)
+	}
+	if cfg.Tools.BrowserAgent.PreferredSearchEngine != "duckduckgo" {
+		t.Errorf("preferred_search_engine = %q, want duckduckgo", cfg.Tools.BrowserAgent.PreferredSearchEngine)
+	}
+	if cfg.Tools.BrowserAgent.HumanTakeoverTimeout.String() != "2m0s" {
+		t.Errorf("human_takeover_timeout = %s, want 2m0s", cfg.Tools.BrowserAgent.HumanTakeoverTimeout)
+	}
+	if cfg.Tools.BrowserAgent.CLITimeout.String() != "25s" {
+		t.Errorf("cli_timeout = %s, want 25s", cfg.Tools.BrowserAgent.CLITimeout)
+	}
+}
+
+func TestBrowserAgentConfig_YAMLRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	p := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(p, []byte(`
+tools:
+  browser_agent:
+    enabled: true
+    binary_path: "/opt/harnessclaw/agent-browser"
+    default_visibility: "visible"
+    max_steps: 12
+    preferred_search_engine: "google"
+    blocked_domains: ["blocked.example"]
+    human_takeover_timeout: "45s"
+    session_persistence: false
+    cli_timeout: "9s"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	got := cfg.Tools.BrowserAgent
+	if !got.Enabled {
+		t.Fatal("browser_agent.enabled should load true")
+	}
+	if got.BinaryPath != "/opt/harnessclaw/agent-browser" {
+		t.Errorf("binary_path = %q", got.BinaryPath)
+	}
+	if got.DefaultVisibility != "visible" {
+		t.Errorf("default_visibility = %q", got.DefaultVisibility)
+	}
+	if got.MaxSteps != 12 {
+		t.Errorf("max_steps = %d", got.MaxSteps)
+	}
+	if got.PreferredSearchEngine != "google" {
+		t.Errorf("preferred_search_engine = %q", got.PreferredSearchEngine)
+	}
+	if len(got.BlockedDomains) != 1 || got.BlockedDomains[0] != "blocked.example" {
+		t.Errorf("blocked_domains = %v", got.BlockedDomains)
+	}
+	if got.HumanTakeoverTimeout.String() != "45s" {
+		t.Errorf("human_takeover_timeout = %s", got.HumanTakeoverTimeout)
+	}
+	if got.SessionPersistence {
+		t.Error("session_persistence should load false")
+	}
+	if got.CLITimeout.String() != "9s" {
+		t.Errorf("cli_timeout = %s", got.CLITimeout)
+	}
+}

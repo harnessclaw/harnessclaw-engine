@@ -133,11 +133,11 @@ func TestRun_InjectsMessagesBeforeNextTurn(t *testing.T) {
 
 	res, err := loop.Run(context.Background(), &loop.Config{
 		Session: sess, SystemPrompt: "x",
-		Tools:          tool.NewToolPool(tool.NewRegistry(), nil, nil),
-		Provider:       &fakeProviderSequence{},
-		Retryer:        retry.New(retry.DefaultConfig(), zap.NewNop()),
-		Logger:         zap.NewNop(),
-		MaxTurns:       5, MaxTokens: 100, ContextWindow: 200000,
+		Tools:    tool.NewToolPool(tool.NewRegistry(), nil, nil),
+		Provider: &fakeProviderSequence{},
+		Retryer:  retry.New(retry.DefaultConfig(), zap.NewNop()),
+		Logger:   zap.NewNop(),
+		MaxTurns: 5, MaxTokens: 100, ContextWindow: 200000,
 		Out: out, AgentID: "a2",
 		PermChecker:    permission.BypassChecker{},
 		OnTurnComplete: hook,
@@ -181,11 +181,11 @@ func TestRun_MaxTurnsHit(t *testing.T) {
 
 	res, _ := loop.Run(context.Background(), &loop.Config{
 		Session: sess, SystemPrompt: "x",
-		Tools:          tool.NewToolPool(tool.NewRegistry(), nil, nil),
-		Provider:       &fakeProviderSequence{},
-		Retryer:        retry.New(retry.DefaultConfig(), zap.NewNop()),
-		Logger:         zap.NewNop(),
-		MaxTurns:       2, MaxTokens: 100, ContextWindow: 200000,
+		Tools:    tool.NewToolPool(tool.NewRegistry(), nil, nil),
+		Provider: &fakeProviderSequence{},
+		Retryer:  retry.New(retry.DefaultConfig(), zap.NewNop()),
+		Logger:   zap.NewNop(),
+		MaxTurns: 2, MaxTokens: 100, ContextWindow: 200000,
 		Out: out, AgentID: "a3",
 		PermChecker:    permission.BypassChecker{},
 		OnTurnComplete: hook,

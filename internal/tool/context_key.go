@@ -105,10 +105,10 @@ type TaskContract struct {
 	TaskStartedAt   time.Time
 	ExpectedOutputs []types.ExpectedOutput
 	// OutputSchema is the per-agent declared structured-result shape
-	// (mirrors AgentDefinition.OutputSchema for TierSubAgent). When
-	// non-empty, submit_task_result requires a matching `result` payload
-	// and validates it server-side. Empty means "no schema enforced",
-	// i.e. legacy free-form submissions.
+	// (mirrors AgentDefinition.OutputSchema for TierSubAgent). When an
+	// agent submits a direct `result` payload, submit_task_result validates
+	// it server-side against this schema. Empty means no structured-result
+	// schema is available.
 	OutputSchema map[string]any
 }
 

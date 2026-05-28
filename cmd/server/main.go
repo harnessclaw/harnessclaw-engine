@@ -32,7 +32,9 @@ import (
 	"harnessclaw-go/internal/api"
 	"harnessclaw-go/internal/api/agentcapabilities"
 	"harnessclaw-go/internal/api/modelsregistry"
+	"harnessclaw-go/internal/api/providersmgmt"
 	"harnessclaw-go/internal/api/sessionmetrics"
+	"harnessclaw-go/internal/api/toolsmgmt"
 	"harnessclaw-go/internal/channel"
 	wsch "harnessclaw-go/internal/channel/websocket"
 	"harnessclaw-go/internal/command"
@@ -44,8 +46,6 @@ import (
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/permission"
-	"harnessclaw-go/internal/api/providersmgmt"
-	"harnessclaw-go/internal/api/toolsmgmt"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/bifrost"
 	"harnessclaw-go/internal/provider/failover"
@@ -60,10 +60,9 @@ import (
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/tool/agenttool"
 	"harnessclaw-go/internal/tool/askuserquestion"
-	orchestratetool "harnessclaw-go/internal/tool/orchestrate"
-	"harnessclaw-go/internal/tool/scheduler"
-	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/internal/tool/bash"
+	browsertools "harnessclaw-go/internal/tool/browser"
+	"harnessclaw-go/internal/tool/browseragent"
 	"harnessclaw-go/internal/tool/fileedit"
 	"harnessclaw-go/internal/tool/fileread"
 	"harnessclaw-go/internal/tool/filewrite"
@@ -72,16 +71,19 @@ import (
 	"harnessclaw-go/internal/tool/listloadedskills"
 	"harnessclaw-go/internal/tool/loadskill"
 	"harnessclaw-go/internal/tool/metatool"
+	orchestratetool "harnessclaw-go/internal/tool/orchestrate"
 	"harnessclaw-go/internal/tool/plantool"
 	"harnessclaw-go/internal/tool/promotetool"
+	"harnessclaw-go/internal/tool/scheduler"
 	"harnessclaw-go/internal/tool/searchskill"
 	"harnessclaw-go/internal/tool/skilltool"
-	"harnessclaw-go/internal/tool/unloadskill"
+	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/internal/tool/tasktool"
+	"harnessclaw-go/internal/tool/tavilysearch"
 	"harnessclaw-go/internal/tool/teamtool"
+	"harnessclaw-go/internal/tool/unloadskill"
 	"harnessclaw-go/internal/tool/webfetch"
 	"harnessclaw-go/internal/tool/websearch"
-	"harnessclaw-go/internal/tool/tavilysearch"
 	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
@@ -233,6 +235,14 @@ func main() {
 				logger.Fatal("failed to register tool", zap.Error(err))
 			}
 			logger.Info("tool registered", zap.String("name", t.Name()), zap.Bool("is_enabled", t.IsEnabled()))
+		}
+	}
+	if cfg.Tools.BrowserAgent.Enabled {
+		for _, t := range browsertools.NewTools(cfg.Tools.BrowserAgent) {
+			if err := registry.Register(t); err != nil {
+				logger.Fatal("failed to register browser tool", zap.Error(err), zap.String("name", t.Name()))
+			}
+			logger.Info("browser tool registered", zap.String("name", t.Name()))
 		}
 	}
 
@@ -407,8 +417,12 @@ func main() {
 		// applied by WithEmmaConfig; setting non-default values here would
 		// be overwritten anyway.
 	}
+	emmaCfg := emma.DefaultEmmaConfig()
+	if cfg.Tools.BrowserAgent.Enabled {
+		emmaCfg.AllowedTools = append(emmaCfg.AllowedTools, browseragent.ToolName)
+	}
 	eng := emma.New(llmProvider, registry, sessionMgr, compactor, permChecker, logger, engCfg, cmdRegistry,
-		emma.WithEmmaConfig(emma.DefaultEmmaConfig()))
+		emma.WithEmmaConfig(emmaCfg))
 	logger.Info("emma engine initialized",
 		zap.Int("max_turns", engCfg.MaxTurns),
 		zap.Float64("compact_threshold", engCfg.AutoCompactThreshold),
@@ -440,6 +454,12 @@ func main() {
 		logger.Fatal("failed to register scheduler tool", zap.Error(err))
 	}
 	logger.Info("scheduler tool registered")
+	if cfg.Tools.BrowserAgent.Enabled {
+		if err := registry.Register(browseragent.New(eng.Spawner(), cfg.Tools.BrowserAgent, logger)); err != nil {
+			logger.Fatal("failed to register browser agent tool", zap.Error(err))
+		}
+		logger.Info("browser agent tool registered")
+	}
 
 	// --- Step 8.5: Initialize multi-agent infrastructure ---
 	agentReg := agent.NewAgentRegistry()
@@ -503,6 +523,11 @@ func main() {
 	// Load all persisted definitions from SQLite into in-memory registry.
 	if err := agentSvc.LoadAllToRegistry(context.Background()); err != nil {
 		logger.Warn("failed to load agent definitions to registry", zap.Error(err))
+	}
+	if cfg.Tools.BrowserAgent.Enabled {
+		if err := agentDefReg.Register(agent.BrowserAgentDefinition()); err != nil {
+			logger.Fatal("failed to register browser-agent definition", zap.Error(err))
+		}
 	}
 
 	// Log all registered agent definitions.
