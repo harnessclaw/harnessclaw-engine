@@ -265,14 +265,6 @@ type QueryEngine struct {
 	// global mutex.
 	emitSeq *emit.Sequencer
 
-	// pendingPlans tracks in-flight PlanCoordinator approval requests.
-	// Indexed by plan_id (server-generated). Each entry holds a result
-	// channel the coordinator is blocking on; SubmitPlanResponse looks
-	// up by plan_id and pushes the response. Same pattern as
-	// pendingPerms / pendingTools.
-	planMu       sync.Mutex
-	pendingPlans map[string]*pendingPlanReq
-
 	// pendingStepDecisions tracks in-flight step-decision requests
 	// (continue / retry / cancel after a step or plan-level failure).
 	// Indexed by request_id (server-generated). Mirrors pendingPlans.
@@ -289,19 +281,8 @@ type QueryEngine struct {
 	schedulerCoord *enginesched.Coordinator
 }
 
-// pendingPlanReq tracks one in-flight plan approval request. The
-// PlanCoordinator pushes a request and blocks on response; the channel
-// adapter routes the user's plan.response message into SubmitPlanResponse,
-// which fills response and closes the channel.
-type pendingPlanReq struct {
-	planID    string
-	sessionID string
-	response  chan *types.PlanResponse
-	createdAt time.Time
-}
-
-// pendingStepDecisionReq is the step-decision counterpart of
-// pendingPlanReq.
+// pendingStepDecisionReq is the step-decision counterpart of the
+// (now-migrated) pendingPlanReq; see Session.Awaits for plans.
 type pendingStepDecisionReq struct {
 	requestID string
 	sessionID string
@@ -371,7 +352,6 @@ func NewQueryEngine(
 		sessionAllowTools: make(map[string]map[string]bool),
 		promptCache:       make(map[string]*promptCacheEntry),
 		emitSeq:           emit.NewSequencer(),
-		pendingPlans:         make(map[string]*pendingPlanReq),
 		pendingStepDecisions: make(map[string]*pendingStepDecisionReq),
 		retryer:              retry.New(retryConfigFromEngineCfg(cfg), logger),
 	}
@@ -471,25 +451,12 @@ func (qe *QueryEngine) requestPlanApproval(
 		return nil, fmt.Errorf("plan approval: empty plan_id")
 	}
 
-	req := &pendingPlanReq{
-		planID:    proposal.PlanID,
-		sessionID: sessionID,
-		response:  make(chan *types.PlanResponse, 1),
-		createdAt: time.Now(),
+	sess := qe.sessionMgr.Get(sessionID)
+	if sess == nil {
+		return nil, fmt.Errorf("session %s not found for plan approval", sessionID)
 	}
-
-	qe.planMu.Lock()
-	qe.pendingPlans[proposal.PlanID] = req
-	qe.planMu.Unlock()
-
-	// Best-effort cleanup on exit. SubmitPlanResponse also deletes
-	// after delivery; double-delete is safe (map is keyed and
-	// idempotent on missing keys).
-	defer func() {
-		qe.planMu.Lock()
-		delete(qe.pendingPlans, proposal.PlanID)
-		qe.planMu.Unlock()
-	}()
+	aw := sess.Awaits.PushPlan(proposal.PlanID, sessionID)
+	defer sess.Awaits.ForgetPlan(proposal.PlanID)
 
 	// Emit the proposal event. The router/channel forwards to the
 	// client. If the channel doesn't exist (tests), we still register
@@ -509,7 +476,7 @@ func (qe *QueryEngine) requestPlanApproval(
 
 	// Block on response or context cancellation.
 	select {
-	case resp := <-req.response:
+	case resp := <-aw.Response:
 		// Echo "approved" event so the client can match its own
 		// confirmation cycle and the trace shows the round-trip.
 		if out != nil && resp != nil {
@@ -526,28 +493,19 @@ func (qe *QueryEngine) requestPlanApproval(
 }
 
 // SubmitPlanResponse implements engine.Engine. Routes the user's
-// plan.response back to the awaiting requestPlanApproval call. Returns
-// nil on success; logs at warn level when the plan_id has no pending
-// request (stale / duplicate response).
-func (qe *QueryEngine) SubmitPlanResponse(_ context.Context, _ string, resp *types.PlanResponse) error {
+// plan.response back to the awaiting requestPlanApproval call via
+// sess.Awaits.
+func (qe *QueryEngine) SubmitPlanResponse(_ context.Context, sessionID string, resp *types.PlanResponse) error {
 	if resp == nil || resp.PlanID == "" {
 		return fmt.Errorf("plan response: missing plan_id")
 	}
-	qe.planMu.Lock()
-	req, ok := qe.pendingPlans[resp.PlanID]
-	if ok {
-		delete(qe.pendingPlans, resp.PlanID)
+	sess := qe.sessionMgr.Get(sessionID)
+	if sess == nil {
+		return fmt.Errorf("session %s not found for plan response", sessionID)
 	}
-	qe.planMu.Unlock()
-	if !ok {
-		qe.logger.Warn("plan response for unknown plan_id (stale or duplicate)",
-			zap.String("plan_id", resp.PlanID),
-		)
-		return nil // not a hard error; client may retry
+	if err := sess.Awaits.ResolvePlan(resp.PlanID, resp); err != nil {
+		return fmt.Errorf("no pending plan request for plan_id %s: %w", resp.PlanID, err)
 	}
-	// Non-blocking send — the channel is buffered (cap=1) and we
-	// already own the slot.
-	req.response <- resp
 	return nil
 }
 

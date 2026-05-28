@@ -191,6 +191,21 @@ func TestAwaits_ForgetPerm_Missing(t *testing.T) {
 	a.ForgetPerm("unknown") // must not panic
 }
 
+func TestAwaits_ForgetPlan(t *testing.T) {
+	a := session.NewAwaits()
+	a.PushPlan("plan_1", "sess_1")
+	a.ForgetPlan("plan_1")
+	err := a.ResolvePlan("plan_1", &types.PlanResponse{PlanID: "plan_1"})
+	if !errors.Is(err, session.ErrAwaitNotFound) {
+		t.Errorf("after ForgetPlan, ResolvePlan returned %v; want ErrAwaitNotFound", err)
+	}
+}
+
+func TestAwaits_ForgetPlan_Missing(t *testing.T) {
+	a := session.NewAwaits()
+	a.ForgetPlan("unknown") // must not panic
+}
+
 func TestAwaits_AbortAll_All4Kinds(t *testing.T) {
 	a := session.NewAwaits()
 	toolAw := a.PushTool("u1", "Read")

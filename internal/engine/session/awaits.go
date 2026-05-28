@@ -192,6 +192,14 @@ func (a *Awaits) ResolvePlan(planID string, resp *types.PlanResponse) error {
 	return nil
 }
 
+// ForgetPlan removes a pending PlanAwait without delivering a response.
+// Mirror of ForgetTool / ForgetPerm.
+func (a *Awaits) ForgetPlan(planID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.plans, planID)
+}
+
 // --- StepDecision ---
 
 // PushStepDecision registers a new StepDecisionAwait and returns it.
