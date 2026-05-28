@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
+	"harnessclaw-go/internal/engine/llmcall"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/pkg/types"
 )
@@ -41,27 +42,27 @@ func TestLLMCallOk_LogsTokenBreakdown(t *testing.T) {
 	}
 
 	out := make(chan types.EngineEvent, 16)
-	// Drain the output channel in a goroutine so callLLM never blocks.
+	// Drain the output channel in a goroutine so CallLLM never blocks.
 	go func() {
 		for range out {
 		}
 	}()
 
-	result := callLLM(
+	result := llmcall.CallLLM(
 		context.Background(),
 		prov,
 		&provider.ChatRequest{},
 		logger,
 		nil, // nil retryer = single attempt, no retries
-		llmCallTimeouts{},
+		llmcall.LLMCallTimeouts{},
 		"agent_test",
 		out,
 		nil,
 	)
 	close(out)
 
-	if result.streamErr != nil {
-		t.Fatalf("callLLM returned unexpected error: %v", result.streamErr)
+	if result.StreamErr != nil {
+		t.Fatalf("CallLLM returned unexpected error: %v", result.StreamErr)
 	}
 
 	// Find the single "llm.call ok" log entry.

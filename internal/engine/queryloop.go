@@ -17,6 +17,7 @@ import (
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/emit"
 	"harnessclaw-go/internal/engine/compact"
+	"harnessclaw-go/internal/engine/llmcall"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/sections"
 	enginesched "harnessclaw-go/internal/engine/scheduler"
@@ -1375,11 +1376,12 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		// envelope.agent_id stamp on every emitter the main session
 		// produces, so heartbeats route to the active turn / message
 		// card.
-		llmResult := callLLM(ctx, qe.provider, req, qe.logger, qe.retryer, qe.llmTimeouts(), "main", out, out)
+		timeouts := llmcall.LLMTimeouts(qe.config.LLMAPITimeout, qe.config.LLMFirstByteTimeout)
+		llmResult := llmcall.CallLLM(ctx, qe.provider, req, qe.logger, qe.retryer, timeouts, "main", out, out)
 
-		if llmResult.streamErr != nil {
+		if llmResult.StreamErr != nil {
 			// ---- Phase 3: Error Recovery (all retries exhausted) ----
-			llmErr := llmResult.streamErr
+			llmErr := llmResult.StreamErr
 			out <- types.EngineEvent{Type: types.EngineEventError, Error: llmErr}
 			out <- types.EngineEvent{Type: types.EngineEventMessageDelta, StopReason: "error", Error: llmErr}
 			out <- types.EngineEvent{Type: types.EngineEventMessageStop}
@@ -1395,18 +1397,18 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 			return types.Terminal{Reason: types.TerminalModelError, Message: llmErr.Error(), Turn: ls.turn}
 		}
 
-		// Events were already streamed in real-time by callLLM.
+		// Events were already streamed in real-time by CallLLM.
 		// Extract collected results for session state.
-		textBuf := llmResult.textBuf
-		toolCalls := llmResult.toolCalls
+		textBuf := llmResult.TextBuf
+		toolCalls := llmResult.ToolCalls
 
-		ls.stopReason = llmResult.stopReason
-		if llmResult.lastUsage != nil {
-			ls.lastUsage = llmResult.lastUsage
-			ls.cumulativeUsage.InputTokens += llmResult.lastUsage.InputTokens
-			ls.cumulativeUsage.OutputTokens += llmResult.lastUsage.OutputTokens
-			ls.cumulativeUsage.CacheRead += llmResult.lastUsage.CacheRead
-			ls.cumulativeUsage.CacheWrite += llmResult.lastUsage.CacheWrite
+		ls.stopReason = llmResult.StopReason
+		if llmResult.LastUsage != nil {
+			ls.lastUsage = llmResult.LastUsage
+			ls.cumulativeUsage.InputTokens += llmResult.LastUsage.InputTokens
+			ls.cumulativeUsage.OutputTokens += llmResult.LastUsage.OutputTokens
+			ls.cumulativeUsage.CacheRead += llmResult.LastUsage.CacheRead
+			ls.cumulativeUsage.CacheWrite += llmResult.LastUsage.CacheWrite
 		}
 
 		// Emit message.delta with stop_reason and output usage.
@@ -1430,7 +1432,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		// Append assistant message to session. Reasoning is threaded
 		// through so providers that require thinking-mode replay
 		// (DeepSeek) see it on the next request.
-		assistantMsg := buildAssistantMessage(textBuf, toolCalls, ls.lastUsage, llmResult.reasoning)
+		assistantMsg := buildAssistantMessage(textBuf, toolCalls, ls.lastUsage, llmResult.Reasoning)
 		sess.AddMessage(assistantMsg)
 
 		// ---- Phase 5 (part A): Check terminal — no tool calls means LLM is done. ----

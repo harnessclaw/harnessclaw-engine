@@ -1,4 +1,4 @@
-package engine
+package llmcall
 
 import (
 	"context"
@@ -50,7 +50,7 @@ func TestCallLLMOnce_EmitsToolPlanningOnFirstChunk(t *testing.T) {
 	}
 
 	planningOut := make(chan types.EngineEvent, 8)
-	callLLMOnce(context.Background(), prov, &provider.ChatRequest{}, nil, planningOut, llmCallTimeouts{}, zap.NewNop())
+	CallLLMOnce(context.Background(), prov, &provider.ChatRequest{}, nil, planningOut, LLMCallTimeouts{}, zap.NewNop())
 	close(planningOut)
 
 	var sawPlanning bool
@@ -85,7 +85,7 @@ func TestCallLLMOnce_EmitsProgressAboveThreshold(t *testing.T) {
 	}
 
 	planningOut := make(chan types.EngineEvent, 8)
-	callLLMOnce(context.Background(), prov, &provider.ChatRequest{}, nil, planningOut, llmCallTimeouts{}, zap.NewNop())
+	CallLLMOnce(context.Background(), prov, &provider.ChatRequest{}, nil, planningOut, LLMCallTimeouts{}, zap.NewNop())
 	close(planningOut)
 
 	var planningCount, progressCount int
@@ -127,11 +127,11 @@ func TestCallLLM_EmitsRetractOnRetry(t *testing.T) {
 	out := make(chan types.EngineEvent, 32)
 	planningOut := make(chan types.EngineEvent, 32)
 
-	result := callLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(),
-		fastRetryer(3), llmCallTimeouts{}, "main", out, planningOut)
+	result := CallLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(),
+		fastRetryer(3), LLMCallTimeouts{}, "main", out, planningOut)
 
-	if result.streamErr != nil {
-		t.Fatalf("expected success on attempt 2, got %v", result.streamErr)
+	if result.StreamErr != nil {
+		t.Fatalf("expected success on attempt 2, got %v", result.StreamErr)
 	}
 
 	close(out)
@@ -161,11 +161,11 @@ func TestCallLLM_EmitsToolQueuedOnSuccess(t *testing.T) {
 	out := make(chan types.EngineEvent, 16)
 	planningOut := make(chan types.EngineEvent, 16)
 
-	result := callLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(),
-		nil /* no retry */, llmCallTimeouts{}, "main", out, planningOut)
+	result := CallLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(),
+		nil /* no retry */, LLMCallTimeouts{}, "main", out, planningOut)
 
-	if result.streamErr != nil {
-		t.Fatalf("unexpected stream err: %v", result.streamErr)
+	if result.StreamErr != nil {
+		t.Fatalf("unexpected stream err: %v", result.StreamErr)
 	}
 	close(out)
 	close(planningOut)

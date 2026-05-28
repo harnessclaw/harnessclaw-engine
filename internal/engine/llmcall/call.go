@@ -1,4 +1,4 @@
-package engine
+package llmcall
 
 import (
 	"context"
@@ -31,22 +31,22 @@ var llmHeartbeatInterval = 30 * time.Second
 func llmHeartbeatIntervalForTest() time.Duration   { return llmHeartbeatInterval }
 func setLLMHeartbeatIntervalForTest(d time.Duration) { llmHeartbeatInterval = d }
 
-// llmCallTimeouts bundles the per-attempt deadlines applied to one
+// LLMCallTimeouts bundles the per-attempt deadlines applied to one
 // provider.Chat() round-trip. Zero values disable the corresponding
 // guard.
-type llmCallTimeouts struct {
+type LLMCallTimeouts struct {
 	// API caps total wall-clock for one Chat() + stream consumption.
 	// When the upstream returns the connection but trickles bytes
 	// indefinitely (or never sends MessageEnd), this is the upper
 	// bound that triggers retry / surfaces the failure.
-	api time.Duration
+	API time.Duration
 
 	// FirstByte caps the silent gap between Chat() returning and the
 	// first stream chunk arriving. Catches "TCP black hole" — gateway
 	// accepted the request but never sends a byte. Disarmed once the
 	// first chunk lands so legitimate slow streams (long thinking
 	// preludes) aren't penalised.
-	firstByte time.Duration
+	FirstByte time.Duration
 }
 
 // errFirstByteTimeout is the typed cause we attach via WithCancelCause
@@ -56,31 +56,28 @@ type llmCallTimeouts struct {
 // ctx.Err().
 var errFirstByteTimeout = errors.New("LLM call: no first byte within budget (upstream stall)")
 
-// llmTimeouts pulls the per-call deadlines off the QueryEngine's
-// config. Centralised so callers don't repeat the field plumbing —
-// every callLLM call site is `qe.llmTimeouts()`.
-func (qe *QueryEngine) llmTimeouts() llmCallTimeouts {
-	if qe == nil {
-		return llmCallTimeouts{}
-	}
-	return llmCallTimeouts{
-		api:       qe.config.LLMAPITimeout,
-		firstByte: qe.config.LLMFirstByteTimeout,
+// LLMTimeouts builds the per-attempt deadlines applied to one
+// CallLLM invocation. Returns a zero-value struct when both inputs
+// are zero (preserves the original "no timeouts" semantics).
+func LLMTimeouts(api, firstByte time.Duration) LLMCallTimeouts {
+	return LLMCallTimeouts{
+		API:       api,
+		FirstByte: firstByte,
 	}
 }
 
-// llmCallResult holds the outcome of a single LLM Chat + stream consumption attempt.
-type llmCallResult struct {
-	textBuf    string
-	toolCalls  []types.ToolCall
-	stopReason string
-	lastUsage  *types.Usage
-	// reasoning is the thinking-mode chain-of-thought captured on the
+// LLMCallResult holds the outcome of a single LLM Chat + stream consumption attempt.
+type LLMCallResult struct {
+	TextBuf    string
+	ToolCalls  []types.ToolCall
+	StopReason string
+	LastUsage  *types.Usage
+	// Reasoning is the thinking-mode chain-of-thought captured on the
 	// terminal MessageEnd event. Threaded onto the outgoing assistant
 	// Message so the next request can echo it back (required by
 	// DeepSeek thinking-mode models).
-	reasoning string
-	streamErr error // non-nil if the call or stream failed
+	Reasoning string
+	StreamErr error // non-nil if the call or stream failed
 
 	// Timing breakdown captured by callLLMOnce. All durations are
 	// from the moment Chat() was invoked. Zero means "never observed".
@@ -88,9 +85,9 @@ type llmCallResult struct {
 	// quickly" — distinguishes gateway hangs (large endDelta), extended
 	// thinking (large firstByte), and network buffering (anything in
 	// between).
-	firstByteAt time.Duration // first text/tool chunk arrived
-	lastChunkAt time.Duration // last text/tool chunk arrived
-	endAt       time.Duration // MessageEnd arrived
+	FirstByteAt time.Duration // first text/tool chunk arrived
+	LastChunkAt time.Duration // last text/tool chunk arrived
+	EndAt       time.Duration // MessageEnd arrived
 }
 
 // Note on planningOut sharing: production callers today pass the same
@@ -101,7 +98,7 @@ type llmCallResult struct {
 // drop-policy isolation; today's translator handles both cases
 // uniformly via its EngineEventType switch.
 
-// callLLM attempts to call provider.Chat and consume the stream,
+// CallLLM attempts to call provider.Chat and consume the stream,
 // driving the retry loop through retry.Retryer. The Retryer owns the
 // backoff schedule, jitter, status-code-based retryability, and the
 // consecutive-529 fallback signal — this function only handles the
@@ -117,26 +114,26 @@ type llmCallResult struct {
 // nil retryer disables retries entirely (single-attempt fallback).
 //
 // Returns the result of the successful attempt, or the last failed
-// attempt with streamErr populated. The wire-level error type
+// attempt with StreamErr populated. The wire-level error type
 // (*retry.APIError or *retry.FallbackTriggeredError) is preserved on
-// streamErr so callers / tests can inspect it.
-// callLLM: see file-level doc. agentID, if non-empty, lands on
+// StreamErr so callers / tests can inspect it.
+// CallLLM: see file-level doc. agentID, if non-empty, lands on
 // every per-attempt heartbeat event so the channel translator can
 // route it to the correct sub-agent card. Empty agentID = L1 main
 // loop; heartbeats then target whatever card is the most-specific
 // open card on the session.
-func callLLM(
+func CallLLM(
 	ctx context.Context,
 	prov provider.Provider,
 	req *provider.ChatRequest,
 	logger *zap.Logger,
 	retryer *retry.Retryer,
-	timeouts llmCallTimeouts,
+	timeouts LLMCallTimeouts,
 	agentID string,
 	out chan<- types.EngineEvent,
 	planningOut chan<- types.EngineEvent,
-) *llmCallResult {
-	var result *llmCallResult
+) *LLMCallResult {
+	var result *LLMCallResult
 	attempt := 0
 	streamedLive := false // true when attempt 1 succeeded after streaming live
 
@@ -211,32 +208,32 @@ func callLLM(
 		)
 		// planningOut is threaded through so planning events fire live
 		// even during retried attempts (and are retracted on each retry).
-		attemptResult := callLLMOnce(ctx, prov, req, attemptOut, planningOut, timeouts, logger)
+		attemptResult := CallLLMOnce(ctx, prov, req, attemptOut, planningOut, timeouts, logger)
 		elapsed := time.Since(startedAt)
 
-		if attemptResult.streamErr == nil {
-			tailAfterLastChunk := elapsed - attemptResult.lastChunkAt
-			if attemptResult.lastChunkAt == 0 {
+		if attemptResult.StreamErr == nil {
+			tailAfterLastChunk := elapsed - attemptResult.LastChunkAt
+			if attemptResult.LastChunkAt == 0 {
 				tailAfterLastChunk = 0
 			}
 			var inputTok, outputTok, cacheRead, cacheWrite, thinkingTok int64
-			if attemptResult.lastUsage != nil {
-				inputTok = int64(attemptResult.lastUsage.InputTokens)
-				outputTok = int64(attemptResult.lastUsage.OutputTokens)
-				cacheRead = int64(attemptResult.lastUsage.CacheRead)
-				cacheWrite = int64(attemptResult.lastUsage.CacheWrite)
-				thinkingTok = int64(attemptResult.lastUsage.ThinkingTokens)
+			if attemptResult.LastUsage != nil {
+				inputTok = int64(attemptResult.LastUsage.InputTokens)
+				outputTok = int64(attemptResult.LastUsage.OutputTokens)
+				cacheRead = int64(attemptResult.LastUsage.CacheRead)
+				cacheWrite = int64(attemptResult.LastUsage.CacheWrite)
+				thinkingTok = int64(attemptResult.LastUsage.ThinkingTokens)
 			}
 			logger.Info("llm.call ok",
 				zap.Int("attempt", attempt),
 				zap.Duration("elapsed", elapsed),
-				zap.Duration("first_byte", attemptResult.firstByteAt),
-				zap.Duration("last_chunk", attemptResult.lastChunkAt),
-				zap.Duration("end_at", attemptResult.endAt),
+				zap.Duration("first_byte", attemptResult.FirstByteAt),
+				zap.Duration("last_chunk", attemptResult.LastChunkAt),
+				zap.Duration("end_at", attemptResult.EndAt),
 				zap.Duration("tail_after_last_chunk", tailAfterLastChunk),
-				zap.Int("text_chars", len(attemptResult.textBuf)),
-				zap.Int("tool_calls", len(attemptResult.toolCalls)),
-				zap.String("stop_reason", attemptResult.stopReason),
+				zap.Int("text_chars", len(attemptResult.TextBuf)),
+				zap.Int("tool_calls", len(attemptResult.ToolCalls)),
+				zap.String("stop_reason", attemptResult.StopReason),
 				zap.Int64("input_tokens", inputTok),
 				zap.Int64("output_tokens", outputTok),
 				zap.Int64("cache_read", cacheRead),
@@ -258,10 +255,10 @@ func callLLM(
 		logger.Warn("llm.call err",
 			zap.Int("attempt", attempt),
 			zap.Duration("elapsed", elapsed),
-			zap.Error(attemptResult.streamErr),
+			zap.Error(attemptResult.StreamErr),
 		)
 		result = attemptResult
-		return toAPIError(attemptResult.streamErr)
+		return toAPIError(attemptResult.StreamErr)
 	}
 
 	// onRetry surfaces retry decisions to the wire. Fires once per
@@ -337,12 +334,12 @@ func callLLM(
 	//   - ctx.Err() on cancellation
 	// The Retryer's terminal err is more informative than the
 	// per-attempt err (e.g. "FallbackTriggered after 3x 529" vs the
-	// final APIError{529}), so it always wins on result.streamErr.
+	// final APIError{529}), so it always wins on result.StreamErr.
 	if err != nil {
 		if result == nil {
-			result = &llmCallResult{}
+			result = &LLMCallResult{}
 		}
-		result.streamErr = err
+		result.StreamErr = err
 		var fbErr *retry.FallbackTriggeredError
 		if errors.As(err, &fbErr) {
 			logger.Warn("LLM retry: consecutive 529 fallback triggered; surface upstream",
@@ -351,14 +348,14 @@ func callLLM(
 		}
 	}
 	if result == nil {
-		result = &llmCallResult{}
+		result = &LLMCallResult{}
 	}
 
 	// On clean success, replay the buffered text + tool_use events
 	// onto `out` so downstream consumers (translator, sub-agent
 	// driver post-processing) see them as if they were live-streamed.
 	// On failure, emit nothing — the caller (subagent_driver /
-	// queryloop) sees result.streamErr and emits its own
+	// queryloop) sees result.StreamErr and emits its own
 	// Error / MessageDelta(stop_reason=error) / MessageStop frames.
 	//
 	// Why replay instead of streaming live: see the doOnce comment.
@@ -377,10 +374,10 @@ func callLLM(
 	// sequence" is unaffected.
 	if err == nil && out != nil && result != nil {
 		// Skip text replay when attempt 1 already streamed it live.
-		if !streamedLive && result.textBuf != "" {
-			out <- types.EngineEvent{Type: types.EngineEventText, Text: result.textBuf}
+		if !streamedLive && result.TextBuf != "" {
+			out <- types.EngineEvent{Type: types.EngineEventText, Text: result.TextBuf}
 		}
-		for _, tc := range result.toolCalls {
+		for _, tc := range result.ToolCalls {
 			out <- types.EngineEvent{
 				Type:      types.EngineEventToolUse,
 				ToolUseID: tc.ID,
@@ -397,7 +394,7 @@ func callLLM(
 	// still naturally retract these too if the next attempt fails before
 	// we get here.
 	if err == nil && planningOut != nil && result != nil {
-		for _, tc := range result.toolCalls {
+		for _, tc := range result.ToolCalls {
 			select {
 			case planningOut <- types.EngineEvent{
 				Type:      types.EngineEventToolQueued,
@@ -440,41 +437,41 @@ func logSubmissionShape(_ *zap.Logger, _ *provider.ChatRequest) {
 	// loop.
 }
 
-// callLLMOnce performs one Chat call and fully consumes the stream,
+// CallLLMOnce performs one Chat call and fully consumes the stream,
 // collecting text, tool calls, and usage. When out is non-nil, events
 // are also emitted in real-time for streaming to the client (today
-// callLLM always passes nil — see buffer-then-replay rationale). When
+// CallLLM always passes nil — see buffer-then-replay rationale). When
 // planningOut is non-nil, the stream-aware tracker emits ToolPlanning
 // / ToolPlanningProgress events live, even when out is nil — these are
 // observation-only signals that may be retracted on retry.
 //
 // Timeouts (both optional, zero = disabled):
-//   - timeouts.api       — total wall-clock cap on this attempt;
+//   - timeouts.API       — total wall-clock cap on this attempt;
 //                          enforced via context.WithTimeout
-//   - timeouts.firstByte — silent-stall cap; a watchdog goroutine
+//   - timeouts.FirstByte — silent-stall cap; a watchdog goroutine
 //                          cancels the call (with errFirstByteTimeout
 //                          as the cause) when no chunk lands within
 //                          this budget. Disarms once the first chunk
 //                          arrives, so legitimate long thinking
 //                          preludes are not penalised.
 //
-// Both timeouts work in concert: api guards "stream that trickles
-// forever", firstByte guards "stream that connects but never sends a
-// byte". Without firstByte, the prior incident (10-min orphan_timeout
+// Both timeouts work in concert: API guards "stream that trickles
+// forever", FirstByte guards "stream that connects but never sends a
+// byte". Without FirstByte, the prior incident (10-min orphan_timeout
 // on a step that never produced any event) would surface only as a
 // watchdog kill, not as a typed retryable error.
-func callLLMOnce(
+func CallLLMOnce(
 	ctx context.Context,
 	prov provider.Provider,
 	req *provider.ChatRequest,
 	out chan<- types.EngineEvent,
 	planningOut chan<- types.EngineEvent,
-	timeouts llmCallTimeouts,
+	timeouts LLMCallTimeouts,
 	logger *zap.Logger,
-) *llmCallResult {
-	if timeouts.api > 0 {
+) *LLMCallResult {
+	if timeouts.API > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeouts.api)
+		ctx, cancel = context.WithTimeout(ctx, timeouts.API)
 		defer cancel()
 	}
 
@@ -492,12 +489,12 @@ func callLLMOnce(
 	signalFirstByte := func() {
 		firstByteOnce.Do(func() { close(firstByteCh) })
 	}
-	if timeouts.firstByte > 0 {
+	if timeouts.FirstByte > 0 {
 		go func() {
 			select {
 			case <-firstByteCh:
 				// First chunk arrived — disarm watchdog.
-			case <-time.After(timeouts.firstByte):
+			case <-time.After(timeouts.FirstByte):
 				callCancel(errFirstByteTimeout)
 			case <-callCtx.Done():
 				// Call ended for unrelated reason (success / parent
@@ -509,10 +506,10 @@ func callLLMOnce(
 	callStart := time.Now()
 	stream, err := prov.Chat(callCtx, req)
 	if err != nil {
-		return &llmCallResult{streamErr: classifyCtxErr(callCtx, err)}
+		return &LLMCallResult{StreamErr: classifyCtxErr(callCtx, err)}
 	}
 
-	result := &llmCallResult{}
+	result := &LLMCallResult{}
 
 	// toolPlanningTracker memoizes per-ToolUseID first-seen state and
 	// throttle timestamps so we don't spam planningOut on every chunk.
@@ -561,29 +558,29 @@ func callLLMOnce(
 	for evt := range stream.Events {
 		switch evt.Type {
 		case types.StreamEventText:
-			if result.firstByteAt == 0 {
-				result.firstByteAt = time.Since(callStart)
+			if result.FirstByteAt == 0 {
+				result.FirstByteAt = time.Since(callStart)
 				signalFirstByte()
 			}
-			result.lastChunkAt = time.Since(callStart)
+			result.LastChunkAt = time.Since(callStart)
 			lastChunkMu.Lock()
 			lastChunkAt = time.Now()
 			lastChunkMu.Unlock()
-			result.textBuf += evt.Text
+			result.TextBuf += evt.Text
 			if out != nil {
 				out <- types.EngineEvent{Type: types.EngineEventText, Text: evt.Text}
 			}
 		case types.StreamEventToolUse:
 			if evt.ToolCall != nil {
-				if result.firstByteAt == 0 {
-					result.firstByteAt = time.Since(callStart)
+				if result.FirstByteAt == 0 {
+					result.FirstByteAt = time.Since(callStart)
 					signalFirstByte()
 				}
-				result.lastChunkAt = time.Since(callStart)
+				result.LastChunkAt = time.Since(callStart)
 				lastChunkMu.Lock()
 				lastChunkAt = time.Now()
 				lastChunkMu.Unlock()
-				result.toolCalls = append(result.toolCalls, *evt.ToolCall)
+				result.ToolCalls = append(result.ToolCalls, *evt.ToolCall)
 				if out != nil {
 					out <- types.EngineEvent{
 						Type:      types.EngineEventToolUse,
@@ -593,7 +590,7 @@ func callLLMOnce(
 					}
 				}
 				// ----- Phase A: stream-time planning observation -----
-				// These events go to planningOut (NOT out / result.toolCalls), so
+				// These events go to planningOut (NOT out / result.ToolCalls), so
 				// they reach the translator live while the main stream is still
 				// buffered. Buffer-then-replay logic unchanged.
 				if planningOut != nil && evt.ToolCall.Name != "" {
@@ -632,23 +629,23 @@ func callLLMOnce(
 				}
 			}
 		case types.StreamEventMessageEnd:
-			result.endAt = time.Since(callStart)
-			result.stopReason = evt.StopReason
-			result.lastUsage = evt.Usage
-			result.reasoning = evt.Reasoning
+			result.EndAt = time.Since(callStart)
+			result.StopReason = evt.StopReason
+			result.LastUsage = evt.Usage
+			result.Reasoning = evt.Reasoning
 		case types.StreamEventError:
 			// In-stream error; will be captured by stream.Err() below.
 		}
 	}
 
 	if streamErr := stream.Err(); streamErr != nil {
-		result.streamErr = classifyCtxErr(callCtx, streamErr)
+		result.StreamErr = classifyCtxErr(callCtx, streamErr)
 	} else if cause := context.Cause(callCtx); cause != nil &&
 		!errors.Is(cause, context.Canceled) && callCtx.Err() != nil {
 		// Stream closed cleanly but ctx was cancelled (likely by our
 		// first-byte watchdog or API timeout). Surface the cause so
 		// retry classification + logs see the specific reason.
-		result.streamErr = cause
+		result.StreamErr = cause
 	}
 
 	return result

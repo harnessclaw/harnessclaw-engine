@@ -9,6 +9,7 @@ import (
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/engine/compact"
+	"harnessclaw-go/internal/engine/llmcall"
 	"harnessclaw-go/internal/engine/prompt"
 	enginesched "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
@@ -109,14 +110,14 @@ func (qe *QueryEngine) SpawnerConfig() spawn.SpawnConfig {
 
 // LLMTimeouts implements spawn.Deps.
 func (qe *QueryEngine) LLMTimeouts() spawn.LLMTimeouts {
-	t := qe.llmTimeouts()
+	t := llmcall.LLMTimeouts(qe.config.LLMAPITimeout, qe.config.LLMFirstByteTimeout)
 	return spawn.LLMTimeouts{
-		API:       t.api,
-		FirstByte: t.firstByte,
+		API:       t.API,
+		FirstByte: t.FirstByte,
 	}
 }
 
-// CallLLM implements spawn.Deps. Wraps the engine package's callLLM
+// CallLLM implements spawn.Deps. Wraps the llmcall package's CallLLM
 // free function so spawn can drive one chat round with retries.
 func (qe *QueryEngine) CallLLM(
 	ctx context.Context,
@@ -125,17 +126,18 @@ func (qe *QueryEngine) CallLLM(
 	agentID string,
 	out, planningOut chan<- types.EngineEvent,
 ) spawn.LLMCallResult {
-	res := callLLM(ctx, qe.provider, req, logger, qe.retryer, qe.llmTimeouts(), agentID, out, planningOut)
+	timeouts := llmcall.LLMTimeouts(qe.config.LLMAPITimeout, qe.config.LLMFirstByteTimeout)
+	res := llmcall.CallLLM(ctx, qe.provider, req, logger, qe.retryer, timeouts, agentID, out, planningOut)
 	if res == nil {
 		return spawn.LLMCallResult{}
 	}
 	return spawn.LLMCallResult{
-		TextBuf:    res.textBuf,
-		ToolCalls:  res.toolCalls,
-		StopReason: res.stopReason,
-		LastUsage:  res.lastUsage,
-		Reasoning:  res.reasoning,
-		StreamErr:  res.streamErr,
+		TextBuf:    res.TextBuf,
+		ToolCalls:  res.ToolCalls,
+		StopReason: res.StopReason,
+		LastUsage:  res.LastUsage,
+		Reasoning:  res.Reasoning,
+		StreamErr:  res.StreamErr,
 	}
 }
 
