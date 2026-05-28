@@ -1,0 +1,5 @@
+name: Plan
+display_name: 规划者
+description: 方案设计 agent，需求分析、架构设计、方案对比
+agent_type: sync
+profile: plan
