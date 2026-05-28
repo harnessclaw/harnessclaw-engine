@@ -31,3 +31,16 @@ func TestSession_PromptCacheRoundtrip(t *testing.T) {
 		t.Error("SetPromptCache(nil) did not clear the cache")
 	}
 }
+
+func TestSession_AllowedTools_List(t *testing.T) {
+	s := &Session{}
+	if got := s.AllowedTools(); got != nil {
+		t.Errorf("empty session AllowedTools should return nil, got %v", got)
+	}
+	s.RememberAllowedTool("Read")
+	s.RememberAllowedTool("Bash")
+	got := s.AllowedTools()
+	if len(got) != 2 {
+		t.Errorf("expected 2 allowed tools, got %d (%v)", len(got), got)
+	}
+}

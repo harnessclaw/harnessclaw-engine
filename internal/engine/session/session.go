@@ -174,6 +174,22 @@ func (s *Session) RememberAllowedTool(toolName string) {
 	s.allowedTools[toolName] = true
 }
 
+// AllowedTools returns a copy of all tool names the session has
+// whitelisted. Used by spawn to pass the inherited approval set down
+// to sub-agents via InheritedChecker.
+func (s *Session) AllowedTools() []string {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	if len(s.allowedTools) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(s.allowedTools))
+	for tool := range s.allowedTools {
+		result = append(result, tool)
+	}
+	return result
+}
+
 // PromptCache returns the cached system prompt entry, or nil if
 // none has been stored. Callers must validate the entry's
 // invalidation conditions before using.

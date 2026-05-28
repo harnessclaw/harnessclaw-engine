@@ -211,17 +211,11 @@ func (qe *QueryEngine) GetEnvSnapshot(sessionRoot string) prompt.EnvSnapshot {
 // session's whitelist of user-approved tools so InheritedChecker can
 // pre-approve them for the sub-agent.
 func (qe *QueryEngine) GetSessionApprovedTools(sessionID string) []string {
-	qe.sessionAllowMu.RLock()
-	defer qe.sessionAllowMu.RUnlock()
-	tools, ok := qe.sessionAllowTools[sessionID]
-	if !ok {
+	sess := qe.sessionMgr.Get(sessionID)
+	if sess == nil {
 		return nil
 	}
-	result := make([]string, 0, len(tools))
-	for k := range tools {
-		result = append(result, k)
-	}
-	return result
+	return sess.AllowedTools()
 }
 
 // BuildLoadedSkillsBlock implements spawn.Deps.

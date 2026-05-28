@@ -235,16 +235,6 @@ type QueryEngine struct {
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
 
-	// Session-level tool allow list. When a user chooses "allow always in this session",
-	// the tool name is recorded here and subsequent invocations auto-approve.
-	sessionAllowMu    sync.RWMutex
-	sessionAllowTools map[string]map[string]bool // session_id → tool_name → true
-
-	// Per-session prompt cache. Caches the entire built system prompt to avoid
-	// rebuilding on every turn when inputs haven't changed.
-	promptCacheMu sync.RWMutex
-	promptCache   map[string]*promptCacheEntry // session_id → cache entry
-
 	// Multi-agent support fields.
 	agentRegistry  *agent.AgentRegistry
 	messageBroker  *agent.MessageBroker
@@ -275,16 +265,6 @@ type QueryEngine struct {
 	schedulerCoord *enginesched.Coordinator
 }
 
-// promptCacheEntry stores a cached system prompt and the conditions under which it was built.
-// The cache is invalidated when any input changes enough to affect the output.
-type promptCacheEntry struct {
-	prompt       string              // cached ToSystemPrompt() result
-	output       *prompt.PromptOutput // full output (for observability)
-	budget       int                 // budget when cached
-	hasTask      bool                // whether task state was present
-	memoryLen    int                 // len(memory) when cached
-	date         string              // date when cached (YYYY-MM-DD)
-}
 
 // NewQueryEngine creates a new query engine.
 func NewQueryEngine(
@@ -334,8 +314,6 @@ func NewQueryEngine(
 		promptBuilder:     promptBuilder,
 		promptProfile:     promptProfile,
 		cancels:           make(map[string]context.CancelFunc),
-		sessionAllowTools: make(map[string]map[string]bool),
-		promptCache:       make(map[string]*promptCacheEntry),
 		emitSeq:           emit.NewSequencer(),
 		retryer:           retry.New(retryConfigFromEngineCfg(cfg), logger),
 	}
@@ -901,9 +879,8 @@ func (qe *QueryEngine) requestPermissionApproval(
 	}
 
 	// Fast path: check if this tool+command is already session-approved.
-	qe.sessionAllowMu.RLock()
-	if tools, ok := qe.sessionAllowTools[sessionID]; ok && tools[permKey] {
-		qe.sessionAllowMu.RUnlock()
+	sess := qe.sessionMgr.Get(sessionID)
+	if sess != nil && sess.IsToolAllowed(permKey) {
 		qe.logger.Debug("permission auto-approved (session scope)",
 			zap.String("permission_key", permKey),
 			zap.String("session_id", sessionID),
@@ -915,9 +892,6 @@ func (qe *QueryEngine) requestPermissionApproval(
 			Message:   "auto-approved (session scope)",
 		}
 	}
-	qe.sessionAllowMu.RUnlock()
-
-	sess := qe.sessionMgr.Get(sessionID)
 	if sess == nil {
 		qe.logger.Warn("requestPermissionApproval: session not found",
 			zap.String("session_id", sessionID),
@@ -955,12 +929,9 @@ func (qe *QueryEngine) requestPermissionApproval(
 
 	// If approved with session scope, record for future auto-approval.
 	if resp.Approved && resp.Scope == types.PermissionScopeSession {
-		qe.sessionAllowMu.Lock()
-		if qe.sessionAllowTools[sessionID] == nil {
-			qe.sessionAllowTools[sessionID] = make(map[string]bool)
+		if sess != nil {
+			sess.RememberAllowedTool(permKey)
 		}
-		qe.sessionAllowTools[sessionID][permKey] = true
-		qe.sessionAllowMu.Unlock()
 		qe.logger.Info("command session-approved",
 			zap.String("permission_key", permKey),
 			zap.String("session_id", sessionID),
@@ -1609,9 +1580,7 @@ func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Sess
 	budget := prompt.ComputeSystemPromptBudget(200000, totalTokens, 16384, prompt.DefaultSafetyMargin)
 
 	// Check if we have a valid cached prompt for this session
-	qe.promptCacheMu.RLock()
-	cached := qe.promptCache[sess.ID]
-	qe.promptCacheMu.RUnlock()
+	cached := sess.PromptCache()
 
 	if cached != nil {
 		// Determine if cache is still valid:
@@ -1620,26 +1589,26 @@ func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Sess
 		// - memory hasn't changed
 		// - date hasn't changed (cross-midnight)
 		today := time.Now().Format("2006-01-02")
-		budgetDrift := float64(cached.budget-budget) / float64(cached.budget)
+		budgetDrift := float64(cached.Budget-budget) / float64(cached.Budget)
 		hasTask := false // TODO: populate from session metadata when available
 		memoryLen := 0   // TODO: populate when memory loading is implemented
 
-		if budgetDrift < 0.1 && cached.hasTask == hasTask && cached.memoryLen == memoryLen && cached.date == today {
+		if budgetDrift < 0.1 && cached.HasTask == hasTask && cached.MemoryLen == memoryLen && cached.Date == today {
 			qe.logger.Debug("prompt cache hit",
 				zap.String("session_id", sess.ID),
-				zap.String("version", cached.output.Version),
-				zap.Int("budget_cached", cached.budget),
+				zap.String("version", cached.Output.(*prompt.PromptOutput).Version),
+				zap.Int("budget_cached", cached.Budget),
 				zap.Int("budget_current", budget),
 			)
-			return cached.prompt
+			return cached.Prompt
 		}
 
 		qe.logger.Debug("prompt cache invalidated",
 			zap.String("session_id", sess.ID),
 			zap.Float64("budget_drift", budgetDrift),
-			zap.Bool("task_changed", cached.hasTask != hasTask),
-			zap.Bool("memory_changed", cached.memoryLen != memoryLen),
-			zap.Bool("date_changed", cached.date != today),
+			zap.Bool("task_changed", cached.HasTask != hasTask),
+			zap.Bool("memory_changed", cached.MemoryLen != memoryLen),
+			zap.Bool("date_changed", cached.Date != today),
 		)
 	}
 
@@ -1705,16 +1674,14 @@ func (qe *QueryEngine) buildSystemPrompt(ctx context.Context, sess *session.Sess
 	)
 
 	// Cache the result for this session
-	qe.promptCacheMu.Lock()
-	qe.promptCache[sess.ID] = &promptCacheEntry{
-		prompt:    result,
-		output:    output,
-		budget:    budget,
-		hasTask:   false, // TODO: update when task state is populated
-		memoryLen: 0,     // TODO: update when memory is populated
-		date:      time.Now().Format("2006-01-02"),
-	}
-	qe.promptCacheMu.Unlock()
+	sess.SetPromptCache(&session.PromptCacheEntry{
+		Prompt:    result,
+		Output:    output,
+		Budget:    budget,
+		HasTask:   false, // TODO: update when task state is populated
+		MemoryLen: 0,     // TODO: update when memory is populated
+		Date:      time.Now().Format("2006-01-02"),
+	})
 
 	return result
 }
