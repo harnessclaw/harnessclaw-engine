@@ -38,7 +38,9 @@ func escalateInputJSON(reason, suggested string) string {
 func registerSubAgentDef(t *testing.T, eng *QueryEngine, def *agent.AgentDefinition) {
 	t.Helper()
 	if eng.defRegistry == nil {
-		eng.SetDefRegistry(agent.NewAgentDefinitionRegistry())
+		reg := agent.NewAgentDefinitionRegistry()
+		eng.defRegistry = reg
+		eng.mentionParser = NewMentionParser(reg)
 	}
 	if err := eng.defRegistry.Register(def); err != nil {
 		t.Fatalf("Register(%s): %v", def.Name, err)
@@ -355,7 +357,8 @@ func TestBuildSubAgentSystemPrompt_NoEmmaForSubAgent(t *testing.T) {
 
 	reg := agent.NewAgentDefinitionRegistry()
 	reg.RegisterBuiltins()
-	eng.SetDefRegistry(reg)
+	eng.defRegistry = reg
+	eng.mentionParser = NewMentionParser(reg)
 
 	sess := &session.Session{ID: "sess_test"}
 	got := eng.buildSubAgentSystemPrompt(

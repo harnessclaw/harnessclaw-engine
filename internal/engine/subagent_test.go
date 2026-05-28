@@ -427,7 +427,8 @@ func TestBuildSubAgentSystemPrompt_SchedulerKeepsStaticRole(t *testing.T) {
 
 	reg := agent.NewAgentDefinitionRegistry()
 	reg.RegisterBuiltins() // pulls in the real "scheduler" + team-member defs
-	eng.SetDefRegistry(reg)
+	eng.defRegistry = reg
+	eng.mentionParser = NewMentionParser(reg)
 
 	sess := &session.Session{ID: "sess_test"}
 	got := eng.buildSubAgentSystemPrompt(
@@ -479,7 +480,8 @@ func TestBuildSubAgentSystemPrompt_GeneralPurposeDoesNotLeakEmma(t *testing.T) {
 
 	reg := agent.NewAgentDefinitionRegistry()
 	reg.RegisterBuiltins()
-	eng.SetDefRegistry(reg)
+	eng.defRegistry = reg
+	eng.mentionParser = NewMentionParser(reg)
 
 	sess := &session.Session{ID: "sess_test"}
 	got := eng.buildSubAgentSystemPrompt(

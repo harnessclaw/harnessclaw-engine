@@ -371,6 +371,12 @@ func main() {
 	}
 	systemPrompt += " - Skills directories: " + strings.Join(cfg.Skills.Dirs, ", ")
 
+	// Construct the agent definition registry up front so it can be
+	// injected into the engine at construction. Population (SQLite sync,
+	// YAML sync, LoadAllToRegistry) happens further below; the engine
+	// holds a pointer, so writes through agentDefReg are visible to it.
+	agentDefReg := agent.NewAgentDefinitionRegistry()
+
 	// L2 (worker / sub-agent) settings live on QueryEngineConfig directly.
 	// L1 settings (emma profile, restricted tool palette, small loop) are
 	// applied by NewL1Engine below and overwrite the main-agent fields here.
@@ -399,6 +405,12 @@ func main() {
 		LLMMaxRetries:       cfg.LLM.MaxRetries,
 		LLMAPITimeout:       cfg.LLM.APITimeout,
 		LLMFirstByteTimeout: cfg.LLM.FirstByteTimeout,
+		// Optional dependencies previously injected via SetX() after
+		// construction. Engine treats nil as "feature disabled".
+		DefRegistry:    agentDefReg,
+		SkillReader:    skillReader,
+		StatsRegistry:  statsRegistry,
+		SessionManager: sessionMgr,
 		// MainAgentProfile / DisplayName / AllowedTools / MaxTurns are filled
 		// in by NewL1Engine; setting non-default values here would be
 		// overwritten anyway.
@@ -464,9 +476,9 @@ func main() {
 		logger.Info("task store initialized", zap.String("backend", "sqlite"), zap.String("path", taskDBPath))
 	}
 
-	agentDefReg := agent.NewAgentDefinitionRegistry()
-
-	// Initialize agent definition store (SQLite) and service.
+	// Initialize agent definition store (SQLite) and service. The
+	// registry (agentDefReg) was constructed earlier and injected into
+	// engCfg; the lines below populate it via SQLite + YAML sync.
 	agentDefDBPath := defaultDBPath("agent_definitions.db")
 	agentDefStore, err := agent.NewSQLiteAgentStore(agentDefDBPath)
 	if err != nil {
@@ -530,17 +542,12 @@ func main() {
 	}
 	logger.Info("orchestrate tool registered")
 
-	// Inject multi-agent dependencies into the engine.
+	// Inject multi-agent infrastructure into the engine. (DefRegistry,
+	// SkillReader, StatsRegistry, SessionManager now arrive via
+	// QueryEngineConfig at construction; only the async-mode primitives
+	// remain on post-construction setters.)
 	eng.SetAgentRegistry(agentReg)
 	eng.SetMessageBroker(broker)
-	eng.SetDefRegistry(agentDefReg)
-	// Session-metrics wiring. The engine reads from the same registry the
-	// StatsProvider writes into; the session manager hand-off lets the
-	// trace-end flush worker force-persist the snapshot on lifecycle
-	// transitions instead of waiting for the debounce.
-	eng.SetStatsRegistry(statsRegistry)
-	eng.SetSessionManager(sessionMgr)
-	eng.SetSkillReader(skillReader)
 
 	// Register task tools (scoped to a default scope for now).
 	defaultScope := "default"

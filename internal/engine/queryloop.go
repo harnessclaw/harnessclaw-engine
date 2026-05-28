@@ -127,6 +127,21 @@ type QueryEngineConfig struct {
 	// the unanswered request.
 	DisableStepDecisionGate bool
 
+	// DefRegistry, when non-nil, enables @-mention parsing for routing
+	// user messages to specialized agents. nil disables mention routing.
+	DefRegistry *agent.AgentDefinitionRegistry
+
+	// SkillReader, when non-nil, enables runtime skill discovery for
+	// search_skill / load_skill tools. nil disables them.
+	SkillReader *skill.Reader
+
+	// StatsRegistry, when non-nil, lets the engine attribute LLM /
+	// sub-agent / tool activity to the correct Tracker. nil disables stats wiring.
+	StatsRegistry *sessionstats.Registry
+
+	// SessionManager, when non-nil, lets the engine reach Manager.FlushStats
+	// at trace lifecycle boundaries. nil disables stats flush.
+	SessionManager *session.Manager
 }
 
 // retryConfigFromEngineCfg builds a *retry.Config from the engine
@@ -397,6 +412,23 @@ func NewQueryEngine(
 		pendingStepDecisions: make(map[string]*pendingStepDecisionReq),
 		retryer:              retry.New(retryConfigFromEngineCfg(cfg), logger),
 		searchGapDetector:    NewSearchGapDetector(logger),
+	}
+
+	// Apply optional config-injected dependencies. Replaces the previous
+	// post-construction SetX() calls. Order matters only for defRegistry
+	// (the mention parser depends on it).
+	if cfg.DefRegistry != nil {
+		qe.defRegistry = cfg.DefRegistry
+		qe.mentionParser = NewMentionParser(cfg.DefRegistry)
+	}
+	if cfg.SkillReader != nil {
+		qe.skillReader = cfg.SkillReader
+	}
+	if cfg.StatsRegistry != nil {
+		qe.statsRegistry = cfg.StatsRegistry
+	}
+	if cfg.SessionManager != nil {
+		qe.sessionManager = cfg.SessionManager
 	}
 
 	qe.schedulerCoord = enginesched.NewCoordinator(enginesched.CoordinatorConfig{
@@ -671,32 +703,6 @@ func (qe *QueryEngine) RegisterPromptSection(section prompt.Section) {
 		// For now, this is a placeholder - sections should be registered during initialization
 		qe.logger.Debug("prompt section registration requested", zap.String("section", section.Name()))
 	}
-}
-
-// SetDefRegistry configures the agent definition registry and initializes
-// the @-mention parser for routing user messages to specialized agents.
-func (qe *QueryEngine) SetDefRegistry(reg *agent.AgentDefinitionRegistry) {
-	qe.defRegistry = reg
-	qe.mentionParser = NewMentionParser(reg)
-}
-
-// SetSkillReader configures the runtime skill reader for search_skill /
-// load_skill tools. nil disables them.
-func (qe *QueryEngine) SetSkillReader(r *skill.Reader) {
-	qe.skillReader = r
-}
-
-// SetStatsRegistry wires the session-metrics registry so the engine
-// can attribute LLM/sub-agent/tool activity to the correct Tracker.
-// nil disables stats wiring.
-func (qe *QueryEngine) SetStatsRegistry(r *sessionstats.Registry) {
-	qe.statsRegistry = r
-}
-
-// SetSessionManager wires the session manager so trace lifecycle
-// transitions can force-flush stats to disk.
-func (qe *QueryEngine) SetSessionManager(m *session.Manager) {
-	qe.sessionManager = m
 }
 
 // ProcessMessage implements Engine. It appends the user message to the session
