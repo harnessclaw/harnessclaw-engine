@@ -205,11 +205,6 @@ func effectiveContextWindow(configured int) int {
 	return 200000
 }
 
-// pendingToolCall tracks a tool call awaiting client result.
-type pendingToolCall struct {
-	resultCh chan *types.ToolResultPayload
-}
-
 // pendingPermission tracks a permission request awaiting client approval.
 type pendingPermission struct {
 	resultCh chan *types.PermissionResponse
@@ -244,10 +239,6 @@ type QueryEngine struct {
 	// In-flight session tracking for abort support.
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
-
-	// Pending tool calls awaiting client results (client-tools mode).
-	toolMu       sync.Mutex
-	pendingTools map[string]*pendingToolCall // tool_use_id → pending
 
 	// Pending permission requests awaiting client approval.
 	permMu       sync.Mutex
@@ -386,7 +377,6 @@ func NewQueryEngine(
 		promptBuilder:     promptBuilder,
 		promptProfile:     promptProfile,
 		cancels:           make(map[string]context.CancelFunc),
-		pendingTools:      make(map[string]*pendingToolCall),
 		pendingPerms:      make(map[string]*pendingPermission),
 		sessionAllowTools: make(map[string]map[string]bool),
 		promptCache:       make(map[string]*promptCacheEntry),
@@ -952,22 +942,16 @@ func (qe *QueryEngine) processWithAgent(
 }
 
 // SubmitToolResult implements Engine. It delivers a client-side tool result
-// to the waiting query loop goroutine.
-func (qe *QueryEngine) SubmitToolResult(_ context.Context, _ string, result *types.ToolResultPayload) error {
-	qe.toolMu.Lock()
-	pending, ok := qe.pendingTools[result.ToolUseID]
-	qe.toolMu.Unlock()
-
-	if !ok {
-		return fmt.Errorf("no pending tool call for tool_use_id %s", result.ToolUseID)
+// to the waiting query loop goroutine via sess.Awaits.
+func (qe *QueryEngine) SubmitToolResult(_ context.Context, sessionID string, result *types.ToolResultPayload) error {
+	sess := qe.sessionMgr.Get(sessionID)
+	if sess == nil {
+		return fmt.Errorf("session lookup for tool result: session %s not found", sessionID)
 	}
-
-	select {
-	case pending.resultCh <- result:
-		return nil
-	default:
-		return fmt.Errorf("tool result channel full for %s", result.ToolUseID)
+	if err := sess.Awaits.ResolveTool(result); err != nil {
+		return fmt.Errorf("no pending tool call for tool_use_id %s: %w", result.ToolUseID, err)
 	}
+	return nil
 }
 
 // SubmitPermissionResult implements Engine. It delivers a permission approval/denial
@@ -1341,7 +1325,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 		// else follows the global ClientTools flag — true means
 		// delegate-everything (Claude Code CLI mode), false means
 		// run-server-side (web UI mode).
-		results := qe.dispatchToolBatch(ctx, executor, pool, toolCalls, out)
+		results := qe.dispatchToolBatch(ctx, sess, executor, pool, toolCalls, out)
 
 		// Check if cancelled during tool execution.
 		if ctx.Err() != nil {
@@ -1411,6 +1395,7 @@ func (qe *QueryEngine) runQueryLoop(ctx context.Context, sess *session.Session, 
 // sees results aligned with its tool_use indices.
 func (qe *QueryEngine) dispatchToolBatch(
 	ctx context.Context,
+	sess *session.Session,
 	executor *toolexec.ToolExecutor,
 	pool *tool.ToolPool,
 	toolCalls []types.ToolCall,
@@ -1448,7 +1433,7 @@ func (qe *QueryEngine) dispatchToolBatch(
 	}
 
 	if len(clientCalls) > 0 {
-		clientResults := qe.executeClientTools(ctx, pool, clientCalls, out)
+		clientResults := qe.executeClientTools(ctx, sess, pool, clientCalls, out)
 		for j, r := range clientResults {
 			results[clientIdx[j]] = r
 		}
@@ -1492,21 +1477,17 @@ func (qe *QueryEngine) routeToClient(pool *tool.ToolPool, toolName string) bool 
 // (timed) branch — defensive default.
 func (qe *QueryEngine) executeClientTools(
 	ctx context.Context,
+	sess *session.Session,
 	pool *tool.ToolPool,
 	toolCalls []types.ToolCall,
 	out chan<- types.EngineEvent,
 ) []types.ToolResult {
 	results := make([]types.ToolResult, len(toolCalls))
 
-	// Register pending tool calls and remember per-call wait policy.
-	pendingChs := make([]chan *types.ToolResultPayload, len(toolCalls))
+	awaits := make([]*session.ToolAwait, len(toolCalls))
 	humanInteractive := make([]bool, len(toolCalls))
 	for i, tc := range toolCalls {
-		ch := make(chan *types.ToolResultPayload, 1)
-		pendingChs[i] = ch
-		qe.toolMu.Lock()
-		qe.pendingTools[tc.ID] = &pendingToolCall{resultCh: ch}
-		qe.toolMu.Unlock()
+		awaits[i] = sess.Awaits.PushTool(tc.ID, tc.Name)
 
 		if t := pool.Get(tc.Name); t != nil {
 			if cr, ok := t.(tool.ClientRoutedTool); ok && cr.IsClientRouted() {
@@ -1533,7 +1514,9 @@ func (qe *QueryEngine) executeClientTools(
 					Content: "execution cancelled",
 					IsError: true,
 				}
-			case payload := <-pendingChs[i]:
+				sess.Awaits.ForgetTool(tc.ID)
+			case payload := <-awaits[i].Result:
+				// ResolveTool already removed the entry.
 				results[i] = toolResultFromPayload(payload)
 			}
 		} else {
@@ -1543,20 +1526,17 @@ func (qe *QueryEngine) executeClientTools(
 					Content: "execution cancelled",
 					IsError: true,
 				}
-			case payload := <-pendingChs[i]:
+				sess.Awaits.ForgetTool(tc.ID)
+			case payload := <-awaits[i].Result:
 				results[i] = toolResultFromPayload(payload)
 			case <-time.After(qe.config.ToolTimeout):
 				results[i] = types.ToolResult{
 					Content: fmt.Sprintf("tool %s timed out waiting for client result", tc.Name),
 					IsError: true,
 				}
+				sess.Awaits.ForgetTool(tc.ID)
 			}
 		}
-
-		// Clean up pending entry.
-		qe.toolMu.Lock()
-		delete(qe.pendingTools, tc.ID)
-		qe.toolMu.Unlock()
 	}
 
 	return results

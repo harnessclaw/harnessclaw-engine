@@ -289,7 +289,7 @@ func (s *Spawner) runSubAgentDriver(
 			execCtx = tool.WithSkillTrackerValue(execCtx, lc.skillTracker)
 		}
 
-		results := s.deps.DispatchToolBatch(execCtx, executor, pool, toolCalls, out)
+		results := s.deps.DispatchToolBatch(execCtx, sess, executor, pool, toolCalls, out)
 
 		if ctx.Err() != nil {
 			return subAgentLoopResult{Terminal: types.Terminal{Reason: types.TerminalAbortedTools, Message: "sub-agent driver cancelled during tool execution", Turn: ls.turn}, ContractFailures: contractFailures}

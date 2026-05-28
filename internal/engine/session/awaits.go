@@ -107,6 +107,16 @@ func (a *Awaits) ResolveTool(payload *types.ToolResultPayload) error {
 	return nil
 }
 
+// ForgetTool removes a pending ToolAwait without delivering a result.
+// Used by callers that want to cancel/time-out a wait without going
+// through the response channel. Safe to call when the entry doesn't
+// exist (e.g., ResolveTool already removed it on the success path).
+func (a *Awaits) ForgetTool(useID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.tools, useID)
+}
+
 // --- Perm ---
 
 // PushPerm registers a new PermAwait and returns it.

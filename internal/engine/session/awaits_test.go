@@ -148,6 +148,34 @@ func TestAwaits_ResolveStepDecision_NotFound(t *testing.T) {
 	}
 }
 
+func TestAwaits_ForgetTool(t *testing.T) {
+	a := session.NewAwaits()
+	aw := a.PushTool("u1", "Read")
+
+	a.ForgetTool("u1")
+
+	// Subsequent ResolveTool should report NotFound.
+	err := a.ResolveTool(&types.ToolResultPayload{ToolUseID: "u1"})
+	if !errors.Is(err, session.ErrAwaitNotFound) {
+		t.Errorf("after ForgetTool, ResolveTool returned %v; want ErrAwaitNotFound", err)
+	}
+
+	// The channel from the now-discarded await stays open (no close).
+	// The caller is expected to abandon it. Reading from it should block.
+	select {
+	case <-aw.Result:
+		t.Error("Result channel produced a value after ForgetTool")
+	default:
+		// Expected: still open and empty.
+	}
+}
+
+func TestAwaits_ForgetTool_Missing(t *testing.T) {
+	a := session.NewAwaits()
+	// Should not panic, not error.
+	a.ForgetTool("unknown")
+}
+
 func TestAwaits_AbortAll_All4Kinds(t *testing.T) {
 	a := session.NewAwaits()
 	toolAw := a.PushTool("u1", "Read")

@@ -163,6 +163,7 @@ func (qe *QueryEngine) NewToolExecutor(
 // concrete *ToolExecutor for the dispatch call.
 func (qe *QueryEngine) DispatchToolBatch(
 	ctx context.Context,
+	sess *session.Session,
 	executor spawn.ToolExecutor,
 	pool *tool.ToolPool,
 	toolCalls []types.ToolCall,
@@ -176,7 +177,7 @@ func (qe *QueryEngine) DispatchToolBatch(
 		// from real callers.
 		te = toolexec.NewToolExecutor(pool, qe.permChecker, qe.logger, qe.config.ToolTimeout, nil)
 	}
-	return qe.dispatchToolBatch(ctx, te, pool, toolCalls, out)
+	return qe.dispatchToolBatch(ctx, sess, te, pool, toolCalls, out)
 }
 
 // BuildAssistantMessage implements spawn.Deps. Wraps the engine helper

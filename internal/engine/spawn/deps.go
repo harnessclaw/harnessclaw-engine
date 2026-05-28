@@ -92,8 +92,11 @@ type Deps interface {
 
 	// DispatchToolBatch routes a batch of tool calls through the engine's
 	// server/client tool router. Returns per-call results in input order.
+	// sess is required so client-routed tools can register pending
+	// awaits on session.Awaits.
 	DispatchToolBatch(
 		ctx context.Context,
+		sess *session.Session,
 		executor ToolExecutor,
 		pool *tool.ToolPool,
 		toolCalls []types.ToolCall,

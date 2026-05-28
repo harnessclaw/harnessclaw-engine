@@ -7,6 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
+
+	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/storage/memory"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
 )
@@ -44,13 +48,23 @@ func (fakeDelegatedTool) Execute(_ context.Context, _ json.RawMessage) (*types.T
 	return &types.ToolResult{Content: "ok"}, nil
 }
 
-// newDispatchTestEngine builds a minimal QueryEngine sufficient for exercising
-// executeClientTools — only the fields that branch touches matter.
-func newDispatchTestEngine(toolTimeout time.Duration) *QueryEngine {
-	return &QueryEngine{
-		config:       QueryEngineConfig{ToolTimeout: toolTimeout, ClientTools: true},
-		pendingTools: make(map[string]*pendingToolCall),
+// newDispatchTestEngine builds a minimal QueryEngine + Session sufficient
+// for exercising executeClientTools — only the fields that branch touches
+// matter. The returned session has Awaits initialized and is registered
+// with the engine's session manager so SubmitToolResult can look it up.
+func newDispatchTestEngine(t *testing.T, toolTimeout time.Duration) (*QueryEngine, *session.Session) {
+	t.Helper()
+	store := memory.New()
+	mgr := session.NewManager(store, zap.NewNop(), time.Hour)
+	sess, err := mgr.GetOrCreate(context.Background(), "test_sid", "ws", "user_1")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
 	}
+	qe := &QueryEngine{
+		config:     QueryEngineConfig{ToolTimeout: toolTimeout, ClientTools: true},
+		sessionMgr: mgr,
+	}
+	return qe, sess
 }
 
 // drainEvents consumes events emitted by executeClientTools so the call
@@ -70,7 +84,7 @@ func TestExecuteClientTools_HumanInteractiveWaitsPastTimeout(t *testing.T) {
 	// before the user "answers". Without the human-interactive override,
 	// the call would time out at toolTimeout. With the override, it
 	// must wait until SubmitToolResult fires.
-	qe := newDispatchTestEngine(150 * time.Millisecond)
+	qe, sess := newDispatchTestEngine(t, 150*time.Millisecond)
 	pool := tool.NewToolPool(stubRegistry(fakeClientRoutedTool{}), nil, nil)
 
 	out := make(chan types.EngineEvent, 8)
@@ -88,7 +102,7 @@ func TestExecuteClientTools_HumanInteractiveWaitsPastTimeout(t *testing.T) {
 	start := time.Now()
 	go func() {
 		defer wg.Done()
-		got = qe.executeClientTools(context.Background(), pool, calls, out)
+		got = qe.executeClientTools(context.Background(), sess, pool, calls, out)
 	}()
 
 	// Wait LONGER than toolTimeout to prove the timeout doesn't fire.
@@ -97,7 +111,7 @@ func TestExecuteClientTools_HumanInteractiveWaitsPastTimeout(t *testing.T) {
 	if elapsed := time.Since(start); elapsed < 300*time.Millisecond {
 		t.Fatalf("test setup wrong: only %v elapsed before delivering result", elapsed)
 	}
-	if err := qe.SubmitToolResult(context.Background(), "", &types.ToolResultPayload{
+	if err := qe.SubmitToolResult(context.Background(), sess.ID, &types.ToolResultPayload{
 		ToolUseID: "toolu_user_1",
 		Status:    "success",
 		Output:    "user picked option A",
@@ -121,7 +135,7 @@ func TestExecuteClientTools_DelegatedToolStillTimesOut(t *testing.T) {
 	// Sanity: a tool that is NOT ClientRouted (the Claude Code CLI
 	// delegation case) keeps its timeout — otherwise a crashed client
 	// would pin the engine forever.
-	qe := newDispatchTestEngine(80 * time.Millisecond)
+	qe, sess := newDispatchTestEngine(t, 80*time.Millisecond)
 	pool := tool.NewToolPool(stubRegistry(fakeDelegatedTool{}), nil, nil)
 
 	out := make(chan types.EngineEvent, 8)
@@ -134,7 +148,7 @@ func TestExecuteClientTools_DelegatedToolStillTimesOut(t *testing.T) {
 	}
 
 	start := time.Now()
-	got := qe.executeClientTools(context.Background(), pool, calls, out)
+	got := qe.executeClientTools(context.Background(), sess, pool, calls, out)
 	elapsed := time.Since(start)
 
 	if elapsed < 80*time.Millisecond || elapsed > 500*time.Millisecond {
@@ -148,7 +162,7 @@ func TestExecuteClientTools_DelegatedToolStillTimesOut(t *testing.T) {
 func TestExecuteClientTools_HumanInteractiveCancelledByContext(t *testing.T) {
 	// Even with no timeout, ctx cancellation must unblock the wait so
 	// session.interrupt actually interrupts.
-	qe := newDispatchTestEngine(10 * time.Second)
+	qe, sess := newDispatchTestEngine(t, 10*time.Second)
 	pool := tool.NewToolPool(stubRegistry(fakeClientRoutedTool{}), nil, nil)
 
 	out := make(chan types.EngineEvent, 8)
@@ -164,7 +178,7 @@ func TestExecuteClientTools_HumanInteractiveCancelledByContext(t *testing.T) {
 	var got []types.ToolResult
 	done := make(chan struct{})
 	go func() {
-		got = qe.executeClientTools(ctx, pool, calls, out)
+		got = qe.executeClientTools(ctx, sess, pool, calls, out)
 		close(done)
 	}()
 

@@ -150,6 +150,7 @@ func (f *fakeDeps) NewToolExecutor(
 
 func (f *fakeDeps) DispatchToolBatch(
 	ctx context.Context,
+	sess *session.Session,
 	executor ToolExecutor,
 	pool *tool.ToolPool,
 	toolCalls []types.ToolCall,
