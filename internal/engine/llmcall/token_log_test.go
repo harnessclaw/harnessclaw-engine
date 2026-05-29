@@ -1,4 +1,4 @@
-package engine
+package llmcall
 
 import (
 	"context"
@@ -8,10 +8,35 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
-	"harnessclaw-go/internal/engine/llmcall"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/pkg/types"
 )
+
+// fakeProv is a minimal provider.Provider for log-output assertions.
+// Mirrors engineFakeProv from the old engine package (was deleted in
+// Phase 6 cleanup).
+type fakeProv struct {
+	events []types.StreamEvent
+	err    error
+}
+
+func (f *fakeProv) Chat(_ context.Context, _ *provider.ChatRequest) (*provider.ChatStream, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	ch := make(chan types.StreamEvent, len(f.events))
+	for _, ev := range f.events {
+		ch <- ev
+	}
+	close(ch)
+	return &provider.ChatStream{Events: ch, Err: func() error { return nil }}, nil
+}
+
+func (f *fakeProv) CountTokens(_ context.Context, _ []types.Message) (int, error) {
+	return 0, nil
+}
+
+func (f *fakeProv) Name() string { return "fakeProv" }
 
 // TestLLMCallOk_LogsTokenBreakdown verifies that the "llm.call ok" INFO log
 // line carries all five token-usage fields from the provider's MessageEnd event.
@@ -24,7 +49,7 @@ func TestLLMCallOk_LogsTokenBreakdown(t *testing.T) {
 
 	// fakeProv emits one text chunk followed by a MessageEnd carrying
 	// the specific usage we want to assert on.
-	prov := &engineFakeProv{
+	prov := &fakeProv{
 		events: []types.StreamEvent{
 			{Type: types.StreamEventText, Text: "hello"},
 			{
@@ -48,13 +73,13 @@ func TestLLMCallOk_LogsTokenBreakdown(t *testing.T) {
 		}
 	}()
 
-	result := llmcall.CallLLM(
+	result := CallLLM(
 		context.Background(),
 		prov,
 		&provider.ChatRequest{},
 		logger,
 		nil, // nil retryer = single attempt, no retries
-		llmcall.LLMCallTimeouts{},
+		LLMCallTimeouts{},
 		"agent_test",
 		out,
 		nil,
