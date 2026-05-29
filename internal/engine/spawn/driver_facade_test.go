@@ -1,4 +1,4 @@
-package engine
+package spawn_test
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/queryloop"
 	"harnessclaw-go/internal/engine/session"
@@ -35,16 +36,17 @@ func escalateInputJSON(reason, suggested string) string {
 	return string(body)
 }
 
-// registerSubAgentDef wires a TierSubAgent definition into eng.defRegistry,
-// auto-creating the registry when absent.
-func registerSubAgentDef(t *testing.T, eng *QueryEngine, def *agent.AgentDefinition) {
+// registerSubAgentDef wires a TierSubAgent definition into the registry
+// already attached to the engine. The migrated tests build the registry
+// first (so it can be passed through Config.DefRegistry), then call this
+// to add a single def for the test.
+func registerSubAgentDef(t *testing.T, eng *engine.QueryEngine, def *agent.AgentDefinition) {
 	t.Helper()
-	if eng.defRegistry == nil {
-		reg := agent.NewAgentDefinitionRegistry()
-		eng.defRegistry = reg
-		eng.mentionParser = queryloop.NewMentionParser(reg)
+	reg := eng.DefRegistry()
+	if reg == nil {
+		t.Fatalf("engine has no DefRegistry; tests must construct the engine via newSpawnTestEngine(t, prov, reg, ...)")
 	}
-	if err := eng.defRegistry.Register(def); err != nil {
+	if err := reg.Register(def); err != nil {
 		t.Fatalf("Register(%s): %v", def.Name, err)
 	}
 }
@@ -86,7 +88,7 @@ func TestSubAgentDriver_StripsDispatchTools(t *testing.T) {
 	schedulerTool := &fakeDispatchTool{name: "scheduler"}
 	orchestrateTool := &fakeDispatchTool{name: "orchestrate"}
 
-	eng := newSubagentTestEngine(prov,
+	eng := newSpawnTestEngine(t, prov, agent.NewAgentDefinitionRegistry(),
 		taskTool, schedulerTool, orchestrateTool,
 		submittool.NewEscalate(),
 		submittool.New(),
@@ -167,7 +169,7 @@ func TestSubAgentDriver_Escalation(t *testing.T) {
 		},
 	}
 
-	eng := newSubagentTestEngine(prov,
+	eng := newSpawnTestEngine(t, prov, agent.NewAgentDefinitionRegistry(),
 		submittool.New(),
 		submittool.NewEscalate(),
 	)
@@ -285,7 +287,7 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 			},
 		},
 	}
-	eng := newSubagentTestEngine(prov,
+	eng := newSpawnTestEngine(t, prov, agent.NewAgentDefinitionRegistry(),
 		submittool.New(),
 		submittool.NewEscalate(),
 	)
@@ -301,7 +303,7 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 	// Drive the @-mention code path directly via processWithAgent. This is
 	// the path that had the bug; SpawnSync alone wouldn't catch it because
 	// most callers (scheduler / Agent tools) already pass def.Name.
-	sess, err := eng.sessionMgr.GetOrCreate(context.Background(), "sess_gap5", "", "")
+	sess, err := eng.SessionMgr().GetOrCreate(context.Background(), "sess_gap5", "", "")
 	if err != nil {
 		t.Fatalf("session: %v", err)
 	}
@@ -309,8 +311,8 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 		AgentName: "writer",
 		Prompt:    "do something",
 	}
-	def := eng.defRegistry.Get("writer")
-	out, err := eng.loopRunner.ProcessWithAgent(context.Background(), "sess_gap5", sess, mention, def)
+	def := eng.DefRegistry().Get("writer")
+	out, err := eng.LoopRunner().ProcessWithAgent(context.Background(), "sess_gap5", sess, mention, def)
 	if err != nil {
 		t.Fatalf("processWithAgent: %v", err)
 	}
@@ -354,13 +356,9 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 // removed.
 func TestBuildSubAgentSystemPrompt_NoEmmaForSubAgent(t *testing.T) {
 	prov := &subagentMockProvider{}
-	eng := newSubagentTestEngine(prov)
-	eng.config.MainAgentDisplayName = "emma"
-
 	reg := agent.NewAgentDefinitionRegistry()
 	reg.RegisterBuiltins()
-	eng.defRegistry = reg
-	eng.mentionParser = queryloop.NewMentionParser(reg)
+	eng := newSpawnTestEngineWithName(t, prov, reg, "emma")
 
 	sess := &session.Session{ID: "sess_test"}
 	got := eng.Spawner().BuildSubAgentSystemPrompt(
@@ -412,7 +410,7 @@ func TestPool_DangerousStrippedForSubAgent(t *testing.T) {
 		},
 	}
 	dangerous := &fakeDangerousTool{name: "DropTable"}
-	eng := newSubagentTestEngine(prov,
+	eng := newSpawnTestEngine(t, prov, agent.NewAgentDefinitionRegistry(),
 		dangerous,
 		submittool.NewEscalate(),
 		submittool.New(),

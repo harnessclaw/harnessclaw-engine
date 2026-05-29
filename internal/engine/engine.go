@@ -413,6 +413,13 @@ func (qe *QueryEngine) PromptProfile() *prompt.AgentProfile {
 	return qe.promptProfile
 }
 
+// LoopRunner returns the queryloop.Runner instance. Exposed for tests
+// that exercise loop-internal helpers (ProcessWithAgent, etc.) from
+// external test packages without reaching for the private field.
+func (qe *QueryEngine) LoopRunner() *queryloop.Runner {
+	return qe.loopRunner
+}
+
 // Start launches background goroutines that require a long-lived context.
 // Must be called once after NewQueryEngine, before the first query.
 // ctx should be cancelled when the server shuts down.
