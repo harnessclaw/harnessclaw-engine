@@ -139,7 +139,7 @@ type Deps interface {
 	MessageBroker() *agent.MessageBroker
 }
 
-// SpawnConfig is the spawn-relevant subset of engine.QueryEngineConfig.
+// SpawnConfig is the spawn-relevant subset of emma.Config.
 // Returned as a value snapshot from Deps.Config() so spawn code never
 // holds a pointer into the engine's mutable state.
 type SpawnConfig struct {
