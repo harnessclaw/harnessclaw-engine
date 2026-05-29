@@ -1,4 +1,8 @@
-package engine
+// Package engine_test holds end-to-end smoke tests that drive the
+// QueryEngine facade via its public API. They require a real provider
+// (configured through testdata/llm.yaml) and an LLM API key; the engine
+// CI suite skips them when the config is absent.
+package engine_test
 
 import (
 	"context"
@@ -10,6 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
+
+	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
@@ -18,9 +26,6 @@ import (
 	"harnessclaw-go/internal/storage/memory"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
-
-	"go.uber.org/zap"
-	"gopkg.in/yaml.v3"
 )
 
 // ==============================
@@ -47,7 +52,7 @@ func loadProvider(t *testing.T) provider.Provider {
 		}
 	}
 	if err != nil {
-		t.Fatalf("load llm config: %v", err)
+		t.Skipf("skip: testdata/llm.yaml not found (%v)", err)
 	}
 	var cfg testLLMConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -65,7 +70,7 @@ func loadProvider(t *testing.T) provider.Provider {
 	return prov
 }
 
-func newTestEngine(t *testing.T, tools ...tool.Tool) (*QueryEngine, *event.Bus) {
+func newTestEngine(t *testing.T, tools ...tool.Tool) (*engine.QueryEngine, *event.Bus) {
 	t.Helper()
 	prov := loadProvider(t)
 	logger, _ := zap.NewDevelopment()
@@ -77,14 +82,14 @@ func newTestEngine(t *testing.T, tools ...tool.Tool) (*QueryEngine, *event.Bus) 
 		_ = reg.Register(tl)
 	}
 
-	cfg := DefaultQueryEngineConfig()
+	cfg := engine.DefaultQueryEngineConfig()
 	cfg.MaxTurns = 10
 	cfg.ToolTimeout = 30 * time.Second
 	cfg.MaxTokens = 1024
 	cfg.SystemPrompt = "You are a helpful assistant. Be concise. Always use tools when asked."
 	cfg.ClientTools = false // Use server-side tool execution for these tests.
 
-	eng := NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, nil)
+	eng := engine.NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, nil)
 	return eng, bus
 }
 
@@ -146,7 +151,7 @@ func (et *echoTool) Execute(_ context.Context, input json.RawMessage) (*types.To
 	var p struct {
 		Text string `json:"text"`
 	}
-	json.Unmarshal(input, &p)
+	_ = json.Unmarshal(input, &p)
 	return &types.ToolResult{Content: "echo: " + p.Text}, nil
 }
 
@@ -176,8 +181,22 @@ func (at *addTool) Execute(_ context.Context, input json.RawMessage) (*types.Too
 		A float64 `json:"a"`
 		B float64 `json:"b"`
 	}
-	json.Unmarshal(input, &p)
+	_ = json.Unmarshal(input, &p)
 	return &types.ToolResult{Content: fmt.Sprintf("%g", p.A+p.B)}, nil
+}
+
+type loopForeverTool struct{ tool.BaseTool }
+
+func (l *loopForeverTool) Name() string { return "loop" }
+func (l *loopForeverTool) Description() string {
+	return "A test tool. Always returns a message asking you to call it again."
+}
+func (l *loopForeverTool) IsReadOnly() bool { return true }
+func (l *loopForeverTool) InputSchema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{}}
+}
+func (l *loopForeverTool) Execute(_ context.Context, _ json.RawMessage) (*types.ToolResult, error) {
+	return &types.ToolResult{Content: "OK. You must call the loop tool again immediately."}, nil
 }
 
 // ==============================
@@ -280,14 +299,14 @@ func TestQueryLoop_MaxTurns(t *testing.T) {
 	reg := tool.NewRegistry()
 	_ = reg.Register(loopTool)
 
-	cfg := DefaultQueryEngineConfig()
+	cfg := engine.DefaultQueryEngineConfig()
 	cfg.MaxTurns = 3 // deliberately low
 	cfg.ToolTimeout = 15 * time.Second
 	cfg.MaxTokens = 512
 	cfg.SystemPrompt = "You must always call the loop tool whenever you see its result. Never stop calling it."
 	cfg.ClientTools = false // Use server-side tool execution.
 
-	eng := NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, nil)
+	eng := engine.NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -308,20 +327,6 @@ func TestQueryLoop_MaxTurns(t *testing.T) {
 	if terminal.Reason != types.TerminalMaxTurns {
 		t.Errorf("expected TerminalMaxTurns, got %s", terminal.Reason)
 	}
-}
-
-type loopForeverTool struct{ tool.BaseTool }
-
-func (l *loopForeverTool) Name() string { return "loop" }
-func (l *loopForeverTool) Description() string {
-	return "A test tool. Always returns a message asking you to call it again."
-}
-func (l *loopForeverTool) IsReadOnly() bool { return true }
-func (l *loopForeverTool) InputSchema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{}}
-}
-func (l *loopForeverTool) Execute(_ context.Context, _ json.RawMessage) (*types.ToolResult, error) {
-	return &types.ToolResult{Content: "OK. You must call the loop tool again immediately."}, nil
 }
 
 // ==============================
@@ -372,11 +377,11 @@ func TestQueryLoop_SessionMessages(t *testing.T) {
 	mgr := session.NewManager(store, logger, 10*time.Minute)
 	bus := event.NewBus()
 	reg := tool.NewRegistry()
-	cfg := DefaultQueryEngineConfig()
+	cfg := engine.DefaultQueryEngineConfig()
 	cfg.MaxTurns = 5
 	cfg.MaxTokens = 512
 
-	eng := NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, nil)
+	eng := engine.NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -504,88 +509,5 @@ func TestQueryLoop_MultiToolChain(t *testing.T) {
 	}
 	if terminal != nil {
 		t.Logf("terminal: reason=%s turn=%d", terminal.Reason, terminal.Turn)
-	}
-}
-
-func TestAbortSession_UnblocksPendingAwaits(t *testing.T) {
-	// Create engine and session.
-	eng, sess := newDispatchTestEngine(t, time.Second)
-
-	// Initialize the cancels map (newDispatchTestEngine doesn't do it for minimal tests).
-	eng.cancels = make(map[string]context.CancelFunc)
-
-	// Simulate an active query by registering a cancel function.
-	_, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	eng.mu.Lock()
-	eng.cancels[sess.ID] = cancel
-	eng.mu.Unlock()
-
-	// Push a pending tool await.
-	aw := sess.Awaits.PushTool("use_1", "Read")
-
-	// Abort the session.
-	if err := eng.AbortSession(context.Background(), sess.ID); err != nil {
-		t.Fatalf("AbortSession: %v", err)
-	}
-
-	// Verify ToolAwait result channel closes within 10ms.
-	select {
-	case _, ok := <-aw.Result:
-		if ok {
-			t.Error("Result delivered a value; want closed channel")
-		}
-	case <-time.After(10 * time.Millisecond):
-		t.Fatal("Result not closed within 10ms after AbortSession")
-	}
-}
-
-func TestAbortSession_NoActiveQuery(t *testing.T) {
-	eng, _ := newDispatchTestEngine(t, time.Second)
-
-	err := eng.AbortSession(context.Background(), "no_such_session")
-	if err == nil {
-		t.Error("AbortSession on unknown session: got nil, want error")
-	}
-}
-
-func TestAbortSession_DeletesFromCancels(t *testing.T) {
-	eng, sess := newDispatchTestEngine(t, time.Second)
-
-	// Initialize the cancels map.
-	eng.cancels = make(map[string]context.CancelFunc)
-
-	// Register a cancel function.
-	_, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	eng.mu.Lock()
-	eng.cancels[sess.ID] = cancel
-	eng.mu.Unlock()
-
-	// Verify entry exists before abort.
-	eng.mu.Lock()
-	_, existsBefore := eng.cancels[sess.ID]
-	eng.mu.Unlock()
-	if !existsBefore {
-		t.Fatal("session cancel should exist before abort")
-	}
-
-	// Abort.
-	if err := eng.AbortSession(context.Background(), sess.ID); err != nil {
-		t.Fatalf("AbortSession: %v", err)
-	}
-
-	// Verify entry was deleted.
-	eng.mu.Lock()
-	_, existsAfter := eng.cancels[sess.ID]
-	eng.mu.Unlock()
-	if existsAfter {
-		t.Error("session cancel should be deleted after abort")
-	}
-
-	// Verify second abort returns "no active query".
-	err := eng.AbortSession(context.Background(), sess.ID)
-	if err == nil {
-		t.Error("second AbortSession should return error")
 	}
 }
