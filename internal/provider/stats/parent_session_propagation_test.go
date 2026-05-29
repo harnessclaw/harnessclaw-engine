@@ -1,4 +1,4 @@
-package engine
+package stats_test
 
 import (
 	"context"
@@ -9,6 +9,30 @@ import (
 	"harnessclaw-go/internal/provider/stats"
 	ptypes "harnessclaw-go/pkg/types"
 )
+
+// fakeProv implements provider.Provider for stats package tests.
+type fakeProv struct {
+	events []ptypes.StreamEvent
+	err    error
+}
+
+func (f *fakeProv) Chat(_ context.Context, _ *provider.ChatRequest) (*provider.ChatStream, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	ch := make(chan ptypes.StreamEvent, len(f.events))
+	for _, ev := range f.events {
+		ch <- ev
+	}
+	close(ch)
+	return &provider.ChatStream{Events: ch, Err: func() error { return nil }}, nil
+}
+
+func (f *fakeProv) CountTokens(_ context.Context, _ []ptypes.Message) (int, error) {
+	return 0, nil
+}
+
+func (f *fakeProv) Name() string { return "fakeProv" }
 
 // TestStatsProvider_SubAgentSessionPropagatesFromCtx asserts that when a
 // stats.StatsProvider wraps a provider and the caller's ctx carries a
@@ -21,7 +45,7 @@ import (
 func TestStatsProvider_SubAgentSessionPropagatesFromCtx(t *testing.T) {
 	reg := sessionstats.NewRegistry()
 
-	inner := &engineFakeProv{events: []ptypes.StreamEvent{{
+	inner := &fakeProv{events: []ptypes.StreamEvent{{
 		Type:  ptypes.StreamEventMessageEnd,
 		Usage: &ptypes.Usage{InputTokens: 10, OutputTokens: 5},
 	}}}
