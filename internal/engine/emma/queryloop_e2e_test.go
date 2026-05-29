@@ -1,8 +1,8 @@
-// Package engine_test holds end-to-end smoke tests that drive the
-// QueryEngine facade via its public API. They require a real provider
-// (configured through testdata/llm.yaml) and an LLM API key; the engine
-// CI suite skips them when the config is absent.
-package engine_test
+// Package emma holds end-to-end smoke tests that drive the emma.Engine
+// facade via its public API. They require a real provider (configured
+// through testdata/llm.yaml) and an LLM API key; the engine CI suite
+// skips them when the config is absent.
+package emma
 
 import (
 	"context"
@@ -17,9 +17,7 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
-	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/bifrost"
@@ -70,27 +68,25 @@ func loadProvider(t *testing.T) provider.Provider {
 	return prov
 }
 
-func newTestEngine(t *testing.T, tools ...tool.Tool) (*engine.QueryEngine, *event.Bus) {
+func newTestEngine(t *testing.T, tools ...tool.Tool) *Engine {
 	t.Helper()
 	prov := loadProvider(t)
 	logger, _ := zap.NewDevelopment()
 	store := memory.New()
 	mgr := session.NewManager(store, logger, 10*time.Minute)
-	bus := event.NewBus()
 	reg := tool.NewRegistry()
 	for _, tl := range tools {
 		_ = reg.Register(tl)
 	}
 
-	cfg := engine.DefaultQueryEngineConfig()
+	cfg := DefaultConfig()
 	cfg.MaxTurns = 10
 	cfg.ToolTimeout = 30 * time.Second
 	cfg.MaxTokens = 1024
 	cfg.SystemPrompt = "You are a helpful assistant. Be concise. Always use tools when asked."
 	cfg.ClientTools = false // Use server-side tool execution for these tests.
 
-	eng := engine.NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, nil)
-	return eng, bus
+	return New(prov, reg, mgr, nil, permission.BypassChecker{}, logger, cfg, nil)
 }
 
 func userMsg(text string) *types.Message {
@@ -204,7 +200,7 @@ func (l *loopForeverTool) Execute(_ context.Context, _ json.RawMessage) (*types.
 // ==============================
 
 func TestQueryLoop_SimpleTextResponse(t *testing.T) {
-	eng, _ := newTestEngine(t)
+	eng := newTestEngine(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -237,7 +233,7 @@ func TestQueryLoop_SimpleTextResponse(t *testing.T) {
 
 func TestQueryLoop_ToolCallCycle(t *testing.T) {
 	echo := &echoTool{}
-	eng, _ := newTestEngine(t, echo)
+	eng := newTestEngine(t, echo)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -295,18 +291,17 @@ func TestQueryLoop_MaxTurns(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	store := memory.New()
 	mgr := session.NewManager(store, logger, 10*time.Minute)
-	bus := event.NewBus()
 	reg := tool.NewRegistry()
 	_ = reg.Register(loopTool)
 
-	cfg := engine.DefaultQueryEngineConfig()
+	cfg := DefaultConfig()
 	cfg.MaxTurns = 3 // deliberately low
 	cfg.ToolTimeout = 15 * time.Second
 	cfg.MaxTokens = 512
 	cfg.SystemPrompt = "You must always call the loop tool whenever you see its result. Never stop calling it."
 	cfg.ClientTools = false // Use server-side tool execution.
 
-	eng := engine.NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, nil)
+	eng := New(prov, reg, mgr, nil, permission.BypassChecker{}, logger, cfg, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -334,7 +329,7 @@ func TestQueryLoop_MaxTurns(t *testing.T) {
 // ==============================
 
 func TestQueryLoop_Abort(t *testing.T) {
-	eng, _ := newTestEngine(t)
+	eng := newTestEngine(t)
 
 	ctx := context.Background()
 	ch, err := eng.ProcessMessage(ctx, "sess-4",
@@ -375,13 +370,12 @@ func TestQueryLoop_SessionMessages(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	store := memory.New()
 	mgr := session.NewManager(store, logger, 10*time.Minute)
-	bus := event.NewBus()
 	reg := tool.NewRegistry()
-	cfg := engine.DefaultQueryEngineConfig()
+	cfg := DefaultConfig()
 	cfg.MaxTurns = 5
 	cfg.MaxTokens = 512
 
-	eng := engine.NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, nil)
+	eng := New(prov, reg, mgr, nil, permission.BypassChecker{}, logger, cfg, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -416,39 +410,11 @@ func TestQueryLoop_SessionMessages(t *testing.T) {
 }
 
 // ==============================
-// Test 6: 事件总线通知
-// ==============================
-
-func TestQueryLoop_EventBus(t *testing.T) {
-	eng, bus := newTestEngine(t)
-
-	var started, completed atomic.Int32
-	bus.Subscribe(event.TopicQueryStarted, func(_ event.Event) { started.Add(1) })
-	bus.Subscribe(event.TopicQueryCompleted, func(_ event.Event) { completed.Add(1) })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	ch, err := eng.ProcessMessage(ctx, "sess-6", userMsg("Say ok"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	drain(t, ch, 30*time.Second)
-
-	if started.Load() != 1 {
-		t.Errorf("expected 1 query.started, got %d", started.Load())
-	}
-	if completed.Load() != 1 {
-		t.Errorf("expected 1 query.completed, got %d", completed.Load())
-	}
-}
-
-// ==============================
 // Test 7: 多轮对话 — 同 session 记忆
 // ==============================
 
 func TestQueryLoop_MultiTurnMemory(t *testing.T) {
-	eng, _ := newTestEngine(t)
+	eng := newTestEngine(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -484,7 +450,7 @@ func TestQueryLoop_MultiTurnMemory(t *testing.T) {
 func TestQueryLoop_MultiToolChain(t *testing.T) {
 	add := &addTool{}
 	echo := &echoTool{}
-	eng, _ := newTestEngine(t, add, echo)
+	eng := newTestEngine(t, add, echo)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

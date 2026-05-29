@@ -12,10 +12,10 @@ import (
 
 	"go.uber.org/zap"
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/emma"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/event"
+	
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider/bifrost"
 	"harnessclaw-go/internal/storage/memory"
@@ -38,7 +38,7 @@ func loadTestConfig(t *testing.T) *config.Config {
 
 // buildFullEngine wires exactly the same components as main() —
 // real Bifrost provider, real engine, real session manager.
-func buildFullEngine(t *testing.T) *engine.QueryEngine {
+func buildFullEngine(t *testing.T) *emma.Engine {
 	t.Helper()
 	cfg := loadTestConfig(t)
 
@@ -59,19 +59,18 @@ func buildFullEngine(t *testing.T) *engine.QueryEngine {
 
 	store := memory.New()
 	mgr := session.NewManager(store, logger, cfg.Session.IdleTimeout)
-	bus := event.NewBus()
 	reg := tool.NewRegistry()
 	comp := compact.NewLLMCompactor(prov, logger)
 	perm := permission.BypassChecker{}
 
-	engCfg := engine.QueryEngineConfig{
+	engCfg := emma.EngineConfig{
 		MaxTurns:             cfg.Engine.MaxTurns,
 		AutoCompactThreshold: cfg.Engine.AutoCompactThreshold,
 		ToolTimeout:          cfg.Engine.ToolTimeout,
 		MaxTokens:            4096,
 		SystemPrompt:         "You are a helpful assistant. Be concise.",
 	}
-	return engine.NewQueryEngine(prov, reg, mgr, comp, perm, bus, logger, engCfg)
+	return emma.New(prov, reg, mgr, comp, perm, logger, engCfg)
 }
 
 func collect(t *testing.T, ch <-chan types.EngineEvent, timeout time.Duration) (text string, terminal *types.Terminal, events []types.EngineEvent) {
@@ -165,15 +164,14 @@ func TestE2E_RealProvider_ToolCall(t *testing.T) {
 
 	store := memory.New()
 	mgr := session.NewManager(store, logger, cfg.Session.IdleTimeout)
-	bus := event.NewBus()
 	reg := tool.NewRegistry()
 	dt := &dateTool{}
 	if err := reg.Register(dt); err != nil {
 		t.Fatal(err)
 	}
 
-	eng := engine.NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger,
-		engine.QueryEngineConfig{
+	eng := emma.New(prov, reg, mgr, nil, permission.BypassChecker{}, logger,
+		emma.EngineConfig{
 			MaxTurns:             5,
 			AutoCompactThreshold: 0.9,
 			ToolTimeout:          30 * time.Second,

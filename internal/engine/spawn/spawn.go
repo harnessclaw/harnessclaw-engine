@@ -21,7 +21,6 @@ import (
 	schedulertypes "harnessclaw-go/internal/engine/scheduler/types"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
-	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
@@ -85,7 +84,7 @@ const maxSubAgentTurns = 30
 //  7. Resolve prompt profile
 //  8. Build permission checker (InheritedChecker)
 //  9. Create drain channel
-//  10. Emit subagent.start on parent out (via eventBus)
+//  10. Emit subagent.start on parent out
 //  11. Run query loop
 //  12. Collect output
 //  13. Emit subagent.end
@@ -648,21 +647,6 @@ func (s *Spawner) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (result
 			)
 		}
 	}
-	if bus := s.deps.EventBus(); bus != nil {
-		bus.Publish(event.Event{
-			Topic: event.TopicSubAgentStarted,
-			Payload: map[string]any{
-				"agent_id":       agentID,
-				"name":           cfg.Name,
-				"description":    cfg.Description,
-				"subagent_type":  cfg.SubagentType,
-				"agent_type":     string(cfg.AgentType),
-				"fork":           cfg.Fork,
-				"parent_session": cfg.ParentSessionID,
-			},
-		})
-	}
-
 	// Step 11-12: Run query loop, drain events, collect text output.
 	// Forward events to ParentOut for real-time client streaming.
 	out := make(chan types.EngineEvent, 64)
@@ -917,19 +901,6 @@ func (s *Spawner) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (result
 			tr.FinishSubAgent(agentID, agentStatus, elapsed.Milliseconds())
 		}
 	}
-	if bus := s.deps.EventBus(); bus != nil {
-		bus.Publish(event.Event{
-			Topic: event.TopicSubAgentEnded,
-			Payload: map[string]any{
-				"agent_id":    agentID,
-				"name":        cfg.Name,
-				"reason":      string(terminal.Reason),
-				"turns":       terminal.Turn,
-				"duration_ms": elapsed.Milliseconds(),
-			},
-		})
-	}
-
 	// Per-terminal log level so monitoring's Error / Warn streams aren't
 	// drowned by user-initiated cancellations:
 	//   - Completed                              → Info  (happy path)

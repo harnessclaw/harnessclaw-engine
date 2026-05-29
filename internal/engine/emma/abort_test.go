@@ -1,4 +1,4 @@
-package engine_test
+package emma
 
 import (
 	"context"
@@ -7,41 +7,40 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/storage/memory"
 	"harnessclaw-go/internal/tool"
 )
 
-// newAbortTestEngine builds a minimal *engine.QueryEngine wired with a
-// real session manager and a single test session. The provider stays nil
-// because none of the abort tests touch the LLM path — they only exercise
-// the cancel-map and Awaits coupling that AbortSession owns.
-func newAbortTestEngine(t *testing.T) (*engine.QueryEngine, *session.Session) {
+// newAbortTestEngine builds a minimal *emma.Engine wired with a real
+// session manager and a single test session. The provider stays a no-op
+// mock because none of the abort tests touch the LLM path — they only
+// exercise the cancel-map and Awaits coupling that AbortSession owns.
+func newAbortTestEngine(t *testing.T) (*Engine, *session.Session) {
 	t.Helper()
 	store := memory.New()
-	mgr := session.NewManager(store, zap.NewNop(), time.Hour)
+	logger := zap.NewNop()
+	mgr := session.NewManager(store, logger, time.Hour)
 	sess, err := mgr.GetOrCreate(context.Background(), "test_sid", "ws", "user_1")
 	if err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
 
-	cfg := engine.DefaultQueryEngineConfig()
+	cfg := DefaultConfig()
 	cfg.ToolTimeout = time.Second
 	cfg.SystemPrompt = ""
 
-	eng := engine.NewQueryEngine(
-		nil, // provider unused — AbortSession never reaches the LLM path
+	eng := New(
+		&emmaMockProvider{},
 		tool.NewRegistry(),
 		mgr,
 		nil, // compactor
 		permission.BypassChecker{},
-		event.NewBus(),
-		zap.NewNop(),
+		logger,
 		cfg,
-		nil, // command registry
+		command.NewRegistry(),
 	)
 	return eng, sess
 }
@@ -78,8 +77,8 @@ func TestAbortSession_UnblocksPendingAwaits(t *testing.T) {
 	}
 }
 
-// TestAbortSession_NoActiveQuery asserts that aborting an unknown
-// session returns an error rather than silently succeeding.
+// TestAbortSession_NoActiveQuery asserts that aborting an unknown session
+// returns an error rather than silently succeeding.
 func TestAbortSession_NoActiveQuery(t *testing.T) {
 	eng, _ := newAbortTestEngine(t)
 

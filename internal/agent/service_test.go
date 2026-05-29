@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
-
-	"harnessclaw-go/internal/event"
 )
 
 // fakeStore is an in-memory AgentStore for service tests. Not concurrency-
@@ -98,8 +96,7 @@ const (
 func TestLoadAllToRegistry_PreservesBuiltinTier(t *testing.T) {
 	store := newFakeStore()
 	reg := NewAgentDefinitionRegistry()
-	bus := event.NewBus()
-	svc := NewAgentService(store, reg, bus, zap.NewNop())
+	svc := NewAgentService(store, reg, zap.NewNop())
 
 	if err := svc.SyncBuiltins(context.Background()); err != nil {
 		t.Fatalf("SyncBuiltins: %v", err)
@@ -170,7 +167,7 @@ func TestLoadAllToRegistry_PreservesBuiltinTier(t *testing.T) {
 func TestLoadAllToRegistry_AppliesUserEdits(t *testing.T) {
 	store := newFakeStore()
 	reg := NewAgentDefinitionRegistry()
-	svc := NewAgentService(store, reg, event.NewBus(), zap.NewNop())
+	svc := NewAgentService(store, reg, zap.NewNop())
 
 	if err := svc.SyncBuiltins(context.Background()); err != nil {
 		t.Fatalf("SyncBuiltins: %v", err)
@@ -204,7 +201,7 @@ func TestLoadAllToRegistry_AppliesUserEdits(t *testing.T) {
 func TestLoadAllToRegistry_NewNonBuiltinLoads(t *testing.T) {
 	store := newFakeStore()
 	reg := NewAgentDefinitionRegistry()
-	svc := NewAgentService(store, reg, event.NewBus(), zap.NewNop())
+	svc := NewAgentService(store, reg, zap.NewNop())
 
 	custom := &AgentDefinition{
 		Name:        "custom-imported",

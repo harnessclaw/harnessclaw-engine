@@ -7,9 +7,8 @@ import (
 	"testing"
 
 	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/emma"
 	"harnessclaw-go/internal/engine/prompt"
-	"harnessclaw-go/internal/engine/queryloop"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/internal/tool"
@@ -40,7 +39,7 @@ func escalateInputJSON(reason, suggested string) string {
 // already attached to the engine. The migrated tests build the registry
 // first (so it can be passed through Config.DefRegistry), then call this
 // to add a single def for the test.
-func registerSubAgentDef(t *testing.T, eng *engine.QueryEngine, def *agent.AgentDefinition) {
+func registerSubAgentDef(t *testing.T, eng *emma.Engine, def *agent.AgentDefinition) {
 	t.Helper()
 	reg := eng.DefRegistry()
 	if reg == nil {
@@ -307,12 +306,12 @@ func TestProcessWithAgent_PassesDefNameAsSubagentType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("session: %v", err)
 	}
-	mention := &queryloop.MentionResult{
+	mention := &emma.MentionResult{
 		AgentName: "writer",
 		Prompt:    "do something",
 	}
 	def := eng.DefRegistry().Get("writer")
-	out, err := eng.LoopRunner().ProcessWithAgent(context.Background(), "sess_gap5", sess, mention, def)
+	out, err := eng.ProcessWithAgent(context.Background(), "sess_gap5", sess, mention, def)
 	if err != nil {
 		t.Fatalf("processWithAgent: %v", err)
 	}

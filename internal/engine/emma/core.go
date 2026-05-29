@@ -23,7 +23,6 @@ import (
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/engine/spawn"
-	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
@@ -50,7 +49,6 @@ type Engine struct {
 	sessionMgr  *session.Manager
 	compactor   compact.Compactor
 	permChecker permission.Checker
-	eventBus    *event.Bus
 	logger      *zap.Logger
 	config      Config
 
@@ -101,6 +99,57 @@ type Engine struct {
 // Option configures Engine at construction.
 type Option func(*Engine)
 
+// L1Config carries the L1-persona overlay applied via WithL1Config. All
+// fields have sensible defaults; an empty L1Config is valid and produces
+// the canonical emma setup.
+//
+// L1 tool palette rationale (post 3-tier refactor):
+//   - scheduler                   → THE delegation entry point. emma never
+//                                   picks between single-step / multi-step
+//                                   or specific sub-agents — the scheduler
+//                                   (L2) handles all decomposition.
+//   - web_search / tavily_search  → emma's own *light* fact-finding for
+//                                   context gathering before dispatching.
+//   - ask_user_question           → clarification when the request is
+//                                   ambiguous.
+//
+// The task tool is intentionally NOT in this list — it lives inside the
+// L2 layer (the scheduler uses task internally to dispatch L3).
+type L1Config struct {
+	// Profile is the prompt profile used for the L1 main agent.
+	// Default: prompt.EmmaProfile.
+	Profile *prompt.AgentProfile
+
+	// DisplayName is the friendly leader name interpolated into worker
+	// identity prompts. Default: "emma".
+	DisplayName string
+
+	// AllowedTools restricts the tools advertised to the L1 LLM.
+	// Default: scheduler + light context tools.
+	AllowedTools []string
+
+	// MaxTurns caps the L1 loop. Default: 10.
+	MaxTurns int
+}
+
+// DefaultL1Config returns the canonical emma L1 configuration.
+func DefaultL1Config() L1Config {
+	return L1Config{
+		Profile:     prompt.EmmaProfile,
+		DisplayName: "emma",
+		AllowedTools: []string{
+			"scheduler",
+			"web_search",
+			"tavily_search",
+			"ask_user_question",
+			"read",
+			"glob",
+			"grep",
+		},
+		MaxTurns: 10,
+	}
+}
+
 // WithL1Config applies an L1Config overlay — sets the main agent profile,
 // display name, tool palette, and small-loop cap. Empty fields fall back
 // to DefaultL1Config defaults.
@@ -143,7 +192,6 @@ func New(
 	mgr *session.Manager,
 	comp compact.Compactor,
 	perm permission.Checker,
-	bus *event.Bus,
 	logger *zap.Logger,
 	cfg Config,
 	cmdReg *command.Registry,
@@ -177,7 +225,6 @@ func New(
 		sessionMgr:    mgr,
 		compactor:     comp,
 		permChecker:   perm,
-		eventBus:      bus,
 		logger:        logger,
 		config:        cfg,
 		promptBuilder: promptBuilder,
@@ -267,7 +314,7 @@ func (e *Engine) ProcessMessage(ctx context.Context, sessionID string, msg *type
 			def := e.defRegistry.Get(mention.AgentName)
 			if def != nil {
 				sess.AddMessage(*msg)
-				return e.processWithAgent(ctx, sessionID, sess, mention, def)
+				return e.ProcessWithAgent(ctx, sessionID, sess, mention, def)
 			}
 		}
 	}
@@ -307,10 +354,7 @@ func (e *Engine) ProcessMessage(ctx context.Context, sessionID string, msg *type
 			e.emitSeq.Drop(traceID)
 		}()
 
-		e.eventBus.Publish(event.Event{
-			Topic:   event.TopicQueryStarted,
-			Payload: map[string]string{"session_id": sessionID},
-		})
+		e.logger.Debug("query started", zap.String("session_id", sessionID))
 
 		out <- types.EngineEvent{
 			Type:     types.EngineEventTraceStarted,
@@ -328,10 +372,11 @@ func (e *Engine) ProcessMessage(ctx context.Context, sessionID string, msg *type
 		}
 		terminal := e.run(qCtx, sess, out, approvalFn)
 
-		e.eventBus.Publish(event.Event{
-			Topic:   event.TopicQueryCompleted,
-			Payload: map[string]any{"session_id": sessionID, "reason": terminal.Reason, "message": terminal.Message},
-		})
+		e.logger.Info("query completed",
+			zap.String("session_id", sessionID),
+			zap.String("reason", string(terminal.Reason)),
+			zap.String("message", terminal.Message),
+		)
 
 		cumUsage := e.cumulativeUsageFor(sess.ID)
 		duration := time.Since(startedAt).Milliseconds()
@@ -388,6 +433,23 @@ func (e *Engine) ProcessMessage(ctx context.Context, sessionID string, msg *type
 	}()
 
 	return out, nil
+}
+
+// RegisterCancel stores the per-session cancel func so AbortSession can
+// reach it. Used by tests that simulate an in-flight query without going
+// through ProcessMessage.
+func (e *Engine) RegisterCancel(sid string, cancel context.CancelFunc) {
+	e.mu.Lock()
+	e.cancels[sid] = cancel
+	e.mu.Unlock()
+}
+
+// DeregisterCancel removes the per-session cancel func registered via
+// RegisterCancel.
+func (e *Engine) DeregisterCancel(sid string) {
+	e.mu.Lock()
+	delete(e.cancels, sid)
+	e.mu.Unlock()
 }
 
 // AbortSession implements engine.Engine. Cancels the in-flight query for

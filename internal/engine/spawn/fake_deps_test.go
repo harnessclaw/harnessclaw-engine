@@ -14,7 +14,6 @@ import (
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	enginesched "harnessclaw-go/internal/engine/scheduler"
-	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	provretry "harnessclaw-go/internal/provider/retry"
@@ -28,14 +27,12 @@ import (
 // purpose is to catch regressions where a new Deps method is added but
 // the QueryEngine implementation forgets to wire it.
 type fakeDeps struct {
-	logger   *zap.Logger
-	eventBus *event.Bus
+	logger *zap.Logger
 }
 
 func newFakeDeps() *fakeDeps {
 	return &fakeDeps{
-		logger:   zap.NewNop(),
-		eventBus: event.NewBus(),
+		logger: zap.NewNop(),
 	}
 }
 
@@ -81,10 +78,6 @@ func (f *fakeDeps) Compactor() compact.Compactor {
 
 func (f *fakeDeps) PermChecker() permission.Checker {
 	return nil // stub — not exercised by smoke test
-}
-
-func (f *fakeDeps) EventBus() *event.Bus {
-	return f.eventBus
 }
 
 func (f *fakeDeps) SessionMgr() *session.Manager {

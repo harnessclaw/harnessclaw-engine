@@ -14,7 +14,6 @@ import (
 	enginesched "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
-	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
@@ -44,7 +43,6 @@ type Deps interface {
 	CmdRegistry() *command.Registry
 	Compactor() compact.Compactor
 	PermChecker() permission.Checker
-	EventBus() *event.Bus
 
 	SessionMgr() *session.Manager
 	StatsRegistry() *sessionstats.Registry

@@ -13,7 +13,6 @@ import (
 	"harnessclaw-go/internal/engine/llmcall"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/toolexec"
-	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
@@ -79,7 +78,6 @@ func (e *Engine) run(
 
 		if e.compactor != nil && e.compactor.ShouldCompact(messages, e.contextWindow(), cfg.AutoCompactThreshold) {
 			logger.Info("auto-compact triggered", zap.String("session_id", sess.ID), zap.Int("msg_count", len(messages)))
-			e.eventBus.Publish(event.Event{Topic: event.TopicCompactTriggered, Payload: map[string]string{"session_id": sess.ID}})
 
 			compacted, err := e.compactor.Compact(ctx, messages)
 			if err != nil {
@@ -480,9 +478,11 @@ func (e *Engine) cumulativeUsageFor(sessionID string) types.Usage {
 	}
 }
 
-// processWithAgent handles a user message routed to a specific agent via
+// ProcessWithAgent handles a user message routed to a specific agent via
 // @-mention. It emits an agent.routed event and delegates to SpawnSync.
-func (e *Engine) processWithAgent(
+// Exported for use by spawn tests that exercise the @-mention dispatch
+// path in isolation.
+func (e *Engine) ProcessWithAgent(
 	ctx context.Context,
 	sessionID string,
 	sess *session.Session,

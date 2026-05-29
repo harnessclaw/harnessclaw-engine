@@ -5,31 +5,21 @@ import (
 	"fmt"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/event"
-)
-
-// Event topics for agent definition lifecycle.
-const (
-	TopicAgentDefCreated event.Topic = "agent.definition.created"
-	TopicAgentDefUpdated event.Topic = "agent.definition.updated"
-	TopicAgentDefDeleted event.Topic = "agent.definition.deleted"
 )
 
 // AgentService provides CRUD operations on agent definitions with
-// automatic synchronization to the in-memory registry and event notification.
+// automatic synchronization to the in-memory registry.
 type AgentService struct {
 	store    AgentStore
 	registry *AgentDefinitionRegistry
-	bus      *event.Bus
 	logger   *zap.Logger
 }
 
 // NewAgentService creates a new agent service.
-func NewAgentService(store AgentStore, registry *AgentDefinitionRegistry, bus *event.Bus, logger *zap.Logger) *AgentService {
+func NewAgentService(store AgentStore, registry *AgentDefinitionRegistry, logger *zap.Logger) *AgentService {
 	return &AgentService{
 		store:    store,
 		registry: registry,
-		bus:      bus,
 		logger:   logger,
 	}
 }
@@ -49,12 +39,6 @@ func (s *AgentService) Create(ctx context.Context, def *AgentDefinition) (*Agent
 	// Sync to in-memory registry
 	s.registry.Register(result)
 	s.logger.Info("agent definition created", zap.String("name", result.Name))
-
-	// Publish event
-	s.bus.PublishAsync(event.Event{
-		Topic:   TopicAgentDefCreated,
-		Payload: result,
-	})
 
 	return result, nil
 }
@@ -80,11 +64,6 @@ func (s *AgentService) Update(ctx context.Context, name string, updates *AgentUp
 	s.registry.Register(result)
 	s.logger.Info("agent definition updated", zap.String("name", name))
 
-	s.bus.PublishAsync(event.Event{
-		Topic:   TopicAgentDefUpdated,
-		Payload: result,
-	})
-
 	return result, nil
 }
 
@@ -96,11 +75,6 @@ func (s *AgentService) Delete(ctx context.Context, name string) error {
 
 	s.registry.Unregister(name)
 	s.logger.Info("agent definition deleted", zap.String("name", name))
-
-	s.bus.PublishAsync(event.Event{
-		Topic:   TopicAgentDefDeleted,
-		Payload: name,
-	})
 
 	return nil
 }

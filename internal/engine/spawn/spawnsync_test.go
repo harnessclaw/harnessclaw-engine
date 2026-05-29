@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/emma"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/texts"
 	"harnessclaw-go/internal/engine/session"
@@ -582,7 +582,7 @@ func writeInputJSON(role, content string) string {
 var _ = texts.SchedulerRole
 
 // Verify that the compile-time interface check passes.
-var _ agent.AgentSpawner = (*engine.QueryEngine)(nil)
+var _ agent.AgentSpawner = (*emma.Engine)(nil)
 
 // Suppress unused import warning for prompt package.
 var _ = prompt.EmmaProfile
@@ -1005,7 +1005,7 @@ func TestQueryEngine_LeaderNameInjection(t *testing.T) {
 // uses (skip definitions with custom SystemPrompt or empty DisplayName).
 // The migrated version reads through the public DefRegistry() / Config()
 // accessors rather than touching private fields.
-func buildWorkerIdentityForTest(qe *engine.QueryEngine, subagentType string) string {
+func buildWorkerIdentityForTest(qe *emma.Engine, subagentType string) string {
 	if qe.DefRegistry() == nil {
 		return ""
 	}

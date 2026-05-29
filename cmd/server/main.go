@@ -4,14 +4,13 @@
 //  1. Load configuration (Viper)
 //  2. Initialize structured logger (Zap)
 //  3. Initialize storage (SQLite)
-//  4. Create event bus
-//  5. Register tools
-//  6. Initialize LLM provider (Bifrost SDK)
-//  7. Create session manager
-//  8. Create query engine
-//  9. Build router with middleware chain
-//  10. Start channels (Feishu, WebSocket, HTTP) in parallel
-//  11. Wait for shutdown signal, then gracefully stop
+//  4. Register tools
+//  5. Initialize LLM provider (Bifrost SDK)
+//  6. Create session manager
+//  7. Create query engine
+//  8. Build router with middleware chain
+//  9. Start channels (Feishu, WebSocket, HTTP) in parallel
+//  10. Wait for shutdown signal, then gracefully stop
 package main
 
 import (
@@ -44,7 +43,6 @@ import (
 	"harnessclaw-go/internal/engine/userprompt"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
-	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/api/providersmgmt"
 	"harnessclaw-go/internal/api/toolsmgmt"
@@ -165,10 +163,7 @@ func main() {
 	defer store.Close()
 	logger.Info("storage initialized", zap.String("db_path", cfg.Session.DBPath))
 
-	// --- Step 4: Create event bus ---
-	bus := event.NewBus()
-
-	// --- Step 5: Register tools ---
+	// --- Step 4: Register tools ---
 	registry := tool.NewRegistry()
 
 	// workspaceRootDir is the shared root for plan.json / tasks/ /
@@ -412,7 +407,7 @@ func main() {
 		// applied by WithL1Config; setting non-default values here would
 		// be overwritten anyway.
 	}
-	eng := emma.New(llmProvider, registry, sessionMgr, compactor, permChecker, bus, logger, engCfg, cmdRegistry,
+	eng := emma.New(llmProvider, registry, sessionMgr, compactor, permChecker, logger, engCfg, cmdRegistry,
 		emma.WithL1Config(emma.DefaultL1Config()))
 	logger.Info("emma engine initialized",
 		zap.Int("max_turns", engCfg.MaxTurns),

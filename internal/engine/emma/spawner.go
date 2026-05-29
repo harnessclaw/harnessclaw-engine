@@ -16,7 +16,6 @@ import (
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/internal/engine/toolexec"
-	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
@@ -44,9 +43,6 @@ func (e *Engine) Compactor() compact.Compactor { return e.compactor }
 
 // PermChecker implements spawn.Deps.
 func (e *Engine) PermChecker() permission.Checker { return e.permChecker }
-
-// EventBus implements spawn.Deps.
-func (e *Engine) EventBus() *event.Bus { return e.eventBus }
 
 // SessionMgr implements spawn.Deps.
 func (e *Engine) SessionMgr() *session.Manager { return e.sessionMgr }

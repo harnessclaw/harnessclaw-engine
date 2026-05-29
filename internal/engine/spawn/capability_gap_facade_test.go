@@ -8,7 +8,7 @@ import (
 
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/emit"
-	"harnessclaw-go/internal/engine"
+	"harnessclaw-go/internal/engine/emma"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
 )
@@ -66,7 +66,7 @@ func drainForSystemNotice(t *testing.T, ch <-chan types.EngineEvent, timeout tim
 
 // newGapTestEngine builds a QueryEngine with the researcherDef registered.
 // Extra tools (e.g. fakeWebSearchTool) can be passed to make search available.
-func newGapTestEngine(t *testing.T, prov *subagentMockProvider, extraTools ...tool.Tool) *engine.QueryEngine {
+func newGapTestEngine(t *testing.T, prov *subagentMockProvider, extraTools ...tool.Tool) *emma.Engine {
 	t.Helper()
 	defReg := agent.NewAgentDefinitionRegistry()
 	if err := defReg.Register(researcherDef); err != nil {
@@ -88,7 +88,7 @@ func newEndTurnResponse() subagentMockResponse {
 // It closes parentOut when done and sends any SpawnSync error on errCh.
 func spawnResearcher(
 	t *testing.T,
-	eng *engine.QueryEngine,
+	eng *emma.Engine,
 	parentOut chan types.EngineEvent,
 	sessionID string,
 ) <-chan error {

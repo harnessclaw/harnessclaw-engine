@@ -9,10 +9,8 @@ import (
 
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/command"
-	"harnessclaw-go/internal/engine"
-	"harnessclaw-go/internal/engine/queryloop"
+	"harnessclaw-go/internal/engine/emma"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/event"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/storage/memory"
@@ -20,7 +18,7 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// newSpawnTestEngine constructs a full *engine.QueryEngine via the public
+// newSpawnTestEngine constructs a full *emma.Engine via the public
 // constructor. Pass a non-nil defReg to enable @-mention routing; the
 // engine wires both qe.defRegistry and qe.mentionParser from the Config
 // (no backdoor writes required).
@@ -29,7 +27,7 @@ func newSpawnTestEngine(
 	prov provider.Provider,
 	defReg *agent.AgentDefinitionRegistry,
 	tools ...tool.Tool,
-) *engine.QueryEngine {
+) *emma.Engine {
 	t.Helper()
 	return newSpawnTestEngineWithName(t, prov, defReg, "", tools...)
 }
@@ -45,11 +43,10 @@ func newSpawnTestEngineWithName(
 	defReg *agent.AgentDefinitionRegistry,
 	displayName string,
 	tools ...tool.Tool,
-) *engine.QueryEngine {
+) *emma.Engine {
 	t.Helper()
 	logger := zap.NewNop()
 	store := memory.New()
-	bus := event.NewBus()
 	mgr := session.NewManager(store, logger, 30*time.Minute)
 	cmdReg := command.NewRegistry()
 
@@ -58,7 +55,7 @@ func newSpawnTestEngineWithName(
 		_ = reg.Register(tl)
 	}
 
-	cfg := engine.QueryEngineConfig{
+	cfg := emma.Config{
 		MaxTurns:             50,
 		AutoCompactThreshold: 0.8,
 		ToolTimeout:          30 * time.Second,
@@ -78,7 +75,7 @@ func newSpawnTestEngineWithName(
 		MainAgentDisplayName: displayName,
 	}
 
-	return engine.NewQueryEngine(prov, reg, mgr, nil, permission.BypassChecker{}, bus, logger, cfg, cmdReg)
+	return emma.New(prov, reg, mgr, nil, permission.BypassChecker{}, logger, cfg, cmdReg)
 }
 
 // --- Mock provider for sub-agent tests (lifted from the old engine package
@@ -230,4 +227,4 @@ func indexOf(s, sub string) int {
 
 // silence unused-import warning if a future edit drops the queryloop
 // reference from this file (the helper exists to make the dep explicit).
-var _ = queryloop.NewMentionParser
+var _ = emma.NewMentionParser
