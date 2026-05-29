@@ -38,7 +38,6 @@ import (
 	wsch "harnessclaw-go/internal/channel/websocket"
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/engine"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/emma"
 	"harnessclaw-go/internal/engine/emma/resume"
@@ -166,9 +165,8 @@ func main() {
 	defer store.Close()
 	logger.Info("storage initialized", zap.String("db_path", cfg.Session.DBPath))
 
-	// --- Step 4: Create event bus and subscribe key events for logging ---
+	// --- Step 4: Create event bus ---
 	bus := event.NewBus()
-	subscribeEventLogging(bus, logger)
 
 	// --- Step 5: Register tools ---
 	registry := tool.NewRegistry()
@@ -377,10 +375,10 @@ func main() {
 	// holds a pointer, so writes through agentDefReg are visible to it.
 	agentDefReg := agent.NewAgentDefinitionRegistry()
 
-	// L2 (worker / sub-agent) settings live on QueryEngineConfig directly.
+	// L2 (worker / sub-agent) settings live on emma.Config directly.
 	// L1 settings (emma profile, restricted tool palette, small loop) are
-	// applied by NewL1Engine below and overwrite the main-agent fields here.
-	engCfg := engine.QueryEngineConfig{
+	// applied via WithL1Config below and overwrite the main-agent fields.
+	engCfg := emma.Config{
 		MaxTurns:             cfg.Agent.MaxTurns,
 		AutoCompactThreshold: cfg.Engine.AutoCompactThreshold,
 		ToolTimeout:          cfg.Engine.ToolTimeout,
@@ -410,27 +408,21 @@ func main() {
 		DefRegistry:   agentDefReg,
 		SkillReader:   skillReader,
 		StatsRegistry: statsRegistry,
-		// MainAgentProfile / DisplayName / AllowedTools / MaxTurns are filled
-		// in by NewL1Engine; setting non-default values here would be
-		// overwritten anyway.
+		// MainAgentProfile / DisplayName / AllowedTools / MaxTurns are
+		// applied by WithL1Config; setting non-default values here would
+		// be overwritten anyway.
 	}
-	eng := engine.NewQueryEngine(llmProvider, registry, sessionMgr, compactor, permChecker, bus, logger, engCfg, cmdRegistry)
-	logger.Info("engine initialized",
+	eng := emma.New(llmProvider, registry, sessionMgr, compactor, permChecker, bus, logger, engCfg, cmdRegistry,
+		emma.WithL1Config(emma.DefaultL1Config()))
+	logger.Info("emma engine initialized",
 		zap.Int("max_turns", engCfg.MaxTurns),
 		zap.Float64("compact_threshold", engCfg.AutoCompactThreshold),
 		zap.Int("agent_context_window", cfg.Agent.ContextWindow),
 		zap.Int("effective_context_window", engCfg.ContextWindow),
-	)
-
-	// Wrap the QueryEngine in an L1Engine. From this point on, the channel
-	// layer talks to `l1` (user-facing); Agent/Orchestrate tools continue to
-	// use `eng` directly to spawn L2 sub-agents.
-	l1 := emma.NewL1Engine(eng, emma.DefaultL1Config(), logger)
-	logger.Info("L1 engine wrapped",
-		zap.String("profile", l1.Config().Profile.Name),
-		zap.String("display_name", l1.Config().DisplayName),
-		zap.Strings("allowed_tools", l1.Config().AllowedTools),
-		zap.Int("max_turns", l1.Config().MaxTurns),
+		zap.String("l1_profile", eng.PromptProfile().Name),
+		zap.String("l1_display_name", eng.Config().MainAgentDisplayName),
+		zap.Strings("l1_allowed_tools", eng.Config().MainAgentAllowedTools),
+		zap.Int("l1_max_turns", eng.Config().MainAgentMaxTurns),
 	)
 
 	// Register Task tool (post-engine: needs engine as AgentSpawner).
@@ -486,7 +478,7 @@ func main() {
 	defer agentDefStore.Close()
 	logger.Info("agent definition store initialized", zap.String("path", agentDefDBPath))
 
-	agentSvc := agent.NewAgentService(agentDefStore, agentDefReg, bus, logger)
+	agentSvc := agent.NewAgentService(agentDefStore, agentDefReg, logger)
 
 	// Sync built-in agent definitions to SQLite (also prunes stale builtins).
 	if err := agentSvc.SyncBuiltins(context.Background()); err != nil {
@@ -591,7 +583,7 @@ func main() {
 	if providerMgr != nil && modelReg != nil {
 		modelInfo = &routerModelInfoBridge{mgr: providerMgr, reg: modelReg}
 	}
-	rtr := router.New(l1, channels, middlewares, modelInfo, logger)
+	rtr := router.New(eng, channels, middlewares, modelInfo, logger)
 
 	// Register WebSocket channel if enabled.
 	//
@@ -840,33 +832,6 @@ func resolveLogPath(p string) (string, error) {
 		return filepath.Join(home, p[2:]), nil
 	}
 	return p, nil
-}
-
-// subscribeEventLogging registers event bus handlers that log key events.
-func subscribeEventLogging(bus *event.Bus, logger *zap.Logger) {
-	bus.Subscribe(event.TopicSessionCreated, func(evt event.Event) {
-		logger.Info("event: session created", zap.Any("payload", evt.Payload))
-	})
-
-	bus.Subscribe(event.TopicSessionArchived, func(evt event.Event) {
-		logger.Info("event: session archived", zap.Any("payload", evt.Payload))
-	})
-
-	bus.Subscribe(event.TopicToolExecuted, func(evt event.Event) {
-		logger.Debug("event: tool executed", zap.Any("payload", evt.Payload))
-	})
-
-	bus.Subscribe(event.TopicQueryStarted, func(evt event.Event) {
-		logger.Debug("event: query started", zap.Any("payload", evt.Payload))
-	})
-
-	bus.Subscribe(event.TopicQueryCompleted, func(evt event.Event) {
-		logger.Info("event: query completed", zap.Any("payload", evt.Payload))
-	})
-
-	bus.Subscribe(event.TopicCompactTriggered, func(evt event.Event) {
-		logger.Info("event: compact triggered", zap.Any("payload", evt.Payload))
-	})
 }
 
 // buildMiddlewareChain assembles the middleware stack based on configuration.
