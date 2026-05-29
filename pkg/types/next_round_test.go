@@ -1,4 +1,4 @@
-package engine
+package types_test
 
 import (
 	"testing"
