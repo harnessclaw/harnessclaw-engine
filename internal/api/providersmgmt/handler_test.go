@@ -572,3 +572,30 @@ func TestRoute_UnknownPath(t *testing.T) {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
+
+func TestPost_Endpoint_PersistsGroup(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	rec := doRequest(t, h, "POST", "/api/v1/providers/alpha/endpoints",
+		`{"name":"claude-haiku","model":"claude-3-5-haiku","group":"Claude-3.5"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, _ := config.Load(cfgPath)
+	ep := cfg.LLM.Providers["alpha"].Endpoints["claude-haiku"]
+	if ep.Group != "Claude-3.5" {
+		t.Errorf("group = %q, want Claude-3.5", ep.Group)
+	}
+}
+
+func TestPost_Endpoint_OmittedGroupIsEmpty(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	rec := doRequest(t, h, "POST", "/api/v1/providers/alpha/endpoints",
+		`{"name":"claude-haiku","model":"claude-3-5-haiku"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	cfg, _ := config.Load(cfgPath)
+	if got := cfg.LLM.Providers["alpha"].Endpoints["claude-haiku"].Group; got != "" {
+		t.Errorf("group = %q, want \"\"", got)
+	}
+}

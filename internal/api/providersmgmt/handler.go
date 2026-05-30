@@ -267,6 +267,7 @@ type AddEndpointRequest struct {
 	Temperature    *float64 `json:"temperature,omitempty"`
 	EnableThinking *bool    `json:"enable_thinking,omitempty"`
 	Disabled       *bool    `json:"disabled,omitempty"`
+	Group          string   `json:"group,omitempty"`
 }
 
 func (h *Handler) addEndpoint(w http.ResponseWriter, r *http.Request, provName string) {
@@ -301,6 +302,9 @@ func (h *Handler) addEndpoint(w http.ResponseWriter, r *http.Request, provName s
 	}
 	if body.Disabled != nil {
 		ep.Disabled = *body.Disabled
+	}
+	if body.Group != "" {
+		ep.Group = body.Group
 	}
 	if err := h.mgr.AddEndpoint(provName, body.Name, ep); err != nil {
 		writeError(w, http.StatusBadRequest, "update_failed", err.Error())
