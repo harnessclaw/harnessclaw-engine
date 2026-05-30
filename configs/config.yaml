@@ -58,6 +58,9 @@ llm:
         claude-haiku:
           model: claude-3-5-haiku
           # max_tokens 省略时继承 default_max_tokens (8192)
+          # group 为可选自由文本，仅供客户端模型列表分组渲染用；
+          # 引擎不参与路由/failover，留空 = 未分组。
+          # group: "Claude-3"
 
 #    deepseek:
 #      type: openai
