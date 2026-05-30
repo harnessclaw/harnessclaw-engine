@@ -230,9 +230,8 @@ func (e *Engine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (*agent.
 // spawn2. Updated as stages 4-7 complete.
 func useNewSpawn(subagentType string) bool {
 	switch subagentType {
-	case "plan_agent":
+	case "plan_agent", "plan_executor_agent", "explore", "plan":
 		return true
-	// Stage 5 will add: plan_executor_agent, explore, plan, plan_design
 	// Stage 6 will add: freelancer
 	// Stage 7 will add: scheduler
 	default:

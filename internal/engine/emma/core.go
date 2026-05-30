@@ -16,8 +16,11 @@ import (
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/emit"
+	"harnessclaw-go/internal/engine/agent/explore"
 	"harnessclaw-go/internal/engine/agent/generic"
 	"harnessclaw-go/internal/engine/agent/plan_agent"
+	"harnessclaw-go/internal/engine/agent/plan_design"
+	"harnessclaw-go/internal/engine/agent/plan_executor_agent"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/sections"
@@ -280,6 +283,47 @@ func New(
 		ContextWindow: cfg.ContextWindow,
 	})
 	e.spawner2.Register(planAgentMod)
+
+	// Stage 5 thin modules — same Deps shape as plan_agent.
+	plExecutorMod := plan_executor_agent.New(plan_executor_agent.Deps{
+		Provider:      prov,
+		Registry:      reg,
+		SessionMgr:    mgr,
+		Compactor:     comp,
+		Retryer:       e.retryer,
+		PromptBuilder: promptBuilder,
+		Logger:        logger,
+		MaxTokens:     cfg.MaxTokens,
+		ContextWindow: cfg.ContextWindow,
+	})
+	e.spawner2.Register(plExecutorMod)
+
+	exploreMod := explore.New(explore.Deps{
+		Provider:      prov,
+		Registry:      reg,
+		SessionMgr:    mgr,
+		Compactor:     comp,
+		Retryer:       e.retryer,
+		PromptBuilder: promptBuilder,
+		Logger:        logger,
+		MaxTokens:     cfg.MaxTokens,
+		ContextWindow: cfg.ContextWindow,
+	})
+	e.spawner2.Register(exploreMod)
+
+	planDesignMod := plan_design.New(plan_design.Deps{
+		Provider:      prov,
+		Registry:      reg,
+		SessionMgr:    mgr,
+		Compactor:     comp,
+		Retryer:       e.retryer,
+		PromptBuilder: promptBuilder,
+		Logger:        logger,
+		MaxTokens:     cfg.MaxTokens,
+		ContextWindow: cfg.ContextWindow,
+	})
+	e.spawner2.Register(planDesignMod)
+
 	// Generic is the fallback so unknown SubagentTypes (during the
 	// transition) still spawn rather than returning ErrUnknownSubagentType.
 	// Once all tiers are migrated we can drop the fallback and let
