@@ -239,7 +239,17 @@ type EngineEvent struct {
 	AgentDesc     string   `json:"agent_desc,omitempty"`     // short label, 3-5 words ("调研 LLM 推理")
 	AgentTask     string   `json:"agent_task,omitempty"`     // full task prompt the parent dispatched (set on subagent_start so the user can see what each L3 was actually asked to do)
 	AgentType     string   `json:"agent_type,omitempty"`
+	// ParentAgentID is the agent_id of the parent agent that initiated
+	// this spawn (for subagent.start/end events). "main" when emma is
+	// the parent. Required for front-end agent tree rendering — the FE
+	// can't see the engine's ctx propagation, so the wire envelope must
+	// carry this explicitly.
 	ParentAgentID string   `json:"parent_agent_id,omitempty"`
+	// ParentSessionID is the parent's session ID, paired with
+	// ParentAgentID for the same parent-tracking purpose. Distinct from
+	// ParentAgentID because a single parent agent can run across multiple
+	// sessions (e.g. coordinator resumed).
+	ParentSessionID string `json:"parent_session_id,omitempty"`
 	// ParentStepID, on subagent_start, names the plan / orchestrate step
 	// that dispatched this sub-agent. Channel translators use it to root
 	// the agent card under the step card so the step's orphan watchdog
