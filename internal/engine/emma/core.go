@@ -22,6 +22,7 @@ import (
 	"harnessclaw-go/internal/engine/agent/plan_agent"
 	"harnessclaw-go/internal/engine/agent/plan_design"
 	"harnessclaw-go/internal/engine/agent/plan_executor_agent"
+	agentscheduler "harnessclaw-go/internal/engine/agent/scheduler"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/sections"
@@ -369,6 +370,21 @@ func New(
 		Provider: e.provider,
 		RootDir:  workspace.DefaultRootDir(),
 	})
+
+	// Stage 7 scheduler — wraps the legacy enginesched.Coordinator. It
+	// is registered AFTER schedulerCoord is constructed because the
+	// module's Run delegates to that Coordinator. Spawner is passed so
+	// the Stage-8 in-module plan strategy port has a recursive dispatch
+	// path without churning core.go again. See
+	// internal/engine/agent/scheduler/deps.go for the rationale.
+	schedulerMod := agentscheduler.New(agentscheduler.Deps{
+		Coord:         e.schedulerCoord,
+		SessionMgr:    mgr,
+		WorkspaceRoot: workspace.DefaultRootDir(),
+		Logger:        logger,
+		Spawner:       e.spawner2,
+	})
+	e.spawner2.Register(schedulerMod)
 
 	for _, opt := range opts {
 		opt(e)
