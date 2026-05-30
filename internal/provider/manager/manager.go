@@ -626,12 +626,17 @@ type EndpointPatch struct {
 	EnableThinking *bool
 	Disabled       *bool
 	ModelType      *[]string
+	// Group sets the display-only tag. nil = leave alone; non-nil
+	// pointer to "" = explicitly clear (yaml `group:` key removed on
+	// persist); non-nil to a string = set/replace.
+	Group          *string
 }
 
 // IsEmpty reports whether the patch would change anything.
 func (p EndpointPatch) IsEmpty() bool {
 	return p.Model == nil && p.MaxTokens == nil && p.Temperature == nil &&
-		p.EnableThinking == nil && p.Disabled == nil && p.ModelType == nil
+		p.EnableThinking == nil && p.Disabled == nil && p.ModelType == nil &&
+		p.Group == nil
 }
 
 // AddEndpoint inserts a new endpoint under the named provider.
@@ -724,6 +729,9 @@ func (m *Manager) UpdateEndpoint(provName, epName string, patch EndpointPatch) e
 		} else {
 			ep.ModelType = append([]string(nil), (*patch.ModelType)...)
 		}
+	}
+	if patch.Group != nil {
+		ep.Group = *patch.Group
 	}
 
 	newAdapter, err := m.adapterBuilder(provName, provCfg, epName, ep, m.agent)

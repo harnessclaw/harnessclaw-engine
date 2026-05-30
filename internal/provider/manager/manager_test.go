@@ -904,3 +904,53 @@ func TestAgentSnapshot_CarriesEffectiveContextWindow(t *testing.T) {
 		t.Errorf("snap.EffectiveContextWindow = %d (capped), want 150000", snap.EffectiveContextWindow)
 	}
 }
+
+func TestUpdateEndpoint_GroupRoundTrip(t *testing.T) {
+	fb := newFakeBuilder()
+	m := mustNewManager(t, baseCfg(), baseAgent(), fb)
+
+	// Set group
+	grp := "Claude-4"
+	if err := m.UpdateEndpoint("alpha", "claude-46", EndpointPatch{Group: &grp}); err != nil {
+		t.Fatalf("set group: %v", err)
+	}
+	for _, p := range m.ProvidersSnapshot() {
+		if p.Name != "alpha" {
+			continue
+		}
+		for _, e := range p.Endpoints {
+			if e.Name == "claude-46" && e.Group != "Claude-4" {
+				t.Fatalf("after set: group = %q, want Claude-4", e.Group)
+			}
+		}
+	}
+
+	// Clear group via explicit empty string
+	empty := ""
+	if err := m.UpdateEndpoint("alpha", "claude-46", EndpointPatch{Group: &empty}); err != nil {
+		t.Fatalf("clear group: %v", err)
+	}
+	for _, p := range m.ProvidersSnapshot() {
+		if p.Name != "alpha" {
+			continue
+		}
+		for _, e := range p.Endpoints {
+			if e.Name == "claude-46" && e.Group != "" {
+				t.Fatalf("after clear: group = %q, want \"\"", e.Group)
+			}
+		}
+	}
+}
+
+func TestEndpointPatch_GroupAloneIsNotEmpty(t *testing.T) {
+	grp := "X"
+	patch := EndpointPatch{Group: &grp}
+	if patch.IsEmpty() {
+		t.Error("EndpointPatch with only Group=&\"X\" must not be empty")
+	}
+	empty := ""
+	patch = EndpointPatch{Group: &empty}
+	if patch.IsEmpty() {
+		t.Error("EndpointPatch with only Group=&\"\" (explicit clear) must not be empty")
+	}
+}
