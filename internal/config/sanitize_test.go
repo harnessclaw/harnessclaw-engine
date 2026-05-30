@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
@@ -166,5 +167,32 @@ func TestSanitizeLLM_NilLoggerSafe(t *testing.T) {
 	c.SanitizeLLM(nil) // must not panic
 	if _, ok := c.LLM.Providers["bad"]; ok {
 		t.Errorf("sanitize still ran with nil logger")
+	}
+}
+
+func TestSanitizeLLM_GroupFreeFormPreserved(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{
+			Providers: map[string]ProviderConfig{
+				"openai": {
+					Type:    "openai",
+					BaseURL: "https://api.openai.com",
+					APIKey:  "sk-x",
+					Endpoints: map[string]EndpointConfig{
+						"empty":      {Model: "m", Group: ""},
+						"chinese":    {Model: "m", Group: "通义系列"},
+						"with-space": {Model: "m", Group: "GPT 5 series"},
+						"long":       {Model: "m", Group: strings.Repeat("x", 4096)},
+					},
+				},
+			},
+		},
+	}
+	cfg.SanitizeLLM(zap.NewNop())
+	got := cfg.LLM.Providers["openai"].Endpoints
+	for _, name := range []string{"empty", "chinese", "with-space", "long"} {
+		if _, ok := got[name]; !ok {
+			t.Errorf("endpoint %q dropped — group value should be irrelevant to sanitize", name)
+		}
 	}
 }
