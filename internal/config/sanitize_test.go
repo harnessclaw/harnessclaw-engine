@@ -171,6 +171,7 @@ func TestSanitizeLLM_NilLoggerSafe(t *testing.T) {
 }
 
 func TestSanitizeLLM_GroupFreeFormPreserved(t *testing.T) {
+	longVal := strings.Repeat("x", 4096) // arbitrary long value — just to assert sanitize doesn't care about length
 	cfg := &Config{
 		LLM: LLMConfig{
 			Providers: map[string]ProviderConfig{
@@ -182,7 +183,7 @@ func TestSanitizeLLM_GroupFreeFormPreserved(t *testing.T) {
 						"empty":      {Model: "m", Group: ""},
 						"chinese":    {Model: "m", Group: "通义系列"},
 						"with-space": {Model: "m", Group: "GPT 5 series"},
-						"long":       {Model: "m", Group: strings.Repeat("x", 4096)},
+						"long":       {Model: "m", Group: longVal},
 					},
 				},
 			},
@@ -190,9 +191,20 @@ func TestSanitizeLLM_GroupFreeFormPreserved(t *testing.T) {
 	}
 	cfg.SanitizeLLM(zap.NewNop())
 	got := cfg.LLM.Providers["openai"].Endpoints
-	for _, name := range []string{"empty", "chinese", "with-space", "long"} {
-		if _, ok := got[name]; !ok {
+	want := map[string]string{
+		"empty":      "",
+		"chinese":    "通义系列",
+		"with-space": "GPT 5 series",
+		"long":       longVal,
+	}
+	for name, wantGroup := range want {
+		ep, ok := got[name]
+		if !ok {
 			t.Errorf("endpoint %q dropped — group value should be irrelevant to sanitize", name)
+			continue
+		}
+		if ep.Group != wantGroup {
+			t.Errorf("endpoint %q: Group mutated by sanitize: got %q, want %q", name, ep.Group, wantGroup)
 		}
 	}
 }
