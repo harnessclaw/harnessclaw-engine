@@ -12,7 +12,8 @@ var skillTrackerContextKey = skillTrackerKey{}
 // GetSkillTrackerValue returns whatever the engine stored under the
 // skill-tracker key. nil + false when absent (non-freelancer agent).
 // Callers in the loadskill / unloadskill / listloadedskills packages
-// assert to the concrete *loop.SkillTracker type.
+// assert to the concrete *tracker.SkillTracker type (from
+// internal/skill/tracker).
 func GetSkillTrackerValue(ctx context.Context) (any, bool) {
 	v := ctx.Value(skillTrackerContextKey)
 	if v == nil {
@@ -22,7 +23,7 @@ func GetSkillTrackerValue(ctx context.Context) (any, bool) {
 }
 
 // WithSkillTrackerValue attaches a *SkillTracker handle to ctx. The
-// engine layer passes the concrete *loop.SkillTracker; the helper
+// engine layer passes the concrete *tracker.SkillTracker; the helper
 // stays type-agnostic so the tool package doesn't import engine.
 func WithSkillTrackerValue(ctx context.Context, tracker any) context.Context {
 	return context.WithValue(ctx, skillTrackerContextKey, tracker)

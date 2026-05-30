@@ -7,12 +7,12 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/skill"
+	"harnessclaw-go/internal/skill/tracker"
 	"harnessclaw-go/internal/tool"
 )
 
-func mkCtx(tr *loop.SkillTracker) context.Context {
+func mkCtx(tr *tracker.SkillTracker) context.Context {
 	return tool.WithSkillTrackerValue(context.Background(), tr)
 }
 
@@ -21,7 +21,7 @@ func mkFull(name string) *skill.SkillFull {
 }
 
 func TestUnloadSkill_Success(t *testing.T) {
-	tr := loop.NewSkillTracker(3)
+	tr := tracker.NewSkillTracker(3)
 	_ = tr.Add(mkFull("a"))
 	tl := New(zap.NewNop())
 	raw, _ := json.Marshal(map[string]any{"skill": "a"})
@@ -48,7 +48,7 @@ func TestUnloadSkill_Success(t *testing.T) {
 }
 
 func TestUnloadSkill_NotLoaded(t *testing.T) {
-	tr := loop.NewSkillTracker(3)
+	tr := tracker.NewSkillTracker(3)
 	tl := New(zap.NewNop())
 	raw, _ := json.Marshal(map[string]any{"skill": "ghost"})
 	res, _ := tl.Execute(mkCtx(tr), raw)
@@ -58,7 +58,7 @@ func TestUnloadSkill_NotLoaded(t *testing.T) {
 }
 
 func TestUnloadSkill_AlreadyUnloaded(t *testing.T) {
-	tr := loop.NewSkillTracker(3)
+	tr := tracker.NewSkillTracker(3)
 	_ = tr.Add(mkFull("a"))
 	_ = tr.MarkUnloaded("a")
 	tl := New(zap.NewNop())

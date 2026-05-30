@@ -1,4 +1,4 @@
-package loop
+package tracker
 
 import (
 	"testing"
@@ -82,7 +82,7 @@ func TestSkillTracker_Reactivate(t *testing.T) {
 func TestSkillTracker_Reactivate_AtBudget(t *testing.T) {
 	tr := NewSkillTracker(3)
 	_ = tr.Preload([]*skill.SkillFull{mkFull("a", "1"), mkFull("b", "1"), mkFull("c", "1")})
-	_ = tr.MarkUnloaded("a") // active=2, unloaded=1
+	_ = tr.MarkUnloaded("a")    // active=2, unloaded=1
 	_ = tr.Add(mkFull("d", "1")) // active=3
 	if err := tr.Reactivate("a"); err == nil {
 		t.Fatal("Reactivate when full should error")

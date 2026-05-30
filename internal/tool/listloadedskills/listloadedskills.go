@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/sessionstats"
+	"harnessclaw-go/internal/skill/tracker"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
 )
@@ -43,8 +43,8 @@ type budget struct {
 }
 
 type output struct {
-	Active   []loop.LoadedRef `json:"active"`
-	Unloaded []loop.LoadedRef `json:"unloaded"`
+	Active   []tracker.LoadedRef `json:"active"`
+	Unloaded []tracker.LoadedRef `json:"unloaded"`
 	Budget   budget             `json:"budget"`
 }
 
@@ -63,7 +63,7 @@ func (t *ListLoadedSkillsTool) Execute(ctx context.Context, _ json.RawMessage) (
 			IsError: true,
 		}, nil
 	}
-	tracker, ok := trackerVal.(*loop.SkillTracker)
+	tr, ok := trackerVal.(*tracker.SkillTracker)
 	if !ok {
 		t.logger.Info("list loaded skills",
 			zap.String("agent_id", agentRunID),
@@ -72,17 +72,17 @@ func (t *ListLoadedSkillsTool) Execute(ctx context.Context, _ json.RawMessage) (
 		return &types.ToolResult{Content: "tracker type assertion failed", IsError: true}, nil
 	}
 
-	active, unloaded := tracker.List()
+	active, unloaded := tr.List()
 	if active == nil {
-		active = []loop.LoadedRef{}
+		active = []tracker.LoadedRef{}
 	}
 	if unloaded == nil {
-		unloaded = []loop.LoadedRef{}
+		unloaded = []tracker.LoadedRef{}
 	}
 	out := output{
 		Active:   active,
 		Unloaded: unloaded,
-		Budget:   budget{Used: tracker.Count(), Max: tracker.Max()},
+		Budget:   budget{Used: tr.Count(), Max: tr.Max()},
 	}
 	body, _ := json.Marshal(out)
 
@@ -99,8 +99,8 @@ func (t *ListLoadedSkillsTool) Execute(ctx context.Context, _ json.RawMessage) (
 		zap.String("outcome", "ok"),
 		zap.Strings("active", activeNames),
 		zap.Strings("unloaded", unloadedNames),
-		zap.Int("budget_used", tracker.Count()),
-		zap.Int("budget_max", tracker.Max()),
+		zap.Int("budget_used", tr.Count()),
+		zap.Int("budget_max", tr.Max()),
 	)
 	return &types.ToolResult{Content: string(body)}, nil
 }

@@ -1,4 +1,17 @@
-package loop
+// Package tracker provides the per-spawn SkillTracker state machine
+// shared by the freelancer tier and the four skill self-management tools
+// (load_skill / unload_skill / list_loaded_skills / search_skill).
+//
+// The tracker records WHICH skills are active vs unloaded for a freelancer
+// run and enforces a hard active-skill budget. It does NOT modify the
+// tool pool, system prompt, or message history — those concerns live in
+// the freelancer module and the skill tools themselves.
+//
+// This package lives under internal/skill/ (next to the existing skill
+// reader/loader) to keep both the freelancer module and the skill tools
+// importing a shared lower-level package — avoiding a freelancer ↔ tool
+// import cycle.
+package tracker
 
 import (
 	"fmt"
