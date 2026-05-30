@@ -432,6 +432,11 @@ func endpointToNode(ep config.EndpointConfig) *yaml.Node {
 		}
 		setKey(n, "model_type", seq)
 	}
+	// Group is emitted only when non-empty so existing endpoints stay
+	// yaml-clean (omitted = "" by convention, same shape as ModelType).
+	if ep.Group != "" {
+		appendScalar(n, "group", ep.Group)
+	}
 	return n
 }
 

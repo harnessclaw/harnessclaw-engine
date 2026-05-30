@@ -518,3 +518,54 @@ func TestSetToolConfig_RejectsEmptyName(t *testing.T) {
 		t.Fatal("expected error for empty name, got nil")
 	}
 }
+
+func TestSetEndpoint_GroupRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	seed := `
+llm:
+  providers:
+    openai:
+      type: openai
+      base_url: https://api.openai.com
+      api_key: sk-x
+      endpoints:
+        gpt-5:
+          model: gpt-5
+`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetEndpoint("openai", "gpt-5", config.EndpointConfig{
+		Model: "gpt-5",
+		Group: "GPT-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := os.ReadFile(path)
+	if !strings.Contains(string(out), "group: GPT-5") {
+		t.Errorf("expected `group: GPT-5` in yaml, got:\n%s", out)
+	}
+
+	// Clear via SetEndpoint with Group=""; expect the key to vanish.
+	if err := f.SetEndpoint("openai", "gpt-5", config.EndpointConfig{
+		Model: "gpt-5",
+		Group: "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+	out, _ = os.ReadFile(path)
+	if strings.Contains(string(out), "group:") {
+		t.Errorf("expected `group:` key removed when Group=\"\", got:\n%s", out)
+	}
+}
