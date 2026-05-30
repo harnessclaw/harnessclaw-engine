@@ -29,7 +29,6 @@ import (
 	enginesched "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
-	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/internal/engine/spawn2"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
@@ -47,9 +46,9 @@ import (
 //   - queryloop.Runner   (real orchestrator)
 //   - emma.L1Engine      (thin proxy applying emma persona)
 //
-// Engine owns all dependencies as fields and exposes spawn.Deps methods on
-// itself so the spawn package can drive sub-agent runs without going
-// through a separate facade.
+// Engine owns all dependencies as fields and dispatches sub-agent
+// spawns through spawner2 (internal/engine/spawn2), which routes by
+// SubagentType to tier modules in internal/engine/agent/*.
 type Engine struct {
 	provider    provider.Provider
 	registry    *tool.Registry
@@ -84,14 +83,11 @@ type Engine struct {
 	// load_skill tools (used by freelancer L3). nil disables them.
 	skillReader *skill.Reader
 
-	// spawner owns the sub-agent lifecycle: taskRegistry,
-	// searchGapDetector, and the 14-step SpawnSync pipeline.
-	spawner *spawn.Spawner
-
-	// spawner2 is the new spawn shape; in the transition window, emma
-	// routes certain SubagentTypes (e.g. plan_agent) to spawner2 and
-	// falls through to legacy spawner for everything else. See routing
-	// logic in spawner.go (useNewSpawn).
+	// spawner2 is the spawn primitive. After Stage 8, every sub-agent
+	// spawn — sync and async — goes through this Spawner via the tier
+	// modules registered below (plan_agent, plan_executor_agent,
+	// explore, plan_design, freelancer, scheduler) plus the generic
+	// fallback for unknown SubagentTypes.
 	spawner2 *spawn2.Spawner
 
 	// emitSeq dispenses per-trace sequence numbers for the emit envelope.
@@ -261,17 +257,11 @@ func New(
 		e.statsRegistry = cfg.StatsRegistry
 	}
 
-	// Spawner depends on Engine via spawn.Deps. Constructed after the
-	// optional deps land so spawn sees the fully wired state.
-	e.spawner = spawn.NewSpawner(e)
-
-	// spawner2 hosts the new-shape tier modules. During the staged
-	// migration (Stages 4–7), emma routes migrated SubagentTypes here
-	// via useNewSpawn(); everything else falls through to the legacy
-	// spawner above. Deps (provider, registry, sessionMgr, compactor,
+	// spawner2 hosts the tier modules. Every SubagentType is dispatched
+	// here — migrated tiers via Register, unknown types via the generic
+	// fallback below. Deps (provider, registry, sessionMgr, compactor,
 	// retryer, promptBuilder, MaxTokens, ContextWindow) come straight
-	// off the engine — same source the legacy spawner reads via
-	// spawn.Deps methods, ensuring parity.
+	// off the engine.
 	e.spawner2 = spawn2.NewSpawner(logger)
 	planAgentMod := plan_agent.New(plan_agent.Deps{
 		Provider:      prov,
@@ -347,10 +337,11 @@ func New(
 	})
 	e.spawner2.Register(freelancerMod)
 
-	// Generic is the fallback so unknown SubagentTypes (during the
-	// transition) still spawn rather than returning ErrUnknownSubagentType.
-	// Once all tiers are migrated we can drop the fallback and let
-	// unknown types fail loudly.
+	// Generic is the fallback for SubagentTypes not handled by a
+	// dedicated tier module above. It preserves the legacy "any
+	// TierSubAgent spins up with declared AllowedTools" behavior so
+	// arbitrary agent definitions (e.g. researcher-test) keep working
+	// after the spawn → spawner2 migration.
 	genericMod := generic.New(generic.Deps{
 		Provider:      prov,
 		Registry:      reg,
@@ -641,7 +632,7 @@ func (e *Engine) contextWindow() int {
 // dedicated config field — we let the provider pick (empty string).
 func (e *Engine) plannerModel() string { return "" }
 
-// session is imported above to satisfy the spawn.Deps signature; this
-// no-op keeps `goimports` from dropping it when other symbols in the
-// file don't reference the package directly.
+// session is imported above for the *session.Manager field; this no-op
+// keeps goimports from dropping it when other symbols in the file
+// don't reference the package directly.
 var _ = session.StateActive

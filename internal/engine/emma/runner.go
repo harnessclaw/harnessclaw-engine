@@ -526,7 +526,7 @@ func (e *Engine) ProcessWithAgent(
 			ParentOut:       out,
 		}
 
-		result, err := e.spawner.SpawnSync(ctx, cfg)
+		result, err := e.SpawnSync(ctx, cfg)
 		if err != nil {
 			out <- types.EngineEvent{Type: types.EngineEventError, Error: err}
 			out <- types.EngineEvent{
