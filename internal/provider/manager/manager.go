@@ -257,6 +257,7 @@ func (m *Manager) ProvidersSnapshot() []ProviderSnapshot {
 				Disabled:       ep.Disabled,
 				InChain:        containsString(chain, config.FormatChainEntry(name, epName)),
 				ModelType:      mt,
+				Group:          ep.Group,
 			})
 		}
 		sort.Slice(eps, func(i, j int) bool { return eps[i].Name < eps[j].Name })

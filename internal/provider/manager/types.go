@@ -40,6 +40,10 @@ type EndpointSnapshot struct {
 	// Empty/nil means the endpoint inherits the manifest's
 	// SupportsFlags baseline.
 	ModelType []string `json:"model_type,omitempty"`
+	// Group is the renderer-facing display tag persisted on the
+	// endpoint. Empty = ungrouped (renderer falls back to its
+	// getModelGroup(id) heuristic).
+	Group string `json:"group,omitempty"`
 }
 
 // AgentSnapshotPayload is the API-facing view of the agent-level
