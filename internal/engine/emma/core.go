@@ -24,6 +24,7 @@ import (
 	"harnessclaw-go/internal/engine/agent/plan_executor_agent"
 	agentscheduler "harnessclaw-go/internal/engine/agent/scheduler"
 	"harnessclaw-go/internal/engine/compact"
+	"harnessclaw-go/internal/engine/mention"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/sections"
 	enginesched "harnessclaw-go/internal/engine/scheduler"
@@ -77,7 +78,7 @@ type Engine struct {
 	agentRegistry *agent.AgentRegistry
 	messageBroker *agent.MessageBroker
 	defRegistry   *agent.AgentDefinitionRegistry
-	mentionParser *MentionParser
+	mentionRouter *mention.Router
 
 	// skillReader provides runtime skill discovery for search_skill /
 	// load_skill tools (used by freelancer L3). nil disables them.
@@ -248,7 +249,6 @@ func New(
 	// "feature disabled".
 	if cfg.DefRegistry != nil {
 		e.defRegistry = cfg.DefRegistry
-		e.mentionParser = NewMentionParser(cfg.DefRegistry)
 	}
 	if cfg.SkillReader != nil {
 		e.skillReader = cfg.SkillReader
@@ -377,6 +377,17 @@ func New(
 	})
 	e.spawner.Register(schedulerMod)
 
+	// @-mention router — only wired when a definition registry is
+	// provided. Holds the spawner so emma's ProcessMessage can offload
+	// agent dispatch without recomputing routing or owning a parser.
+	if e.defRegistry != nil {
+		e.mentionRouter = mention.NewRouter(
+			e.spawner,
+			e.defRegistry,
+			agent.NewMentionParser(e.defRegistry),
+		)
+	}
+
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -426,15 +437,13 @@ func (e *Engine) ProcessMessage(ctx context.Context, sessionID string, msg *type
 		return nil, fmt.Errorf("session get-or-create: %w", err)
 	}
 
-	// @-mention routing: detect @agent_name at the start of the user message.
-	if e.mentionParser != nil && e.defRegistry != nil {
-		msgText := ExtractMessageText(msg)
-		if mention := e.mentionParser.Parse(msgText); mention.AgentName != "" {
-			def := e.defRegistry.Get(mention.AgentName)
-			if def != nil {
-				sess.AddMessage(*msg)
-				return e.ProcessWithAgent(ctx, sessionID, sess, mention, def)
-			}
+	// @-mention routing: detect @agent_name at the start of the user
+	// message and offload to mention.Router. Router appends msg to
+	// sess itself before spawning, so we MUST NOT add it here when
+	// TryRoute returns a non-nil channel.
+	if e.mentionRouter != nil {
+		if out := e.mentionRouter.TryRoute(ctx, sess, msg); out != nil {
+			return out, nil
 		}
 	}
 

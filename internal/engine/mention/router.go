@@ -37,6 +37,10 @@ func NewRouter(spawner *spawn.Spawner, defReg *agent.AgentDefinitionRegistry, pa
 // events stream and the dispatch result terminates. Returns nil when
 // no mention is detected — caller falls through to its main path.
 //
+// The goroutine appends msg to sess before spawning, so callers MUST
+// NOT call sess.AddMessage(*msg) themselves when TryRoute returns a
+// non-nil channel.
+//
 // Caller is responsible for closing/draining the channel.
 func (r *Router) TryRoute(ctx context.Context, sess *session.Session, msg *types.Message) <-chan types.EngineEvent {
 	text := extractText(msg)
@@ -54,21 +58,39 @@ func (r *Router) TryRoute(ctx context.Context, sess *session.Session, msg *types
 		defer close(out)
 		sess.AddMessage(*msg)
 
-		cfg := &agent.SpawnConfig{
-			Prompt:          match.Message,
-			SubagentType:    def.Name,
-			Name:            def.Name,
-			Description:     def.Description,
-			AgentType:       def.AgentType,
-			ParentSessionID: sess.ID,
-			ParentAgentID:   "main",
-			ParentOut:       out,
-		}
-
 		out <- types.EngineEvent{
 			Type:      types.EngineEventAgentRouted,
 			AgentName: def.Name,
 			AgentDesc: def.Description,
+		}
+
+		// Prepend the agent definition's SystemPrompt to the
+		// user-supplied prompt when present, matching the legacy
+		// emma.ProcessWithAgent behavior.
+		promptText := match.Message
+		if def.SystemPrompt != "" {
+			promptText = def.SystemPrompt + "\n\n" + match.Message
+		}
+
+		if def.AutoTeam && len(def.SubAgents) > 0 {
+			r.logger.Info("team workflow not yet implemented, falling back to single agent",
+				zap.String("agent", def.Name),
+			)
+		}
+
+		// SubagentType MUST be def.Name (the registry key), not
+		// def.Profile (a prompt-profile selector).
+		cfg := &agent.SpawnConfig{
+			Prompt:          promptText,
+			SubagentType:    def.Name,
+			Name:            def.Name,
+			Description:     def.Description,
+			AgentType:       def.AgentType,
+			Model:           def.Model,
+			MaxTurns:        def.MaxTurns,
+			ParentSessionID: sess.ID,
+			ParentAgentID:   "main",
+			ParentOut:       out,
 		}
 
 		result, err := r.spawner.Sync(ctx, cfg)
@@ -80,6 +102,7 @@ func (r *Router) TryRoute(ctx context.Context, sess *session.Session, msg *types
 					Reason:  types.TerminalModelError,
 					Message: err.Error(),
 				},
+				Usage: &types.Usage{},
 			}
 			return
 		}
