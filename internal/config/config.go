@@ -453,6 +453,17 @@ type EndpointConfig struct {
 	// Unknown tokens are dropped with a warn on startup; the PATCH
 	// endpoint rejects them with 400.
 	ModelType []string `mapstructure:"model_type" yaml:"model_type,omitempty"`
+	// Group is a free-form display-only tag used by the renderer to
+	// bucket endpoints under a heading (e.g. "GPT-5" groups every
+	// gpt-5.x model in the Settings UI). Empty = ungrouped; renderer
+	// falls back to its getModelGroup(id) heuristic.
+	//
+	// The engine ignores this field entirely — it does NOT influence
+	// routing, failover health, chain reference syntax, or model
+	// capability. Persisted via yaml so the value survives a restart
+	// and is visible across multiple clients pointing at the same
+	// engine.
+	Group string `mapstructure:"group" yaml:"group,omitempty"`
 }
 
 // ParseChainEntry splits a fallback_chain string into (provider,

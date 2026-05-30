@@ -63,3 +63,36 @@ llm:
 		t.Errorf("absent model_type should be nil/empty, got %v", ep.ModelType)
 	}
 }
+
+func TestLoad_EndpointGroup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	yaml := `
+llm:
+  providers:
+    openai:
+      type: openai
+      base_url: https://api.openai.com
+      api_key: sk-test
+      endpoints:
+        gpt-5:
+          model: gpt-5
+          group: "GPT-5"
+        gpt-3:
+          model: gpt-3.5-turbo
+`
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.LLM.Providers["openai"]
+	if got := p.Endpoints["gpt-5"].Group; got != "GPT-5" {
+		t.Errorf("gpt-5 group = %q, want GPT-5", got)
+	}
+	if got := p.Endpoints["gpt-3"].Group; got != "" {
+		t.Errorf("gpt-3 group = %q, want \"\" (omitted)", got)
+	}
+}
