@@ -351,6 +351,10 @@ type PatchEndpointRequest struct {
 	EnableThinking *bool     `json:"enable_thinking,omitempty"`
 	Disabled       *bool     `json:"disabled,omitempty"`
 	ModelType      *[]string `json:"model_type,omitempty"`
+	// Group is a free-form display tag. nil/omitted = unchanged;
+	// non-nil pointer to "" = explicitly clear; non-nil to a string =
+	// set/replace.
+	Group          *string   `json:"group,omitempty"`
 }
 
 func (h *Handler) patchEndpoint(w http.ResponseWriter, r *http.Request, provName, epName string) {
@@ -381,10 +385,11 @@ func (h *Handler) patchEndpoint(w http.ResponseWriter, r *http.Request, provName
 		EnableThinking: body.EnableThinking,
 		Disabled:       body.Disabled,
 		ModelType:      filteredModelType,
+		Group:          body.Group,
 	}
 	if patch.IsEmpty() {
 		writeError(w, http.StatusBadRequest, "bad_request",
-			"empty patch; supply at least one of model/max_tokens/temperature/enable_thinking/disabled/model_type")
+			"empty patch; supply at least one of model/max_tokens/temperature/enable_thinking/disabled/model_type/group")
 		return
 	}
 	if err := h.mgr.UpdateEndpoint(provName, epName, patch); err != nil {

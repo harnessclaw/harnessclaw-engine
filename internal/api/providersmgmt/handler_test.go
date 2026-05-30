@@ -599,3 +599,95 @@ func TestPost_Endpoint_OmittedGroupIsEmpty(t *testing.T) {
 		t.Errorf("group = %q, want \"\"", got)
 	}
 }
+
+func TestPatch_Endpoint_SetsGroup(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"group":"Claude-4"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, _ := config.Load(cfgPath)
+	if got := cfg.LLM.Providers["alpha"].Endpoints["claude-46"].Group; got != "Claude-4" {
+		t.Errorf("group = %q, want Claude-4", got)
+	}
+}
+
+func TestPatch_Endpoint_EmptyStringClearsGroup(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	// seed
+	if rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"group":"Claude-4"}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed: %d", rec.Code)
+	}
+	// clear
+	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"group":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear: %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, _ := config.Load(cfgPath)
+	if got := cfg.LLM.Providers["alpha"].Endpoints["claude-46"].Group; got != "" {
+		t.Errorf("after clear: group = %q, want \"\"", got)
+	}
+}
+
+func TestPatch_Endpoint_OmittedGroupUnchanged(t *testing.T) {
+	h, cfgPath := setupTest(t)
+	// seed
+	if rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"group":"Claude-4"}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed: %d", rec.Code)
+	}
+	// patch something else; group must survive
+	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"max_tokens":12345}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	cfg, _ := config.Load(cfgPath)
+	if got := cfg.LLM.Providers["alpha"].Endpoints["claude-46"].Group; got != "Claude-4" {
+		t.Errorf("group = %q, want Claude-4 (omitted patch should not touch it)", got)
+	}
+}
+
+func TestGet_Providers_ExposesGroup(t *testing.T) {
+	h, _ := setupTest(t)
+	// seed via PATCH first
+	if rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
+		`{"group":"Claude-4"}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed: %d", rec.Code)
+	}
+	rec := doRequest(t, h, "GET", "/api/v1/providers", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d", rec.Code)
+	}
+	var resp struct {
+		Data struct {
+			Providers []struct {
+				Name      string `json:"name"`
+				Endpoints []struct {
+					Name  string `json:"name"`
+					Group string `json:"group"`
+				} `json:"endpoints"`
+			} `json:"providers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	var found string
+	for _, p := range resp.Data.Providers {
+		if p.Name != "alpha" {
+			continue
+		}
+		for _, e := range p.Endpoints {
+			if e.Name == "claude-46" {
+				found = e.Group
+			}
+		}
+	}
+	if found != "Claude-4" {
+		t.Errorf("GET providers: alpha.claude-46.group = %q, want Claude-4", found)
+	}
+}
