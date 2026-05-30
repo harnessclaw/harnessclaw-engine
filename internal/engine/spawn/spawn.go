@@ -457,7 +457,7 @@ func (s *Spawner) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (result
 	isSubAgent := agentDef != nil && agentDef.EffectiveTier() == agent.TierSubAgent
 	// useSubAgentDriver: routes through the LLM driver instead of SchedulerCoordinator.
 	// True for TierSubAgent AND for coordinator-tier agents marked RunAsLLMAgent
-	// (plan-agent, plan-executor-agent).
+	// (e.g. plan_agent, plan_executor_agent).
 	useSubAgentDriver := isSubAgent || (agentDef != nil && agentDef.RunAsLLMAgent)
 	if isSubAgent {
 		pool = pool.WithoutNames(dispatchToolNames)
@@ -1107,8 +1107,8 @@ type loopConfig struct {
 	// stripDispatchTools instructs runSubAgentDriver to strip dispatchToolNames
 	// from the pool before the LLM loop. True for strict leaf agents (TierSubAgent)
 	// that must never call back into dispatch. False for RunAsLLMAgent agents
-	// (e.g. plan-executor-agent) whose AllowedTools whitelist already controls
-	// which dispatch tools are present in the pool.
+	// whose AllowedTools whitelist already controls which dispatch tools are
+	// present in the pool.
 	stripDispatchTools bool
 }
 

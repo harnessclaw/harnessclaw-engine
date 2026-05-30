@@ -40,7 +40,7 @@ import (
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/emma"
 	"harnessclaw-go/internal/engine/emma/resume"
-	"harnessclaw-go/internal/engine/userprompt"
+	"harnessclaw-go/internal/engine/humanloop"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/permission"
@@ -167,7 +167,7 @@ func main() {
 	registry := tool.NewRegistry()
 
 	// workspaceRootDir is the shared root for plan.json / tasks/ /
-	// deliverables/ across every L1 session. Defaults to
+	// deliverables/ across every emma session. Defaults to
 	// ~/.harnessclaw/workspace — the same convention skills and the
 	// session DB already use. Empty when UserHomeDir fails (e.g.
 	// containerised builds with no $HOME) which disables the
@@ -205,7 +205,7 @@ func main() {
 		// API flips them on with full credentials.
 		{true, func() tool.Tool { return websearch.New(cfg.Tools.WebSearch, logger) }},
 		{true, func() tool.Tool { return tavilysearch.New(cfg.Tools.TavilySearch, logger) }},
-		// AskUserQuestion is L1's clarification mechanism. Always enabled
+		// AskUserQuestion is emma's clarification mechanism. Always enabled
 		// (no config — it's a passthrough to the WebSocket client).
 		{true, func() tool.Tool { return askuserquestion.New(logger) }},
 		// SubmitTaskResult is the L3 task-completion declaration
@@ -371,8 +371,8 @@ func main() {
 	agentDefReg := agent.NewAgentDefinitionRegistry()
 
 	// L2 (worker / sub-agent) settings live on emma.Config directly.
-	// L1 settings (emma profile, restricted tool palette, small loop) are
-	// applied via WithL1Config below and overwrite the main-agent fields.
+	// emma settings (profile, restricted tool palette, small loop) are
+	// applied via WithEmmaConfig below and overwrite the main-agent fields.
 	engCfg := emma.Config{
 		MaxTurns:             cfg.Agent.MaxTurns,
 		AutoCompactThreshold: cfg.Engine.AutoCompactThreshold,
@@ -387,7 +387,7 @@ func main() {
 		// Reported in startup log + GET /api/v1/agent so operators can confirm.
 		ContextWindow: providerMgr.EffectiveContextWindow(),
 		SystemPrompt:  systemPrompt,
-		// ClientTools comes from the WebSocket channel config since L1's
+		// ClientTools comes from the WebSocket channel config since emma's
 		// only delivery surface for client-routed tools (AskUserQuestion,
 		// etc.) is the WebSocket. Forgetting this defaults Go's zero value
 		// (false), which silently drops AskUserQuestion calls into the
@@ -404,11 +404,11 @@ func main() {
 		SkillReader:   skillReader,
 		StatsRegistry: statsRegistry,
 		// MainAgentProfile / DisplayName / AllowedTools / MaxTurns are
-		// applied by WithL1Config; setting non-default values here would
+		// applied by WithEmmaConfig; setting non-default values here would
 		// be overwritten anyway.
 	}
 	eng := emma.New(llmProvider, registry, sessionMgr, compactor, permChecker, logger, engCfg, cmdRegistry,
-		emma.WithL1Config(emma.DefaultL1Config()))
+		emma.WithEmmaConfig(emma.DefaultEmmaConfig()))
 	logger.Info("emma engine initialized",
 		zap.Int("max_turns", engCfg.MaxTurns),
 		zap.Float64("compact_threshold", engCfg.AutoCompactThreshold),
@@ -424,7 +424,7 @@ func main() {
 	// ToolPool is rebuilt per query loop, so late registration is safe.
 	//
 	// In the 3-tier architecture the task tool (formerly "Agent") is not in
-	// emma's tool palette (see L1Engine.AllowedTools). It is reachable from
+	// emma's tool palette (see EmmaConfig.AllowedTools). It is reachable from
 	// the L2 scheduler, which declares "task" in its AgentDefinition.AllowedTools
 	// and bypasses the AgentType blacklist (see internal/engine/subagent.go
 	// filter logic).
@@ -475,10 +475,9 @@ func main() {
 
 	agentSvc := agent.NewAgentService(agentDefStore, agentDefReg, logger)
 
-	// Sync built-in agent definitions to SQLite (also prunes stale builtins).
-	if err := agentSvc.SyncBuiltins(context.Background()); err != nil {
-		logger.Warn("failed to sync builtin agent definitions", zap.Error(err))
-	}
+	// Register built-in agent definitions into the in-memory registry only;
+	// builtins live in code, not SQLite.
+	agentDefReg.RegisterBuiltins()
 
 	// Sync project-level agent definitions from YAML directories.
 	for _, dir := range cfg.Agents.Dirs {
@@ -593,7 +592,7 @@ func main() {
 		if err != nil {
 			logger.Fatal("failed to initialise wait store", zap.Error(err))
 		}
-		waitPrompter := userprompt.New(userprompt.Config{Store: waitStore})
+		waitPrompter := humanloop.New(humanloop.Config{Store: waitStore})
 
 		wsCh := wsch.New(cfg.Channel.WebSocket, nil, logger)
 		wsCh.SetPrompter(waitPrompter)
@@ -907,7 +906,7 @@ func runIdleCleanup(ctx context.Context, mgr *session.Manager, logger *zap.Logge
 // Frequency is intentionally modest (1 hour): with a 15-day TTL a
 // hour of slack past nominal expiry is irrelevant, and hourly DELETE
 // is cheap on the single-writer SQLite (one indexed range delete).
-func runWaitJanitor(ctx context.Context, p *userprompt.Prompter, logger *zap.Logger) {
+func runWaitJanitor(ctx context.Context, p *humanloop.Prompter, logger *zap.Logger) {
 	const interval = time.Hour
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -1168,7 +1167,7 @@ func defaultDBPath(name string) string {
 
 // agentDefRoster adapts the agent definition registry to the Orchestrate
 // tool's AgentRoster interface. It also includes built-in profile names so
-// the Planner can route to non-team profiles like Explore/Plan/general-purpose.
+// the Planner can route to non-team profiles like Plan / worker.
 type agentDefRoster struct {
 	reg *agent.AgentDefinitionRegistry
 }
@@ -1176,9 +1175,7 @@ type agentDefRoster struct {
 // builtInRosterAgents are the always-available profile names the Planner
 // may target, in addition to agent definitions registered at runtime.
 var builtInRosterAgents = []string{
-	"general-purpose",
-	"Explore",
-	"Plan",
+	"plan",
 	"worker",
 }
 

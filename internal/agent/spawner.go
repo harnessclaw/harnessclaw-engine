@@ -29,8 +29,8 @@ type SpawnConfig struct {
 	// AgentType controls tool filtering (sync, async, teammate, coordinator, custom).
 	AgentType tool.AgentType
 
-	// SubagentType selects the prompt profile: "general-purpose", "Explore", "Plan".
-	// Empty defaults to "general-purpose".
+	// SubagentType selects the prompt profile (e.g. "plan", "freelancer").
+	// Empty defaults to "freelancer".
 	SubagentType string
 
 	// Description is a short human-readable summary (3-5 words) for observability.

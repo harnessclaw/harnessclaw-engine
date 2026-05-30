@@ -21,7 +21,7 @@ const (
 	PhaseExecuting      ToolPhase = "executing"       // executor 真正在跑
 	// 终态走 ClosePayload.Status
 
-	// PhaseNextRound 不是 tool card 上的 phase — 仅作为 CopyPicker 查询 key
+	// PhaseNextRound 不是 tool card 上的 phase — 仅作为 toolphrase.Picker 查询 key
 	// 使用，文案落到 message card 的 Hint.Summary 上。声明在这里保持 picker
 	// 接口一致。
 	PhaseNextRound ToolPhase = "next_round_thinking"

@@ -2,7 +2,7 @@ package principles
 
 const planAgentPrinciples = `# Plan Agent 工作纪律
 
-你是 plan-agent，专门负责分析任务目标并生成执行计划。
+你是 plan_agent，专门负责分析任务目标并生成执行计划。
 
 ## 工作区
 
@@ -50,5 +50,5 @@ plan_update({
 
 - 不执行任何实际工作（不调 bash / edit / write 执行代码）
 - 不创建超过 5 个 task（除非 goal 明确要求分阶段多轮）
-- 不调用 freelance 工具（那是 plan-executor-agent 的职责）
+- 不调用 freelance 工具（plan_agent 只规划、不执行）
 `

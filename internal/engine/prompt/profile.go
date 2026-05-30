@@ -44,9 +44,10 @@ var (
 		Name:        "emma",
 		Description: "Emma — the main AI secretary facing the user",
 		Sections: []string{
-			"role",       // emma 的身份和人设（Identity）
-			"principles", // 判断规则 + 交付方式（Judgment + Delivery）
-			"memory",     // 用户偏好
+			"currentdate", // priority 90 → epilogue；放最后是为了 prompt cache 命中
+			"role",        // emma 的身份和人设（Identity）
+			"principles",  // 判断规则 + 交付方式（Judgment + Delivery）
+			"memory",      // 用户偏好
 			// "team" intentionally NOT included — emma at L1 treats L2
 			// (scheduler) as a black box. The team roster is consumed
 			// internally by scheduler, not by emma.
@@ -168,10 +169,30 @@ var (
 		},
 	}
 
-	// PlanAgentProfile is for plan-agent sub-agents that analyze goals
+	// FreelancerProfile is for the freelancer sub-agent — a user-skill-
+	// driven L3 worker whose capability comes from runtime-loaded skills.
+	// Mirrors WorkerProfile in section layout, swapping in freelancer
+	// principles for self-consistency with the agent name.
+	FreelancerProfile = &AgentProfile{
+		Name:        "freelancer",
+		Description: "Skill-driven L3 worker; capability comes from runtime-loaded user skills",
+		Sections: []string{
+			"currentdate",
+			"role",
+			"principles",
+			"tools",
+			"env",
+			"task",
+		},
+		SectionOverrides: map[string]string{
+			"principles": principles.Principles(principles.RoleFreelancer),
+		},
+	}
+
+	// PlanAgentProfile is for plan_agent sub-agents that analyze goals
 	// and decompose them into executable tasks via plan_update.
 	PlanAgentProfile = &AgentProfile{
-		Name:        "plan-agent",
+		Name:        "plan_agent",
 		Description: "Analyzes goal and writes task breakdown to plan.json via plan_update",
 		Sections: []string{
 			"currentdate",
@@ -187,10 +208,10 @@ var (
 		},
 	}
 
-	// PlanExecutorAgentProfile is for plan-executor-agent sub-agents that
+	// PlanExecutorAgentProfile is for plan_executor_agent sub-agents that
 	// read plan.json, dispatch freelancers, and update task status in real-time.
 	PlanExecutorAgentProfile = &AgentProfile{
-		Name:        "plan-executor-agent",
+		Name:        "plan_executor_agent",
 		Description: "Reads plan.json, dispatches freelancers, updates status in real-time",
 		Sections: []string{
 			"currentdate",
@@ -221,8 +242,9 @@ func GetBuiltInProfiles() map[string]*AgentProfile {
 		"plan":                PlanProfile,
 		"planner":             PlannerProfile,
 		"worker":              WorkerProfile,
-		"plan-agent":          PlanAgentProfile,
-		"plan-executor-agent": PlanExecutorAgentProfile,
+		"freelancer":          FreelancerProfile,
+		"plan_agent":          PlanAgentProfile,
+		"plan_executor_agent": PlanExecutorAgentProfile,
 	}
 }
 
@@ -321,24 +343,29 @@ func ResolveProfileByName(name string) *AgentProfile {
 //
 // Mapping:
 //
-//	"scheduler" (L2)           → SchedulerProfile
-//	"Explore" / "researcher"   → ExploreProfile (L3)
-//	"Plan"                     → PlanProfile (L3)
-//	"planner" (legacy)         → PlannerProfile
-//	everything else            → WorkerProfile (L3 default)
+//	"scheduler" (L2)              → SchedulerProfile
+//	"explore" / "researcher"      → ExploreProfile (L3)
+//	"plan"                        → PlanProfile (L3)
+//	"planner" (legacy)            → PlannerProfile
+//	"freelancer"                  → FreelancerProfile (L3)
+//	"plan_agent"                  → PlanAgentProfile
+//	"plan_executor_agent"         → PlanExecutorAgentProfile
+//	everything else               → WorkerProfile (L3 default)
 func ResolveProfileBySubagentType(subagentType string) *AgentProfile {
 	switch subagentType {
 	case "scheduler":
 		return SchedulerProfile
-	case "Explore", "explore", "researcher":
+	case "explore", "researcher":
 		return ExploreProfile
-	case "Plan", "plan":
+	case "plan":
 		return PlanProfile
-	case "Planner", "planner":
+	case "planner":
 		return PlannerProfile
-	case "plan-agent":
+	case "freelancer":
+		return FreelancerProfile
+	case "plan_agent":
 		return PlanAgentProfile
-	case "plan-executor-agent":
+	case "plan_executor_agent":
 		return PlanExecutorAgentProfile
 	default:
 		// All sub-agents use WorkerProfile by default.

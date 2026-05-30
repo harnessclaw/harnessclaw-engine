@@ -7,11 +7,11 @@ import (
 
 func buildPlanAgentSpec(parentGoal, sessionID string) spec.TaskSpec {
 	return spec.TaskSpec{
-		LocalID:      "plan-agent",
+		LocalID:      "plan_agent",
 		Goal:         "Generate execution plan for: " + parentGoal,
 		Hint:         spec.Hint{Kind: types.KindLeaf},
 		Layout:       "flat",
 		SessionID:    sessionID,
-		SubagentType: "plan-agent",
+		SubagentType: "plan_agent",
 	}
 }

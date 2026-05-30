@@ -1,4 +1,4 @@
-package userprompt
+package humanloop
 
 import (
 	"sync"

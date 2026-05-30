@@ -28,8 +28,8 @@ const (
 	RolePlan              Role = "plan"
 	RolePlanner           Role = "planner"
 	RoleFreelancer        Role = "freelancer"
-	RolePlanAgent         Role = "plan-agent"
-	RolePlanExecutorAgent Role = "plan-executor-agent"
+	RolePlanAgent         Role = "plan_agent"
+	RolePlanExecutorAgent Role = "plan_executor_agent"
 )
 
 // Principles returns the full principles text for the given role. Unknown

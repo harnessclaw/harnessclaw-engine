@@ -243,7 +243,7 @@ func TestTranslator_TaskToolCardViaSubAgentEventIsLifecycleExempt(t *testing.T) 
 			EventType: "tool_start",
 			ToolName:  "freelance",
 			ToolUseID: "toolu_nested_task",
-			ToolInput: `{"subagent_type":"general-purpose","prompt":"..."}`,
+			ToolInput: `{"subagent_type":"freelancer","prompt":"..."}`,
 		},
 	})
 

@@ -4,14 +4,14 @@ import (
 	"math/rand"
 	"testing"
 
-	copypkg "harnessclaw-go/internal/copy"
 	emitv2 "harnessclaw-go/internal/emit/v2"
+	"harnessclaw-go/internal/toolphrase"
 	"harnessclaw-go/pkg/types"
 )
 
-// fixedPicker creates a deterministic CopyPicker for translator tests.
-func fixedPicker(seed int64) *copypkg.CopyPicker {
-	return copypkg.NewCopyPicker(func() *rand.Rand {
+// fixedPicker creates a deterministic Picker for translator tests.
+func fixedPicker(seed int64) *toolphrase.Picker {
+	return toolphrase.NewPicker(func() *rand.Rand {
 		return rand.New(rand.NewSource(seed))
 	})
 }

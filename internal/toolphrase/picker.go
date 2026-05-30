@@ -1,4 +1,4 @@
-package copy
+package toolphrase
 
 import (
 	"math/rand"
@@ -10,15 +10,15 @@ import (
 // sessionCap caps the number of distinct sessions tracked in memory.
 // Beyond this, the oldest session's rotation state is evicted (LRU).
 // 1000 is generous for a single-tenant deployment; multi-tenant should
-// tune via NewCopyPickerWithCap.
+// tune via NewPickerWithCap.
 const sessionCap = 1000
 
-// CopyPicker resolves a (toolName, phase) query to a localized
+// Picker resolves a (toolName, phase) query to a localized
 // user-facing string, with session-level rotation so the same user
 // doesn't see the same phrase twice in a row for the same key.
 //
 // Concurrency-safe: a single instance can serve many sessions.
-type CopyPicker struct {
+type Picker struct {
 	mu       sync.Mutex
 	cap      int
 	sessions map[string]*sessionPickerState
@@ -26,30 +26,30 @@ type CopyPicker struct {
 	rngFunc  func() *rand.Rand
 }
 
-type copyKey struct {
+type phraseKey struct {
 	Category ToolCategory
 	Phase    emitv2.ToolPhase
 }
 
 type sessionPickerState struct {
-	used map[copyKey]map[int]bool
+	used map[phraseKey]map[int]bool
 	rng  *rand.Rand
 }
 
-// NewCopyPicker builds a Picker with the given RNG factory. Production
+// NewPicker builds a Picker with the given RNG factory. Production
 // callers pass `func() *rand.Rand { return rand.New(rand.NewSource(time.Now().UnixNano())) }`;
 // tests pass a fixed-seed factory for deterministic assertions.
-func NewCopyPicker(rngFunc func() *rand.Rand) *CopyPicker {
-	return NewCopyPickerWithCap(rngFunc, sessionCap)
+func NewPicker(rngFunc func() *rand.Rand) *Picker {
+	return NewPickerWithCap(rngFunc, sessionCap)
 }
 
-// NewCopyPickerWithCap exposes the session cap for tests / specialized
+// NewPickerWithCap exposes the session cap for tests / specialized
 // deployments. Use the default sessionCap (1000) in production.
-func NewCopyPickerWithCap(rngFunc func() *rand.Rand, cap int) *CopyPicker {
+func NewPickerWithCap(rngFunc func() *rand.Rand, cap int) *Picker {
 	if cap <= 0 {
 		cap = sessionCap
 	}
-	return &CopyPicker{
+	return &Picker{
 		cap:      cap,
 		sessions: make(map[string]*sessionPickerState),
 		order:    make([]string, 0, cap),
@@ -61,7 +61,7 @@ func NewCopyPickerWithCap(rngFunc func() *rand.Rand, cap int) *CopyPicker {
 // only meaningful for PhasePlanningArgs. RetryInfo is only meaningful
 // for retry-templated phases. Empty result means no template registered
 // — caller may render a Phase-enum-based default in the front-end.
-func (p *CopyPicker) Pick(sessionID, toolName string, phase emitv2.ToolPhase, bytes int, retry *RetryInfo) string {
+func (p *Picker) Pick(sessionID, toolName string, phase emitv2.ToolPhase, bytes int, retry *RetryInfo) string {
 	cat := Categorize(toolName)
 	templates := lookup(cat, phase)
 	if len(templates) == 0 {
@@ -72,7 +72,7 @@ func (p *CopyPicker) Pick(sessionID, toolName string, phase emitv2.ToolPhase, by
 	defer p.mu.Unlock()
 
 	st := p.getOrInitSession(sessionID)
-	key := copyKey{cat, phase}
+	key := phraseKey{cat, phase}
 
 	if len(st.used[key]) >= len(templates) {
 		st.used[key] = map[int]bool{}
@@ -96,7 +96,7 @@ func (p *CopyPicker) Pick(sessionID, toolName string, phase emitv2.ToolPhase, by
 // Forget drops all rotation state for sessionID. Channel layer calls
 // this on EngineEventDone / session disconnect to prevent the
 // sessions map from growing unbounded across the server's lifetime.
-func (p *CopyPicker) Forget(sessionID string) {
+func (p *Picker) Forget(sessionID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if _, ok := p.sessions[sessionID]; !ok {
@@ -112,7 +112,7 @@ func (p *CopyPicker) Forget(sessionID string) {
 }
 
 // activeSessionCount is a test helper.
-func (p *CopyPicker) activeSessionCount() int {
+func (p *Picker) activeSessionCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.sessions)
@@ -121,7 +121,7 @@ func (p *CopyPicker) activeSessionCount() int {
 // getOrInitSession returns the per-session state, creating it on first
 // access. Enforces the LRU cap by evicting the oldest entry when the
 // map is full. Caller must hold p.mu.
-func (p *CopyPicker) getOrInitSession(sessionID string) *sessionPickerState {
+func (p *Picker) getOrInitSession(sessionID string) *sessionPickerState {
 	if st, ok := p.sessions[sessionID]; ok {
 		for i, id := range p.order {
 			if id == sessionID {
@@ -143,7 +143,7 @@ func (p *CopyPicker) getOrInitSession(sessionID string) *sessionPickerState {
 	}
 
 	st := &sessionPickerState{
-		used: map[copyKey]map[int]bool{},
+		used: map[phraseKey]map[int]bool{},
 		rng:  p.rngFunc(),
 	}
 	p.sessions[sessionID] = st

@@ -26,9 +26,9 @@ import (
 
 	"harnessclaw-go/internal/channel"
 	"harnessclaw-go/internal/config"
-	copypkg "harnessclaw-go/internal/copy"
+	"harnessclaw-go/internal/toolphrase"
 	emitv2 "harnessclaw-go/internal/emit/v2"
-	"harnessclaw-go/internal/engine/userprompt"
+	"harnessclaw-go/internal/engine/humanloop"
 	"harnessclaw-go/internal/engine/wait"
 	"harnessclaw-go/pkg/types"
 )
@@ -52,7 +52,7 @@ type Channel struct {
 	// Both are optional: when nil the channel skips persistence and
 	// recovery (matches the alpha-without-recovery behaviour). Wire
 	// them in through SetPrompter / SetResumer.
-	prompter *userprompt.Prompter
+	prompter *humanloop.Prompter
 	resumer  wait.Resumer
 
 	handler channel.MessageHandler // engine inbound dispatch (set by Start)
@@ -70,12 +70,12 @@ func New(cfg config.WSChannelConfig, _ func(context.Context, string) error, logg
 	if cfg.Path == "" {
 		cfg.Path = "/v1/ws"
 	}
-	// CopyPicker resolves localized phase hints for tool cards and the M4
+	// toolphrase.Picker resolves localized phase hints for tool cards and the M4
 	// inter-round thinking hint on message cards. Per-session randomness
 	// is seeded fresh on each new session via the rng factory below;
 	// production wants non-deterministic rotation, tests use a fixed seed
 	// via NewTranslator(picker) directly.
-	picker := copypkg.NewCopyPicker(func() *rand.Rand {
+	picker := toolphrase.NewPicker(func() *rand.Rand {
 		return rand.New(rand.NewSource(time.Now().UnixNano()))
 	})
 	return &Channel{
@@ -92,7 +92,7 @@ func New(cfg config.WSChannelConfig, _ func(context.Context, string) error, logg
 // the translator persists every wait before emitting, and conn falls
 // through to the persisted-wait path when a user reply arrives for an
 // in-memory miss. Call before Start.
-func (c *Channel) SetPrompter(p *userprompt.Prompter) { c.prompter = p }
+func (c *Channel) SetPrompter(p *humanloop.Prompter) { c.prompter = p }
 
 // SetResumer wires the engine-side resume callback. Without a Resumer
 // the channel can persist waits and re-emit them on reconnect, but

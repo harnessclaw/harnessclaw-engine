@@ -7,11 +7,11 @@ import (
 
 func buildPlanExecutorAgentSpec(parentGoal, sessionID string) spec.TaskSpec {
 	return spec.TaskSpec{
-		LocalID:      "plan-executor-agent",
+		LocalID:      "plan_executor_agent",
 		Goal:         "Execute plan for: " + parentGoal,
 		Hint:         spec.Hint{Kind: types.KindLeaf},
 		Layout:       "flat",
 		SessionID:    sessionID,
-		SubagentType: "plan-executor-agent",
+		SubagentType: "plan_executor_agent",
 	}
 }

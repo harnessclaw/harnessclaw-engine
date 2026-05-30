@@ -1,4 +1,4 @@
-package copy
+package toolphrase
 
 import (
 	"fmt"
@@ -7,13 +7,13 @@ import (
 	emitv2 "harnessclaw-go/internal/emit/v2"
 )
 
-// PhaseCopy bundles a category × phase key with its candidate templates.
+// Phrase bundles a category × phase key with its candidate templates.
 // Templates support these placeholders:
 //   - {bytes}        — humanized byte count (e.g. "1.2KB")
 //   - {attempt}      — retry attempt index (1-based)
 //   - {max}          — max retry attempts
 //   - {seconds}      — retry delay in whole seconds
-type PhaseCopy struct {
+type Phrase struct {
 	Category  ToolCategory
 	Phase     emitv2.ToolPhase
 	Templates []string
@@ -27,10 +27,10 @@ type RetryInfo struct {
 	DelaySeconds int
 }
 
-// copyLibrary is the master table. Order doesn't matter — lookup is by
+// library is the master table. Order doesn't matter — lookup is by
 // (Category, Phase) key. Adding new (category, phase) entries here is
 // the only way to introduce new copy.
-var copyLibrary = []PhaseCopy{
+var library = []Phrase{
 	// T1 PLANNING
 	{CategoryWrite, emitv2.PhasePlanning, []string{
 		"构思文件内容", "草拟内容中", "准备落笔", "整理要写入的结构",
@@ -108,7 +108,7 @@ var copyLibrary = []PhaseCopy{
 // default based on the Phase enum).
 func lookup(cat ToolCategory, phase emitv2.ToolPhase) []string {
 	var generic []string
-	for _, e := range copyLibrary {
+	for _, e := range library {
 		if e.Phase != phase {
 			continue
 		}

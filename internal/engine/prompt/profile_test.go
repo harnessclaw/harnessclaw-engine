@@ -22,9 +22,11 @@ func TestPlannerProfile_RegisteredInBuiltins(t *testing.T) {
 func TestResolveProfileBySubagentType_Planner(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"planner", "planner"},
-		{"Planner", "planner"},
 		{"researcher", "explore"},
-		{"Plan", "plan"},
+		{"plan", "plan"},
+		{"freelancer", "freelancer"},
+		{"plan_agent", "plan_agent"},
+		{"plan_executor_agent", "plan_executor_agent"},
 		{"writer", "worker"},
 		{"unknown", "worker"},
 	}

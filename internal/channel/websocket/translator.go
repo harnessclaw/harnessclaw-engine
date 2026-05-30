@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"harnessclaw-go/internal/copy"
 	emitv2 "harnessclaw-go/internal/emit/v2"
+	"harnessclaw-go/internal/toolphrase"
 	"harnessclaw-go/internal/engine/wait"
 	"harnessclaw-go/pkg/types"
 )
@@ -35,11 +35,11 @@ type Translator struct {
 	// pendingPerm maps are still authoritative for live answers).
 	prompter promptIssuer
 
-	// copyPicker resolves localized strings for tool card phase hints
+	// phrasePicker resolves localized strings for tool card phase hints
 	// and the M4 message card hint. Injected; nil = degraded mode where
 	// PhaseHint stays empty and front-end falls back to phase-enum
 	// defaults.
-	copyPicker *copy.CopyPicker
+	phrasePicker *toolphrase.Picker
 }
 
 // promptIssuer is the minimal slice of prompter.Prompter the translator
@@ -52,10 +52,10 @@ type promptIssuer interface {
 // NewTranslator constructs a Translator. picker may be nil for
 // degraded mode (PhaseHint stays empty; front-end uses Phase enum
 // defaults).
-func NewTranslator(picker *copy.CopyPicker) *Translator {
+func NewTranslator(picker *toolphrase.Picker) *Translator {
 	return &Translator{
 		sessions:   make(map[string]*sessionState),
-		copyPicker: picker,
+		phrasePicker: picker,
 	}
 }
 
@@ -228,8 +228,8 @@ func (t *Translator) Drop(sessionID string) {
 	t.mu.Lock()
 	delete(t.sessions, sessionID)
 	t.mu.Unlock()
-	if t.copyPicker != nil {
-		t.copyPicker.Forget(sessionID)
+	if t.phrasePicker != nil {
+		t.phrasePicker.Forget(sessionID)
 	}
 }
 
@@ -366,7 +366,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		}
 		em.Card(emitv2.CardTool, toolCardID).Set(map[string]any{
 			"phase":       emitv2.PhasePlanningArgs,
-			"phase_hint":  t.pickCopy(s, toolName, emitv2.PhasePlanningArgs, ev.Bytes, nil),
+			"phase_hint":  t.pickPhrase(s, toolName, emitv2.PhasePlanningArgs, ev.Bytes, nil),
 			"phase_bytes": ev.Bytes,
 		})
 
@@ -395,7 +395,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			Name:      toolName,
 			Target:    "server",
 			Phase:     emitv2.PhaseQueued,
-			PhaseHint: t.pickCopy(s, toolName, emitv2.PhaseQueued, 0, nil),
+			PhaseHint: t.pickPhrase(s, toolName, emitv2.PhaseQueued, 0, nil),
 		}, opts...)
 
 	case types.EngineEventToolPlanningRetract:
@@ -420,7 +420,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		em.Card(emitv2.CardMessage, mid).Add(emitv2.MessagePayload{Role: "assistant"},
 			emitv2.WithParent(s.turnCardID),
 			emitv2.WithHint(emitv2.Hint{
-				Summary: t.pickCopy(s, "", emitv2.PhaseNextRound, 0, nil),
+				Summary: t.pickPhrase(s, "", emitv2.PhaseNextRound, 0, nil),
 			}))
 
 	case types.EngineEventToolStart:
@@ -430,7 +430,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			// ToolQueued 已开卡 — 升级到 executing 而非重开
 			em.Card(emitv2.CardTool, existing).Set(map[string]any{
 				"phase":      emitv2.PhaseExecuting,
-				"phase_hint": t.pickCopy(s, ev.ToolName, emitv2.PhaseExecuting, 0, nil),
+				"phase_hint": t.pickPhrase(s, ev.ToolName, emitv2.PhaseExecuting, 0, nil),
 				"input":      input,
 			})
 			// 摘除 planning 标记 — 这卡已转正，retract 不应再操作它
@@ -464,7 +464,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			Intent:    ev.Intent,
 			Input:     input,
 			Phase:     emitv2.PhaseExecuting,
-			PhaseHint: t.pickCopy(s, ev.ToolName, emitv2.PhaseExecuting, 0, nil),
+			PhaseHint: t.pickPhrase(s, ev.ToolName, emitv2.PhaseExecuting, 0, nil),
 		}, opts...)
 
 	case types.EngineEventToolEnd:
@@ -767,7 +767,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 				}
 				em.Card(emitv2.CardTool, toolCardID).Set(map[string]any{
 					"phase":      emitv2.PhasePermissionWait,
-					"phase_hint": t.pickCopy(s, toolName, emitv2.PhasePermissionWait, 0, nil),
+					"phase_hint": t.pickPhrase(s, toolName, emitv2.PhasePermissionWait, 0, nil),
 				})
 			}
 		}
@@ -1533,13 +1533,13 @@ func formatRetryNote(info *types.LLMRetryInfo) string {
 	}
 }
 
-// pickCopy is a thin wrapper around t.copyPicker.Pick with nil-safety.
+// pickPhrase is a thin wrapper around t.phrasePicker.Pick with nil-safety.
 // Returns "" when the picker is not configured.
-func (t *Translator) pickCopy(s *sessionState, toolName string, phase emitv2.ToolPhase, bytes int, retry *copy.RetryInfo) string {
-	if t.copyPicker == nil {
+func (t *Translator) pickPhrase(s *sessionState, toolName string, phase emitv2.ToolPhase, bytes int, retry *toolphrase.RetryInfo) string {
+	if t.phrasePicker == nil {
 		return ""
 	}
-	return t.copyPicker.Pick(s.sessionID, toolName, phase, bytes, retry)
+	return t.phrasePicker.Pick(s.sessionID, toolName, phase, bytes, retry)
 }
 
 // decodeAskQuestionInput pulls fields out of an ask_user_question tool

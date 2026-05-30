@@ -13,27 +13,27 @@ func newTestRegistry() *AgentDefinitionRegistry {
 func TestMentionParser_BasicMatch(t *testing.T) {
 	parser := NewMentionParser(newTestRegistry())
 
-	m := parser.Parse("@Explore search for auth files")
+	m := parser.Parse("@plan design auth strategy")
 	if !m.Matched {
 		t.Fatal("expected Matched=true")
 	}
-	if m.AgentName != "Explore" {
-		t.Fatalf("expected AgentName=Explore, got %q", m.AgentName)
+	if m.AgentName != "plan" {
+		t.Fatalf("expected AgentName=plan, got %q", m.AgentName)
 	}
-	if m.Message != "search for auth files" {
-		t.Fatalf("expected remaining message 'search for auth files', got %q", m.Message)
+	if m.Message != "design auth strategy" {
+		t.Fatalf("expected remaining message 'design auth strategy', got %q", m.Message)
 	}
 }
 
 func TestMentionParser_CaseInsensitive(t *testing.T) {
 	parser := NewMentionParser(newTestRegistry())
 
-	m := parser.Parse("@explore look for main.go")
+	m := parser.Parse("@plan look for main.go")
 	if !m.Matched {
 		t.Fatal("expected Matched=true for case-insensitive match")
 	}
-	if m.AgentName != "Explore" {
-		t.Fatalf("expected AgentName=Explore, got %q", m.AgentName)
+	if m.AgentName != "plan" {
+		t.Fatalf("expected AgentName=plan, got %q", m.AgentName)
 	}
 	if m.Message != "look for main.go" {
 		t.Fatalf("expected remaining message 'look for main.go', got %q", m.Message)
@@ -43,12 +43,12 @@ func TestMentionParser_CaseInsensitive(t *testing.T) {
 func TestMentionParser_MultiWordAgentName(t *testing.T) {
 	parser := NewMentionParser(newTestRegistry())
 
-	m := parser.Parse("@general-purpose do something complex")
+	m := parser.Parse("@plan_agent do something complex")
 	if !m.Matched {
 		t.Fatal("expected Matched=true for multi-word agent name")
 	}
-	if m.AgentName != "general-purpose" {
-		t.Fatalf("expected AgentName=general-purpose, got %q", m.AgentName)
+	if m.AgentName != "plan_agent" {
+		t.Fatalf("expected AgentName=plan_agent, got %q", m.AgentName)
 	}
 	if m.Message != "do something complex" {
 		t.Fatalf("expected remaining message 'do something complex', got %q", m.Message)
@@ -82,7 +82,7 @@ func TestMentionParser_UnknownAgent(t *testing.T) {
 func TestMentionParser_MentionInMiddle(t *testing.T) {
 	parser := NewMentionParser(newTestRegistry())
 
-	m := parser.Parse("hello @Explore do something")
+	m := parser.Parse("hello @plan do something")
 	if m.Matched {
 		t.Fatal("expected Matched=false when @mention is not at start")
 	}
@@ -109,12 +109,12 @@ func TestMentionParser_JustAtSign(t *testing.T) {
 func TestMentionParser_AgentNameOnly(t *testing.T) {
 	parser := NewMentionParser(newTestRegistry())
 
-	m := parser.Parse("@Plan")
+	m := parser.Parse("@plan")
 	if !m.Matched {
 		t.Fatal("expected Matched=true for agent name with no trailing message")
 	}
-	if m.AgentName != "Plan" {
-		t.Fatalf("expected AgentName=Plan, got %q", m.AgentName)
+	if m.AgentName != "plan" {
+		t.Fatalf("expected AgentName=plan, got %q", m.AgentName)
 	}
 	if m.Message != "" {
 		t.Fatalf("expected empty Message, got %q", m.Message)
@@ -124,12 +124,12 @@ func TestMentionParser_AgentNameOnly(t *testing.T) {
 func TestMentionParser_LeadingWhitespace(t *testing.T) {
 	parser := NewMentionParser(newTestRegistry())
 
-	m := parser.Parse("  @Explore find files")
+	m := parser.Parse("  @plan find files")
 	if !m.Matched {
 		t.Fatal("expected Matched=true even with leading whitespace")
 	}
-	if m.AgentName != "Explore" {
-		t.Fatalf("expected AgentName=Explore, got %q", m.AgentName)
+	if m.AgentName != "plan" {
+		t.Fatalf("expected AgentName=plan, got %q", m.AgentName)
 	}
 	if m.Message != "find files" {
 		t.Fatalf("expected remaining message 'find files', got %q", m.Message)
@@ -137,15 +137,15 @@ func TestMentionParser_LeadingWhitespace(t *testing.T) {
 }
 
 func TestMentionParser_AgentNamePrefix(t *testing.T) {
-	// Ensure that "general-purpose" is not matched by a partial prefix like "general"
+	// Ensure that "plan_agent" is not matched by a partial prefix like "plan"
 	parser := NewMentionParser(newTestRegistry())
 
-	m := parser.Parse("@general-purpose check this PR")
+	m := parser.Parse("@plan_agent check this PR")
 	if !m.Matched {
-		t.Fatal("expected Matched=true for general-purpose")
+		t.Fatal("expected Matched=true for plan_agent")
 	}
-	if m.AgentName != "general-purpose" {
-		t.Fatalf("expected AgentName=general-purpose, got %q", m.AgentName)
+	if m.AgentName != "plan_agent" {
+		t.Fatalf("expected AgentName=plan_agent, got %q", m.AgentName)
 	}
 	if m.Message != "check this PR" {
 		t.Fatalf("expected remaining message 'check this PR', got %q", m.Message)
@@ -153,10 +153,10 @@ func TestMentionParser_AgentNamePrefix(t *testing.T) {
 }
 
 func TestMentionParser_AgentNameNotSubstring(t *testing.T) {
-	// "@Planning" should NOT match "Plan" since 'n' follows without whitespace
+	// "@planning" should NOT match "plan" since 'n' follows without whitespace
 	parser := NewMentionParser(newTestRegistry())
 
-	m := parser.Parse("@Planning something")
+	m := parser.Parse("@planning something")
 	if m.Matched {
 		t.Fatal("expected Matched=false when text after agent name continues without whitespace")
 	}

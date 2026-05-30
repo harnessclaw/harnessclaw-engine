@@ -113,71 +113,6 @@ func (s *AgentService) ImportFromYAML(ctx context.Context, dir string) (int, []e
 	return imported, errs
 }
 
-// SyncBuiltins persists built-in agent definitions to the store.
-// Existing built-in entries are updated; new ones are created.
-// Stale entries (source=builtin but no longer in code) are deleted.
-func (s *AgentService) SyncBuiltins(ctx context.Context) error {
-	s.registry.RegisterBuiltins()
-
-	codeNames := make(map[string]bool)
-	for _, def := range s.registry.All() {
-		if def.Source != "" {
-			continue
-		}
-		codeNames[def.Name] = true
-		def.Source = "builtin"
-		def.IsBuiltin = true
-		_, err := s.store.Create(ctx, def)
-		if err != nil {
-			updates := &AgentUpdate{
-				DisplayName:     &def.DisplayName,
-				Description:     &def.Description,
-				SystemPrompt:    &def.SystemPrompt,
-				Model:           &def.Model,
-				Profile:         &def.Profile,
-				MaxTurns:        &def.MaxTurns,
-				Tools:           def.Tools,
-				AllowedTools:    def.AllowedTools,
-				DisallowedTools: def.DisallowedTools,
-				// Builtins are code-authoritative: pass []string{} when nil
-				// so the store overwrites any stale skills written by older
-				// versions instead of leaving them in place.
-				Skills:          builtinSkills(def.Skills),
-				AutoTeam:        &def.AutoTeam,
-				SubAgents:       def.SubAgents,
-				Personality:     &def.Personality,
-				Triggers:        &def.Triggers,
-				IsTeamMember:    &def.IsTeamMember,
-			}
-			if _, err := s.store.Update(ctx, def.Name, updates); err != nil {
-				s.logger.Warn("failed to sync builtin agent definition",
-					zap.String("name", def.Name),
-					zap.Error(err),
-				)
-			}
-		}
-	}
-
-	// Prune stale builtins: delete SQLite entries with source=builtin
-	// that no longer exist in the code registry.
-	builtinSource := "builtin"
-	stored, err := s.store.List(ctx, &AgentFilter{Source: &builtinSource})
-	if err != nil {
-		s.logger.Warn("failed to list stored builtins for pruning", zap.Error(err))
-		return nil
-	}
-	for _, d := range stored {
-		if !codeNames[d.Name] {
-			if err := s.store.Delete(ctx, d.Name); err != nil {
-				s.logger.Warn("failed to prune stale builtin", zap.String("name", d.Name), zap.Error(err))
-			} else {
-				s.logger.Info("pruned stale builtin agent", zap.String("name", d.Name))
-			}
-		}
-	}
-	return nil
-}
-
 // SyncFromDirectory loads agent definitions from YAML files in dir and
 // upserts them to the store. YAML is authoritative: changes take effect
 // on the next server restart without recompilation.
@@ -231,23 +166,9 @@ func (s *AgentService) SyncFromDirectory(ctx context.Context, dir string) (int, 
 	return synced, nil
 }
 
-// LoadAllToRegistry loads all agent definitions from the store into the
-// in-memory registry.
-//
-// Built-in definitions: the SQLite schema doesn't persist every code-side
-// field (Tier, OutputSchema, InputSchema, Limitations, ExampleTasks,
-// CostTier, Temperature, etc.). Hydrating from SQLite would silently
-// strip those, leaving e.g. ListForPlanner with no TierSubAgent matches —
-// Plan-mode coordinator would have no skills to dispatch.
-//
-// Resolution: when a definition is already present in the registry from
-// RegisterBuiltins (always called first via SyncBuiltins), we MERGE the
-// SQLite-side mutable fields onto it rather than replacing wholesale.
-// This keeps DB-driven user edits (DisplayName, Description, etc.)
-// effective while preserving the code constants on built-ins.
-//
-// Non-builtin defs (Source != "builtin", e.g. user-imported YAML) load
-// as-is — they have no in-code counterpart to preserve.
+// LoadAllToRegistry loads all stored (non-builtin) agent definitions into
+// the in-memory registry. Builtins live in code via RegisterBuiltins; the
+// store only carries user-imported YAML and console-API additions.
 func (s *AgentService) LoadAllToRegistry(ctx context.Context) error {
 	defs, err := s.store.List(ctx, nil)
 	if err != nil {
@@ -255,15 +176,6 @@ func (s *AgentService) LoadAllToRegistry(ctx context.Context) error {
 	}
 	loaded := 0
 	for _, def := range defs {
-		existing := s.registry.Get(def.Name)
-		if existing != nil && existing.IsBuiltin {
-			// Merge mutable user-editable fields from store onto the
-			// in-memory builtin, leaving Tier / OutputSchema / etc.
-			// untouched.
-			mergeMutableFields(existing, def)
-			loaded++
-			continue
-		}
 		if err := s.registry.Register(def); err != nil {
 			s.logger.Warn("skipping invalid agent definition",
 				zap.String("name", def.Name),
@@ -278,64 +190,4 @@ func (s *AgentService) LoadAllToRegistry(ctx context.Context) error {
 		zap.Int("total", len(defs)),
 	)
 	return nil
-}
-
-// mergeMutableFields copies SQLite-persisted mutable fields from src to
-// dst in place. Used to preserve code-only fields (Tier, OutputSchema,
-// etc.) on built-in definitions when re-hydrating from the store.
-//
-// Field set mirrors what AgentService.Update accepts on the wire — these
-// are the "operator can change at runtime" fields. Any field not listed
-// here is owned by code (RegisterBuiltins).
-func mergeMutableFields(dst, src *AgentDefinition) {
-	if src.DisplayName != "" {
-		dst.DisplayName = src.DisplayName
-	}
-	if src.Description != "" {
-		dst.Description = src.Description
-	}
-	if src.SystemPrompt != "" {
-		dst.SystemPrompt = src.SystemPrompt
-	}
-	if src.Model != "" {
-		dst.Model = src.Model
-	}
-	if src.Profile != "" {
-		dst.Profile = src.Profile
-	}
-	if src.MaxTurns != 0 {
-		dst.MaxTurns = src.MaxTurns
-	}
-	if len(src.Tools) > 0 {
-		dst.Tools = src.Tools
-	}
-	if len(src.AllowedTools) > 0 {
-		dst.AllowedTools = src.AllowedTools
-	}
-	if len(src.DisallowedTools) > 0 {
-		dst.DisallowedTools = src.DisallowedTools
-	}
-	if len(src.Skills) > 0 {
-		dst.Skills = src.Skills
-	}
-	if src.Personality != "" {
-		dst.Personality = src.Personality
-	}
-	if src.Triggers != "" {
-		dst.Triggers = src.Triggers
-	}
-	// IsTeamMember is a bool — always reflect the store value so
-	// "remove from team" updates take effect. Tier remains code-owned.
-	dst.IsTeamMember = src.IsTeamMember
-}
-
-// builtinSkills returns s if non-nil, or []string{} when nil. Used by
-// SyncBuiltins so that a builtin with no skills explicitly clears any
-// stale skills written by an older version of the code, rather than
-// leaving them in place (nil = "don't touch this field" in AgentUpdate).
-func builtinSkills(s []string) []string {
-	if s == nil {
-		return []string{}
-	}
-	return s
 }

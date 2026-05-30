@@ -48,7 +48,7 @@ func (r *HeuristicAgentResolver) Resolve(goal string, available []string) string
 		return best
 	}
 
-	priority := []string{"freelancer", "general-purpose"}
+	priority := []string{"freelancer"}
 	for _, p := range priority {
 		for _, a := range available {
 			if a == p {

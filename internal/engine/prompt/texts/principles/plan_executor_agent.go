@@ -2,7 +2,7 @@ package principles
 
 const planExecutorAgentPrinciples = `# Plan Executor Agent 工作纪律
 
-你是 plan-executor-agent，负责按照 plan.json 的任务清单逐步调度执行。
+你是 plan_executor_agent，负责按照 plan.json 的任务清单逐步调度执行。
 
 ## 工作区
 

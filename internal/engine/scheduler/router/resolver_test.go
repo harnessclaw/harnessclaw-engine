@@ -7,7 +7,7 @@ import (
 
 func TestHeuristicAgentResolver_ResearchGoal(t *testing.T) {
 	r := router.NewHeuristicAgentResolver()
-	available := []string{"researcher", "developer", "writer", "general-purpose"}
+	available := []string{"researcher", "developer", "writer", "freelancer"}
 	got := r.Resolve("research the impact of LLMs on software engineering", available)
 	if got != "researcher" {
 		t.Fatalf("want researcher, got %q", got)
@@ -16,19 +16,19 @@ func TestHeuristicAgentResolver_ResearchGoal(t *testing.T) {
 
 func TestHeuristicAgentResolver_WriteGoal(t *testing.T) {
 	r := router.NewHeuristicAgentResolver()
-	available := []string{"writer", "researcher", "general-purpose"}
+	available := []string{"writer", "researcher", "freelancer"}
 	got := r.Resolve("write a blog post about Go generics", available)
 	if got != "writer" {
 		t.Fatalf("want writer, got %q", got)
 	}
 }
 
-func TestHeuristicAgentResolver_FallbackToGeneral(t *testing.T) {
+func TestHeuristicAgentResolver_FallbackToFreelancer(t *testing.T) {
 	r := router.NewHeuristicAgentResolver()
-	available := []string{"general-purpose"}
+	available := []string{"freelancer"}
 	got := r.Resolve("do something vague", available)
-	if got != "general-purpose" {
-		t.Fatalf("want general-purpose, got %q", got)
+	if got != "freelancer" {
+		t.Fatalf("want freelancer, got %q", got)
 	}
 }
 

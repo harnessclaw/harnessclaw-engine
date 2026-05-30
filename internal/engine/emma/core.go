@@ -1,5 +1,5 @@
-// Package emma owns the L1 query engine — the single user-facing engine
-// reachable from the WebSocket / API channel. Engine collapses the former
+// Package emma owns the user-facing query engine — reachable from the
+// WebSocket / API channel. Engine collapses the former
 // engine.QueryEngine + queryloop.Runner + emma.L1Engine three-layer proxy
 // into one type that drives the 5-phase query loop directly.
 package emma
@@ -32,12 +32,12 @@ import (
 	"harnessclaw-go/pkg/types"
 )
 
-// Engine is the concrete L1 implementation that runs the 5-phase query loop.
+// Engine is emma's concrete implementation that runs the 5-phase query loop.
 //
 // It folds together what used to be three layers:
 //   - engine.QueryEngine (assembler + 30 getters + forwarding methods)
 //   - queryloop.Runner   (real orchestrator)
-//   - emma.L1Engine      (thin proxy applying L1 persona)
+//   - emma.L1Engine      (thin proxy applying emma persona)
 //
 // Engine owns all dependencies as fields and exposes spawn.Deps methods on
 // itself so the spawn package can drive sub-agent runs without going
@@ -99,11 +99,11 @@ type Engine struct {
 // Option configures Engine at construction.
 type Option func(*Engine)
 
-// L1Config carries the L1-persona overlay applied via WithL1Config. All
-// fields have sensible defaults; an empty L1Config is valid and produces
+// EmmaConfig carries the emma-persona overlay applied via WithEmmaConfig. All
+// fields have sensible defaults; an empty EmmaConfig is valid and produces
 // the canonical emma setup.
 //
-// L1 tool palette rationale (post 3-tier refactor):
+// emma tool palette rationale (post 3-tier refactor):
 //   - scheduler                   → THE delegation entry point. emma never
 //                                   picks between single-step / multi-step
 //                                   or specific sub-agents — the scheduler
@@ -115,8 +115,8 @@ type Option func(*Engine)
 //
 // The task tool is intentionally NOT in this list — it lives inside the
 // L2 layer (the scheduler uses task internally to dispatch L3).
-type L1Config struct {
-	// Profile is the prompt profile used for the L1 main agent.
+type EmmaConfig struct {
+	// Profile is the prompt profile used for the emma main agent.
 	// Default: prompt.EmmaProfile.
 	Profile *prompt.AgentProfile
 
@@ -124,17 +124,17 @@ type L1Config struct {
 	// identity prompts. Default: "emma".
 	DisplayName string
 
-	// AllowedTools restricts the tools advertised to the L1 LLM.
+	// AllowedTools restricts the tools advertised to the emma LLM.
 	// Default: scheduler + light context tools.
 	AllowedTools []string
 
-	// MaxTurns caps the L1 loop. Default: 10.
+	// MaxTurns caps the emma loop. Default: 10.
 	MaxTurns int
 }
 
-// DefaultL1Config returns the canonical emma L1 configuration.
-func DefaultL1Config() L1Config {
-	return L1Config{
+// DefaultEmmaConfig returns the canonical emma configuration.
+func DefaultEmmaConfig() EmmaConfig {
+	return EmmaConfig{
 		Profile:     prompt.EmmaProfile,
 		DisplayName: "emma",
 		AllowedTools: []string{
@@ -150,10 +150,10 @@ func DefaultL1Config() L1Config {
 	}
 }
 
-// WithL1Config applies an L1Config overlay — sets the main agent profile,
+// WithEmmaConfig applies an EmmaConfig overlay — sets the main agent profile,
 // display name, tool palette, and small-loop cap. Empty fields fall back
-// to DefaultL1Config defaults.
-func WithL1Config(cfg L1Config) Option {
+// to DefaultEmmaConfig defaults.
+func WithEmmaConfig(cfg EmmaConfig) Option {
 	if cfg.Profile == nil {
 		cfg.Profile = prompt.EmmaProfile
 	}
@@ -183,8 +183,8 @@ func WithL1Config(cfg L1Config) Option {
 	}
 }
 
-// New constructs the L1 engine. opts apply after the core wiring is up so
-// L1Config (or any future overlay) can mutate the resolved main-agent
+// New constructs the emma engine. opts apply after the core wiring is up so
+// EmmaConfig (or any future overlay) can mutate the resolved main-agent
 // fields before the first ProcessMessage.
 func New(
 	prov provider.Provider,

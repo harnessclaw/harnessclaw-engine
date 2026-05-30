@@ -10,7 +10,7 @@ func TestRegisterBuiltins_PlanAgentsDefined(t *testing.T) {
 	r := agent.NewAgentDefinitionRegistry()
 	r.RegisterBuiltins()
 
-	for _, name := range []string{"plan-agent", "plan-executor-agent"} {
+	for _, name := range []string{"plan_agent", "plan_executor_agent"} {
 		def := r.Get(name)
 		if def == nil {
 			t.Errorf("agent %q not registered", name)
@@ -21,8 +21,8 @@ func TestRegisterBuiltins_PlanAgentsDefined(t *testing.T) {
 		}
 	}
 
-	// plan-agent must have plan_update but NOT freelance
-	pa := r.Get("plan-agent")
+	// plan_agent must have plan_update but NOT freelance
+	pa := r.Get("plan_agent")
 	if pa != nil {
 		hasPlanUpdate := false
 		hasFreelance := false
@@ -35,15 +35,15 @@ func TestRegisterBuiltins_PlanAgentsDefined(t *testing.T) {
 			}
 		}
 		if !hasPlanUpdate {
-			t.Error("plan-agent missing plan_update")
+			t.Error("plan_agent missing plan_update")
 		}
 		if hasFreelance {
-			t.Error("plan-agent should NOT have freelance")
+			t.Error("plan_agent should NOT have freelance")
 		}
 	}
 
-	// plan-executor-agent must have plan_read, plan_update, and freelance
-	pea := r.Get("plan-executor-agent")
+	// plan_executor_agent must have plan_read, plan_update, and freelance
+	pea := r.Get("plan_executor_agent")
 	if pea != nil {
 		required := []string{"plan_read", "plan_update", "freelance"}
 		for _, req := range required {
@@ -55,7 +55,7 @@ func TestRegisterBuiltins_PlanAgentsDefined(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Errorf("plan-executor-agent missing %q", req)
+				t.Errorf("plan_executor_agent missing %q", req)
 			}
 		}
 	}

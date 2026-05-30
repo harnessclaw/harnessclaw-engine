@@ -90,7 +90,7 @@ func (f *QueryEngineFactory) Build(taskID types.TaskID, sessionID string, sp spe
 		cfg.SubagentType = f.agentResolver.Resolve(sp.Goal, knownAgents())
 	}
 	if cfg.SubagentType == "" {
-		cfg.SubagentType = "general-purpose"
+		cfg.SubagentType = "freelancer"
 	}
 	cfg.Name = cfg.SubagentType
 	cfg.ParentOut = f.currentOutCh()
@@ -128,7 +128,7 @@ func specToSpawnConfig(sp spec.TaskSpec, rootSessionID string) *agent.SpawnConfi
 // IMPORTANT: only include names that are registered in AgentDefinitionRegistry.RegisterBuiltins().
 // Unregistered names resolve to agentDef=nil → isSubAgent=false → coordinator branch.
 func knownAgents() []string {
-	return []string{"freelancer", "general-purpose", "plan-agent", "plan-executor-agent"}
+	return []string{"freelancer", "plan_agent", "plan_executor_agent"}
 }
 
 // flatWorkspace implements WorkspaceHandle for a flat (per-session) layout.

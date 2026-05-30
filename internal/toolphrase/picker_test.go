@@ -1,4 +1,4 @@
-package copy
+package toolphrase
 
 import (
 	"math/rand"
@@ -14,8 +14,8 @@ func fixedRng(seed int64) func() *rand.Rand {
 	}
 }
 
-func TestCopyPicker_DeterministicWithSeed(t *testing.T) {
-	p := NewCopyPicker(fixedRng(42))
+func TestPicker_DeterministicWithSeed(t *testing.T) {
+	p := NewPicker(fixedRng(42))
 	got1 := p.Pick("sess1", "write", emitv2.PhasePlanning, 0, nil)
 	if got1 == "" {
 		t.Fatal("expected non-empty pick")
@@ -26,8 +26,8 @@ func TestCopyPicker_DeterministicWithSeed(t *testing.T) {
 	}
 }
 
-func TestCopyPicker_RotationCoversAllCandidates(t *testing.T) {
-	p := NewCopyPicker(fixedRng(7))
+func TestPicker_RotationCoversAllCandidates(t *testing.T) {
+	p := NewPicker(fixedRng(7))
 	// PhasePlanning Write 类有 4 个候选
 	seen := map[string]bool{}
 	for i := 0; i < 4; i++ {
@@ -42,8 +42,8 @@ func TestCopyPicker_RotationCoversAllCandidates(t *testing.T) {
 	}
 }
 
-func TestCopyPicker_RotationResetsAfterExhaustion(t *testing.T) {
-	p := NewCopyPicker(fixedRng(7))
+func TestPicker_RotationResetsAfterExhaustion(t *testing.T) {
+	p := NewPicker(fixedRng(7))
 	for i := 0; i < 4; i++ {
 		p.Pick("sess_reset", "write", emitv2.PhasePlanning, 0, nil)
 	}
@@ -53,8 +53,8 @@ func TestCopyPicker_RotationResetsAfterExhaustion(t *testing.T) {
 	}
 }
 
-func TestCopyPicker_SessionsIndependent(t *testing.T) {
-	p := NewCopyPicker(fixedRng(7))
+func TestPicker_SessionsIndependent(t *testing.T) {
+	p := NewPicker(fixedRng(7))
 	pickA := p.Pick("sessA", "write", emitv2.PhasePlanning, 0, nil)
 	pickB := p.Pick("sessB", "write", emitv2.PhasePlanning, 0, nil)
 	seen := map[string]bool{pickB: true}
@@ -67,8 +67,8 @@ func TestCopyPicker_SessionsIndependent(t *testing.T) {
 	}
 }
 
-func TestCopyPicker_BytesInterpolated(t *testing.T) {
-	p := NewCopyPicker(fixedRng(7))
+func TestPicker_BytesInterpolated(t *testing.T) {
+	p := NewPicker(fixedRng(7))
 	s := p.Pick("sessX", "write", emitv2.PhasePlanningArgs, 1024, nil)
 	if s == "" {
 		t.Fatal("expected non-empty")
@@ -78,24 +78,24 @@ func TestCopyPicker_BytesInterpolated(t *testing.T) {
 	}
 }
 
-func TestCopyPicker_FallbackChain(t *testing.T) {
-	p := NewCopyPicker(fixedRng(7))
+func TestPicker_FallbackChain(t *testing.T) {
+	p := NewPicker(fixedRng(7))
 	s := p.Pick("sessFB", "read", emitv2.PhasePermissionWait, 0, nil)
 	if s == "" {
 		t.Error("expected fallback to generic, got empty")
 	}
 }
 
-func TestCopyPicker_UnknownToolFallsBackToGeneric(t *testing.T) {
-	p := NewCopyPicker(fixedRng(7))
+func TestPicker_UnknownToolFallsBackToGeneric(t *testing.T) {
+	p := NewPicker(fixedRng(7))
 	s := p.Pick("sessU", "DefinitelyNotARealTool", emitv2.PhasePlanning, 0, nil)
 	if s == "" {
 		t.Error("expected generic fallback for unknown tool")
 	}
 }
 
-func TestCopyPicker_Forget(t *testing.T) {
-	p := NewCopyPicker(fixedRng(7))
+func TestPicker_Forget(t *testing.T) {
+	p := NewPicker(fixedRng(7))
 	p.Pick("sessForget", "bash", emitv2.PhasePlanning, 0, nil)
 	p.Forget("sessForget")
 	if p.activeSessionCount() != 0 {

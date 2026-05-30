@@ -1,4 +1,4 @@
-// Package prompter is the recovery-aware glue between the channel
+// Package humanloop is the recovery-aware glue between the channel
 // (which talks to the user) and the engine (which is the thing waiting).
 //
 // Two responsibilities:
@@ -16,7 +16,7 @@
 // Prompter. The channel layer (translator + conn) wires Prompter into
 // the prompt.user / prompt.user_response flow. Tool code stays focused
 // on its work — recovery is fully transparent.
-package userprompt
+package humanloop
 
 import (
 	"context"
@@ -46,7 +46,7 @@ type Config struct {
 // New constructs a Prompter. Store is required.
 func New(cfg Config) *Prompter {
 	if cfg.Store == nil {
-		panic("prompter.New: Store required")
+		panic("humanloop.New: Store required")
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now

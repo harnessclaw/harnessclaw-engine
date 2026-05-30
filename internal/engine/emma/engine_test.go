@@ -56,8 +56,8 @@ func newTestEngineWithOpts(t *testing.T, opts ...Option) *Engine {
 	return New(&emmaMockProvider{}, reg, mgr, nil, permission.BypassChecker{}, logger, cfg, cmdReg, opts...)
 }
 
-func TestEngine_DefaultL1ConfigOverlay(t *testing.T) {
-	e := newTestEngineWithOpts(t, WithL1Config(L1Config{}))
+func TestEngine_DefaultEmmaConfigOverlay(t *testing.T) {
+	e := newTestEngineWithOpts(t, WithEmmaConfig(EmmaConfig{}))
 
 	cfg := e.Config()
 	if cfg.MainAgentProfile != prompt.EmmaProfile {
@@ -75,7 +75,7 @@ func TestEngine_DefaultL1ConfigOverlay(t *testing.T) {
 			hasScheduler = true
 		}
 		if n == "Agent" || n == "orchestrate" {
-			t.Errorf("L1 must not expose %q (L2-internal)", n)
+			t.Errorf("emma must not expose %q (L2-internal)", n)
 		}
 	}
 	if !hasScheduler {
@@ -86,8 +86,8 @@ func TestEngine_DefaultL1ConfigOverlay(t *testing.T) {
 	}
 }
 
-func TestEngine_AppliesExplicitL1Overlay(t *testing.T) {
-	e := newTestEngineWithOpts(t, WithL1Config(L1Config{
+func TestEngine_AppliesExplicitEmmaOverlay(t *testing.T) {
+	e := newTestEngineWithOpts(t, WithEmmaConfig(EmmaConfig{
 		Profile:      prompt.EmmaProfile,
 		DisplayName:  "emma",
 		AllowedTools: []string{"Agent", "orchestrate"},
@@ -114,7 +114,7 @@ func TestEngine_AppliesExplicitL1Overlay(t *testing.T) {
 
 func TestEngine_CustomProfile(t *testing.T) {
 	custom := &prompt.AgentProfile{Name: "custom-leader", Description: "test"}
-	e := newTestEngineWithOpts(t, WithL1Config(L1Config{
+	e := newTestEngineWithOpts(t, WithEmmaConfig(EmmaConfig{
 		Profile:     custom,
 		DisplayName: "Sara",
 	}))
@@ -131,13 +131,13 @@ func TestEngine_CustomProfile(t *testing.T) {
 	}
 }
 
-func TestEngine_DefaultL1ConfigConstants(t *testing.T) {
-	cfg := DefaultL1Config()
+func TestEngine_DefaultEmmaConfigConstants(t *testing.T) {
+	cfg := DefaultEmmaConfig()
 	if cfg.Profile != prompt.EmmaProfile {
-		t.Error("DefaultL1Config Profile mismatch")
+		t.Error("DefaultEmmaConfig Profile mismatch")
 	}
 	if cfg.DisplayName != "emma" {
-		t.Error("DefaultL1Config DisplayName mismatch")
+		t.Error("DefaultEmmaConfig DisplayName mismatch")
 	}
 	wantTools := map[string]bool{
 		"scheduler":         true,
@@ -149,25 +149,25 @@ func TestEngine_DefaultL1ConfigConstants(t *testing.T) {
 		"grep":              true,
 	}
 	if len(cfg.AllowedTools) != len(wantTools) {
-		t.Errorf("DefaultL1Config AllowedTools length = %d, want %d",
+		t.Errorf("DefaultEmmaConfig AllowedTools length = %d, want %d",
 			len(cfg.AllowedTools), len(wantTools))
 	}
 	for _, name := range cfg.AllowedTools {
 		if !wantTools[name] {
-			t.Errorf("unexpected tool in default L1 palette: %s", name)
+			t.Errorf("unexpected tool in default emma palette: %s", name)
 		}
 		delete(wantTools, name)
 	}
 	if len(wantTools) > 0 {
-		t.Errorf("default L1 palette missing tools: %v", wantTools)
+		t.Errorf("default emma palette missing tools: %v", wantTools)
 	}
 	for _, n := range cfg.AllowedTools {
 		if n == "Agent" || n == "orchestrate" {
-			t.Errorf("L1 palette must not expose %q (L2-internal)", n)
+			t.Errorf("emma palette must not expose %q (L2-internal)", n)
 		}
 	}
 	if cfg.MaxTurns != 10 {
-		t.Errorf("DefaultL1Config MaxTurns = %d", cfg.MaxTurns)
+		t.Errorf("DefaultEmmaConfig MaxTurns = %d", cfg.MaxTurns)
 	}
 }
 
@@ -180,7 +180,7 @@ func TestEngine_ImplementsEngineInterface(t *testing.T) {
 // TestEngine_PassthroughMethods exercises the trivial submit paths to
 // ensure compile-time wiring is correct.
 func TestEngine_PassthroughMethods(t *testing.T) {
-	e := newTestEngineWithOpts(t, WithL1Config(L1Config{}))
+	e := newTestEngineWithOpts(t, WithEmmaConfig(EmmaConfig{}))
 
 	_ = e.AbortSession(context.Background(), "no-such-session")
 	_ = e.SubmitToolResult(context.Background(), "no-such-session",

@@ -66,8 +66,8 @@ func (s *Spawner) runSubAgentDriver(
 	logger := lc.logger
 
 	// Strip dispatch tools for strict leaf agents (TierSubAgent). Agents with
-	// RunAsLLMAgent (e.g. plan-executor-agent) control their dispatch tools
-	// via AllowedTools — their pool is already correctly filtered upstream.
+	// RunAsLLMAgent control their dispatch tools via AllowedTools — their pool
+	// is already correctly filtered upstream.
 	pool := lc.pool
 	if lc.stripDispatchTools {
 		pool = pool.WithoutNames(dispatchToolNames)

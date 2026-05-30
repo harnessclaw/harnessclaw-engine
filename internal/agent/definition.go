@@ -123,7 +123,7 @@ type AgentDefinition struct {
 
 	// RunAsLLMAgent causes this agent to run through the subagent LLM driver
 	// even when Tier is TierCoordinator. Use for coordinator-tier agents that
-	// make direct LLM calls (e.g. plan-agent, plan-executor-agent) but should
+	// make direct LLM calls (e.g. plan_agent, plan_executor_agent) but should
 	// not be subject to the TierSubAgent restrictions (OutputSchema required,
 	// dispatch tools forbidden). Dispatch tool stripping is NOT applied when
 	// RunAsLLMAgent is set without TierSubAgent.
@@ -438,21 +438,7 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 		AllowedTools: []string{"freelance", "web_search", "tavily_search", "plan_update", "promote", "read", "edit", "write", "glob", "search_skill", "skill"},
 	})
 	r.MustRegister(&AgentDefinition{
-		Name:        "general-purpose",
-		DisplayName: "通用执行者",
-		Description: "通用 agent，处理不属于特定搭档领域的复杂多步骤任务",
-		AgentType:   tool.AgentTypeSync,
-		Profile:     "worker",
-	})
-	r.MustRegister(&AgentDefinition{
-		Name:        "Explore",
-		DisplayName: "探索者",
-		Description: "快速只读探索 agent，搜索代码库、定位文件",
-		AgentType:   tool.AgentTypeSync,
-		Profile:     "explore",
-	})
-	r.MustRegister(&AgentDefinition{
-		Name:        "Plan",
+		Name:        "plan",
 		DisplayName: "规划者",
 		Description: "方案设计 agent，需求分析、架构设计、方案对比",
 		AgentType:   tool.AgentTypeSync,
@@ -468,7 +454,7 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 		DisplayName:  "外援",
 		Description:  "通用执行体，能力由装载的 user skill 决定（来自本地 skills/ 目录）",
 		Tier:         TierSubAgent,
-		Profile:      "worker",
+		Profile:      "freelancer",
 		AgentType:    tool.AgentTypeSync,
 		IsTeamMember: false,
 		AllowedTools: []string{
@@ -531,10 +517,10 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 	})
 	// --- Plan Mode Agents -----------------------------------------------
 	r.MustRegister(&AgentDefinition{
-		Name:          "plan-agent",
+		Name:          "plan_agent",
 		DisplayName:   "规划员",
 		Description:   "分析 goal，生成任务分解写入 plan.json，不执行任务",
-		Profile:       "plan-agent",
+		Profile:       "plan_agent",
 		AgentType:     tool.AgentTypeSync,
 		RunAsLLMAgent: true,
 		AllowedTools: []string{
@@ -545,10 +531,10 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 		},
 	})
 	r.MustRegister(&AgentDefinition{
-		Name:          "plan-executor-agent",
+		Name:          "plan_executor_agent",
 		DisplayName:   "执行协调员",
 		Description:   "按 plan.json 任务清单调度 freelancer 执行，实时更新任务状态",
-		Profile:       "plan-executor-agent",
+		Profile:       "plan_executor_agent",
 		AgentType:     tool.AgentTypeSync,
 		RunAsLLMAgent: true,
 		AllowedTools: []string{

@@ -73,7 +73,7 @@ func TestSpawnSync_SimpleCompletion(t *testing.T) {
 	result, err := eng.SpawnSync(context.Background(), &agent.SpawnConfig{
 		Prompt:          "Say hello",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "general-purpose",
+		SubagentType:    "freelancer",
 		Description:     "test agent",
 		ParentSessionID: "parent_123",
 	})
@@ -123,7 +123,7 @@ func TestSpawnSync_WithToolUse(t *testing.T) {
 	result, err := eng.SpawnSync(context.Background(), &agent.SpawnConfig{
 		Prompt:          "Echo hello",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "Explore",
+		SubagentType:    "plan",
 		ParentSessionID: "parent_456",
 	})
 
@@ -239,12 +239,12 @@ func TestSpawnSync_ProfileResolution(t *testing.T) {
 		subagentType string
 		wantProfile  string
 	}{
-		{"Explore", "explore"},
 		{"explore", "explore"},
-		{"Plan", "plan"},
 		{"plan", "plan"},
-		{"general-purpose", "full"},
-		{"", "full"},
+		{"freelancer", "freelancer"},
+		{"plan_agent", "plan_agent"},
+		{"plan_executor_agent", "plan_executor_agent"},
+		{"", "worker"},
 	}
 
 	for _, tt := range tests {
@@ -332,10 +332,10 @@ func TestBuildSubAgentSystemPrompt_SchedulerKeepsStaticRole(t *testing.T) {
 	}
 }
 
-// TestBuildSubAgentSystemPrompt_GeneralPurposeDoesNotLeakEmma is a regression
+// TestBuildSubAgentSystemPrompt_FreelancerDoesNotLeakEmma is a regression
 // guard for the leak found 2026-05-02:
 //
-// general-purpose has IsTeamMember=false and uses WorkerProfile, which has
+// freelancer has IsTeamMember=false and uses WorkerProfile, which has
 // no SectionOverrides["role"]. Before the fix, the IsTeamMember gate
 // caused workerIdentity="" → role section fell back to IdentitySection
 // → the L3 received emma's L1 persona prompt verbatim ("你是 emma...").
@@ -343,7 +343,7 @@ func TestBuildSubAgentSystemPrompt_SchedulerKeepsStaticRole(t *testing.T) {
 // Fix: also fire BuildWorkerIdentity when the profile has no role
 // override, so the role slot always carries the sub-agent's own
 // identity rather than the leader's.
-func TestBuildSubAgentSystemPrompt_GeneralPurposeDoesNotLeakEmma(t *testing.T) {
+func TestBuildSubAgentSystemPrompt_FreelancerDoesNotLeakEmma(t *testing.T) {
 	prov := &subagentMockProvider{}
 	reg := agent.NewAgentDefinitionRegistry()
 	reg.RegisterBuiltins()
@@ -355,26 +355,26 @@ func TestBuildSubAgentSystemPrompt_GeneralPurposeDoesNotLeakEmma(t *testing.T) {
 		sess,
 		nil,
 		prompt.WorkerProfile,
-		"general-purpose",
+		"freelancer",
 		nil,
 		nil,
 		"",
 	)
 
-	// The general-purpose agent's role identity should mention "通用执行者"
-	// (its DisplayName), not emma's full persona. Either of these two
-	// signatures would prove emma's identity leaked through.
+	// The freelancer agent's role identity should mention its own
+	// DisplayName ("外援"), not emma's full persona. Either of these
+	// two signatures would prove emma's identity leaked through.
 	for _, leak := range []string{
 		"我是 emma",       // a phrase from texts.EmmaIdentity
 		"你叫 emma",
 	} {
 		if strings.Contains(got, leak) {
-			t.Errorf("general-purpose prompt leaked emma identity (%q)\nfull prompt:\n%s", leak, got)
+			t.Errorf("freelancer prompt leaked emma identity (%q)\nfull prompt:\n%s", leak, got)
 		}
 	}
 	// And it should carry SOMETHING that identifies it as the sub-agent.
-	if !strings.Contains(got, "通用执行者") && !strings.Contains(got, "general-purpose") {
-		t.Errorf("general-purpose prompt missing its own identity; got:\n%s", got)
+	if !strings.Contains(got, "外援") && !strings.Contains(got, "freelancer") {
+		t.Errorf("freelancer prompt missing its own identity; got:\n%s", got)
 	}
 }
 
@@ -607,7 +607,7 @@ func TestSpawnSync_ParentOutEvents(t *testing.T) {
 	result, err := eng.SpawnSync(context.Background(), &agent.SpawnConfig{
 		Prompt:          "test task",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "general-purpose",
+		SubagentType:    "freelancer",
 		Description:     "test subagent",
 		Name:            "tester",
 		ParentSessionID: "parent_out_test",
@@ -714,7 +714,7 @@ func TestSpawnSync_FiltersTextFromParentOut(t *testing.T) {
 	_, err := eng.SpawnSync(context.Background(), &agent.SpawnConfig{
 		Prompt:          "do something",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "general-purpose",
+		SubagentType:    "freelancer",
 		Description:     "leak test",
 		Name:            "leak-test",
 		ParentSessionID: "p_filter",
@@ -759,7 +759,7 @@ func TestSpawnSync_ForwardsToolEventsToParentOut(t *testing.T) {
 	_, err := eng.SpawnSync(context.Background(), &agent.SpawnConfig{
 		Prompt:          "use a tool",
 		AgentType:       tool.AgentTypeSync,
-		SubagentType:    "general-purpose",
+		SubagentType:    "freelancer",
 		Description:     "tool fwd test",
 		Name:            "tool-fwd",
 		ParentSessionID: "p_tool",

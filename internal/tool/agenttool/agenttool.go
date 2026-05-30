@@ -434,25 +434,17 @@ func deriveTaskID(ctx context.Context) string {
 }
 
 // resolveAgentType maps a subagent_type string to the tool.AgentType enum.
-func resolveAgentType(subagentType string) tool.AgentType {
-	switch subagentType {
-	case "Explore", "explore":
-		return tool.AgentTypeSync
-	case "Plan", "plan":
-		return tool.AgentTypeSync
-	case "general-purpose", "":
-		return tool.AgentTypeSync
-	default:
-		return tool.AgentTypeSync
-	}
+// All sub-agent kinds are sync today; the function is kept as the explicit
+// extension point if that ever stops being true.
+func resolveAgentType(_ string) tool.AgentType {
+	return tool.AgentTypeSync
 }
 
 const agentToolDescription = `创建一个任务并派给 sub-agent 自主执行。
 
-freelance 工具会启动一个专业 sub-agent（worker / explore / plan 或具体团队成员），sub-agent 跑自己的 query loop，带受限工具集。各类型能力：
+freelance 工具会启动一个专业 sub-agent（freelancer / Plan 或具体团队成员），sub-agent 跑自己的 query loop，带受限工具集。各类型能力：
 
-- general-purpose：除递归 Task 外的全部工具。适用于需要文件编辑、shell 命令、多步推理的任务。
-- Explore / researcher：只读型 sub-agent，用于代码库探索 / 资料调研。
+- freelancer：通用 worker，能力由装载的 skill 决定，能调用文件 / shell / web 等常规工具。适用于需要文件编辑、shell 命令、多步推理的任务。
 - Plan：只读型 sub-agent，用于方案设计、需求分析。
 - writer / analyst / developer / lifestyle / scheduler：各自领域的专业团队成员。
 

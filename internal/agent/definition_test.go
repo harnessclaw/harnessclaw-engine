@@ -83,14 +83,17 @@ func TestAgentDefinitionRegistry_RegisterBuiltins(t *testing.T) {
 	reg := NewAgentDefinitionRegistry()
 	reg.RegisterBuiltins()
 
-	if reg.Get("general-purpose") == nil {
-		t.Error("expected 'general-purpose' builtin")
+	if reg.Get("plan") == nil {
+		t.Error("expected 'plan' builtin")
 	}
-	if reg.Get("Explore") == nil {
-		t.Error("expected 'Explore' builtin")
+	if reg.Get("freelancer") == nil {
+		t.Error("expected 'freelancer' builtin")
 	}
-	if reg.Get("Plan") == nil {
-		t.Error("expected 'Plan' builtin")
+	if reg.Get("plan_agent") == nil {
+		t.Error("expected 'plan_agent' builtin")
+	}
+	if reg.Get("plan_executor_agent") == nil {
+		t.Error("expected 'plan_executor_agent' builtin")
 	}
 }
 

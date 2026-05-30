@@ -1,11 +1,11 @@
-// Package copy provides session-level localized copy strings for engine
+// Package toolphrase provides session-level localized phrases for engine
 // signals that need user-facing presentation (currently: tool card phase
 // hints and the M4 "next round thinking" hint on message cards).
 //
-// Design philosophy: copy lives in the engine (not the front-end) so
+// Design philosophy: phrasing lives in the engine (not the front-end) so
 // the wire carries resolved strings — front-end stays dumb and any
 // future localization plumbs through this package, not React.
-package copy
+package toolphrase
 
 // ToolCategory groups tools by user-perceived behaviour. Used to pick
 // category-appropriate copy templates (e.g. write-class tools get

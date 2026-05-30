@@ -60,12 +60,12 @@ func TestAgentTool_ValidateInput(t *testing.T) {
 		},
 		{
 			name:    "valid full input",
-			input:   `{"prompt":"find files","subagent_type":"Explore","description":"find test files","name":"explorer"}`,
+			input:   `{"prompt":"find files","subagent_type":"plan","description":"find test files","name":"explorer"}`,
 			wantErr: false,
 		},
 		{
 			name:    "missing prompt",
-			input:   `{"subagent_type":"Explore"}`,
+			input:   `{"subagent_type":"plan"}`,
 			wantErr: true,
 		},
 		{
@@ -112,7 +112,7 @@ func TestAgentTool_Execute_Success(t *testing.T) {
 	}
 	tool := New(spawner, zap.NewNop())
 
-	input := json.RawMessage(`{"prompt":"what is the meaning of life?","subagent_type":"general-purpose","description":"answer question"}`)
+	input := json.RawMessage(`{"prompt":"what is the meaning of life?","subagent_type":"freelancer","description":"answer question"}`)
 	result, err := tool.Execute(context.Background(), input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -139,7 +139,7 @@ func TestAgentTool_Execute_Success(t *testing.T) {
 	if cfg.Prompt != "what is the meaning of life?" {
 		t.Errorf("unexpected prompt: %q", cfg.Prompt)
 	}
-	if cfg.SubagentType != "general-purpose" {
+	if cfg.SubagentType != "freelancer" {
 		t.Errorf("unexpected subagent_type: %q", cfg.SubagentType)
 	}
 	if cfg.Description != "answer question" {
@@ -230,11 +230,10 @@ func TestResolveAgentType(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"Explore", "sync"},
 		{"explore", "sync"},
-		{"Plan", "sync"},
 		{"plan", "sync"},
-		{"general-purpose", "sync"},
+		{"plan", "sync"},
+		{"freelancer", "sync"},
 		{"", "sync"},
 	}
 	for _, tt := range tests {
