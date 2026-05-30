@@ -10,7 +10,7 @@ import (
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/engine/mention"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/engine/spawn2"
+	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/internal/storage/memory"
 	"harnessclaw-go/pkg/types"
 )
@@ -18,7 +18,7 @@ import (
 func TestTryRoute_NoMention_ReturnsNil(t *testing.T) {
 	reg := agent.NewAgentDefinitionRegistry()
 	reg.RegisterBuiltins()
-	r := mention.NewRouter(spawn2.NewSpawner(zap.NewNop()), reg, agent.NewMentionParser(reg))
+	r := mention.NewRouter(spawn.NewSpawner(zap.NewNop()), reg, agent.NewMentionParser(reg))
 
 	mgr := session.NewManager(memory.New(), zap.NewNop(), time.Hour)
 	sess, _ := mgr.GetOrCreate(context.Background(), "s1", "ws", "u")

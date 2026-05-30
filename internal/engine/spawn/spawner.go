@@ -1,4 +1,4 @@
-package spawn2
+package spawn
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 //
 // Modules register themselves under their SubagentType. Sync routes by
 // cfg.SubagentType; Async wraps Sync in a goroutine and returns a
-// Handle. spawn2.Spawner satisfies agent.AgentSpawner.
+// Handle. spawn.Spawner satisfies agent.AgentSpawner.
 type Spawner struct {
 	mu       sync.RWMutex
 	modules  map[string]Module
@@ -39,7 +39,7 @@ func NewSpawner(logger *zap.Logger) *Spawner {
 func (s *Spawner) Register(m Module) {
 	key := m.SubagentType()
 	if key == "" {
-		panic("spawn2: Module.SubagentType() returned empty string")
+		panic("spawn: Module.SubagentType() returned empty string")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

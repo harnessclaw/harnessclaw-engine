@@ -1,4 +1,4 @@
-package spawn2
+package spawn
 
 import (
 	"context"
@@ -48,7 +48,7 @@ func (h *handleImpl) Wait(ctx context.Context) (*agent.SpawnResult, error) {
 // unaffected).
 func (s *Spawner) Async(ctx context.Context, cfg *agent.SpawnConfig) (Handle, error) {
 	if cfg == nil {
-		return nil, errors.New("spawn2.Async: nil cfg")
+		return nil, errors.New("spawn.Async: nil cfg")
 	}
 	derived, cancel := context.WithCancel(ctx)
 
@@ -62,7 +62,7 @@ func (s *Spawner) Async(ctx context.Context, cfg *agent.SpawnConfig) (Handle, er
 		defer close(h.done)
 		defer func() {
 			if r := recover(); r != nil {
-				h.err = errors.New("spawn2.Async: panic in module run")
+				h.err = errors.New("spawn.Async: panic in module run")
 			}
 		}()
 		h.result, h.err = s.Sync(derived, cfg)

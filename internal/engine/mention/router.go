@@ -7,7 +7,7 @@ import (
 
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/engine/spawn2"
+	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -15,7 +15,7 @@ import (
 // the named agent is registered, spawns it directly (bypassing the
 // host engine's main loop).
 type Router struct {
-	spawner *spawn2.Spawner
+	spawner *spawn.Spawner
 	defReg  *agent.AgentDefinitionRegistry
 	parser  *agent.MentionParser
 	logger  *zap.Logger
@@ -23,7 +23,7 @@ type Router struct {
 
 // NewRouter constructs a Router. parser may be created from defReg via
 // agent.NewMentionParser; passed in to allow reuse / testing.
-func NewRouter(spawner *spawn2.Spawner, defReg *agent.AgentDefinitionRegistry, parser *agent.MentionParser) *Router {
+func NewRouter(spawner *spawn.Spawner, defReg *agent.AgentDefinitionRegistry, parser *agent.MentionParser) *Router {
 	return &Router{
 		spawner: spawner,
 		defReg:  defReg,

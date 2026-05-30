@@ -9,12 +9,12 @@
 // (requireNonEmptyPlan reads {workspace}/session/{sid}/plan.json) →
 // plan_executor_agent (dispatches freelancers via the freelance tool,
 // integrates results). Because plan_agent and plan_executor_agent are
-// already routed through spawn2 in Stages 4–5, those leaf dispatches
+// already routed through spawn in Stages 4–5, those leaf dispatches
 // still flow through the new module path even though the L2
 // orchestration of the two phases lives in the legacy package.
 //
 // Stage 8 will replace this wrapper with an in-module re-port that uses
-// the injected *spawn2.Spawner directly, dropping the msgbus →
+// the injected *spawn.Spawner directly, dropping the msgbus →
 // QueryEngineFactory → SpawnSync round-trip entirely.
 package plan
 

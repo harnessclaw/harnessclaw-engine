@@ -1,4 +1,4 @@
-package spawn2_test
+package spawn_test
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/engine/spawn2"
+	"harnessclaw-go/internal/engine/spawn"
 )
 
 type fakeModule struct {
@@ -25,7 +25,7 @@ func (f *fakeModule) Run(_ context.Context, _ *agent.SpawnConfig) (*agent.SpawnR
 }
 
 func TestRegister_AssignsKeyFromModule(t *testing.T) {
-	s := spawn2.NewSpawner(zap.NewNop())
+	s := spawn.NewSpawner(zap.NewNop())
 	mod := &fakeModule{subagentType: "fake"}
 	s.Register(mod)
 
@@ -42,7 +42,7 @@ func TestRegister_AssignsKeyFromModule(t *testing.T) {
 }
 
 func TestRegister_DuplicatePanics(t *testing.T) {
-	s := spawn2.NewSpawner(zap.NewNop())
+	s := spawn.NewSpawner(zap.NewNop())
 	s.Register(&fakeModule{subagentType: "x"})
 	defer func() {
 		if r := recover(); r == nil {
@@ -53,17 +53,17 @@ func TestRegister_DuplicatePanics(t *testing.T) {
 }
 
 func TestSync_UnknownTypeWithoutFallback_ReturnsError(t *testing.T) {
-	s := spawn2.NewSpawner(zap.NewNop())
+	s := spawn.NewSpawner(zap.NewNop())
 	_, err := s.Sync(context.Background(), &agent.SpawnConfig{
 		SubagentType: "nobody",
 	})
-	if !errors.Is(err, spawn2.ErrUnknownSubagentType) {
+	if !errors.Is(err, spawn.ErrUnknownSubagentType) {
 		t.Errorf("err = %v, want ErrUnknownSubagentType", err)
 	}
 }
 
 func TestSetFallback_UnknownTypeRoutesToFallback(t *testing.T) {
-	s := spawn2.NewSpawner(zap.NewNop())
+	s := spawn.NewSpawner(zap.NewNop())
 	fallback := &fakeModule{subagentType: "__fallback__",
 		out: &agent.SpawnResult{Output: "fb"}}
 	s.SetFallback(fallback)

@@ -5,7 +5,7 @@ import (
 
 	enginesched "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/engine/spawn2"
+	"harnessclaw-go/internal/engine/spawn"
 )
 
 // Deps is the dependency surface the scheduler (L2 dispatcher) module
@@ -19,7 +19,7 @@ import (
 // agent/scheduler would duplicate a substantial subsystem with no
 // migration benefit during Stage 7.
 //
-// This module therefore acts as a thin spawn2.Module adapter:
+// This module therefore acts as a thin spawn.Module adapter:
 //
 //  1. emit subagent.start through common.EmitSubagentStart
 //  2. translate cfg.CoordinatorMode → spec.TaskSpec.Hint.Kind
@@ -31,7 +31,7 @@ import (
 // The Spawner field is reserved for the future port of the in-module
 // plan strategy (DONE_WITH_CONCERNS #1 below): once we drop the legacy
 // msgbus/kernel pipeline, the plan strategy will dispatch plan_agent and
-// plan_executor_agent through this *spawn2.Spawner directly instead of
+// plan_executor_agent through this *spawn.Spawner directly instead of
 // round-tripping through msgbus → subagent.QueryEngineFactory →
 // emma.SpawnSync. Until then it sits unused; we still take it on Deps so
 // emma can wire it once and we never have to touch core.go again when
@@ -58,5 +58,5 @@ type Deps struct {
 
 	// Spawner is reserved for the in-module plan strategy port. See the
 	// package comment in deps.go. nil is acceptable today.
-	Spawner *spawn2.Spawner
+	Spawner *spawn.Spawner
 }

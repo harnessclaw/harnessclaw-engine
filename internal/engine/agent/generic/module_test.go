@@ -12,7 +12,7 @@ import (
 
 // TestModule_SubagentTypeKey pins the conventional fallback key used by
 // Spawner.SetFallback. Renaming or changing it is a breaking change for
-// the spawn2 → generic wiring done in Stage 4.3.
+// the spawn → generic wiring done in Stage 4.3.
 func TestModule_SubagentTypeKey(t *testing.T) {
 	m := generic.New(generic.Deps{
 		PromptBuilder: prompt.NewBuilder(prompt.NewRegistry(), zap.NewNop()),

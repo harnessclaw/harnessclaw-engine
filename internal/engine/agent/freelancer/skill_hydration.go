@@ -21,7 +21,7 @@ import (
 //
 // Moved from internal/engine/spawn/spawn.go (hydrateFreelancer) under
 // Stage 6 of the engine refactor; behavior is intentionally identical so
-// the spawn2-routed freelancer matches legacy spawn semantics.
+// the spawn-routed freelancer matches legacy spawn semantics.
 func hydrateSkills(reader *skill.Reader, candidates []string, taskPrompt string) (*tracker.SkillTracker, string, error) {
 	tr := tracker.NewSkillTracker(3)
 

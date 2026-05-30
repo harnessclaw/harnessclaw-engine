@@ -1,4 +1,4 @@
-// Package scheduler is the spawn2 Module for the L2 dispatcher tier.
+// Package scheduler is the spawn Module for the L2 dispatcher tier.
 // emma routes SubagentType=="scheduler" through this module; the module
 // delegates to one of two strategies (react, plan) chosen by
 // cfg.CoordinatorMode.
@@ -154,7 +154,7 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	// — parity with the legacy spawn path (spawn.go line 1021).
 	result.CoordinatorMode = mode
 	if runErr != nil {
-		// Surface the error as-is so the spawn2 façade can route it
+		// Surface the error as-is so the spawn façade can route it
 		// through the standard "module returned error" path. The
 		// subagent.end event has already been emitted above, so the
 		// parent has the terminal envelope before the error pops.

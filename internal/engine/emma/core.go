@@ -29,7 +29,7 @@ import (
 	enginesched "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
-	"harnessclaw-go/internal/engine/spawn2"
+	"harnessclaw-go/internal/engine/spawn"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
@@ -47,7 +47,7 @@ import (
 //   - emma.L1Engine      (thin proxy applying emma persona)
 //
 // Engine owns all dependencies as fields and dispatches sub-agent
-// spawns through spawner2 (internal/engine/spawn2), which routes by
+// spawns through spawner (internal/engine/spawn), which routes by
 // SubagentType to tier modules in internal/engine/agent/*.
 type Engine struct {
 	provider    provider.Provider
@@ -83,12 +83,12 @@ type Engine struct {
 	// load_skill tools (used by freelancer L3). nil disables them.
 	skillReader *skill.Reader
 
-	// spawner2 is the spawn primitive. After Stage 8, every sub-agent
+	// spawner is the spawn primitive. After Stage 8, every sub-agent
 	// spawn — sync and async — goes through this Spawner via the tier
 	// modules registered below (plan_agent, plan_executor_agent,
 	// explore, plan_design, freelancer, scheduler) plus the generic
 	// fallback for unknown SubagentTypes.
-	spawner2 *spawn2.Spawner
+	spawner *spawn.Spawner
 
 	// emitSeq dispenses per-trace sequence numbers for the emit envelope.
 	emitSeq *emit.Sequencer
@@ -257,12 +257,12 @@ func New(
 		e.statsRegistry = cfg.StatsRegistry
 	}
 
-	// spawner2 hosts the tier modules. Every SubagentType is dispatched
+	// spawner hosts the tier modules. Every SubagentType is dispatched
 	// here — migrated tiers via Register, unknown types via the generic
 	// fallback below. Deps (provider, registry, sessionMgr, compactor,
 	// retryer, promptBuilder, MaxTokens, ContextWindow) come straight
 	// off the engine.
-	e.spawner2 = spawn2.NewSpawner(logger)
+	e.spawner = spawn.NewSpawner(logger)
 	planAgentMod := plan_agent.New(plan_agent.Deps{
 		Provider:      prov,
 		Registry:      reg,
@@ -274,7 +274,7 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 	})
-	e.spawner2.Register(planAgentMod)
+	e.spawner.Register(planAgentMod)
 
 	// Stage 5 thin modules — same Deps shape as plan_agent.
 	plExecutorMod := plan_executor_agent.New(plan_executor_agent.Deps{
@@ -288,7 +288,7 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 	})
-	e.spawner2.Register(plExecutorMod)
+	e.spawner.Register(plExecutorMod)
 
 	exploreMod := explore.New(explore.Deps{
 		Provider:      prov,
@@ -301,7 +301,7 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 	})
-	e.spawner2.Register(exploreMod)
+	e.spawner.Register(exploreMod)
 
 	planDesignMod := plan_design.New(plan_design.Deps{
 		Provider:      prov,
@@ -314,7 +314,7 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 	})
-	e.spawner2.Register(planDesignMod)
+	e.spawner.Register(planDesignMod)
 
 	// Stage 6 freelancer — substantial L3 with skill hydration +
 	// SearchGapDetector + ContractEnforcer. Skill reader and def
@@ -335,13 +335,13 @@ func New(
 		MaxTokens:         cfg.MaxTokens,
 		ContextWindow:     cfg.ContextWindow,
 	})
-	e.spawner2.Register(freelancerMod)
+	e.spawner.Register(freelancerMod)
 
 	// Generic is the fallback for SubagentTypes not handled by a
 	// dedicated tier module above. It preserves the legacy "any
 	// TierSubAgent spins up with declared AllowedTools" behavior so
 	// arbitrary agent definitions (e.g. researcher-test) keep working
-	// after the spawn → spawner2 migration.
+	// after the spawn → spawner migration.
 	genericMod := generic.New(generic.Deps{
 		Provider:      prov,
 		Registry:      reg,
@@ -353,7 +353,7 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 	})
-	e.spawner2.SetFallback(genericMod)
+	e.spawner.SetFallback(genericMod)
 
 	e.schedulerCoord = enginesched.NewCoordinator(enginesched.CoordinatorConfig{
 		Spawner:  e,
@@ -373,9 +373,9 @@ func New(
 		SessionMgr:    mgr,
 		WorkspaceRoot: workspace.DefaultRootDir(),
 		Logger:        logger,
-		Spawner:       e.spawner2,
+		Spawner:       e.spawner,
 	})
-	e.spawner2.Register(schedulerMod)
+	e.spawner.Register(schedulerMod)
 
 	for _, opt := range opts {
 		opt(e)

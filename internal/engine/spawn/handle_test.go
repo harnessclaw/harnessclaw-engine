@@ -1,4 +1,4 @@
-package spawn2_test
+package spawn_test
 
 import (
 	"context"
@@ -9,11 +9,11 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/engine/spawn2"
+	"harnessclaw-go/internal/engine/spawn"
 )
 
 func TestAsync_HandleWaitReturnsResult(t *testing.T) {
-	s := spawn2.NewSpawner(zap.NewNop())
+	s := spawn.NewSpawner(zap.NewNop())
 	s.Register(&fakeModule{
 		subagentType: "fast",
 		out:          &agent.SpawnResult{Output: "done"},
@@ -51,7 +51,7 @@ func (m *slowModule) Run(ctx context.Context, _ *agent.SpawnConfig) (*agent.Spaw
 }
 
 func TestAsync_HandleCancelInterruptsRun(t *testing.T) {
-	s := spawn2.NewSpawner(zap.NewNop())
+	s := spawn.NewSpawner(zap.NewNop())
 	mod := &slowModule{subagentType: "slow", finished: make(chan struct{})}
 	s.Register(mod)
 
