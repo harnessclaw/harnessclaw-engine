@@ -209,9 +209,35 @@ func (e *Engine) BuildLoadedSkillsBlock(fulls []*skill.SkillFull) string {
 
 // --- agent.AgentSpawner facade. spawn does the real work.
 
-// SpawnSync implements agent.AgentSpawner. Delegates to spawn.Spawner.
+// SpawnSync implements agent.AgentSpawner. Routes to spawn2 for tier
+// modules that have been migrated; falls through to legacy spawn for
+// everything else.
+//
+// Migrated SubagentTypes per stage:
+//
+//	Stage 4: plan_agent
+//	Stage 5: plan_executor_agent, explore, plan, plan_design
+//	Stage 6: freelancer
+//	Stage 7: scheduler
 func (e *Engine) SpawnSync(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnResult, error) {
+	if e.spawner2 != nil && useNewSpawn(cfg.SubagentType) {
+		return e.spawner2.Sync(ctx, cfg)
+	}
 	return e.spawner.SpawnSync(ctx, cfg)
+}
+
+// useNewSpawn returns true when SubagentType has been migrated to
+// spawn2. Updated as stages 4-7 complete.
+func useNewSpawn(subagentType string) bool {
+	switch subagentType {
+	case "plan_agent":
+		return true
+	// Stage 5 will add: plan_executor_agent, explore, plan, plan_design
+	// Stage 6 will add: freelancer
+	// Stage 7 will add: scheduler
+	default:
+		return false
+	}
 }
 
 // SpawnAsync implements agent.AsyncSpawner. Delegates to spawn.Spawner.

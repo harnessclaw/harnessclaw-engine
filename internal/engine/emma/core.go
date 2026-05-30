@@ -16,6 +16,8 @@ import (
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/emit"
+	"harnessclaw-go/internal/engine/agent/generic"
+	"harnessclaw-go/internal/engine/agent/plan_agent"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/sections"
@@ -23,6 +25,7 @@ import (
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/engine/spawn"
+	"harnessclaw-go/internal/engine/spawn2"
 	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
@@ -79,6 +82,12 @@ type Engine struct {
 	// spawner owns the sub-agent lifecycle: taskRegistry,
 	// searchGapDetector, and the 14-step SpawnSync pipeline.
 	spawner *spawn.Spawner
+
+	// spawner2 is the new spawn shape; in the transition window, emma
+	// routes certain SubagentTypes (e.g. plan_agent) to spawner2 and
+	// falls through to legacy spawner for everything else. See routing
+	// logic in spawner.go (useNewSpawn).
+	spawner2 *spawn2.Spawner
 
 	// emitSeq dispenses per-trace sequence numbers for the emit envelope.
 	emitSeq *emit.Sequencer
@@ -250,6 +259,43 @@ func New(
 	// Spawner depends on Engine via spawn.Deps. Constructed after the
 	// optional deps land so spawn sees the fully wired state.
 	e.spawner = spawn.NewSpawner(e)
+
+	// spawner2 hosts the new-shape tier modules. During the staged
+	// migration (Stages 4–7), emma routes migrated SubagentTypes here
+	// via useNewSpawn(); everything else falls through to the legacy
+	// spawner above. Deps (provider, registry, sessionMgr, compactor,
+	// retryer, promptBuilder, MaxTokens, ContextWindow) come straight
+	// off the engine — same source the legacy spawner reads via
+	// spawn.Deps methods, ensuring parity.
+	e.spawner2 = spawn2.NewSpawner(logger)
+	planAgentMod := plan_agent.New(plan_agent.Deps{
+		Provider:      prov,
+		Registry:      reg,
+		SessionMgr:    mgr,
+		Compactor:     comp,
+		Retryer:       e.retryer,
+		PromptBuilder: promptBuilder,
+		Logger:        logger,
+		MaxTokens:     cfg.MaxTokens,
+		ContextWindow: cfg.ContextWindow,
+	})
+	e.spawner2.Register(planAgentMod)
+	// Generic is the fallback so unknown SubagentTypes (during the
+	// transition) still spawn rather than returning ErrUnknownSubagentType.
+	// Once all tiers are migrated we can drop the fallback and let
+	// unknown types fail loudly.
+	genericMod := generic.New(generic.Deps{
+		Provider:      prov,
+		Registry:      reg,
+		SessionMgr:    mgr,
+		Compactor:     comp,
+		Retryer:       e.retryer,
+		PromptBuilder: promptBuilder,
+		Logger:        logger,
+		MaxTokens:     cfg.MaxTokens,
+		ContextWindow: cfg.ContextWindow,
+	})
+	e.spawner2.SetFallback(genericMod)
 
 	e.schedulerCoord = enginesched.NewCoordinator(enginesched.CoordinatorConfig{
 		Spawner:  e,
