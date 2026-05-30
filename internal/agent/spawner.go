@@ -70,6 +70,16 @@ type SpawnConfig struct {
 	// and context inheritance in fork mode.
 	ParentSessionID string
 
+	// ParentAgentID is the agent_id of the direct parent that initiated
+	// this spawn. Used by sub-agent modules to populate the wire envelope's
+	// ParentAgentID field (see subagent.start event schema). "main" when
+	// emma is the parent; otherwise the parent's agent_id (e.g., scheduler
+	// passes its own ID when dispatching plan_agent in plan-mode).
+	//
+	// Empty allowed during legacy code paths; new modules treat empty as
+	// "no explicit parent" and emit a warn log.
+	ParentAgentID string
+
 	// RootSessionID is the top-level user-facing session id (emma's main
 	// session). Sub-agents propagate this through their own spawns so the
 	// root session's metrics tracker sees every descendant's token spend
