@@ -1,9 +1,3 @@
-// Package spawn2 is the new spawn shape, scheduled to replace
-// internal/engine/spawn in Stage 8 of the tier-decoupling refactor.
-//
-// It exposes Module (the interface tier modules implement), Spawner
-// (the registry + sync/async wrapper), and Handle (the async result
-// carrier). spawn2 has zero tier knowledge.
 package spawn2
 
 import (
