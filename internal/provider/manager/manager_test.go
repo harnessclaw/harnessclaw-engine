@@ -914,15 +914,23 @@ func TestUpdateEndpoint_GroupRoundTrip(t *testing.T) {
 	if err := m.UpdateEndpoint("alpha", "claude-46", EndpointPatch{Group: &grp}); err != nil {
 		t.Fatalf("set group: %v", err)
 	}
+	found := false
 	for _, p := range m.ProvidersSnapshot() {
 		if p.Name != "alpha" {
 			continue
 		}
 		for _, e := range p.Endpoints {
-			if e.Name == "claude-46" && e.Group != "Claude-4" {
+			if e.Name != "claude-46" {
+				continue
+			}
+			found = true
+			if e.Group != "Claude-4" {
 				t.Fatalf("after set: group = %q, want Claude-4", e.Group)
 			}
 		}
+	}
+	if !found {
+		t.Fatal("after set: alpha:claude-46 not found in snapshot")
 	}
 
 	// Clear group via explicit empty string
@@ -930,15 +938,23 @@ func TestUpdateEndpoint_GroupRoundTrip(t *testing.T) {
 	if err := m.UpdateEndpoint("alpha", "claude-46", EndpointPatch{Group: &empty}); err != nil {
 		t.Fatalf("clear group: %v", err)
 	}
+	found = false
 	for _, p := range m.ProvidersSnapshot() {
 		if p.Name != "alpha" {
 			continue
 		}
 		for _, e := range p.Endpoints {
-			if e.Name == "claude-46" && e.Group != "" {
+			if e.Name != "claude-46" {
+				continue
+			}
+			found = true
+			if e.Group != "" {
 				t.Fatalf("after clear: group = %q, want \"\"", e.Group)
 			}
 		}
+	}
+	if !found {
+		t.Fatal("after clear: alpha:claude-46 not found in snapshot")
 	}
 }
 
