@@ -33,9 +33,9 @@ import (
 // msgbus/kernel pipeline, the plan strategy will dispatch plan_agent and
 // plan_executor_agent through this *spawn.Spawner directly instead of
 // round-tripping through msgbus → subagent.QueryEngineFactory →
-// emma.SpawnSync. Until then it sits unused; we still take it on Deps so
-// emma can wire it once and we never have to touch core.go again when
-// Stage 8 cleanup flips the implementation.
+// spawn.Spawner.SpawnSync. Until then it sits unused; we still take it
+// on Deps so emma can wire it once and we never have to touch core.go
+// again when Stage 8 cleanup flips the implementation.
 type Deps struct {
 	// Coord is the legacy L2 scheduler Coordinator that owns the
 	// msgbus / tstate / kernel pipeline implementing react + plan.

@@ -428,7 +428,7 @@ func main() {
 	// the L2 scheduler, which declares "task" in its AgentDefinition.AllowedTools
 	// and bypasses the AgentType blacklist (see internal/engine/subagent.go
 	// filter logic).
-	if err := registry.Register(agenttool.New(eng, logger)); err != nil {
+	if err := registry.Register(agenttool.New(eng.Spawner(), logger)); err != nil {
 		logger.Fatal("failed to register task tool", zap.Error(err))
 	}
 	logger.Info("task tool registered")
@@ -436,7 +436,7 @@ func main() {
 	// Register scheduler tool — the L1→L2 dispatch entry point. emma sees
 	// this tool as her single delegation channel; the scheduler itself spawns
 	// L3 sub-agents internally via the task tool above.
-	if err := registry.Register(scheduler.New(eng, logger)); err != nil {
+	if err := registry.Register(scheduler.New(eng.Spawner(), logger)); err != nil {
 		logger.Fatal("failed to register scheduler tool", zap.Error(err))
 	}
 	logger.Info("scheduler tool registered")
@@ -522,7 +522,7 @@ func main() {
 	// definitions; it is queried per Execute() call so newly-registered
 	// definitions are picked up automatically.
 	orchestrateRoster := &agentDefRoster{reg: agentDefReg}
-	if err := registry.Register(orchestratetool.New(eng, orchestrateRoster, logger)); err != nil {
+	if err := registry.Register(orchestratetool.New(eng.Spawner(), orchestrateRoster, logger)); err != nil {
 		logger.Fatal("failed to register orchestrate tool", zap.Error(err))
 	}
 	logger.Info("orchestrate tool registered")

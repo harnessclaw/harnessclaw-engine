@@ -356,7 +356,7 @@ func New(
 	e.spawner.SetFallback(genericMod)
 
 	e.schedulerCoord = enginesched.NewCoordinator(enginesched.CoordinatorConfig{
-		Spawner:  e,
+		Spawner:  e.spawner,
 		Logger:   slog.Default(),
 		Provider: e.provider,
 		RootDir:  workspace.DefaultRootDir(),
