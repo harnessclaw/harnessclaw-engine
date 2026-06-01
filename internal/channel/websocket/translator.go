@@ -603,8 +603,18 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 				})
 			}
 		}
+		// Name drives the CardAgent hint.title template "{name}". When the
+		// caller leaves AgentName empty (the scheduler tool deliberately
+		// does this to avoid duplicating SubagentType in two places — see
+		// internal/tool/scheduler/scheduler.go:171), fall back to
+		// SubagentType so the card surfaces "scheduler"/"freelancer"
+		// instead of the literal "{name}" placeholder leaking to the UI.
+		agentName := ev.AgentName
+		if agentName == "" {
+			agentName = ev.SubagentType
+		}
 		child.Card(emitv2.CardAgent, agentCardID).Add(emitv2.AgentPayload{
-			Name:          ev.AgentName,
+			Name:          agentName,
 			AgentType:     ev.AgentType,
 			SubagentType:  ev.SubagentType,
 			ParentAgentID: ev.ParentAgentID,
