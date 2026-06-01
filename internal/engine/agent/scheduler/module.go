@@ -94,6 +94,11 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 
 	ctx = common.WithSubAgentStats(ctx, sess.ID, sess.ID,
 		cfg.ParentSessionID, cfg.RootSessionID)
+	// Stamp this L2 agent's id on ctx so the QueryEngineFactory can
+	// fill SpawnConfig.ParentAgentID for every L3 it dispatches — the
+	// translator then parents the L3 card under this L2's card instead
+	// of the grandparent emma's scheduler tool call.
+	ctx = agent.WithParentAgentID(ctx, sess.ID)
 
 	// Reset session id on the spec to the PARENT session id rather than
 	// the sub-session we just built — the legacy Coordinator anchors all

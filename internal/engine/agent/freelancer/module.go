@@ -84,6 +84,11 @@ type Deps struct {
 	// Zero means "no executor-level cap" — the tool's own internal
 	// timeout (e.g. bash's defaultTimeout) still applies.
 	ToolTimeout time.Duration
+
+	// RootDir is the workspace root (e.g. ~/.harnessclaw/workspace).
+	// Combined with cfg.RootSessionID it yields the SessionRoot that
+	// meta_write / submit_task_result read from ctx.
+	RootDir string
 }
 
 // Module is the freelancer tier runtime.
@@ -236,6 +241,7 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		AgentID:        sess.ID,
 		PermChecker:    permChecker,
 		ApprovalFn:     nil, // sub-agents have no approval UI
+		AgentScope:     common.BuildAgentScope(cfg, m.deps.RootDir, "freelancer"),
 		OnTurnComplete: common.ContractEnforcer(cfg.ExpectedOutputs, contractRetries),
 	})
 

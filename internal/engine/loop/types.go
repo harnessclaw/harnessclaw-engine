@@ -51,6 +51,14 @@ type Config struct {
 	// have no UI to surface approval prompts to.
 	ApprovalFn toolexec.PermissionApprovalFunc
 
+	// AgentScope is the per-spawn filesystem + identity scope reachable
+	// from tool Execute via tool.AgentScopeFromCtx. Tools that resolve
+	// workspace-relative paths (meta_write, submit_task_result) require
+	// SessionRoot here; tier modules fill it from cfg.RootSessionID +
+	// cfg.TaskID + subagent_type before calling loop.Run. Empty is
+	// tolerated (legacy "no scope" behavior).
+	AgentScope tool.AgentScope
+
 	// OnTurnComplete is invoked at the end of each turn (after assistant
 	// message and tool results are produced). It returns a Decision
 	// telling the loop whether to stop or to inject extra messages

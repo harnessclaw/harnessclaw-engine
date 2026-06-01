@@ -144,6 +144,12 @@ type EmmaConfig struct {
 }
 
 // DefaultEmmaConfig returns the canonical emma configuration.
+//
+// emma is the persona/dispatch surface; file inspection (read/glob/grep)
+// is intentionally NOT in the palette so emma cannot "take over" a task
+// halfway and burn the small-loop turn budget on local file checks. If
+// inspection is needed, emma dispatches scheduler — scheduler/L3 own
+// every filesystem read and report findings back.
 func DefaultEmmaConfig() EmmaConfig {
 	return EmmaConfig{
 		Profile:     prompt.EmmaProfile,
@@ -153,11 +159,8 @@ func DefaultEmmaConfig() EmmaConfig {
 			"web_search",
 			"tavily_search",
 			"ask_user_question",
-			"read",
-			"glob",
-			"grep",
 		},
-		MaxTurns: 10,
+		MaxTurns: 15,
 	}
 }
 
@@ -177,13 +180,10 @@ func WithEmmaConfig(cfg EmmaConfig) Option {
 			"web_search",
 			"tavily_search",
 			"ask_user_question",
-			"read",
-			"glob",
-			"grep",
 		}
 	}
 	if cfg.MaxTurns <= 0 {
-		cfg.MaxTurns = 10
+		cfg.MaxTurns = 15
 	}
 	return func(e *Engine) {
 		e.config.MainAgentProfile = cfg.Profile
@@ -274,6 +274,7 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 		ToolTimeout:   cfg.ToolTimeout,
+		RootDir:       workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(planAgentMod)
 
@@ -289,6 +290,7 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 		ToolTimeout:   cfg.ToolTimeout,
+		RootDir:       workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(plExecutorMod)
 
@@ -303,6 +305,7 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 		ToolTimeout:   cfg.ToolTimeout,
+		RootDir:       workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(exploreMod)
 
@@ -317,6 +320,7 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 		ToolTimeout:   cfg.ToolTimeout,
+		RootDir:       workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(planDesignMod)
 
@@ -339,6 +343,7 @@ func New(
 		MaxTokens:         8192,
 		ContextWindow:     cfg.ContextWindow,
 		ToolTimeout:       cfg.ToolTimeout,
+		RootDir:           workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(freelancerMod)
 
@@ -358,6 +363,7 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 		ToolTimeout:   cfg.ToolTimeout,
+		RootDir:       workspace.DefaultRootDir(),
 	})
 	e.spawner.SetFallback(genericMod)
 

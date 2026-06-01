@@ -81,8 +81,8 @@ func TestEngine_DefaultEmmaConfigOverlay(t *testing.T) {
 	if !hasScheduler {
 		t.Errorf("default AllowedTools missing scheduler: %v", cfg.MainAgentAllowedTools)
 	}
-	if cfg.MainAgentMaxTurns != 10 {
-		t.Errorf("default MaxTurns = %d, want 10", cfg.MainAgentMaxTurns)
+	if cfg.MainAgentMaxTurns != 15 {
+		t.Errorf("default MaxTurns = %d, want 15", cfg.MainAgentMaxTurns)
 	}
 }
 
@@ -139,14 +139,14 @@ func TestEngine_DefaultEmmaConfigConstants(t *testing.T) {
 	if cfg.DisplayName != "emma" {
 		t.Error("DefaultEmmaConfig DisplayName mismatch")
 	}
+	// emma's palette is persona/dispatch only. File inspection
+	// (read/glob/grep) is deliberately absent so emma cannot take over
+	// a task halfway and burn small-loop turns on local checks.
 	wantTools := map[string]bool{
 		"scheduler":         true,
 		"web_search":        true,
 		"tavily_search":     true,
 		"ask_user_question": true,
-		"read":              true,
-		"glob":              true,
-		"grep":              true,
 	}
 	if len(cfg.AllowedTools) != len(wantTools) {
 		t.Errorf("DefaultEmmaConfig AllowedTools length = %d, want %d",
@@ -166,7 +166,7 @@ func TestEngine_DefaultEmmaConfigConstants(t *testing.T) {
 			t.Errorf("emma palette must not expose %q (L2-internal)", n)
 		}
 	}
-	if cfg.MaxTurns != 10 {
+	if cfg.MaxTurns != 15 {
 		t.Errorf("DefaultEmmaConfig MaxTurns = %d", cfg.MaxTurns)
 	}
 }

@@ -83,7 +83,19 @@ func (f *QueryEngineFactory) Build(taskID types.TaskID, sessionID string, sp spe
 		sessionRoot: workspace.SessionRoot(f.rootDir, sessionID),
 	}
 
-	cfg := specToSpawnConfig(sp, f.rootSessionID)
+	// rootSessionID priority: factory-bound (set by Coordinator if
+	// known at startup) → TaskSpec.SessionID (set by strategies that
+	// know the user-facing session). The Coordinator currently
+	// constructs the factory with "" (one Coordinator serves all
+	// sessions), so sp.SessionID is the real source. Without this
+	// fallback every L3 SpawnConfig.RootSessionID is empty,
+	// AgentScope.SessionRoot is empty, and meta_write /
+	// submit_task_result / plan_read fail with "SessionRoot missing".
+	rootSID := f.rootSessionID
+	if rootSID == "" {
+		rootSID = sp.SessionID
+	}
+	cfg := specToSpawnConfig(sp, rootSID)
 	cfg.TaskID = string(taskID)
 	// Use agent resolver to fill SubagentType if not already set.
 	if cfg.SubagentType == "" && f.agentResolver != nil {
@@ -97,7 +109,17 @@ func (f *QueryEngineFactory) Build(taskID types.TaskID, sessionID string, sp spe
 
 	spawner := f.spawner
 	spawnFn := SpawnFn(func(ctx context.Context) (*agent.SpawnResult, error) {
-		return spawner.SpawnSync(ctx, cfg)
+		// Stamp ParentAgentID from ctx if the L2 caller set it via
+		// agent.WithParentAgentID. Without this the translator's
+		// parentForSubAgent falls back to the grandparent's tool card
+		// and L3 cards end up siblings of L2 in the UI rather than
+		// nested. Copy the cfg first so concurrent task dispatches
+		// don't race on the shared struct.
+		spawnCfg := *cfg
+		if spawnCfg.ParentAgentID == "" {
+			spawnCfg.ParentAgentID = agent.ParentAgentIDFromCtx(ctx)
+		}
+		return spawner.SpawnSync(ctx, &spawnCfg)
 	})
 
 	return LeafContext{
