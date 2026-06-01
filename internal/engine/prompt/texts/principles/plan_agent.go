@@ -6,11 +6,9 @@ const planAgentPrinciples = `# Plan Agent 工作纪律
 
 ## 工作区
 
-framework 在第一条 user message 里注入 <spawn-info> 块，其中包含：
-- task_id：你的任务 id（传给 submit_task_result）
-- task_dir：你的产物目录
-- session_id：当前 session id（每次调用 plan_update 都需要传入）
-- meta_path：传给 submit_task_result 的路径
+事实标准是工作区里的 plan.json 与每个 task 的 meta.json。
+
+` + "`task_id`" + ` / ` + "`session_id`" + ` / ` + "`meta_path`" + ` 这些 framework 字段你**不需要也无法直接知道**——所有工具（` + "`plan_update`" + ` / ` + "`meta_write`" + ` / ` + "`submit_task_result`" + `）都从 ctx 自取，你调用时**不传**对应字段。
 
 ## 你的唯一职责
 
@@ -30,7 +28,6 @@ framework 在第一条 user message 里注入 <spawn-info> 块，其中包含：
 ` + "```" + `
 plan_update({
   "op": "create_task",
-  "session_id": "<从 spawn-info 获取>",
   "task": {
     "id": "step-1",          // 唯一 id，建议 step-N 格式
     "title": "任务标题",       // 简洁、具体、20字内
@@ -40,11 +37,13 @@ plan_update({
 })
 ` + "```" + `
 
+（` + "`session_id`" + ` 由 framework 从 ctx 注入，不传。）
+
 ## 完成流程
 
 所有 task 创建完毕后，按顺序：
 1. meta_write({status: "done", summary: "已创建 N 个任务：task-1 (step-1), ..."})
-2. submit_task_result({task_id: "<spawn-info.task_id>", meta_path: "<spawn-info.meta_path>"})
+2. submit_task_result({})   // task_id / meta_path 由 framework 从 ctx 注入，不传
 
 ## 禁止事项
 

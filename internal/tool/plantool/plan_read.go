@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/workspace"
@@ -30,15 +31,14 @@ func (*PlanReadTool) IsEnabled() bool               { return true }
 func (*PlanReadTool) IsConcurrencySafe() bool       { return true }
 
 func (*PlanReadTool) InputSchema() map[string]any {
+	// session_id is intentionally NOT required: the framework injects
+	// it via ctx.AgentScope.SessionRoot, and the tool derives the id
+	// from that. LLM-supplied values are accepted as an override but
+	// callers should leave it empty — framework-known fields shouldn't
+	// be in LLM input.
 	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"session_id": map[string]any{
-				"type":        "string",
-				"description": "当前 session id（从 spawn-info 获取）",
-			},
-		},
-		"required": []string{"session_id"},
+		"type":       "object",
+		"properties": map[string]any{},
 	}
 }
 
@@ -62,11 +62,21 @@ type planReadOutput struct {
 
 func (t *PlanReadTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
 	var in planReadInput
-	if err := json.Unmarshal(raw, &in); err != nil {
-		return errResultRead("invalid input: " + err.Error()), nil
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &in); err != nil {
+			return errResultRead("invalid input: " + err.Error()), nil
+		}
+	}
+	// Fall back to ctx-injected SessionRoot. session_id is the last
+	// path component of {rootDir}/session/{sessionID}. LLM-supplied
+	// value takes precedence so legacy callers still work.
+	if in.SessionID == "" {
+		if scope, ok := tool.AgentScopeFromCtx(ctx); ok && scope.SessionRoot != "" {
+			in.SessionID = filepath.Base(scope.SessionRoot)
+		}
 	}
 	if in.SessionID == "" {
-		return errResultRead("session_id is required"), nil
+		return errResultRead("session_id missing: framework did not inject SessionRoot via ctx — engine configuration error"), nil
 	}
 
 	planPath := workspace.PlanPath(t.rootDir, in.SessionID)

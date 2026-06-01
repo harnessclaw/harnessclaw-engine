@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"harnessclaw-go/internal/tool"
@@ -45,7 +46,7 @@ func (*PlanUpdateTool) InputSchema() map[string]any {
 			},
 			"session_id": map[string]any{
 				"type":        "string",
-				"description": "根 session id（emma 的 session）。所有 mutation 必须显式带这个字段以防 LLM 跨 session 串改。",
+				"description": "可选：框架从 ctx 注入；通常不传。仅在需要跨 session 操作时显式覆盖。",
 			},
 			"task": map[string]any{
 				"type": "object",
@@ -72,7 +73,8 @@ func (*PlanUpdateTool) InputSchema() map[string]any {
 				"description": "可选；当 status=done 时**必须**指向有效 meta.json。相对 sessionRoot。",
 			},
 		},
-		"required": []string{"op", "session_id"},
+		// session_id is intentionally NOT required — see field description.
+		"required": []string{"op"},
 	}
 }
 
@@ -98,8 +100,16 @@ func (t *PlanUpdateTool) Execute(ctx context.Context, raw json.RawMessage) (*typ
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult("invalid input: " + err.Error()), nil
 	}
+	// Fall back to ctx-injected SessionRoot. LLM-supplied value (when
+	// present) takes precedence so legacy callers and cross-session
+	// overrides still work.
 	if in.SessionID == "" {
-		return errResult("session_id is required"), nil
+		if scope, ok := tool.AgentScopeFromCtx(ctx); ok && scope.SessionRoot != "" {
+			in.SessionID = filepath.Base(scope.SessionRoot)
+		}
+	}
+	if in.SessionID == "" {
+		return errResult("session_id missing: framework did not inject SessionRoot via ctx — engine configuration error"), nil
 	}
 	w := t.registry.Get(in.SessionID)
 

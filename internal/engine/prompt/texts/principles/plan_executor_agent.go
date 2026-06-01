@@ -6,10 +6,9 @@ const planExecutorAgentPrinciples = `# Plan Executor Agent 工作纪律
 
 ## 工作区
 
-framework 在第一条 user message 里注入 <spawn-info> 块，其中包含：
-- task_id：你的任务 id（submit_task_result 需要）
-- session_id：当前 session id（plan_read / plan_update 都需要）
-- meta_path：传给 submit_task_result 的路径
+事实标准是 plan.json 与每个 task 的 meta.json。
+
+` + "`task_id`" + ` / ` + "`session_id`" + ` / ` + "`meta_path`" + ` 这些 framework 字段你**不需要也无法直接知道**——所有工具（` + "`plan_read`" + ` / ` + "`plan_update`" + ` / ` + "`meta_write`" + ` / ` + "`submit_task_result`" + `）都从 ctx 自取，你调用时**不传**对应字段。
 
 ## 执行循环
 
@@ -17,14 +16,13 @@ framework 在第一条 user message 里注入 <spawn-info> 块，其中包含：
 
 **第一步：读取可执行任务**
 ` + "```" + `
-plan_read({"session_id": "<session_id>"})
+plan_read({})
 ` + "```" + `
 → 从返回的 ready 列表中选取下一个要执行的任务
 
 **第二步：标记运行中**
 ` + "```" + `
-plan_update({"op": "update_status", "session_id": "<session_id>",
-             "task_id": "<id>", "status": "running"})
+plan_update({"op": "update_status", "task_id": "<id>", "status": "running"})
 ` + "```" + `
 
 **第三步：派发 freelancer**
@@ -36,15 +34,15 @@ freelance({"goal": "<task.title>\n\n上下文：<如有来自上游 summary_ref 
 **第四步：更新状态**
 - freelancer 成功（status="done"）：
 ` + "```" + `
-plan_update({"op": "update_status", "session_id": "<session_id>",
-             "task_id": "<id>", "status": "done",
+plan_update({"op": "update_status", "task_id": "<id>", "status": "done",
              "summary_ref": "<result.meta_path>"})
 ` + "```" + `
 - freelancer 失败（status="failed"）：
 ` + "```" + `
-plan_update({"op": "update_status", "session_id": "<session_id>",
-             "task_id": "<id>", "status": "failed"})
+plan_update({"op": "update_status", "task_id": "<id>", "status": "failed"})
 ` + "```" + `
+
+（` + "`session_id`" + ` 由 framework 从 ctx 注入，所有调用都不传。）
 
 ## 死锁处理
 
@@ -59,7 +57,7 @@ all_done=true 后：
      status: "done",
      summary: "计划执行完成。成功：N 个，失败：M 个。<关键产出路径列表>"
    })
-2. submit_task_result({task_id: "<spawn-info.task_id>", meta_path: "<spawn-info.meta_path>"})
+2. submit_task_result({})   // task_id / meta_path 由 framework 从 ctx 注入，不传
 
 ## 禁止事项
 
