@@ -77,6 +77,19 @@ func (t *PromoteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.
 		return errResult("invalid input: " + err.Error()), nil
 	}
 
+	// Fall back to ctx-injected SessionRoot when the LLM didn't supply
+	// session_id (consistent with plan_read / plan_update / meta_write
+	// / submit_task_result). session_id is the last path component of
+	// {rootDir}/session/{sessionID}.
+	if in.SessionID == "" {
+		if scope, ok := tool.AgentScopeFromCtx(ctx); ok && scope.SessionRoot != "" {
+			in.SessionID = filepath.Base(scope.SessionRoot)
+		}
+	}
+	if in.SessionID == "" {
+		return errResult("session_id missing: framework did not inject SessionRoot via ctx — engine configuration error"), nil
+	}
+
 	// PreCheck stage — read meta + plan, validate every mapping before any
 	// filesystem mutation. Cheaper to refuse here than to copy-then-rollback.
 	meta, err := loadMeta(t.rootDir, in.SessionID, in.TaskID)
@@ -141,7 +154,15 @@ func (t *PromoteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.
 	// this fails (e.g. plan.json corrupted between PreCheck and now), we
 	// roll back the copied files so the filesystem stays consistent with
 	// the unchanged plan.
+	if t.registry == nil {
+		rollback()
+		return errResult("PlanWriterRegistry not configured — promote cannot mutate plan.json"), nil
+	}
 	w := t.registry.Get(in.SessionID)
+	if w == nil {
+		rollback()
+		return errResult(fmt.Sprintf("no PlanWriter for session %q — has the session been bootstrapped?", in.SessionID)), nil
+	}
 	now := time.Now().UTC()
 	err = w.Apply(ctx, func(p *workspace.Plan) error {
 		task, ok := p.Tasks[in.TaskID]
