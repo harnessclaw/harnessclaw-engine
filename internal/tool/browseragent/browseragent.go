@@ -209,7 +209,7 @@ func buildPrompt(in input, maxSteps int, cfg config.BrowserAgentConfig) string {
 	} else {
 		b.WriteString("；需要打开网页时必须调用 browser_navigate")
 	}
-	b.WriteString("；然后使用返回的 cdp_endpoint 调用浏览器操作；直接访问失败时按浏览器搜索、搜索 API、WebFetch 顺序降级；最后调用 submit_task_result，用 result 返回 content 和 source。")
+	b.WriteString("；浏览器使用客户端全局持久 profile，登录态、cookies、localStorage 和 IndexedDB 会跨聊天会话、跨浏览器 session、关闭窗口后继续复用，不要传 task_id 或 partition 创建隔离 profile；然后使用返回的 cdp_endpoint 调用浏览器操作；遇到登录、验证码、扫码、MFA 或站点确认时调用 browser_ask_human，让用户操作后调用 browser_session_state 取回当前 active_tab.cdp_endpoint 再继续；直接访问失败时按浏览器搜索、搜索 API、WebFetch 顺序降级；最后调用 submit_task_result，用 result 返回 content 和 source；普通 turn 完成后不要主动关闭浏览器，客户端会自动隐藏窗口；显式关闭也只关闭窗口/session 句柄，不清理登录态。")
 	return b.String()
 }
 

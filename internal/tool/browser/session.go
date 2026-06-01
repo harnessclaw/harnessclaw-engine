@@ -16,6 +16,7 @@ import (
 const (
 	SessionCreateToolName = "browser_session_create"
 	SessionCloseToolName  = "browser_session_close"
+	SessionStateToolName  = "browser_session_state"
 )
 
 type SessionCreateTool struct {
@@ -26,8 +27,6 @@ type SessionCreateTool struct {
 type sessionCreateInput struct {
 	StartURL   string `json:"start_url,omitempty"`
 	Visibility string `json:"visibility,omitempty"`
-	Partition  string `json:"partition,omitempty"`
-	TaskID     string `json:"task_id,omitempty"`
 }
 
 func NewSessionCreateTool(cfg config.BrowserAgentConfig) *SessionCreateTool {
@@ -56,14 +55,6 @@ func (t *SessionCreateTool) InputSchema() map[string]any {
 				"type":        "string",
 				"description": "窗口默认可见性。",
 				"enum":        []string{"hidden", "visible"},
-			},
-			"partition": map[string]any{
-				"type":        "string",
-				"description": "Electron session partition，可省略由客户端按策略生成。",
-			},
-			"task_id": map[string]any{
-				"type":        "string",
-				"description": "浏览器任务 ID，用于隔离一次性 partition。",
 			},
 		},
 	}
@@ -102,6 +93,69 @@ func (t *SessionCreateTool) Execute(_ context.Context, raw json.RawMessage) (*ty
 type SessionCloseTool struct {
 	tool.BaseTool
 	cfg config.BrowserAgentConfig
+}
+
+type SessionStateTool struct {
+	tool.BaseTool
+	cfg config.BrowserAgentConfig
+}
+
+type sessionStateInput struct {
+	SessionID string `json:"session_id"`
+	WindowID  string `json:"window_id,omitempty"`
+}
+
+func NewSessionStateTool(cfg config.BrowserAgentConfig) *SessionStateTool {
+	return &SessionStateTool{cfg: cfg}
+}
+
+func (t *SessionStateTool) Name() string         { return SessionStateToolName }
+func (t *SessionStateTool) Description() string  { return sessionStateDescription }
+func (t *SessionStateTool) IsReadOnly() bool     { return true }
+func (t *SessionStateTool) IsEnabled() bool      { return t.cfg.Enabled }
+func (t *SessionStateTool) IsClientRouted() bool { return true }
+func (t *SessionStateTool) SafetyLevel() tool.SafetyLevel {
+	return tool.SafetySafe
+}
+
+func (t *SessionStateTool) InputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"session_id": map[string]any{
+				"type":        "string",
+				"description": "browser_session_create 返回的 session_id。",
+				"minLength":   1,
+			},
+			"window_id": map[string]any{
+				"type":        "string",
+				"description": "可选 BrowserWindow ID。",
+			},
+		},
+		"required": []string{"session_id"},
+	}
+}
+
+func (t *SessionStateTool) ValidateInput(raw json.RawMessage) error {
+	var in sessionStateInput
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return fmt.Errorf("invalid browser_session_state input: %w", err)
+	}
+	if strings.TrimSpace(in.SessionID) == "" {
+		return fmt.Errorf("session_id is required")
+	}
+	return nil
+}
+
+func (t *SessionStateTool) Execute(_ context.Context, raw json.RawMessage) (*types.ToolResult, error) {
+	if err := t.ValidateInput(raw); err != nil {
+		return &types.ToolResult{Content: err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
+	}
+	return &types.ToolResult{
+		Content:   "browser_session_state is a client-routed tool; it must be executed by the connected Electron client.",
+		IsError:   true,
+		ErrorType: types.ToolErrorDependencyFail,
+	}, nil
 }
 
 type sessionCloseInput struct {
@@ -205,6 +259,14 @@ func domainBlocked(raw string, blocked []string) bool {
 
 const sessionCreateDescription = `创建独立的浏览器会话窗口，由 Electron 客户端执行。
 
-返回值应包含 session_id、window_id 和 cdp_endpoint。拿到 cdp_endpoint 后，后续 browser_navigate / browser_snapshot / browser_extract 调用必须把它作为 cdp_endpoint 参数传入。`
+浏览器使用客户端全局持久 profile；登录态、cookies、localStorage 和 IndexedDB 会跨聊天会话、跨浏览器 session、关闭窗口后继续复用。
 
-const sessionCloseDescription = `关闭 browser_session_create 创建的浏览器会话，由 Electron 客户端执行。完成浏览器任务后应尽量调用该工具释放窗口资源。`
+返回值应包含 session_id、window_id、当前 active_tab 和 cdp_endpoint。拿到 cdp_endpoint 后，后续 browser_navigate / browser_snapshot / browser_extract 调用必须把它作为 cdp_endpoint 参数传入。`
+
+const sessionCloseDescription = `关闭 browser_session_create 创建的浏览器会话，由 Electron 客户端执行。
+
+普通任务完成后不要主动调用该工具；客户端会在 turn 结束时隐藏窗口并保留 session。用户显式关闭也只销毁窗口/session 句柄，不清理全局持久 profile 或登录态。只有用户明确要求关闭、窗口不可恢复或需要释放资源时才调用。`
+
+const sessionStateDescription = `读取浏览器会话当前状态，由 Electron 客户端执行。
+
+返回值包含 visible、active_tab、tabs，以及当前活动标签页的 cdp_endpoint。用户完成登录、验证码、扫码或手动切换标签页后，应调用该工具重新获取 active_tab.cdp_endpoint 再继续操作。`

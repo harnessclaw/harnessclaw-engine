@@ -56,6 +56,12 @@ func TestSessionCreateTool_ClientRoutedAndDangerous(t *testing.T) {
 		t.Fatal("blocked domain should be rejected")
 	}
 	props := tl.InputSchema()["properties"].(map[string]any)
+	if _, ok := props["partition"]; ok {
+		t.Fatal("browser_session_create schema should not expose partition")
+	}
+	if _, ok := props["task_id"]; ok {
+		t.Fatal("browser_session_create schema should not expose task_id")
+	}
 	startURL := props["start_url"].(map[string]any)
 	desc := startURL["description"].(string)
 	if !strings.Contains(desc, "browser_navigate") {
@@ -63,6 +69,9 @@ func TestSessionCreateTool_ClientRoutedAndDangerous(t *testing.T) {
 	}
 	if strings.Contains(desc, "直接加载") {
 		t.Fatalf("start_url schema description should not imply direct client loading: %q", desc)
+	}
+	if !strings.Contains(tl.Description(), "全局持久 profile") {
+		t.Fatalf("description should document global persistent profile:\n%s", tl.Description())
 	}
 }
 
@@ -248,6 +257,27 @@ func TestAskHumanTool_ClientRouted(t *testing.T) {
 	}
 	if err := tl.ValidateInput(json.RawMessage(`{"session_id":"s1","message":"   "}`)); err == nil {
 		t.Fatal("blank message should be rejected")
+	}
+}
+
+func TestSessionStateTool_ClientRouted(t *testing.T) {
+	tl := NewSessionStateTool(config.BrowserAgentConfig{Enabled: true})
+	if tl.Name() != "browser_session_state" {
+		t.Fatalf("Name() = %q", tl.Name())
+	}
+	if routed, ok := any(tl).(tool.ClientRoutedTool); !ok || !routed.IsClientRouted() {
+		t.Fatal("browser_session_state must be client-routed")
+	}
+	if err := tl.ValidateInput(json.RawMessage(`{"session_id":"s1"}`)); err != nil {
+		t.Fatalf("ValidateInput valid: %v", err)
+	}
+	if err := tl.ValidateInput(json.RawMessage(`{"session_id":"   "}`)); err == nil {
+		t.Fatal("blank session_id should be rejected")
+	}
+	props := tl.InputSchema()["properties"].(map[string]any)
+	sessionID := props["session_id"].(map[string]any)
+	if sessionID["minLength"] != 1 {
+		t.Fatalf("session_id schema = %#v, want minLength 1", sessionID)
 	}
 }
 

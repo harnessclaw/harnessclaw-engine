@@ -123,6 +123,7 @@ func TestBrowserAgentDefinition(t *testing.T) {
 		"browser_wait",
 		"browser_tabs",
 		"browser_ask_human",
+		"browser_session_state",
 		"browser_session_close",
 	} {
 		if !containsString(def.AllowedTools, want) {
@@ -137,6 +138,12 @@ func TestBrowserAgentDefinition(t *testing.T) {
 		"result",
 		"content",
 		"source",
+		"browser_session_state",
+		"登录",
+		"隐藏",
+		"不要主动关闭",
+		"全局持久 profile",
+		"关闭窗口后继续复用",
 	} {
 		if !strings.Contains(def.SystemPrompt, want) {
 			t.Fatalf("browser-agent prompt missing %q:\n%s", want, def.SystemPrompt)

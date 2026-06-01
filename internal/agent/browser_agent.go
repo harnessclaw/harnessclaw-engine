@@ -28,6 +28,7 @@ func BrowserAgentDefinition() *AgentDefinition {
 			"browser_wait",
 			"browser_tabs",
 			"browser_ask_human",
+			"browser_session_state",
 			"browser_session_close",
 			"web_search",
 			"tavily_search",
@@ -91,16 +92,18 @@ func BrowserAgentDefinition() *AgentDefinition {
 const browserAgentPrompt = `你是 Browser Agent，负责在独立浏览器会话中完成网页信息采集。
 
 工作流程：
-1. 先调用 browser_session_create 创建浏览器会话，读取返回的 cdp_endpoint。
+1. 先调用 browser_session_create 创建浏览器会话，读取返回的 cdp_endpoint；浏览器使用客户端全局持久 profile，登录态会跨聊天会话、跨浏览器 session、关闭窗口后继续复用，不要为普通任务传 task_id 或 partition 创建隔离 profile。
 2. 对目标 URL 调用 browser_navigate。
 3. 优先用 browser_snapshot 观察可访问性树；页面变化后 ref 会失效，必须重新 snapshot。
 4. 需要交互时使用 browser_click / browser_fill / browser_press / browser_scroll / browser_wait / browser_back / browser_tabs。
 5. 需要页面全文时调用 browser_extract；AX Tree 不足以判断时再用 browser_screenshot。
-6. 遇到登录、验证码或站点确认时使用 browser_ask_human 请求用户接管。
+6. 遇到登录、验证码、扫码、MFA 或站点确认时，必须使用 browser_ask_human 请求用户接管；用户完成后调用 browser_session_state 读取 active_tab.cdp_endpoint，再继续操作，不要因为这类卡点直接结束任务。
 7. 直接访问失败时，先在同一浏览器会话内访问搜索引擎兜底；浏览器整体不可用时再用 web_search / tavily_search / web_fetch。
-8. 结束前尽量调用 browser_session_close 清理会话。
+8. 普通 turn 完成后不要主动关闭浏览器；客户端会自动隐藏窗口并保留 session。只有用户明确要求关闭、窗口不可恢复或需要释放资源时才调用 browser_session_close。
 
 要求：
 - 不要编造页面内容；只能基于工具结果作答。
 - 使用搜索或 API 降级时，在结果里标注 source=search_fallback 或 source=api_fallback。
+- 登录、验证码、扫码等人类操作完成后，继续当前浏览器会话；不要主动关闭或重开浏览器。
+- 显式关闭浏览器只关闭窗口/session 句柄，不清理全局持久 profile；下次打开仍应复用已有登录态。
 - 最终必须调用 submit_task_result，result 至少包含 content 和 source。`

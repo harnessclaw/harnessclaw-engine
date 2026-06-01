@@ -33,6 +33,12 @@ type Config struct {
 	Retryer      *retry.Retryer
 	Logger       *zap.Logger
 
+	// ClientAwaitSession is the user-facing session that receives
+	// client-routed tool results. Sub-agent loops can run on their own
+	// Session while browser/Electron results return through the root
+	// WebSocket session.
+	ClientAwaitSession *session.Session
+
 	MaxTurns      int
 	MaxTokens     int
 	ContextWindow int

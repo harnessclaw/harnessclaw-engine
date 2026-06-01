@@ -2,6 +2,7 @@ package loop_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -164,6 +165,130 @@ func TestRun_InjectsMessagesBeforeNextTurn(t *testing.T) {
 	}
 	if !foundInjection {
 		t.Error("expected injected correction in session.messages")
+	}
+}
+
+type fakeToolCallProvider struct{}
+
+func (f *fakeToolCallProvider) Name() string { return "fake-tool-call" }
+func (f *fakeToolCallProvider) CountTokens(_ context.Context, _ []types.Message) (int, error) {
+	return 0, nil
+}
+func (f *fakeToolCallProvider) Chat(_ context.Context, _ *provider.ChatRequest) (*provider.ChatStream, error) {
+	ch := make(chan types.StreamEvent, 4)
+	ch <- types.StreamEvent{
+		Type: types.StreamEventToolUse,
+		ToolCall: &types.ToolCall{
+			ID:    "tu_browser",
+			Name:  "browser_session_create",
+			Input: `{"visibility":"visible"}`,
+		},
+	}
+	ch <- types.StreamEvent{
+		Type:       types.StreamEventMessageEnd,
+		StopReason: "tool_use",
+		Usage:      &types.Usage{InputTokens: 1, OutputTokens: 1},
+	}
+	close(ch)
+	return &provider.ChatStream{Events: ch, Err: func() error { return nil }}, nil
+}
+
+type fakeClientRoutedTool struct {
+	tool.BaseTool
+}
+
+func (t *fakeClientRoutedTool) Name() string            { return "browser_session_create" }
+func (t *fakeClientRoutedTool) Description() string     { return "client routed browser session" }
+func (t *fakeClientRoutedTool) IsReadOnly() bool        { return false }
+func (t *fakeClientRoutedTool) IsConcurrencySafe() bool { return true }
+func (t *fakeClientRoutedTool) InputSchema() map[string]any {
+	return map[string]any{"type": "object"}
+}
+func (t *fakeClientRoutedTool) Execute(context.Context, json.RawMessage) (*types.ToolResult, error) {
+	return &types.ToolResult{Content: "should not execute server-side", IsError: true}, nil
+}
+func (t *fakeClientRoutedTool) IsClientRouted() bool { return true }
+
+func TestRun_RoutesClientRoutedToolsThroughSessionAwaits(t *testing.T) {
+	store := memory.New()
+	mgr := session.NewManager(store, zap.NewNop(), time.Hour)
+	rootSess, _ := mgr.GetOrCreate(context.Background(), "root_client", "ws", "u")
+	subSess, _ := mgr.GetOrCreate(context.Background(), "sub_client", "subagent", "u")
+	subSess.AddMessage(types.Message{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "open browser"}}})
+
+	reg := tool.NewRegistry()
+	if err := reg.Register(&fakeClientRoutedTool{}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	out := make(chan types.EngineEvent, 16)
+	done := make(chan *loop.Result, 1)
+	errs := make(chan error, 1)
+	go func() {
+		res, err := loop.Run(context.Background(), &loop.Config{
+			Session:            subSess,
+			ClientAwaitSession: rootSess,
+			SystemPrompt:       "x",
+			Tools:              tool.NewToolPool(reg, nil, nil),
+			Provider:           &fakeToolCallProvider{},
+			Retryer:            retry.New(retry.DefaultConfig(), zap.NewNop()),
+			Logger:             zap.NewNop(),
+			MaxTurns:           1,
+			MaxTokens:          100,
+			ContextWindow:      200000,
+			Out:                out,
+			AgentID:            "a_client",
+			PermChecker:        permission.BypassChecker{},
+			OnTurnComplete: func(turn int, msg types.Message, results []types.ToolResult) loop.Decision {
+				if len(results) != 1 || results[0].Content != "browser ready" {
+					t.Errorf("tool results = %+v, want browser ready", results)
+				}
+				return loop.Decision{Terminate: &types.Terminal{Reason: types.TerminalCompleted, Turn: turn}}
+			},
+		})
+		if err != nil {
+			errs <- err
+			return
+		}
+		done <- res
+	}()
+
+	for {
+		select {
+		case err := <-errs:
+			t.Fatalf("Run error: %v", err)
+		case res := <-done:
+			t.Fatalf("loop finished before client tool result: %+v", res)
+		case ev := <-out:
+			if ev.Type != types.EngineEventToolCall {
+				continue
+			}
+			if ev.ToolName != "browser_session_create" || ev.ToolUseID != "tu_browser" {
+				t.Fatalf("unexpected tool_call event: %+v", ev)
+			}
+			if err := rootSess.Awaits.ResolveTool(&types.ToolResultPayload{
+				ToolUseID: ev.ToolUseID,
+				Status:    "success",
+				Output:    "browser ready",
+			}); err != nil {
+				t.Fatalf("ResolveTool: %v", err)
+			}
+			goto waitDone
+		case <-time.After(time.Second):
+			t.Fatal("timeout waiting for client-routed tool_call")
+		}
+	}
+
+waitDone:
+	select {
+	case err := <-errs:
+		t.Fatalf("Run error: %v", err)
+	case res := <-done:
+		if res.Terminal.Reason != types.TerminalCompleted {
+			t.Fatalf("terminal = %+v", res.Terminal)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for loop completion")
 	}
 }
 

@@ -110,22 +110,24 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		maxTurns = 30
 	}
 
+	clientAwaitSession := m.clientAwaitSession(cfg)
 	loopRes, err := loop.Run(ctx, &loop.Config{
-		Session:          sess,
-		SystemPrompt:     sysPrompt,
-		Tools:            pool,
-		Provider:         m.deps.Provider,
-		Compactor:        m.deps.Compactor,
-		Retryer:          m.deps.Retryer,
-		Logger:           m.deps.Logger,
-		MaxTurns:         maxTurns,
-		MaxTokens:        m.deps.MaxTokens,
-		ContextWindow:    m.deps.ContextWindow,
-		Out:              cfg.ParentOut,
-		AgentID:          sess.ID,
-		TaskContract:     tool.TaskContract{TaskID: taskID, TaskStartedAt: cfg.TaskStartedAt, OutputSchema: def.OutputSchema},
-		ArtifactProducer: tool.ArtifactProducer{AgentID: sess.ID, AgentRunID: sess.ID, TaskID: taskID, SessionID: sess.ID},
-		OnTurnComplete:   common.SubmitResultEnforcer(nil, def.OutputSchema, submitRetries),
+		Session:            sess,
+		SystemPrompt:       sysPrompt,
+		Tools:              pool,
+		Provider:           m.deps.Provider,
+		Compactor:          m.deps.Compactor,
+		Retryer:            m.deps.Retryer,
+		Logger:             m.deps.Logger,
+		ClientAwaitSession: clientAwaitSession,
+		MaxTurns:           maxTurns,
+		MaxTokens:          m.deps.MaxTokens,
+		ContextWindow:      m.deps.ContextWindow,
+		Out:                cfg.ParentOut,
+		AgentID:            sess.ID,
+		TaskContract:       tool.TaskContract{TaskID: taskID, TaskStartedAt: cfg.TaskStartedAt, OutputSchema: def.OutputSchema},
+		ArtifactProducer:   tool.ArtifactProducer{AgentID: sess.ID, AgentRunID: sess.ID, TaskID: taskID, SessionID: sess.ID},
+		OnTurnComplete:     common.SubmitResultEnforcer(nil, def.OutputSchema, submitRetries),
 	})
 	if err != nil {
 		return nil, err
@@ -155,6 +157,21 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	})
 
 	return common.BuildSpawnResult(sess.ID, sess.ID, output, terminal, usage, loopRes.NumTurns), nil
+}
+
+func (m *Module) clientAwaitSession(cfg *agent.SpawnConfig) *session.Session {
+	if m.deps.SessionMgr == nil || cfg == nil {
+		return nil
+	}
+	for _, id := range []string{cfg.RootSessionID, cfg.ParentSessionID} {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		if sess := m.deps.SessionMgr.Get(id); sess != nil {
+			return sess
+		}
+	}
+	return nil
 }
 
 func browserTaskPrompt(taskID, body string) string {

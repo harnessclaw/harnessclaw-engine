@@ -81,6 +81,9 @@ func TestBrowserAgentTool_PromptRequestsConfiguredVisibleSession(t *testing.T) {
 		`result`,
 		`content`,
 		`source`,
+		"全局持久 profile",
+		"关闭窗口后继续复用",
+		"不要传 task_id 或 partition",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

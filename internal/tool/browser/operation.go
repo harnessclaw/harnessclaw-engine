@@ -267,6 +267,7 @@ func NewTools(cfg config.BrowserAgentConfig) []tool.Tool {
 	runner := NewCommandRunner(cfg)
 	return []tool.Tool{
 		NewSessionCreateTool(cfg),
+		NewSessionStateTool(cfg),
 		NewSessionCloseTool(cfg),
 		NewNavigateTool(cfg, runner),
 		NewSnapshotTool(cfg, runner),

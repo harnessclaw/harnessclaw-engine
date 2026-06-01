@@ -79,7 +79,11 @@ func routeToClient(pool *tool.ToolPool, toolName string) bool {
 
 func executeClientTools(ctx context.Context, cfg *Config, calls []types.ToolCall) []types.ToolResult {
 	results := make([]types.ToolResult, len(calls))
-	if cfg.Session == nil || cfg.Session.Awaits == nil {
+	awaitSession := cfg.ClientAwaitSession
+	if awaitSession == nil {
+		awaitSession = cfg.Session
+	}
+	if awaitSession == nil || awaitSession.Awaits == nil {
 		for i, call := range calls {
 			results[i] = types.ToolResult{
 				Content: fmt.Sprintf("tool %s requires a session await registry", call.Name),
@@ -100,7 +104,7 @@ func executeClientTools(ctx context.Context, cfg *Config, calls []types.ToolCall
 
 	awaits := make([]chan *types.ToolResultPayload, len(calls))
 	for i, call := range calls {
-		await := cfg.Session.Awaits.PushTool(call.ID, call.Name)
+		await := awaitSession.Awaits.PushTool(call.ID, call.Name)
 		awaits[i] = await.Result
 		select {
 		case cfg.Out <- types.EngineEvent{
@@ -111,7 +115,7 @@ func executeClientTools(ctx context.Context, cfg *Config, calls []types.ToolCall
 		}:
 		case <-ctx.Done():
 			results[i] = types.ToolResult{Content: "execution cancelled", IsError: true}
-			cfg.Session.Awaits.ForgetTool(call.ID)
+			awaitSession.Awaits.ForgetTool(call.ID)
 		}
 	}
 
@@ -122,7 +126,7 @@ func executeClientTools(ctx context.Context, cfg *Config, calls []types.ToolCall
 		select {
 		case <-ctx.Done():
 			results[i] = types.ToolResult{Content: "execution cancelled", IsError: true}
-			cfg.Session.Awaits.ForgetTool(call.ID)
+			awaitSession.Awaits.ForgetTool(call.ID)
 		case payload, ok := <-awaits[i]:
 			if !ok {
 				results[i] = types.ToolResult{Content: "execution cancelled", IsError: true}
