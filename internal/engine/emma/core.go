@@ -273,6 +273,7 @@ func New(
 		Logger:        logger,
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
+		ToolTimeout:   cfg.ToolTimeout,
 	})
 	e.spawner.Register(planAgentMod)
 
@@ -287,6 +288,7 @@ func New(
 		Logger:        logger,
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
+		ToolTimeout:   cfg.ToolTimeout,
 	})
 	e.spawner.Register(plExecutorMod)
 
@@ -300,6 +302,7 @@ func New(
 		Logger:        logger,
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
+		ToolTimeout:   cfg.ToolTimeout,
 	})
 	e.spawner.Register(exploreMod)
 
@@ -313,6 +316,7 @@ func New(
 		Logger:        logger,
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
+		ToolTimeout:   cfg.ToolTimeout,
 	})
 	e.spawner.Register(planDesignMod)
 
@@ -332,8 +336,9 @@ func New(
 		SkillReader:       e.skillReader,
 		DefRegistry:       e.defRegistry,
 		SearchGapDetector: freelancer.NewSearchGapDetector(logger),
-		MaxTokens:         cfg.MaxTokens,
+		MaxTokens:         8192,
 		ContextWindow:     cfg.ContextWindow,
+		ToolTimeout:       cfg.ToolTimeout,
 	})
 	e.spawner.Register(freelancerMod)
 
@@ -352,6 +357,7 @@ func New(
 		Logger:        logger,
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
+		ToolTimeout:   cfg.ToolTimeout,
 	})
 	e.spawner.SetFallback(genericMod)
 
