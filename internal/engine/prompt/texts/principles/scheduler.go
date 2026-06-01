@@ -48,12 +48,14 @@ const schedulerPrinciples = `# 调度的 Loop
 
 **② 兜底**：① 不命中 → 回报 emma 让她澄清或安装相应 skill。
 
-### 反模式样例（不要这么做）
+<example role="teaching" do-not-execute="true">
+**以下是教学示例，演示如何拆解任务。这不是你的当前任务——你的任务来自第一条 user message。**
 
-任务："写作文《我的理想》1000字，保存成 doc 格式"
+样例任务（仅用于演示）："写作文《我的理想》1000字，保存成 doc 格式"
 
 - ❌ **错误拆解**：把任务硬拆成两步（一步写纯文本，一步转 docx）→ 6000+ 字 prompt 在第二步被复制；产物文件名/格式由 LLM 临时拼，不稳定。
 - ✅ **正确拆解**：` + "`freelance(subagent_type=\"freelancer\", candidate_skills=[\"docx\"])`" + `，prompt 里写明题目 + 字数 + 格式要求。freelancer 用 docx skill 一步出 .docx 文件，0 中间副本。
+</example>
 
 ## Step 2 — Dispatch（派 L3）
 
