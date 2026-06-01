@@ -187,6 +187,80 @@ func TestMicroCompact_TwoMessages(t *testing.T) {
 	}
 }
 
+// Regression: microCompact must not leave an orphan tool_result at the head
+// of the kept tail. OpenAI rejects a "tool" role message that isn't preceded
+// by an assistant with matching tool_calls; the bifrost adapter converts any
+// user message containing ContentTypeToolResult into role=tool.
+//
+// Construct an alternating assistant_with_tool_use / user_tool_result chain
+// where the naive midpoint lands on a tool_result whose matching tool_use
+// would be discarded.
+func TestMicroCompact_SkipsOrphanToolResultAtBoundary(t *testing.T) {
+	c := NewLLMCompactor(&mockProvider{}, testLogger())
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "task"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{{Type: types.ContentTypeToolUse, ToolUseID: "a"}}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeToolResult, ToolUseID: "a"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{{Type: types.ContentTypeToolUse, ToolUseID: "b"}}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeToolResult, ToolUseID: "b"}}}, // naive keepFrom (5/2=... — see 9-msg version below)
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{{Type: types.ContentTypeToolUse, ToolUseID: "c"}}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeToolResult, ToolUseID: "c"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{{Type: types.ContentTypeToolUse, ToolUseID: "d"}}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeToolResult, ToolUseID: "d"}}},
+	}
+	// Naive keepFrom = 9/2 = 4 → msgs[4] = tool_result B (orphan, because
+	// msgs[3] = its tool_use is in the discarded prefix). After fix,
+	// keepFrom advances to 5 (assistant tool_use C).
+	result := c.microCompact(msgs)
+	if len(result) < 2 {
+		t.Fatalf("expected kept head + tail, got %d messages", len(result))
+	}
+	// First kept message after msgs[0] must NOT be a tool_result.
+	if containsToolResult(result[1]) {
+		t.Errorf("kept tail starts with orphan tool_result: %+v", result[1])
+	}
+	// Specifically, expect the advance to land on assistant C.
+	if result[1].Content[0].Type != types.ContentTypeToolUse || result[1].Content[0].ToolUseID != "c" {
+		t.Errorf("expected kept tail to start at tool_use C, got %+v", result[1])
+	}
+}
+
+// Regression: full Compact must apply the same orphan-tool_result guard at
+// its 2/3 boundary.
+func TestCompact_SkipsOrphanToolResultAtBoundary(t *testing.T) {
+	mp := &mockProvider{summary: "summary"}
+	c := NewLLMCompactor(mp, testLogger())
+	// 12 messages, naive keepFrom = 12*2/3 = 8. Place a tool_result at
+	// index 8 whose tool_use (index 7) is in the summarized prefix.
+	msgs := make([]types.Message, 12)
+	for i := range msgs {
+		msgs[i] = types.Message{
+			Role:    types.RoleUser,
+			Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "m"}},
+		}
+	}
+	msgs[7] = types.Message{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentBlock{{Type: types.ContentTypeToolUse, ToolUseID: "x"}},
+	}
+	msgs[8] = types.Message{
+		Role:    types.RoleUser,
+		Content: []types.ContentBlock{{Type: types.ContentTypeToolResult, ToolUseID: "x"}},
+	}
+	result, err := c.Compact(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) < 2 {
+		t.Fatalf("expected summary + tail, got %d messages", len(result))
+	}
+	// result[0] is summary assistant; result[1] is the head of the kept
+	// tail and must not be an orphan tool_result.
+	if containsToolResult(result[1]) {
+		t.Errorf("kept tail starts with orphan tool_result: %+v", result[1])
+	}
+}
+
 func TestMicroCompact_SixMessages(t *testing.T) {
 	c := NewLLMCompactor(&mockProvider{}, testLogger())
 	msgs := make([]types.Message, 6)

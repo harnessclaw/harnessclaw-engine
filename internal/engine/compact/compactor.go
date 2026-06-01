@@ -84,8 +84,10 @@ func (c *LLMCompactor) Compact(ctx context.Context, messages []types.Message) ([
 			{Type: types.ContentTypeText, Text: summary},
 		},
 	})
-	// Keep recent 1/3 of messages.
-	keepFrom := len(messages) * 2 / 3
+	// Keep recent 1/3 of messages, but advance past any orphan tool_result
+	// at the boundary — its matching tool_call assistant is in the summary
+	// half and OpenAI rejects a tool message without a preceding tool_calls.
+	keepFrom := advancePastOrphanToolResults(messages, len(messages)*2/3)
 	result = append(result, messages[keepFrom:]...)
 	return result, nil
 }
@@ -95,11 +97,37 @@ func (c *LLMCompactor) microCompact(messages []types.Message) []types.Message {
 	if len(messages) <= 2 {
 		return messages
 	}
-	keepFrom := len(messages) / 2
+	// Skip orphan tool_result at the boundary — same reason as Compact.
+	keepFrom := advancePastOrphanToolResults(messages, len(messages)/2)
 	result := make([]types.Message, 0, len(messages)-keepFrom+1)
 	result = append(result, messages[0]) // keep first message for context
 	result = append(result, messages[keepFrom:]...)
 	return result
+}
+
+// advancePastOrphanToolResults moves keepFrom forward while the message at
+// that index is a tool_result whose matching tool_call assistant lies in the
+// discarded prefix. OpenAI's chat-completions schema requires every "tool"
+// role message to immediately follow an assistant message that carries the
+// matching tool_calls; an orphan tool_result triggers a 400. Anthropic's
+// schema is more lenient but the engine targets both, so we sanitize here.
+func advancePastOrphanToolResults(messages []types.Message, keepFrom int) int {
+	for keepFrom < len(messages) && containsToolResult(messages[keepFrom]) {
+		keepFrom++
+	}
+	return keepFrom
+}
+
+// containsToolResult reports whether any content block in m is a
+// ContentTypeToolResult — i.e. the message becomes an OpenAI "tool" role
+// message during provider conversion.
+func containsToolResult(m types.Message) bool {
+	for _, b := range m.Content {
+		if b.Type == types.ContentTypeToolResult {
+			return true
+		}
+	}
+	return false
 }
 
 // summarize calls the LLM to generate a conversation summary.
