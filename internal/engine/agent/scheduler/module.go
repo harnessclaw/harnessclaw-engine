@@ -107,9 +107,20 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 func (m *Module) runReactLLM(ctx context.Context, cfg *agent.SpawnConfig,
 	sess *session.Session, startTime time.Time) (*agent.SpawnResult, error) {
 
-	// Full palette (dispatch tools kept; scheduler dispatches L3
-	// freelancers via the freelance tool).
-	pool := common.BuildToolPool(m.deps.Registry, nil, cfg.AgentType, false)
+	// Pool must be built from the scheduler AgentDefinition.AllowedTools
+	// whitelist, NOT from the AgentType blacklist. Reason: `freelance`
+	// and `scheduler` are in AllAgentDisallowed (see
+	// tool/restrictions.go) and would be stripped by the blacklist —
+	// then the LLM, prompted by scheduler principles to call freelance,
+	// hallucinates the call and toolexec returns "unknown tool". The
+	// whitelist in AgentDefinition explicitly allows freelance for L2.
+	var allowed []string
+	if m.deps.DefRegistry != nil {
+		if def := m.deps.DefRegistry.Get("scheduler"); def != nil {
+			allowed = def.AllowedTools
+		}
+	}
+	pool := common.BuildToolPool(m.deps.Registry, allowed, cfg.AgentType, false)
 
 	sysPrompt := common.BuildSubAgentPrompt(common.PromptArgs{
 		Ctx:               ctx,

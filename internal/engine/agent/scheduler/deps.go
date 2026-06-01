@@ -5,6 +5,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/prompt"
 	enginesched "harnessclaw-go/internal/engine/scheduler"
@@ -59,6 +60,16 @@ type Deps struct {
 	// Combined with cfg.RootSessionID it yields the SessionRoot that
 	// meta_write / submit_task_result read from ctx.
 	RootDir string
+
+	// DefRegistry resolves the "scheduler" AgentDefinition so the react
+	// loop can use AgentDefinition.AllowedTools as the BuildToolPool
+	// whitelist. Without it the pool falls back to AgentType=Sync's
+	// blacklist, which strips `freelance` (the L2→L3 dispatch tool) —
+	// the LLM then hallucinates calls and toolexec returns
+	// "unknown tool: freelance". nil disables the whitelist (legacy
+	// blacklist behaviour preserved for callers that haven't wired this
+	// dep).
+	DefRegistry *agent.AgentDefinitionRegistry
 
 	// --- plan mode (legacy delegation) ---
 

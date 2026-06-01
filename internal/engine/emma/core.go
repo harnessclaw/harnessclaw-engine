@@ -393,6 +393,7 @@ func New(
 		ContextWindow: cfg.ContextWindow,
 		ToolTimeout:   cfg.ToolTimeout,
 		RootDir:       workspace.DefaultRootDir(),
+		DefRegistry:   e.defRegistry,
 
 		Coord:         e.schedulerCoord,
 		Spawner:       e.spawner,
