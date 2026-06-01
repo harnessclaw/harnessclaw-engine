@@ -1,25 +1,22 @@
 // Package scheduler is the spawn Module for the L2 dispatcher tier.
-// emma routes SubagentType=="scheduler" through this module; the module
-// delegates to one of two strategies (react, plan) chosen by
-// cfg.CoordinatorMode.
+// emma routes SubagentType=="scheduler" through this module.
 //
-// Stage 7 wraps the legacy enginesched.Coordinator instead of porting
-// the full L2 pipeline. See package deps.go and the strategy packages
-// for rationale and the planned Stage-8 follow-up.
+// Two modes:
 //
-// Event flow stays parity-compatible with the legacy spawn path:
+//   - react (default): the module drives its own LLM loop with a palette
+//     of [freelance, plan_*, meta_*, submit_task_result, read/glob/grep,
+//     web_search/tavily_search]. The L2 LLM plans/dispatches/integrates/
+//     checks per principles/scheduler.go. Terminates on submit_task_result.
+//   - plan: still wraps the legacy enginesched.Coordinator's plan path
+//     (plan_agent → guard → plan_executor_agent). Stage 8 will port this
+//     in-module too.
 //
-//   - subagent.start emitted before the dispatch starts
-//   - Coordinator forwards L3 lifecycle events (start/end/tool calls,
-//     intents) through cfg.ParentOut while the dispatch runs
-//   - subagent.end emitted after the dispatch returns with the final
-//     terminal + usage envelope
+// SpawnResult.Output:
 //
-// SpawnResult.Output is composed from the meta.json the Coordinator
-// wrote to the workspace (mirrors the legacy metaRefToLoopResult helper
-// in spawn.go) so the parent (emma) sees the same summary +
-// deliverables block whether the dispatch ran through legacy spawn or
-// the new module.
+//   - react: composed from the loop's terminal LastMessage text, mirroring
+//     plan_executor_agent. submit_task_result is the canonical terminal,
+//     so meta.json was written by L2 itself via meta_write.
+//   - plan: read from meta.json the Coordinator wrote (composeOutput).
 package scheduler
 
 import (
@@ -37,6 +34,9 @@ import (
 	"harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/engine/agent/scheduler/plan"
 	"harnessclaw-go/internal/engine/agent/scheduler/react"
+	"harnessclaw-go/internal/engine/loop"
+	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/session"
 	schedulertypes "harnessclaw-go/internal/engine/scheduler/types"
 	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
@@ -44,13 +44,13 @@ import (
 
 // Module is the scheduler tier runtime.
 type Module struct {
-	deps           Deps
-	reactStrategy  *react.Strategy
-	planStrategy   *plan.Strategy
+	deps          Deps
+	reactStrategy *react.Strategy
+	planStrategy  *plan.Strategy
 }
 
-// New constructs a scheduler Module. Coord may be nil for tests that
-// only exercise SubagentType(); Run requires Coord to be non-nil.
+// New constructs a scheduler Module. Coord may be nil if only react mode
+// is exercised; plan mode requires Coord to be non-nil.
 func New(deps Deps) *Module {
 	m := &Module{deps: deps}
 	if deps.Coord != nil {
@@ -60,19 +60,12 @@ func New(deps Deps) *Module {
 	return m
 }
 
-// SubagentType returns "scheduler" — the typed key the Spawner resolves
-// to route scheduler spawns at this module.
+// SubagentType returns "scheduler".
 func (m *Module) SubagentType() string { return "scheduler" }
 
-// Run dispatches the cfg to the underlying Coordinator according to
-// cfg.CoordinatorMode (react default, plan when explicitly pinned).
-// Emits subagent.start/end on cfg.ParentOut around the dispatch and
-// composes a SpawnResult from the resulting MetaRef.
+// Run executes the L2 dispatch. react mode drives an LLM loop in-module;
+// plan mode delegates to the legacy Coordinator.
 func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnResult, error) {
-	if m.deps.Coord == nil {
-		return nil, fmt.Errorf("scheduler module: Coord dependency is nil")
-	}
-
 	startTime := time.Now()
 
 	sess, err := common.BuildSubSession(m.deps.SessionMgr, cfg.ParentSessionID)
@@ -95,34 +88,146 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	ctx = common.WithSubAgentStats(ctx, sess.ID, sess.ID,
 		cfg.ParentSessionID, cfg.RootSessionID)
 
-	// Reset session id on the spec to the PARENT session id rather than
-	// the sub-session we just built — the legacy Coordinator anchors all
-	// workspace writes (plan.json, meta.json, deliverables/) under the
-	// parent session so emma's per-session bootstrap (EnsureSession in
-	// ProcessMessage) lines up with where the dispatch will write.
-	dispatchSessionID := cfg.ParentSessionID
-
 	mode := cfg.CoordinatorMode
 	if mode == "" {
 		mode = "react"
 	}
 
-	var (
-		metaRef schedulertypes.MetaRef
-		runErr  error
-	)
-	// sess.ID is this L2 agent's session/card id; the strategy threads
-	// it into TaskSpec.ParentAgentID → QueryEngineFactory → L3
-	// SpawnConfig.ParentAgentID so the translator parents the L3 card
-	// under this L2's card (instead of falling back to emma's tool
-	// call, which would render L2/L3 as siblings in the UI).
-	switch mode {
-	case "plan":
-		metaRef, runErr = m.planStrategy.Run(ctx, cfg.Prompt, dispatchSessionID, cfg.Model, cfg.ParentOut, sess.ID)
-	default:
-		metaRef, runErr = m.reactStrategy.Run(ctx, cfg.Prompt, dispatchSessionID, cfg.Model, cfg.ParentOut, sess.ID)
-		mode = "react"
+	if mode == "plan" {
+		return m.runPlanLegacy(ctx, cfg, sess, startTime)
 	}
+	return m.runReactLLM(ctx, cfg, sess, startTime)
+}
+
+// runReactLLM drives the L2 LLM loop. Tool palette intentionally
+// includes file inspection (read/glob/grep) and web search so the
+// scheduler can do its own exploration before/while dispatching L3 —
+// emma forbids exploratory dispatches, so this layer absorbs that
+// responsibility.
+func (m *Module) runReactLLM(ctx context.Context, cfg *agent.SpawnConfig,
+	sess *session.Session, startTime time.Time) (*agent.SpawnResult, error) {
+
+	// Full palette (dispatch tools kept; scheduler dispatches L3
+	// freelancers via the freelance tool).
+	pool := common.BuildToolPool(m.deps.Registry, nil, cfg.AgentType, false)
+
+	sysPrompt := common.BuildSubAgentPrompt(common.PromptArgs{
+		Ctx:               ctx,
+		Session:           sess,
+		Profile:           prompt.SchedulerProfile,
+		Builder:           m.deps.PromptBuilder,
+		WorkerDisplayName: cfg.Name,
+		SubagentType:      "scheduler",
+		ContextWindow:     m.deps.ContextWindow,
+		Registry:          m.deps.Registry,
+	})
+
+	// Seed session with the prompt as the first user message.
+	sess.AddMessage(types.Message{
+		Role: types.RoleUser,
+		Content: []types.ContentBlock{{
+			Type: types.ContentTypeText, Text: cfg.Prompt,
+		}},
+	})
+
+	maxTurns := cfg.MaxTurns
+	if maxTurns <= 0 {
+		// scheduler runs plan/dispatch/integrate/check cycles; needs
+		// more turns than a leaf worker.
+		maxTurns = 30
+	}
+
+	permChecker := common.BuildInheritedChecker(
+		common.SessionApprovedTools(m.deps.SessionMgr, cfg.ParentSessionID),
+	)
+
+	loopRes, err := loop.Run(ctx, &loop.Config{
+		Session:        sess,
+		SystemPrompt:   sysPrompt,
+		Tools:          pool,
+		Provider:       m.deps.Provider,
+		Compactor:      m.deps.Compactor,
+		Retryer:        m.deps.Retryer,
+		Logger:         m.deps.Logger,
+		MaxTurns:       maxTurns,
+		MaxTokens:      m.deps.MaxTokens,
+		ContextWindow:  m.deps.ContextWindow,
+		ToolTimeout:    m.deps.ToolTimeout,
+		Out:            cfg.ParentOut,
+		AgentID:        sess.ID,
+		PermChecker:    permChecker,
+		ApprovalFn:     nil, // sub-agents have no approval UI
+		AgentScope: common.BuildAgentScope(cfg, m.deps.RootDir, "scheduler"),
+		// react mode terminates on natural end_turn (no tool calls).
+		// Unlike L3 workers, L2 has no per-spawn task_id assigned by emma
+		// (the scheduler tool doesn't allocate one), so submit_task_result
+		// would fail; StopOnSubmitResult would loop until MaxTurns. The
+		// last assistant text becomes the parent-visible summary —
+		// scheduler principles guide the LLM to format that message as
+		// the final report to emma.
+		OnTurnComplete: common.StopOnEndTurn(),
+	})
+
+	if err != nil {
+		// Module-level error (not LLM error): emit end + return.
+		terminal := types.Terminal{Reason: types.TerminalModelError, Message: err.Error()}
+		common.EmitSubagentEnd(cfg.ParentOut, common.EndEvent{
+			AgentID:         sess.ID,
+			AgentName:       cfg.Name,
+			AgentStatus:     statusFromTerminal(terminal),
+			SubagentType:    "scheduler",
+			DurationMs:      time.Since(startTime).Milliseconds(),
+			Terminal:        &terminal,
+			ParentAgentID:   cfg.ParentAgentID,
+			ParentSessionID: cfg.ParentSessionID,
+		})
+		result := common.BuildSpawnResult(sess.ID, sess.ID, "", terminal, types.Usage{}, 0)
+		result.CoordinatorMode = "react"
+		return result, err
+	}
+
+	output := ""
+	if loopRes.LastMessage != nil {
+		for _, b := range loopRes.LastMessage.Content {
+			if b.Type == types.ContentTypeText {
+				output += b.Text
+			}
+		}
+	}
+
+	terminal := loopRes.Terminal
+	usage := loopRes.Usage
+
+	common.EmitSubagentEnd(cfg.ParentOut, common.EndEvent{
+		AgentID:         sess.ID,
+		AgentName:       cfg.Name,
+		AgentStatus:     statusFromTerminal(terminal),
+		SubagentType:    "scheduler",
+		DurationMs:      time.Since(startTime).Milliseconds(),
+		Usage:           &usage,
+		Terminal:        &terminal,
+		ParentAgentID:   cfg.ParentAgentID,
+		ParentSessionID: cfg.ParentSessionID,
+	})
+
+	result := common.BuildSpawnResult(sess.ID, sess.ID, output, terminal, usage, loopRes.NumTurns)
+	result.CoordinatorMode = "react"
+	return result, nil
+}
+
+// runPlanLegacy keeps the legacy plan dispatch path: delegate to
+// Coordinator.Run, then read the resulting meta.json off disk to compose
+// the parent-visible summary.
+func (m *Module) runPlanLegacy(ctx context.Context, cfg *agent.SpawnConfig,
+	sess *session.Session, startTime time.Time) (*agent.SpawnResult, error) {
+
+	if m.planStrategy == nil {
+		return nil, fmt.Errorf("scheduler module: plan mode requires Deps.Coord to be set")
+	}
+
+	dispatchSessionID := cfg.ParentSessionID
+
+	metaRef, runErr := m.planStrategy.Run(ctx, cfg.Prompt, dispatchSessionID, cfg.Model, cfg.ParentOut, sess.ID)
 
 	terminal := types.Terminal{Reason: types.TerminalCompleted}
 	if runErr != nil {
@@ -131,15 +236,13 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 			Message: runErr.Error(),
 		}
 		if m.deps.Logger != nil {
-			m.deps.Logger.Debug("scheduler module: coordinator returned error",
-				zap.String("mode", mode),
+			m.deps.Logger.Debug("scheduler module: plan coordinator returned error",
 				zap.Error(runErr),
 			)
 		}
 	}
 
 	output := composeOutput(m.deps.WorkspaceRoot, dispatchSessionID, metaRef)
-
 	usage := types.Usage{}
 
 	common.EmitSubagentEnd(cfg.ParentOut, common.EndEvent{
@@ -155,27 +258,16 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	})
 
 	result := common.BuildSpawnResult(sess.ID, sess.ID, output, terminal, usage, 0)
-	// Stamp the L2 coordinator surface so the parent sees which mode ran
-	// — parity with the legacy spawn path (spawn.go line 1021).
-	result.CoordinatorMode = mode
+	result.CoordinatorMode = "plan"
 	if runErr != nil {
-		// Surface the error as-is so the spawn façade can route it
-		// through the standard "module returned error" path. The
-		// subagent.end event has already been emitted above, so the
-		// parent has the terminal envelope before the error pops.
 		return result, runErr
 	}
 	return result, nil
 }
 
 // composeOutput reads the meta.json the Coordinator wrote and composes
-// a parent-visible summary string. Mirrors the legacy
-// metaRefToLoopResult helper from spawn.go so the parent sees the same
-// summary + deliverables block.
-//
-// Returns "" when any required input is missing or the meta is
-// unreadable — the parent then sees a generic completion message rather
-// than a synthetic error.
+// a parent-visible summary string. Used only by the legacy plan path —
+// the react LLM-loop path returns LastMessage text directly.
 func composeOutput(rootDir, sessionID string, ref schedulertypes.MetaRef) string {
 	if rootDir == "" || sessionID == "" || string(ref) == "" {
 		return ""
@@ -211,8 +303,7 @@ func composeOutput(rootDir, sessionID string, ref schedulertypes.MetaRef) string
 }
 
 // statusFromTerminal maps Terminal.Reason to the wire envelope's
-// agent_status string used by EmitSubagentEnd. Mirrors the helper used
-// by every other tier module.
+// agent_status string used by EmitSubagentEnd.
 func statusFromTerminal(t types.Terminal) string {
 	switch t.Reason {
 	case types.TerminalCompleted:

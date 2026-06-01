@@ -435,7 +435,24 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 		// sole entry point for mutating plan.json (create/done/wipe); Promote
 		// is the sole Deliverable source. Without these two L2 cannot drive
 		// the local-files-as-truth state machine.
-		AllowedTools: []string{"freelance", "web_search", "tavily_search", "plan_update", "promote", "read", "edit", "write", "glob", "search_skill", "skill"},
+		// react mode needs the full L2 palette: dispatch (freelance),
+		// research (web_search/tavily_search), workspace inspection
+		// (read/glob/grep), self-output (edit/write), plan state
+		// (plan_update/plan_read), deliverables (promote), skill
+		// discovery (search_skill/skill). NOT included: meta_write /
+		// submit_task_result — those are L3-leaf terminals that need a
+		// task_id, which emma's scheduler tool doesn't allocate. L2
+		// terminates on natural end_turn; its last assistant message
+		// becomes the parent-visible summary (see
+		// principles/scheduler.go "Step 4 — Return").
+		AllowedTools: []string{
+			"freelance",
+			"web_search", "tavily_search",
+			"read", "edit", "write", "glob", "grep",
+			"plan_update", "plan_read",
+			"promote",
+			"search_skill", "skill",
+		},
 	})
 	r.MustRegister(&AgentDefinition{
 		Name:        "plan",

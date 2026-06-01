@@ -105,11 +105,16 @@ const schedulerPrinciples = `# 调度的 Loop
 
 **触发再循环的条件**：检查发现结构性缺失（比如漏了一整块、关键数据错误），且不是单步重派能解决的——回到 Step 1 重新拆解。**整任务循环 ≤ 2 轮**。
 
-## Step 4 — Return
+## Step 4 — Return（终止流程）
 
 emma 已经能从 ` + "`subagent.end.artifacts`" + ` 自动看到所有 L3 提交的 artifact ID 列表，**你的 summary 不要再复制正文**。
 
+**怎么结束**：直接以一条**不带 tool_call 的 assistant message** 输出最终 summary 就会 end_turn。
+**不要调 ` + "`submit_task_result`" + `**（你没有自己的 task_id，调了会报错——这是给 L3 worker 用的工具）。
+
 # 输出格式
+
+最后一条 message 直接写：
 
 ` + "```" + `
 <summary>

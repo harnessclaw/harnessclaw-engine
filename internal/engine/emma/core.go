@@ -374,18 +374,29 @@ func New(
 		RootDir:  workspace.DefaultRootDir(),
 	})
 
-	// Stage 7 scheduler — wraps the legacy enginesched.Coordinator. It
-	// is registered AFTER schedulerCoord is constructed because the
-	// module's Run delegates to that Coordinator. Spawner is passed so
-	// the Stage-8 in-module plan strategy port has a recursive dispatch
-	// path without churning core.go again. See
-	// internal/engine/agent/scheduler/deps.go for the rationale.
+	// Stage 7 scheduler — react mode runs an in-module LLM loop (plan/
+	// dispatch/integrate/check per principles/scheduler.go); plan mode
+	// still wraps the legacy enginesched.Coordinator. react mode needs
+	// the full provider/registry/compactor/retryer/promptBuilder stack
+	// to drive loop.Run; plan mode still needs Coord. Both modes share
+	// the same Deps so emma wires once. Spawner is reserved for the
+	// Stage-8 in-module plan port.
 	schedulerMod := agentscheduler.New(agentscheduler.Deps{
-		Coord:         e.schedulerCoord,
+		Provider:      prov,
+		Registry:      reg,
 		SessionMgr:    mgr,
-		WorkspaceRoot: workspace.DefaultRootDir(),
+		Compactor:     comp,
+		Retryer:       e.retryer,
+		PromptBuilder: promptBuilder,
 		Logger:        logger,
+		MaxTokens:     cfg.MaxTokens,
+		ContextWindow: cfg.ContextWindow,
+		ToolTimeout:   cfg.ToolTimeout,
+		RootDir:       workspace.DefaultRootDir(),
+
+		Coord:         e.schedulerCoord,
 		Spawner:       e.spawner,
+		WorkspaceRoot: workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(schedulerMod)
 
