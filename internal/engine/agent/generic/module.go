@@ -47,6 +47,11 @@ type Deps struct {
 	// ContextWindow is the model's input window in tokens; the loop's
 	// compactor gate uses it.
 	ContextWindow int
+
+	// ToolTimeout caps wall-clock for one tool call inside the loop.
+	// Zero means "no executor-level cap" — the tool's own internal
+	// timeout (e.g. bash's defaultTimeout) still applies.
+	ToolTimeout time.Duration
 }
 
 // Module is the generic-tier sub-agent runtime.
@@ -139,6 +144,7 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		MaxTurns:       maxTurns,
 		MaxTokens:      m.deps.MaxTokens,
 		ContextWindow:  m.deps.ContextWindow,
+		ToolTimeout:    m.deps.ToolTimeout,
 		Out:            cfg.ParentOut,
 		AgentID:        sess.ID,
 		PermChecker:    permChecker,

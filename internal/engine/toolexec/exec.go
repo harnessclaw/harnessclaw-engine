@@ -423,8 +423,12 @@ func (te *ToolExecutor) executeSingle(
 	var cancel context.CancelFunc
 	if lrt, ok := t.(tool.LongRunningTool); ok && lrt.IsLongRunning() {
 		execCtx, cancel = ctx, func() {}
-	} else {
+	} else if te.timeout > 0 {
 		execCtx, cancel = context.WithTimeout(ctx, te.timeout)
+	} else {
+		// timeout <= 0 means "no executor-level cap"; tool's own
+		// internal timeout (e.g. bash's defaultTimeout) still applies.
+		execCtx, cancel = ctx, func() {}
 	}
 	defer cancel()
 
