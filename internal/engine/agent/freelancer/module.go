@@ -208,6 +208,13 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		maxTurns = 25
 	}
 
+	// Sub-agents inherit the parent session's approved tool whitelist.
+	// common.BuildInheritedChecker returns BypassChecker when no
+	// approved tools (sub-agents have no UI to ask).
+	permChecker := common.BuildInheritedChecker(
+		common.SessionApprovedTools(m.deps.SessionMgr, cfg.ParentSessionID),
+	)
+
 	loopRes, err := loop.Run(ctx, &loop.Config{
 		Session:        sess,
 		SystemPrompt:   sysPrompt,
@@ -221,6 +228,8 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		ContextWindow:  m.deps.ContextWindow,
 		Out:            cfg.ParentOut,
 		AgentID:        sess.ID,
+		PermChecker:    permChecker,
+		ApprovalFn:     nil, // sub-agents have no approval UI
 		OnTurnComplete: common.ContractEnforcer(cfg.ExpectedOutputs, contractRetries),
 	})
 

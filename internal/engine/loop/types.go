@@ -13,6 +13,8 @@ import (
 
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/engine/toolexec"
+	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/tool"
@@ -38,6 +40,16 @@ type Config struct {
 
 	Out     chan<- types.EngineEvent
 	AgentID string
+
+	// PermChecker is the permission gate consulted before every tool call.
+	// REQUIRED — passing nil causes runtime panic in toolexec because every
+	// tool path calls permChecker.Check unless a PreChecker auto-allows.
+	PermChecker permission.Checker
+
+	// ApprovalFn handles permission.Ask decisions. Optional; nil falls back
+	// to deny-on-Ask behavior. Sub-agents typically pass nil since they
+	// have no UI to surface approval prompts to.
+	ApprovalFn toolexec.PermissionApprovalFunc
 
 	// OnTurnComplete is invoked at the end of each turn (after assistant
 	// message and tool results are produced). It returns a Decision

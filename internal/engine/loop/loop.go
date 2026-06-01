@@ -28,6 +28,9 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 	if cfg.MaxTurns <= 0 {
 		return nil, fmt.Errorf("loop.Run: MaxTurns must be > 0")
 	}
+	if cfg.PermChecker == nil {
+		return nil, fmt.Errorf("loop.Run: PermChecker required")
+	}
 
 	res := &Result{}
 	logger := cfg.Logger

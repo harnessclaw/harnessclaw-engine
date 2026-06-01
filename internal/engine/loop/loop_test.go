@@ -9,6 +9,7 @@ import (
 
 	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/storage/memory"
@@ -65,6 +66,7 @@ func TestRun_TerminatesWhenHookReturnsTerminal(t *testing.T) {
 		ContextWindow:  200000,
 		Out:            out,
 		AgentID:        "a1",
+		PermChecker:    permission.BypassChecker{},
 		OnTurnComplete: hook,
 	})
 
@@ -136,7 +138,9 @@ func TestRun_InjectsMessagesBeforeNextTurn(t *testing.T) {
 		Retryer:        retry.New(retry.DefaultConfig(), zap.NewNop()),
 		Logger:         zap.NewNop(),
 		MaxTurns:       5, MaxTokens: 100, ContextWindow: 200000,
-		Out: out, AgentID: "a2", OnTurnComplete: hook,
+		Out: out, AgentID: "a2",
+		PermChecker:    permission.BypassChecker{},
+		OnTurnComplete: hook,
 	})
 
 	if err != nil {
@@ -182,7 +186,9 @@ func TestRun_MaxTurnsHit(t *testing.T) {
 		Retryer:        retry.New(retry.DefaultConfig(), zap.NewNop()),
 		Logger:         zap.NewNop(),
 		MaxTurns:       2, MaxTokens: 100, ContextWindow: 200000,
-		Out: out, AgentID: "a3", OnTurnComplete: hook,
+		Out: out, AgentID: "a3",
+		PermChecker:    permission.BypassChecker{},
+		OnTurnComplete: hook,
 	})
 	if res.Terminal.Reason != types.TerminalMaxTurns {
 		t.Errorf("Terminal.Reason = %v, want TerminalMaxTurns", res.Terminal.Reason)

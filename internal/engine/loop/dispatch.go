@@ -14,14 +14,17 @@ import (
 // are NOT handled here — tier modules that need client routing must
 // wrap their own loop call or extend Config with a routing decision.
 //
-// For now, all tools go through server-side execution; client routing
-// is a future extension.
+// cfg.PermChecker is REQUIRED. The toolexec executor calls
+// permChecker.Check on every tool path that isn't pre-allowed; passing
+// nil produces a nil-pointer panic deep inside the tool call. The
+// caller (tier module / loop.Run precondition) is responsible for
+// supplying a non-nil checker — typically BypassChecker for sub-agents
+// or an InheritedChecker seeded with the parent session's approved
+// tool whitelist (see common.BuildInheritedChecker).
+//
+// cfg.ApprovalFn is optional; nil falls back to deny-on-Ask (legacy
+// sub-agent behavior — they have no UI to surface prompts to).
 func dispatchTools(ctx context.Context, cfg *Config, calls []types.ToolCall, logger *zap.Logger) []types.ToolResult {
-	// Permission checker and approval handler are caller's concern;
-	// the loop module is intentionally tier-agnostic so we pass nil
-	// here. Tier modules that need permission gating wrap their own
-	// executor today. Stage-6 work will hoist these into Config when
-	// the migration calls for it.
-	exec := toolexec.NewToolExecutor(cfg.Tools, nil, logger, cfg.ToolTimeout, nil)
+	exec := toolexec.NewToolExecutor(cfg.Tools, cfg.PermChecker, logger, cfg.ToolTimeout, cfg.ApprovalFn)
 	return exec.ExecuteBatch(ctx, calls, cfg.Out)
 }
