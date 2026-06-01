@@ -97,6 +97,11 @@ func (f *QueryEngineFactory) Build(taskID types.TaskID, sessionID string, sp spe
 	}
 	cfg := specToSpawnConfig(sp, rootSID)
 	cfg.TaskID = string(taskID)
+	// ParentAgentID comes from the L2 caller via sp.ParentAgentID. The
+	// translator uses this to parent the L3 card under the L2 card;
+	// without it L3 falls back to the grandparent's tool card and the
+	// UI shows L2/L3 as siblings.
+	cfg.ParentAgentID = sp.ParentAgentID
 	// Use agent resolver to fill SubagentType if not already set.
 	if cfg.SubagentType == "" && f.agentResolver != nil {
 		cfg.SubagentType = f.agentResolver.Resolve(sp.Goal, knownAgents())
@@ -109,17 +114,7 @@ func (f *QueryEngineFactory) Build(taskID types.TaskID, sessionID string, sp spe
 
 	spawner := f.spawner
 	spawnFn := SpawnFn(func(ctx context.Context) (*agent.SpawnResult, error) {
-		// Stamp ParentAgentID from ctx if the L2 caller set it via
-		// agent.WithParentAgentID. Without this the translator's
-		// parentForSubAgent falls back to the grandparent's tool card
-		// and L3 cards end up siblings of L2 in the UI rather than
-		// nested. Copy the cfg first so concurrent task dispatches
-		// don't race on the shared struct.
-		spawnCfg := *cfg
-		if spawnCfg.ParentAgentID == "" {
-			spawnCfg.ParentAgentID = agent.ParentAgentIDFromCtx(ctx)
-		}
-		return spawner.SpawnSync(ctx, &spawnCfg)
+		return spawner.SpawnSync(ctx, cfg)
 	})
 
 	return LeafContext{

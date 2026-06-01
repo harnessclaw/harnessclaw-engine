@@ -94,11 +94,6 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 
 	ctx = common.WithSubAgentStats(ctx, sess.ID, sess.ID,
 		cfg.ParentSessionID, cfg.RootSessionID)
-	// Stamp this L2 agent's id on ctx so the QueryEngineFactory can
-	// fill SpawnConfig.ParentAgentID for every L3 it dispatches — the
-	// translator then parents the L3 card under this L2's card instead
-	// of the grandparent emma's scheduler tool call.
-	ctx = agent.WithParentAgentID(ctx, sess.ID)
 
 	// Reset session id on the spec to the PARENT session id rather than
 	// the sub-session we just built — the legacy Coordinator anchors all
@@ -116,11 +111,16 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		metaRef schedulertypes.MetaRef
 		runErr  error
 	)
+	// sess.ID is this L2 agent's session/card id; the strategy threads
+	// it into TaskSpec.ParentAgentID → QueryEngineFactory → L3
+	// SpawnConfig.ParentAgentID so the translator parents the L3 card
+	// under this L2's card (instead of falling back to emma's tool
+	// call, which would render L2/L3 as siblings in the UI).
 	switch mode {
 	case "plan":
-		metaRef, runErr = m.planStrategy.Run(ctx, cfg.Prompt, dispatchSessionID, cfg.Model, cfg.ParentOut)
+		metaRef, runErr = m.planStrategy.Run(ctx, cfg.Prompt, dispatchSessionID, cfg.Model, cfg.ParentOut, sess.ID)
 	default:
-		metaRef, runErr = m.reactStrategy.Run(ctx, cfg.Prompt, dispatchSessionID, cfg.Model, cfg.ParentOut)
+		metaRef, runErr = m.reactStrategy.Run(ctx, cfg.Prompt, dispatchSessionID, cfg.Model, cfg.ParentOut, sess.ID)
 		mode = "react"
 	}
 

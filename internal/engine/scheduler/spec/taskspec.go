@@ -38,6 +38,17 @@ type TaskSpec struct {
 
 	// Escalation carries context from a prior failed attempt to the next coordinator
 	Escalation *EscalationInfo `json:"escalation,omitempty"`
+
+	// ParentAgentID is the dispatching L2 agent's session id, plumbed
+	// from the L2 module through the strategy so QueryEngineFactory can
+	// stamp it on each L3 SpawnConfig. The translator then parents the
+	// L3 card under this L2's card; without it L3 falls back to the
+	// grandparent (emma's tool call) and the UI renders L2/L3 as
+	// siblings rather than nested.
+	//
+	// Not persisted: this is a runtime wiring hint, not part of the
+	// recorded task definition.
+	ParentAgentID string `json:"-"`
 }
 
 // Hint guides router.Select. Kind takes precedence when non-zero.

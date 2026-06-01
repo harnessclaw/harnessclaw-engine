@@ -45,13 +45,15 @@ func (s *Strategy) Run(
 	sessionID string,
 	model string,
 	outCh chan<- types.EngineEvent,
+	parentAgentID string,
 ) (schedulertypes.MetaRef, error) {
 	sp := spec.TaskSpec{
-		Goal:      goal,
-		Layout:    "flat",
-		SessionID: sessionID,
-		Model:     model,
-		Hint:      spec.Hint{Kind: schedulertypes.KindReact},
+		Goal:          goal,
+		Layout:        "flat",
+		SessionID:     sessionID,
+		Model:         model,
+		Hint:          spec.Hint{Kind: schedulertypes.KindReact},
+		ParentAgentID: parentAgentID,
 	}
 	return s.coord.Run(ctx, sp, outCh)
 }
