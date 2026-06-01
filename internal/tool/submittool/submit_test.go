@@ -112,22 +112,33 @@ func TestSubmit_RejectsInvalidMetaSchema(t *testing.T) {
 	}
 }
 
+// task_id / meta_path moved out of the input schema — they come from
+// ctx.AgentScope (TaskID + derived "tasks/{task_id}/meta.json"). The
+// only client-side input that's still a hard error is an absolute
+// meta_path, which would escape the session sandbox if accepted.
+// Missing fields are validated lazily inside Execute against ctx.
 func TestValidateInput_RejectsMalformed(t *testing.T) {
 	tt := []struct {
-		name string
-		raw  string
+		name      string
+		raw       string
+		wantError bool
 	}{
-		{"missing task_id", `{"meta_path":"tasks/x/meta.json"}`},
-		{"missing meta_path", `{"task_id":"x"}`},
-		{"empty task_id", `{"task_id":" ","meta_path":"tasks/x/meta.json"}`},
-		{"empty meta_path", `{"task_id":"x","meta_path":"  "}`},
-		{"absolute path", `{"task_id":"x","meta_path":"/etc/passwd"}`},
+		{"missing task_id", `{"meta_path":"tasks/x/meta.json"}`, false},
+		{"missing meta_path", `{"task_id":"x"}`, false},
+		{"empty task_id", `{"task_id":" ","meta_path":"tasks/x/meta.json"}`, false},
+		{"empty meta_path", `{"task_id":"x","meta_path":"  "}`, false},
+		{"empty body", `{}`, false},
+		{"absolute path", `{"task_id":"x","meta_path":"/etc/passwd"}`, true},
 	}
 	sub := New()
 	for _, c := range tt {
 		t.Run(c.name, func(t *testing.T) {
-			if err := sub.ValidateInput(json.RawMessage(c.raw)); err == nil {
+			err := sub.ValidateInput(json.RawMessage(c.raw))
+			if c.wantError && err == nil {
 				t.Errorf("expected validation failure for %s", c.name)
+			}
+			if !c.wantError && err != nil {
+				t.Errorf("unexpected validation failure for %s: %v", c.name, err)
 			}
 		})
 	}

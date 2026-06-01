@@ -55,34 +55,26 @@ func (*Tool) IsEnabled() bool               { return true }
 func (*Tool) IsConcurrencySafe() bool       { return false }
 
 func (*Tool) InputSchema() map[string]any {
+	// task_id and meta_path are intentionally NOT required: the
+	// framework injects task_id via ctx.AgentScope.TaskID and derives
+	// meta_path as "tasks/{task_id}/meta.json". LLM-supplied values are
+	// accepted as override but callers should leave them empty —
+	// framework-known fields shouldn't be in LLM input.
 	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"task_id": map[string]any{
-				"type":        "string",
-				"description": "本 task 的 id（与 plan.json / meta.json.task_id 一致）。",
-			},
-			"meta_path": map[string]any{
-				"type":        "string",
-				"description": "meta.json 路径，相对 sessionRoot。典型形如 tasks/{task_id}/meta.json。",
-			},
-		},
-		"required": []string{"task_id", "meta_path"},
+		"type":       "object",
+		"properties": map[string]any{},
 	}
 }
 
 func (*Tool) ValidateInput(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
 	var s submission
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return fmt.Errorf("invalid input: %w", err)
 	}
-	if strings.TrimSpace(s.TaskID) == "" {
-		return fmt.Errorf("task_id is required")
-	}
-	if strings.TrimSpace(s.MetaPath) == "" {
-		return fmt.Errorf("meta_path is required")
-	}
-	if filepath.IsAbs(s.MetaPath) {
+	if s.MetaPath != "" && filepath.IsAbs(s.MetaPath) {
 		return fmt.Errorf("meta_path must be relative to sessionRoot (got absolute path %q)", s.MetaPath)
 	}
 	return nil
@@ -90,21 +82,29 @@ func (*Tool) ValidateInput(raw json.RawMessage) error {
 
 func (*Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
 	var s submission
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return rejected("invalid input: " + err.Error())
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return rejected("invalid input: " + err.Error())
+		}
+	}
+	scope, _ := tool.AgentScopeFromCtx(ctx)
+	// Fall back to ctx-injected values. LLM-supplied values win so
+	// legacy callers and explicit overrides still work.
+	if strings.TrimSpace(s.TaskID) == "" {
+		s.TaskID = scope.TaskID
+	}
+	if strings.TrimSpace(s.MetaPath) == "" && s.TaskID != "" {
+		s.MetaPath = filepath.Join("tasks", s.TaskID, "meta.json")
 	}
 	if strings.TrimSpace(s.TaskID) == "" {
-		return rejected("task_id is required")
+		return rejected("task_id missing: framework did not inject TaskID via ctx — engine configuration error")
 	}
 	if strings.TrimSpace(s.MetaPath) == "" {
-		return rejected("meta_path is required")
+		return rejected("meta_path missing and cannot be derived")
 	}
 
-	// Resolve meta_path against the spawn's SessionRoot. AgentScope is
-	// injected by ToolExecutor immediately before Execute; legacy callers
-	// (no scope) fall back to the meta_path's literal absolute form via
-	// filepath.Clean below.
-	scope, _ := tool.AgentScopeFromCtx(ctx)
+	// Resolve meta_path against the spawn's SessionRoot. scope was
+	// already pulled above for TaskID/MetaPath fallback; reuse it.
 	abs := s.MetaPath
 	if !filepath.IsAbs(abs) {
 		if scope.SessionRoot == "" {
