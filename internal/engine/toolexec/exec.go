@@ -317,7 +317,7 @@ func (te *ToolExecutor) executeSingle(
 	rawInput := json.RawMessage(tc.Input)
 	if err := t.ValidateInput(rawInput); err != nil {
 		return types.ToolResult{
-			Content:   fmt.Sprintf("invalid input for %s: %v", tc.Name, err),
+			Content:   wrapValidateErr(tc.Name, tc.Input, err),
 			IsError:   true,
 			ErrorType: types.ToolErrorInvalidInput,
 		}
@@ -610,6 +610,59 @@ func artifactRefFromMetadata(meta map[string]any) (types.ArtifactRef, bool) {
 		ref.SizeBytes = int(v)
 	}
 	return ref, true
+}
+
+// wrapValidateErr formats a ValidateInput error for the LLM. The common
+// failure mode is max_tokens truncation: the assistant message was cut
+// mid-stream, so the tool_call's arguments JSON is incomplete and either
+// fails to unmarshal ("unexpected end of JSON input") or unmarshals into
+// an empty required field. Recognise that fingerprint and replace the
+// terse parser error with an actionable nudge — otherwise the LLM
+// retries the same oversized write and burns another 8192 tokens.
+//
+// rawInput is the literal tool_input string the LLM produced; we look
+// at its tail for an open quote/bracket to confirm truncation before
+// rewriting the message (so callers who genuinely forgot file_path on a
+// small valid JSON still get the original error).
+func wrapValidateErr(toolName, rawInput string, err error) string {
+	msg := err.Error()
+	if isLikelyTruncation(rawInput, msg) {
+		return fmt.Sprintf(
+			"invalid input for %s: %v\n\n"+
+				"This looks like a max_tokens (8192) truncation — your previous assistant message was cut mid-stream and the JSON arguments never finished. "+
+				"DO NOT retry the same call; you will hit the same cap again. "+
+				"For large file output, split it: write a minimal skeleton first, then use multiple `edit` calls to fill in each section, "+
+				"or use `bash` with a heredoc to append in chunks of ≤ 1500 tokens each.",
+			toolName, err,
+		)
+	}
+	return fmt.Sprintf("invalid input for %s: %v", toolName, err)
+}
+
+// isLikelyTruncation reports whether a ValidateInput failure is most
+// likely caused by max_tokens cutting the LLM's tool_input mid-stream,
+// as opposed to the LLM genuinely producing wrong-shaped input.
+//
+// Signals (any of):
+//   - parser error contains "unexpected end of JSON input"
+//   - input is large (≥ 4KB — close to the per-call output budget) AND
+//     ends inside an unterminated string or container; a small valid
+//     JSON missing a required field is not truncation.
+func isLikelyTruncation(rawInput, errMsg string) bool {
+	if strings.Contains(errMsg, "unexpected end of JSON input") {
+		return true
+	}
+	if len(rawInput) < 4096 {
+		return false
+	}
+	trimmed := strings.TrimRight(rawInput, " \t\r\n")
+	if trimmed == "" {
+		return false
+	}
+	last := trimmed[len(trimmed)-1]
+	// Properly closed JSON ends with `}` or `]`. Anything else on a
+	// large input is suspicious — open quote, bare value, dangling comma.
+	return last != '}' && last != ']'
 }
 
 // truncateForLog clips s to at most n bytes (rune-safe) for log output.
