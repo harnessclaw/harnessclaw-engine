@@ -21,6 +21,7 @@ import (
 	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
 	browsertools "harnessclaw-go/internal/tool/browser"
+	browseragenttool "harnessclaw-go/internal/tool/browseragent"
 	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/pkg/types"
 )
@@ -135,7 +136,7 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	clientAwaitSession := m.clientAwaitSession(cfg)
 	finalEnforcer := common.SubmitResultEnforcerForTool(browsertools.FinalResultToolName, nil, def.OutputSchema, submitRetries)
 	permChecker := common.BuildInheritedChecker(
-		common.SessionApprovedTools(m.deps.SessionMgr, cfg.ParentSessionID),
+		browserAgentApprovedTools(common.SessionApprovedTools(m.deps.SessionMgr, cfg.ParentSessionID), def),
 	)
 	loopRes, err := loop.Run(ctx, &loop.Config{
 		Session:            sess,
@@ -188,6 +189,39 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	})
 
 	return common.BuildSpawnResult(sess.ID, sess.ID, output, terminal, usage, loopRes.NumTurns), nil
+}
+
+func browserAgentApprovedTools(parentApproved []string, def *agent.AgentDefinition) []string {
+	if !containsTool(parentApproved, browseragenttool.ToolName) {
+		return parentApproved
+	}
+	internalTools := def.MaybeAugmentForSubAgent()
+	approved := make([]string, 0, len(parentApproved)+len(internalTools))
+	seen := make(map[string]bool, len(parentApproved)+len(internalTools))
+	for _, toolName := range parentApproved {
+		if seen[toolName] {
+			continue
+		}
+		seen[toolName] = true
+		approved = append(approved, toolName)
+	}
+	for _, toolName := range internalTools {
+		if seen[toolName] {
+			continue
+		}
+		seen[toolName] = true
+		approved = append(approved, toolName)
+	}
+	return approved
+}
+
+func containsTool(tools []string, want string) bool {
+	for _, toolName := range tools {
+		if toolName == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Module) clientAwaitSession(cfg *agent.SpawnConfig) *session.Session {
