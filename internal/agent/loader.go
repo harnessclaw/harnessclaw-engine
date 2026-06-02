@@ -13,9 +13,17 @@ import (
 
 // LoadFromDirectory discovers and loads agent definitions from YAML files
 // in the given directory (e.g., ".harnessclaw/agents/"). Files must have
-// .yaml or .yml extension.
+// .yaml or .yml extension. dir may originate from operator-supplied input
+// (see AgentService.ImportFromYAML / POST /console/v1/agents/import), so
+// traversal segments are rejected and each loaded file is verified to live
+// inside the cleaned root.
 func (r *AgentDefinitionRegistry) LoadFromDirectory(dir string) error {
-	entries, err := os.ReadDir(dir)
+	cleanDir := filepath.Clean(dir)
+	if cleanDir == ".." || strings.HasPrefix(cleanDir, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("invalid agent definitions dir: %q", dir)
+	}
+
+	entries, err := os.ReadDir(cleanDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil // directory doesn't exist — not an error
@@ -27,11 +35,16 @@ func (r *AgentDefinitionRegistry) LoadFromDirectory(dir string) error {
 		if entry.IsDir() {
 			continue
 		}
-		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		name := entry.Name()
+		ext := strings.ToLower(filepath.Ext(name))
 		if ext != ".yaml" && ext != ".yml" {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
+		path := filepath.Join(cleanDir, name)
+		rel, relErr := filepath.Rel(cleanDir, path)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			return fmt.Errorf("agent definition path escapes root: %s", path)
+		}
 		def, err := loadAgentDefinitionFile(path)
 		if err != nil {
 			return fmt.Errorf("load agent definition %s: %w", path, err)
@@ -70,7 +83,7 @@ type yamlSubAgent struct {
 }
 
 func loadAgentDefinitionFile(path string) (*AgentDefinition, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, err
 	}
