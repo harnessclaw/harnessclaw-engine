@@ -937,13 +937,49 @@ func sanitizeToolSequence(msgs []schemas.ChatMessage, logger *zap.Logger) []sche
 		final = append(final, *m)
 	}
 
-	if logger != nil && (len(droppedToolIDs) > 0 || strippedFromAssistants > 0 || emptiedAssistants > 0) {
+	// Pass 4: repair truncated tool_call.Arguments. When max_tokens cuts
+	// a tool_use mid-stream, the stream-end accumulator emits a partial
+	// JSON string like `{"file_path":"a","content":"const {\n  Document`.
+	// Downstream, bifrost-core/providers/anthropic/chat.go:380-387
+	// fallbacks that partial blob into a json.RawMessage when its
+	// compactJSONBytes round-trip fails — and json.RawMessage's
+	// MarshalJSON returns the bytes verbatim, which encoding/json then
+	// rejects with `invalid Marshaler output json syntax at N`. The
+	// entire anthropic request body fails to marshal, the stream dies
+	// with a non-retryable error, and the whole sub-agent crashes —
+	// even though the offending message is several turns back in
+	// history. Rewrite to "{}" preserves the (id, name) pair so the
+	// matching tool_result (already carrying a truncation error) stays
+	// addressable; the LLM sees the truncation hint on the tool_result
+	// side and is told not to retry. Empty Arguments is left as-is
+	// (some providers send no arguments for zero-arg tools).
+	repairedToolCalls := 0
+	for i := range final {
+		m := &final[i]
+		if m.Role != schemas.ChatMessageRoleAssistant || m.ChatAssistantMessage == nil {
+			continue
+		}
+		for j := range m.ChatAssistantMessage.ToolCalls {
+			args := m.ChatAssistantMessage.ToolCalls[j].Function.Arguments
+			if args == "" {
+				continue
+			}
+			if json.Valid([]byte(args)) {
+				continue
+			}
+			m.ChatAssistantMessage.ToolCalls[j].Function.Arguments = "{}"
+			repairedToolCalls++
+		}
+	}
+
+	if logger != nil && (len(droppedToolIDs) > 0 || strippedFromAssistants > 0 || emptiedAssistants > 0 || repairedToolCalls > 0) {
 		logger.Warn("bifrost: sanitized tool message sequence",
 			zap.Int("in", len(msgs)),
 			zap.Int("out", len(final)),
 			zap.Strings("dropped_orphan_tool_ids", droppedToolIDs),
 			zap.Int("stripped_unanswered_tool_calls", strippedFromAssistants),
 			zap.Int("emptied_assistants", emptiedAssistants),
+			zap.Int("repaired_truncated_tool_calls", repairedToolCalls),
 		)
 	}
 	return final

@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -1590,5 +1591,106 @@ func TestSanitizeToolSequence_DropsEmptiedAssistant(t *testing.T) {
 	}
 	if result[1].Role != schemas.ChatMessageRoleAssistant {
 		t.Errorf("msg[1] role = %s, want assistant", result[1].Role)
+	}
+}
+
+// TestSanitizeToolSequence_RepairsTruncatedToolArgs: when the model's
+// tool_use.input JSON gets cut by max_tokens, the stream-end
+// accumulator emits a partial blob like
+// `{"file_path":"a","content":"const {\n`. bifrost-core's anthropic
+// provider falls back to json.RawMessage(<raw bytes>) for that string,
+// and json.RawMessage.MarshalJSON returns the bytes verbatim — which
+// encoding/json then rejects with
+// `invalid Marshaler output json syntax at N`. The entire request body
+// fails to marshal, the stream dies, and the whole sub-agent crashes.
+// The sanitizer must rewrite the bad Arguments to "{}" so the (id,
+// name) pair stays addressable while the body becomes marshalable.
+func TestSanitizeToolSequence_RepairsTruncatedToolArgs(t *testing.T) {
+	core, recorded := observer.New(zap.DebugLevel)
+	logger := zap.New(core)
+
+	truncated := `{"file_path":"/tmp/x.js","content":"const {\n  Document`
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "go"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ToolUseID: "T1", ToolName: "write", ToolInput: truncated},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "T1", ToolName: "write",
+				ToolResult: "max_tokens truncation; do not retry", IsError: true},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "let me try a smaller write"},
+		}},
+	}
+
+	result := convertMessages(msgs, "", false, logger)
+
+	// Find the assistant carrying T1.
+	var assistant *schemas.ChatMessage
+	for i := range result {
+		if result[i].Role == schemas.ChatMessageRoleAssistant &&
+			result[i].ChatAssistantMessage != nil &&
+			len(result[i].ChatAssistantMessage.ToolCalls) > 0 {
+			assistant = &result[i]
+			break
+		}
+	}
+	if assistant == nil {
+		t.Fatal("expected assistant with tool_calls; got none")
+	}
+	tc := assistant.ChatAssistantMessage.ToolCalls[0]
+	if tc.ID == nil || *tc.ID != "T1" {
+		t.Fatalf("tool_call id = %v, want T1", tc.ID)
+	}
+	if tc.Function.Name == nil || *tc.Function.Name != "write" {
+		t.Errorf("tool_call name = %v, want write", tc.Function.Name)
+	}
+	if tc.Function.Arguments != "{}" {
+		t.Errorf("tool_call Arguments = %q, want {} (truncated JSON should be replaced)",
+			tc.Function.Arguments)
+	}
+	if !json.Valid([]byte(tc.Function.Arguments)) {
+		t.Errorf("repaired Arguments must be valid JSON, got %q", tc.Function.Arguments)
+	}
+	if recorded.FilterMessageSnippet("sanitized tool message sequence").Len() == 0 {
+		t.Error("expected sanitizer to log the repair")
+	}
+}
+
+// TestSanitizeToolSequence_LeavesValidArgsAlone: regression guard — a
+// well-formed JSON tool_call must pass through untouched. Otherwise the
+// repair pass would dilute every prompt with `{}` and break tools that
+// actually need their arguments.
+func TestSanitizeToolSequence_LeavesValidArgsAlone(t *testing.T) {
+	good := `{"file_path":"/tmp/x","content":"hi"}`
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "go"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ToolUseID: "T1", ToolName: "write", ToolInput: good},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "T1", ToolName: "write", ToolResult: "ok"},
+		}},
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "done"},
+		}},
+	}
+
+	result := convertMessages(msgs, "", false, nil)
+
+	for _, m := range result {
+		if m.Role != schemas.ChatMessageRoleAssistant || m.ChatAssistantMessage == nil {
+			continue
+		}
+		for _, tc := range m.ChatAssistantMessage.ToolCalls {
+			if tc.Function.Arguments != good {
+				t.Errorf("valid Arguments mutated: got %q, want %q", tc.Function.Arguments, good)
+			}
+		}
 	}
 }
