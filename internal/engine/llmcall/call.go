@@ -2,6 +2,7 @@ package llmcall
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -506,7 +507,47 @@ func CallLLMOnce(
 	}
 
 	callStart := time.Now()
-	stream, err := prov.Chat(callCtx, req)
+
+	// Wrap prov.Chat in a goroutine so the watchdog can actually pull
+	// the trigger. The synchronous form here had a silent failure mode:
+	// when the upstream SDK (bifrost → anthropic stream API) hung in
+	// dial / TLS handshake without honouring callCtx, callCancel from
+	// the first-byte watchdog fired and the ctx flipped to Done, but
+	// prov.Chat was already deep in net.Dial and never noticed — so
+	// the main goroutine stayed parked for the full LLMAPITimeout
+	// (10 min) instead of the FirstByte budget (2 min). Observed: L3
+	// sub_84ffd7c4 turn 24 wedged for >6 min on `llm.call.dial` with
+	// no chunks, no error, no watchdog signal — even though the
+	// watchdog had cancelled callCtx minutes earlier.
+	//
+	// chatResCh is buffered so the inner goroutine never blocks on
+	// send even if we've already given up and returned; the orphaned
+	// stream gets garbage-collected (and any underlying socket closed
+	// by callCtx propagation if the SDK ever does notice).
+	type chatRes struct {
+		stream *provider.ChatStream
+		err    error
+	}
+	chatResCh := make(chan chatRes, 1)
+	go func() {
+		s, e := prov.Chat(callCtx, req)
+		chatResCh <- chatRes{stream: s, err: e}
+	}()
+
+	var (
+		stream *provider.ChatStream
+		err    error
+	)
+	select {
+	case r := <-chatResCh:
+		stream, err = r.stream, r.err
+	case <-callCtx.Done():
+		// Watchdog (or API timeout, or parent ctx) cancelled while
+		// Chat() was still dialing. Don't wait for the SDK to honour
+		// the cancel — return the typed cause now so retry classifies
+		// it correctly.
+		return &LLMCallResult{StreamErr: classifyCtxErr(callCtx, callCtx.Err())}
+	}
 	if err != nil {
 		return &LLMCallResult{StreamErr: classifyCtxErr(callCtx, err)}
 	}
@@ -651,7 +692,51 @@ func CallLLMOnce(
 		result.StreamErr = cause
 	}
 
+	// Defense-in-depth: refuse to surface tool_calls whose Input got cut
+	// mid-stream by max_tokens. The bifrost adapter has its own repair
+	// pass for any survivors that already made it into session.messages
+	// (which is the read path that actually feeds the next request), but
+	// this front-stop keeps the bad blob out of session.messages in the
+	// first place — so log dumps, compactor snapshots, and any
+	// out-of-band consumer of result.ToolCalls all see valid JSON.
+	// Rewrite to "{}" rather than drop the call: the tool result that
+	// loop.Run.dispatchTools synthesizes for this call needs a matching
+	// tool_use to pair with, and the resulting error message
+	// (toolexec's max_tokens truncation explainer) is the LLM's only
+	// signal that retrying the same call will fail again.
+	sanitizeTruncatedToolCalls(result, agentID, out, logger)
+
 	return result
+}
+
+// sanitizeTruncatedToolCalls rewrites any ToolCall whose Input is not
+// valid JSON to "{}", emits a one-line warn log per occurrence, and (if
+// out != nil) sends an AgentNotice so observers / the UI can surface
+// that a tool call was truncated. Empty Input is left as-is — some
+// zero-arg tools legitimately send no arguments and the bifrost layer
+// already handles that case.
+func sanitizeTruncatedToolCalls(result *LLMCallResult, agentID string, out chan<- types.EngineEvent, logger *zap.Logger) {
+	if result == nil || len(result.ToolCalls) == 0 {
+		return
+	}
+	for i := range result.ToolCalls {
+		raw := result.ToolCalls[i].Input
+		if raw == "" {
+			continue
+		}
+		if json.Valid([]byte(raw)) {
+			continue
+		}
+		if logger != nil {
+			logger.Warn("llmcall: tool_call input truncated by max_tokens; rewriting to {}",
+				zap.String("agent_id", agentID),
+				zap.String("tool_use_id", result.ToolCalls[i].ID),
+				zap.String("tool_name", result.ToolCalls[i].Name),
+				zap.Int("partial_bytes", len(raw)),
+			)
+		}
+		result.ToolCalls[i].Input = "{}"
+	}
 }
 
 // classifyCtxErr surfaces the first-byte / API-timeout cause when the
