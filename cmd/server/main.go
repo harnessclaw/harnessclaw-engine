@@ -475,6 +475,20 @@ func main() {
 
 	agentSvc := agent.NewAgentService(agentDefStore, agentDefReg, logger)
 
+	// Pre-tier-system binaries persisted builtins into SQLite; those
+	// stale rows now overwrite the in-code RegisterBuiltins() entries
+	// on LoadAllToRegistry, silently locking in old tool palettes
+	// (e.g. the "scheduler" record from before AgentTypeCoordinator +
+	// freelance). Purge them once at startup so the in-code registry
+	// is authoritative going forward.
+	if n, err := agentDefStore.PurgeBuiltins(context.Background()); err != nil {
+		logger.Warn("failed to purge stale builtin agent definitions from store", zap.Error(err))
+	} else if n > 0 {
+		logger.Info("purged stale builtin agent definitions from store",
+			zap.Int("count", n),
+		)
+	}
+
 	// Register built-in agent definitions into the in-memory registry only;
 	// builtins live in code, not SQLite.
 	agentDefReg.RegisterBuiltins()

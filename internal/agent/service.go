@@ -185,24 +185,19 @@ func (s *AgentService) LoadAllToRegistry(ctx context.Context) error {
 		// AgentTypeCoordinator+freelance-bearing scheduler def with a
 		// legacy "user-facing 小时" record that had agent_type=sync and
 		// 5 unrelated tools.
+		// Defense-in-depth: even after PurgeBuiltins at startup, refuse
+		// to let a store record clobber a reserved tier builtin. The
+		// store's Create now rejects builtins outright, and main runs
+		// PurgeBuiltins on boot, so this branch should almost never
+		// fire in practice — but if it does (e.g. someone hand-edited
+		// the sqlite db), keep the in-memory builtin and warn loudly.
 		if reservedTierName[def.Name] {
 			if existing := s.registry.Get(def.Name); existing != nil {
 				skipped++
-				s.logger.Warn("dropping stale store record for reserved tier name (builtin wins)",
+				s.logger.Warn("ignoring store record for reserved tier name; builtin wins",
 					zap.String("name", def.Name),
 					zap.String("stale_display_name", def.DisplayName),
 				)
-				// Best-effort: also delete the stale record from store
-				// so subsequent runs don't keep logging the warning and
-				// so /agents API doesn't surface a phantom entry. Failure
-				// here is non-fatal — the in-memory registry already has
-				// the right builtin.
-				if delErr := s.store.Delete(ctx, def.Name); delErr != nil {
-					s.logger.Warn("failed to delete stale store record",
-						zap.String("name", def.Name),
-						zap.Error(delErr),
-					)
-				}
 				continue
 			}
 		}

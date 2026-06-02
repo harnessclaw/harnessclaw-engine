@@ -86,6 +86,15 @@ func (s *SQLiteAgentStore) Close() error {
 }
 
 func (s *SQLiteAgentStore) Create(_ context.Context, def *AgentDefinition) (*AgentDefinition, error) {
+	// Builtins live in code (RegisterBuiltins), never in the store.
+	// Persisting them creates a bind that locks in stale tool palettes
+	// across builds — a tool added in a new RegisterBuiltins() entry
+	// would never reach the registry because LoadAllToRegistry would
+	// overwrite with the persisted (old) record. Refuse at the wire.
+	if def.IsBuiltin || def.Source == "builtin" {
+		return nil, fmt.Errorf("agent store: refusing to persist builtin %q (builtins live in code, not SQLite)", def.Name)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -317,6 +326,28 @@ func (s *SQLiteAgentStore) Update(_ context.Context, name string, updates *Agent
 
 	cp := *d
 	return &cp, nil
+}
+
+// PurgeBuiltins hard-deletes every row whose is_builtin=1 OR
+// source='builtin'. Builtins must live in code (RegisterBuiltins), not
+// the store; pre-tier-system versions of this binary used to persist
+// them and those stale rows (e.g. a legacy "小时" scheduler with
+// agent_type=sync and the wrong tool palette) silently overwrite the
+// in-code definition on LoadAllToRegistry. Run once at startup, after
+// store open, before LoadAllToRegistry.
+//
+// Bypasses the soft-delete Delete() flow because builtins shouldn't
+// linger as tombstones either — if RegisterBuiltins drops a name later
+// we want it really gone.
+func (s *SQLiteAgentStore) PurgeBuiltins(_ context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec("DELETE FROM agent_definitions WHERE is_builtin = 1 OR source = 'builtin'")
+	if err != nil {
+		return 0, fmt.Errorf("purge builtins: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 func (s *SQLiteAgentStore) Delete(_ context.Context, name string) error {
