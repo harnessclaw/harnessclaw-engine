@@ -437,9 +437,13 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 		// the local-files-as-truth state machine.
 		// react mode needs the full L2 palette: dispatch (freelance),
 		// research (web_search/tavily_search), workspace inspection
-		// (read/glob/grep), self-output (edit/write), plan state
+		// (read/glob/grep/bash), self-output (edit/write), plan state
 		// (plan_update/plan_read), deliverables (promote), skill
-		// discovery (search_skill/skill). NOT included: meta_write /
+		// discovery (search_skill/skill). bash is included for short
+		// integration / verification ops (`file foo.docx`, `cp` between
+		// task dirs and the session root, `wc -w` on essay drafts)
+		// that fall under "5-minute self-integration" instead of
+		// warranting a sub-agent dispatch. NOT included: meta_write /
 		// submit_task_result — those are L3-leaf terminals that need a
 		// task_id, which emma's scheduler tool doesn't allocate. L2
 		// terminates on natural end_turn; its last assistant message
@@ -448,7 +452,7 @@ func (r *AgentDefinitionRegistry) RegisterBuiltins() {
 		AllowedTools: []string{
 			"freelance",
 			"web_search", "tavily_search",
-			"read", "edit", "write", "glob", "grep",
+			"read", "edit", "write", "glob", "grep", "bash",
 			"plan_update", "plan_read",
 			"promote",
 			"search_skill", "skill",
