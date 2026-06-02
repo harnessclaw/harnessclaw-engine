@@ -7,6 +7,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ### Added
 - Endpoint config now carries an optional `group` display tag (yaml + POST/PATCH/GET). Used by the desktop client to bucket models by series in the Settings UI. Engine ignores the field for routing.
+- `provider.ChatRequest.Purpose` label disambiguates main-loop vs compactor-summarize vs other call sites in bifrost dial logs (`purpose=main_loop` / `purpose=compact_summary`).
+- Bifrost adapter dumps the full `BifrostError` struct plus a shape-only summary of the outgoing request (per-message role / block types / empty markers) whenever upstream returns 4xx, so request-body bugs that trigger HTTP 400 are diagnosable from a single log line.
+- Bifrost stream consumer publishes a per-stream chunk histogram (`chunks_text_delta` / `tool_call_delta` / `reasoning_delta` / `finish` / `usage_only` / `other`) on `MessageEnd` and warns when `output_tokens > 0` but no forwarded channels saw any payload.
+- Loop pre-flight scan flags four request-body pathologies (empty text block, message with zero content blocks, first message not user, orphan tool_result) before sending — emits a single WARN with index/role/kind for each issue.
+- Loop warns when `buildAssistantMessage` produces a message with zero content blocks and DEBUG-traces `Message.Tokens` vs raw usage so compactor false-triggers are diagnosable.
+- LLMCompactor logs the full lifecycle (`compact.should` / `compact.begin` / `compact.summary` / `compact.end`) plus circuit-breaker state changes; summarize requests are tagged `Purpose=compact_summary`.
+- `ContractEnforcerWithLogger` records every branch decision (no-tool-call nudge, budget-exhaustion hard nudge, validation retry, terminate-on-valid-submit) at INFO; freelancer wires its logger so "why did this agent get the '2 turns left' message?" is answerable from logs alone.
+- `subagent_end status=failed` card.close payload now carries an `ErrorInfo` block built from `Terminal.Reason/Message/Turn` so clients render the actual failure cause instead of an opaque "failed" badge.
+
+### Fixed
+- LLMCompactor no longer constructs an `assistant{text:""}` block when summarize returns an empty/whitespace-only string — falls back to `microCompact` and increments the circuit-breaker count, preventing the empty-block from triggering an HTTP 400 on the next turn.
+- LLMCompactor synthetic summary is now a `user`-role message with a `[Prior conversation summary]\n` prefix instead of `assistant`, so Anthropic's "first non-system message must be role=user" constraint holds when the original leading user turn is summarized away.
+- LLMCompactor summarize prompt explicitly tells the model "Reply with the summary text only. Do not call any tools.", reducing the chance of completion tokens landing on a non-text channel that yields an empty summary.
 
 ## [0.0.15] - 2026-05-26
 
