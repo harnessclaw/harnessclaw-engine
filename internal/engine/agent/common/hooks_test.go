@@ -71,7 +71,7 @@ func TestStopOnSubmitResult_ContinuesOnOtherTool(t *testing.T) {
 func TestContractEnforcer_AcceptsValidSubmit(t *testing.T) {
 	enforcer := common.ContractEnforcer([]types.ExpectedOutput{{
 		Role: "result", Required: true,
-	}}, 2)
+	}}, 2, 25)
 
 	goodSubmit := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ToolName: "submit_task_result",
@@ -89,7 +89,7 @@ func TestContractEnforcer_AcceptsValidSubmit(t *testing.T) {
 func TestContractEnforcer_RetryUntilLimitThenFail(t *testing.T) {
 	enforcer := common.ContractEnforcer([]types.ExpectedOutput{{
 		Role: "result", Required: true,
-	}}, /*maxRetries*/ 2)
+	}}, /*maxRetries*/ 2, /*maxTurns*/ 25)
 
 	badSubmit := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ToolName: "submit_task_result",
@@ -119,7 +119,7 @@ func TestContractEnforcer_RetryUntilLimitThenFail(t *testing.T) {
 func TestContractEnforcer_NudgesWhenNoToolCalls(t *testing.T) {
 	enforcer := common.ContractEnforcer([]types.ExpectedOutput{{
 		Role: "result", Required: true,
-	}}, 2)
+	}}, 2, 25)
 	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
 		{Type: types.ContentTypeText, Text: "I'm thinking..."},
 	}}
@@ -132,10 +132,66 @@ func TestContractEnforcer_NudgesWhenNoToolCalls(t *testing.T) {
 	}
 }
 
+func TestContractEnforcer_HardNudgeOnBudgetExhaustion(t *testing.T) {
+	enforcer := common.ContractEnforcer([]types.ExpectedOutput{{
+		Role: "result", Required: true,
+	}}, 2, /*maxTurns*/ 10)
+
+	// LLM is busy with non-submit tools mid-loop — no nudge.
+	busyMsg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ToolUseID: "e1", ToolName: "edit", ToolInput: `{}`},
+	}}
+	if d := enforcer(5, busyMsg, []types.ToolResult{{Content: "ok"}}); len(d.Inject) != 0 {
+		t.Errorf("mid-loop tool_use should not trigger nudge; got %d injects", len(d.Inject))
+	}
+
+	// turn 9 = maxTurns - 1, still in tool_use → hard nudge fires.
+	d := enforcer(9, busyMsg, []types.ToolResult{{Content: "ok"}})
+	if len(d.Inject) != 1 {
+		t.Fatalf("turn 9 with tool_use should inject hard nudge; got %d injects", len(d.Inject))
+	}
+	if got := d.Inject[0].Content[0].Text; !contains(got, "submit_task_result") {
+		t.Errorf("hard nudge should reference submit_task_result; got %q", got)
+	}
+
+	// Already nudged — turn 10 must not nudge again.
+	d2 := enforcer(10, busyMsg, []types.ToolResult{{Content: "ok"}})
+	if len(d2.Inject) != 0 {
+		t.Errorf("hard nudge should fire at most once; turn 10 got %d injects", len(d2.Inject))
+	}
+}
+
+func TestContractEnforcer_NoHardNudgeWhenMaxTurnsZero(t *testing.T) {
+	enforcer := common.ContractEnforcer([]types.ExpectedOutput{{
+		Role: "result", Required: true,
+	}}, 2, /*maxTurns*/ 0)
+	busyMsg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ToolUseID: "e1", ToolName: "edit", ToolInput: `{}`},
+	}}
+	for _, turn := range []int{1, 50, 9999} {
+		if d := enforcer(turn, busyMsg, []types.ToolResult{{Content: "ok"}}); len(d.Inject) != 0 {
+			t.Errorf("maxTurns=0 must disable hard nudge; turn %d got %d injects", turn, len(d.Inject))
+		}
+	}
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && indexOf(s, sub) >= 0
+}
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestContractEnforcer_ContinuesOnOtherTool(t *testing.T) {
 	enforcer := common.ContractEnforcer([]types.ExpectedOutput{{
 		Role: "result", Required: true,
-	}}, 2)
+	}}, 2, 25)
 	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ToolUseID: "r1", ToolName: "read", ToolInput: `{}`},
 	}}

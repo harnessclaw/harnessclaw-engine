@@ -82,6 +82,70 @@ func TestEnsureTaskDir_CreatesPerTaskDir(t *testing.T) {
 	}
 }
 
+func TestScanResidualFiles_ListsFilesNonRecursive(t *testing.T) {
+	rootDir := t.TempDir()
+	cfg := &agent.SpawnConfig{RootSessionID: "s1", TaskID: "t1"}
+	if err := EnsureTaskDir(cfg, rootDir); err != nil {
+		t.Fatalf("EnsureTaskDir: %v", err)
+	}
+	taskDir := rootDir + "/session/s1/tasks/t1"
+	if err := os.WriteFile(taskDir+"/gen.js", []byte("console.log('hi')"), 0o644); err != nil {
+		t.Fatalf("write gen.js: %v", err)
+	}
+	if err := os.WriteFile(taskDir+"/notes.md", []byte("# notes"), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+	// Nested dir + file inside — must NOT appear (non-recursive on purpose).
+	if err := os.MkdirAll(taskDir+"/scratch", 0o755); err != nil {
+		t.Fatalf("mkdir scratch: %v", err)
+	}
+	if err := os.WriteFile(taskDir+"/scratch/inner.txt", []byte("x"), 0o644); err != nil {
+		t.Fatalf("write inner: %v", err)
+	}
+
+	got := ScanResidualFiles(cfg, rootDir)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 top-level files, got %d: %+v", len(got), got)
+	}
+	names := map[string]int64{}
+	for _, f := range got {
+		names[f.Path] = f.SizeBytes
+	}
+	if names[taskDir+"/gen.js"] != int64(len("console.log('hi')")) {
+		t.Errorf("gen.js size wrong: %+v", names)
+	}
+	if names[taskDir+"/notes.md"] != int64(len("# notes")) {
+		t.Errorf("notes.md size wrong: %+v", names)
+	}
+	for path := range names {
+		if strings.Contains(path, "scratch") {
+			t.Errorf("nested file leaked into result: %s", path)
+		}
+	}
+}
+
+func TestScanResidualFiles_NilOnEmptyOrMissing(t *testing.T) {
+	rootDir := t.TempDir()
+	// Missing fields → nil.
+	if got := ScanResidualFiles(nil, rootDir); got != nil {
+		t.Errorf("nil cfg should yield nil, got %+v", got)
+	}
+	if got := ScanResidualFiles(&agent.SpawnConfig{}, rootDir); got != nil {
+		t.Errorf("empty cfg should yield nil, got %+v", got)
+	}
+	// Existing dir but empty → nil (not empty slice — keeps the failure
+	// summary from rendering an empty section).
+	cfg := &agent.SpawnConfig{RootSessionID: "s2", TaskID: "t2"}
+	_ = EnsureTaskDir(cfg, rootDir)
+	if got := ScanResidualFiles(cfg, rootDir); got != nil {
+		t.Errorf("empty dir should yield nil, got %+v", got)
+	}
+	// Dir that was never created → nil (best-effort, no error).
+	if got := ScanResidualFiles(&agent.SpawnConfig{RootSessionID: "nope", TaskID: "nope"}, rootDir); got != nil {
+		t.Errorf("missing dir should yield nil, got %+v", got)
+	}
+}
+
 func TestEnsureTaskDir_NoOpOnMissingFields(t *testing.T) {
 	rootDir := t.TempDir()
 	tests := []struct {

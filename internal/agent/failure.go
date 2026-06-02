@@ -81,6 +81,26 @@ func BuildFailureContent(result *SpawnResult, agentLabel string) string {
 		b.WriteString(excerpt)
 		b.WriteString("\n")
 	}
+	// Resume hint: list every file the failed sub-agent left on disk.
+	// The parent LLM can then choose to `read` one of these and
+	// continue, instead of dispatching a fresh sub-agent that redoes
+	// the work from scratch. Without this, the most common recovery
+	// pattern is "L3 fails after 17 turns of partial progress → L2
+	// silently re-dispatches → L3 #2 redoes 40 turns from zero, never
+	// touching L3 #1's surviving generate_docx.js". Capping the list
+	// at 20 entries keeps a runaway scratch dir from flooding the
+	// failure summary while still naming the interesting outputs.
+	if len(result.ResidualFiles) > 0 {
+		b.WriteString("produced_files (left on disk by the failed run — read and resume rather than restart from scratch):\n")
+		const maxList = 20
+		for i, f := range result.ResidualFiles {
+			if i >= maxList {
+				fmt.Fprintf(&b, "  - ... and %d more\n", len(result.ResidualFiles)-maxList)
+				break
+			}
+			fmt.Fprintf(&b, "  - %s (%d bytes)\n", f.Path, f.SizeBytes)
+		}
+	}
 	// Closing directive — without it some models read the structured
 	// fields and still narrate around them. This sentence is short on
 	// purpose so it survives prompt compaction.

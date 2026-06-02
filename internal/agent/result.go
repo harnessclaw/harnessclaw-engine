@@ -98,6 +98,34 @@ type SpawnResult struct {
 	// never started a tracker. Surfaced so emma can explain "降级原因：
 	// token 预算耗尽 (used 250k of 200k)" without inferring from logs.
 	BudgetSpent BudgetSpent
+
+	// ResidualFiles is the directory listing of the spawn's task_dir at
+	// exit time — every file the sub-agent left on disk, whether or not
+	// it was promoted to a deliverable or submitted via the contract.
+	// Populated by the module on completion (success or failure).
+	//
+	// The point is recovery: when a sub-agent fails mid-task (e.g.
+	// upstream 499 / model_error after 17 turns of work), the L2 parent
+	// gets a tool_result that names exactly which files survived. Before
+	// this, L2 would see only the failure reason and dispatch a fresh
+	// sub-agent that redid the same work from scratch, ignoring the
+	// generate_docx.js sitting on disk from the previous attempt. With
+	// ResidualFiles surfaced via BuildFailureContent, the parent LLM
+	// can decide to read the file and resume instead of restarting.
+	ResidualFiles []ResidualFile
+}
+
+// ResidualFile is a single entry in SpawnResult.ResidualFiles. Kept
+// minimal on purpose: the parent LLM needs the path to read it and the
+// size to decide whether to bother — anything richer (modtime, hash,
+// content snippet) belongs on the caller's next `read` call, not in
+// the failure summary.
+type ResidualFile struct {
+	// Path is the absolute path on disk, ready to be passed back as a
+	// `read({file_path: ...})` argument by the next sub-agent.
+	Path string `json:"path"`
+	// SizeBytes is the file size at scan time.
+	SizeBytes int64 `json:"size_bytes"`
 }
 
 // BudgetSpent is the wire-shape mirror of engine.BudgetSnapshot. Lives

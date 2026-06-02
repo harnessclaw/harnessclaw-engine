@@ -74,3 +74,43 @@ func SeedPrompt(cfg *agent.SpawnConfig, rootDir string) string {
 	}
 	return prelude + cfg.Prompt
 }
+
+// ScanResidualFiles lists every regular file currently living under the
+// spawn's task_dir. Non-recursive: we only surface the top level (where
+// task output is supposed to land) — nested scratch dirs would balloon
+// the failure summary the parent reads. Returns nil (not error) for
+// missing dir or unreadable entries; this is best-effort observability,
+// not a contract.
+//
+// Tier modules call this right before returning their SpawnResult, so
+// the file list reaches the parent via BuildFailureContent and the
+// parent LLM has a chance to resume rather than restart. See
+// agent.SpawnResult.ResidualFiles docstring for the recovery rationale.
+func ScanResidualFiles(cfg *agent.SpawnConfig, rootDir string) []agent.ResidualFile {
+	if cfg == nil || rootDir == "" || cfg.RootSessionID == "" || cfg.TaskID == "" {
+		return nil
+	}
+	dir := workspace.TaskDir(rootDir, cfg.RootSessionID, cfg.TaskID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	out := make([]agent.ResidualFile, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, agent.ResidualFile{
+			Path:      dir + string(os.PathSeparator) + e.Name(),
+			SizeBytes: info.Size(),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}

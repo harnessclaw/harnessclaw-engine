@@ -147,6 +147,18 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	if err != nil {
 		return nil, fmt.Errorf("skill hydration failed for %q: %w", cfg.SubagentType, err)
 	}
+	// Surface what got preloaded. Without this log, operators staring at
+	// a session that never called `load_skill` ask "did the skill body
+	// actually get injected?" — the answer is "yes, candidates are
+	// preloaded directly into <loaded-skills> in the system prompt;
+	// load_skill is only for runtime additions on top of that base".
+	// This line is the cheapest way to make that distinction visible.
+	if m.deps.Logger != nil && (len(candidates) > 0 || skillBlock != "") {
+		m.deps.Logger.Info("freelancer: skill body preloaded",
+			zap.Strings("candidate_skills", candidates),
+			zap.Int("block_chars", len(skillBlock)),
+		)
+	}
 
 	// freelancer is L3 leaf: strip dispatch tools so it cannot recursively
 	// spawn. No per-spawn AllowedTools whitelist: SpawnConfig only
@@ -231,10 +243,18 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 
 	maxTurns := cfg.MaxTurns
 	if maxTurns <= 0 {
-		// freelancer typically needs more turns than fixed-role L3
-		// agents: it discovers skills, loads them, then executes the
-		// underlying task.
-		maxTurns = 25
+		// freelancer cap. Earlier defaults (25 → 40) gave the LLM
+		// enough rope to spend an entire session bouncing between
+		// bash → write → edit → bash without producing a deliverable,
+		// then run into the wall having submitted nothing. 20 turns is
+		// enough for a typical "preload skill body → generate
+		// script → run it → submit" flow (3-4 tool calls per step ×
+		// 4 steps = ~16 turns), and small enough that ContractEnforcer's
+		// budget-exhaustion nudge (fires at maxTurns-2 = turn 18)
+		// arrives before the LLM has time to dig itself into yet
+		// another rabbit hole. Tasks that genuinely need more headroom
+		// must pass cfg.MaxTurns explicitly from the L2 dispatch site.
+		maxTurns = 20
 	}
 
 	// Sub-agents inherit the parent session's approved tool whitelist.
@@ -263,7 +283,7 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		PermChecker:    permChecker,
 		ApprovalFn:     nil, // sub-agents have no approval UI
 		AgentScope:     common.BuildAgentScope(cfg, m.deps.RootDir, "freelancer"),
-		OnTurnComplete: common.ContractEnforcer(cfg.ExpectedOutputs, contractRetries),
+		OnTurnComplete: common.ContractEnforcer(cfg.ExpectedOutputs, contractRetries, maxTurns),
 	})
 
 	if err != nil {
@@ -294,7 +314,9 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		ParentSessionID: cfg.ParentSessionID,
 	})
 
-	return common.BuildSpawnResult(sess.ID, sess.ID, output, terminal, usage, loopRes.NumTurns), nil
+	res := common.BuildSpawnResult(sess.ID, sess.ID, output, terminal, usage, loopRes.NumTurns)
+	res.ResidualFiles = common.ScanResidualFiles(cfg, m.deps.RootDir)
+	return res, nil
 }
 
 // statusFromTerminal maps Terminal.Reason to the wire envelope's

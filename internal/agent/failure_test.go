@@ -70,6 +70,76 @@ func TestBuildFailureContent_SurfacesProviderError(t *testing.T) {
 	}
 }
 
+// TestBuildFailureContent_ListsResidualFilesForRecovery pins the
+// recovery-from-failure surface: when a sub-agent fails after writing
+// real files to disk (e.g. a half-finished docx-generator script), the
+// failure message must name those files so the parent LLM can resume
+// from them instead of dispatching a fresh sub-agent that redoes the
+// work from zero. Observed pre-fix: L3 #1 failed after writing a 4.5KB
+// generate_docx.js; L2 silently re-dispatched and L3 #2 burned 40
+// turns rewriting the exact same script without ever reading the
+// surviving file.
+func TestBuildFailureContent_ListsResidualFilesForRecovery(t *testing.T) {
+	res := &SpawnResult{
+		Terminal: &types.Terminal{Reason: types.TerminalModelError, Message: "499 client_disconnected", Turn: 17},
+		ResidualFiles: []ResidualFile{
+			{Path: "/sessions/x/tasks/t1/generate_docx.js", SizeBytes: 4564},
+			{Path: "/sessions/x/tasks/t1/notes.md", SizeBytes: 312},
+		},
+	}
+	got := BuildFailureContent(res, "freelancer")
+
+	for _, must := range []string{
+		"produced_files",
+		"generate_docx.js",
+		"4564 bytes",
+		"notes.md",
+		"312 bytes",
+		"read and resume", // steering language — without it the LLM tends to ignore the list
+	} {
+		if !strings.Contains(got, must) {
+			t.Errorf("failure content missing %q\nfull text:\n%s", must, got)
+		}
+	}
+}
+
+// TestBuildFailureContent_TruncatesLongResidualLists keeps the failure
+// summary from blowing up when a scratch dir accumulates many files.
+// Without the cap, a long-running sub-agent that wrote 200 intermediate
+// files would shove 200 lines into the parent's tool_result and crowd
+// out the actually useful fields above (reason, contract_failures).
+func TestBuildFailureContent_TruncatesLongResidualLists(t *testing.T) {
+	files := make([]ResidualFile, 25)
+	for i := range files {
+		files[i] = ResidualFile{Path: "/x/f", SizeBytes: 1}
+	}
+	res := &SpawnResult{
+		Terminal:      &types.Terminal{Reason: types.TerminalModelError},
+		ResidualFiles: files,
+	}
+	got := BuildFailureContent(res, "freelancer")
+	if !strings.Contains(got, "... and 5 more") {
+		t.Errorf("expected truncation marker '... and 5 more'; got:\n%s", got)
+	}
+	if strings.Count(got, "/x/f") > 20 {
+		t.Errorf("listed more than 20 paths; truncation cap broken")
+	}
+}
+
+// TestBuildFailureContent_NoResidualSectionWhenEmpty keeps the noise
+// floor low: a sub-agent that failed before writing anything must NOT
+// emit an empty "produced_files:" header — that would just confuse the
+// LLM.
+func TestBuildFailureContent_NoResidualSectionWhenEmpty(t *testing.T) {
+	res := &SpawnResult{
+		Terminal: &types.Terminal{Reason: types.TerminalModelError},
+	}
+	got := BuildFailureContent(res, "freelancer")
+	if strings.Contains(got, "produced_files") {
+		t.Errorf("must not render produced_files section when nothing was written; got:\n%s", got)
+	}
+}
+
 func TestBuildFailureContent_IncludesContractFailures(t *testing.T) {
 	// Distinct failure mode: the sub-agent finished but contract validation
 	// rejected the submitted artifacts. Each rejection reason must reach
