@@ -50,7 +50,7 @@ func TestCallLLMOnce_EmitsToolPlanningOnFirstChunk(t *testing.T) {
 	}
 
 	planningOut := make(chan types.EngineEvent, 8)
-	CallLLMOnce(context.Background(), prov, &provider.ChatRequest{}, nil, planningOut, LLMCallTimeouts{}, zap.NewNop())
+	CallLLMOnce(context.Background(), prov, &provider.ChatRequest{}, nil, planningOut, LLMCallTimeouts{}, zap.NewNop(), "test_agent")
 	close(planningOut)
 
 	var sawPlanning bool
@@ -85,7 +85,7 @@ func TestCallLLMOnce_EmitsProgressAboveThreshold(t *testing.T) {
 	}
 
 	planningOut := make(chan types.EngineEvent, 8)
-	CallLLMOnce(context.Background(), prov, &provider.ChatRequest{}, nil, planningOut, LLMCallTimeouts{}, zap.NewNop())
+	CallLLMOnce(context.Background(), prov, &provider.ChatRequest{}, nil, planningOut, LLMCallTimeouts{}, zap.NewNop(), "test_agent")
 	close(planningOut)
 
 	var planningCount, progressCount int

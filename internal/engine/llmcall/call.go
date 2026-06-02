@@ -208,7 +208,7 @@ func CallLLM(
 		)
 		// planningOut is threaded through so planning events fire live
 		// even during retried attempts (and are retracted on each retry).
-		attemptResult := CallLLMOnce(ctx, prov, req, attemptOut, planningOut, timeouts, logger)
+		attemptResult := CallLLMOnce(ctx, prov, req, attemptOut, planningOut, timeouts, logger, agentID)
 		elapsed := time.Since(startedAt)
 
 		if attemptResult.StreamErr == nil {
@@ -375,11 +375,12 @@ func CallLLM(
 	if err == nil && out != nil && result != nil {
 		// Skip text replay when attempt 1 already streamed it live.
 		if !streamedLive && result.TextBuf != "" {
-			out <- types.EngineEvent{Type: types.EngineEventText, Text: result.TextBuf}
+			out <- types.EngineEvent{Type: types.EngineEventText, AgentID: agentID, Text: result.TextBuf}
 		}
 		for _, tc := range result.ToolCalls {
 			out <- types.EngineEvent{
 				Type:      types.EngineEventToolUse,
+				AgentID:   agentID,
 				ToolUseID: tc.ID,
 				ToolName:  tc.Name,
 				ToolInput: tc.Input,
@@ -468,6 +469,7 @@ func CallLLMOnce(
 	planningOut chan<- types.EngineEvent,
 	timeouts LLMCallTimeouts,
 	logger *zap.Logger,
+	agentID string,
 ) *LLMCallResult {
 	if timeouts.API > 0 {
 		var cancel context.CancelFunc
@@ -568,7 +570,7 @@ func CallLLMOnce(
 			lastChunkMu.Unlock()
 			result.TextBuf += evt.Text
 			if out != nil {
-				out <- types.EngineEvent{Type: types.EngineEventText, Text: evt.Text}
+				out <- types.EngineEvent{Type: types.EngineEventText, AgentID: agentID, Text: evt.Text}
 			}
 		case types.StreamEventToolUse:
 			if evt.ToolCall != nil {
@@ -584,6 +586,7 @@ func CallLLMOnce(
 				if out != nil {
 					out <- types.EngineEvent{
 						Type:      types.EngineEventToolUse,
+						AgentID:   agentID,
 						ToolUseID: evt.ToolCall.ID,
 						ToolName:  evt.ToolCall.Name,
 						ToolInput: evt.ToolCall.Input,

@@ -83,6 +83,14 @@ type sessionState struct {
 	tools         map[string]string         // tool_use_id → tool card_id
 	subagents     map[string]*emitv2.Emitter // agent_id → child Emitter (sub-agent scope)
 	subAgentCard  map[string]string         // agent_id → agent card_id
+
+	// agentMessageCard tracks the currently-open message card for each
+	// sub-agent (keyed by agent_id == card_id from EmitSubagentStart).
+	// Without this, sub-agent LLM text events (EngineEventText etc.) all
+	// land on the main session's messageCardID and the user sees L2/L3
+	// turn-of-mind text bleed into emma's message stream, defeating the
+	// nested-card hierarchy that EmitSubagentStart sets up.
+	agentMessageCard map[string]string
 	plans         map[string]string         // plan_id → plan card_id
 	steps         map[string]string         // step_id → step card_id
 	pendingPerm   map[string]string         // request_id → ⟨request_id⟩ (for prompt.reply correlation)
@@ -138,19 +146,51 @@ type sessionState struct {
 
 func newSessionState() *sessionState {
 	return &sessionState{
-		tools:        make(map[string]string),
-		subagents:    make(map[string]*emitv2.Emitter),
-		subAgentCard: make(map[string]string),
-		plans:        make(map[string]string),
-		steps:        make(map[string]string),
-		pendingPerm:  make(map[string]string),
-		askQuestion:  make(map[string]string),
+		tools:            make(map[string]string),
+		subagents:        make(map[string]*emitv2.Emitter),
+		subAgentCard:     make(map[string]string),
+		agentMessageCard: make(map[string]string),
+		plans:            make(map[string]string),
+		steps:            make(map[string]string),
+		pendingPerm:      make(map[string]string),
+		askQuestion:      make(map[string]string),
 		pendingPlan:         make(map[string]string),
 		pendingStepDecision: make(map[string]string),
 		pausedCards:         make(map[string][]string),
 		toolsFromPlanning:   make(map[string]bool),
 		toolNames:           make(map[string]string),
 	}
+}
+
+// scopeFor resolves the Emitter + current message-card-id for events
+// attributed to agentID. Sub-agent scope is keyed by agentID == card_id
+// of the EmitSubagentStart card; main scope is the session emitter
+// itself (agentID empty / "main" / unknown sub-agent).
+//
+// getMsgCardID / setMsgCardID are paired: getMsgCardID returns "" when
+// no message card is open for this scope; setMsgCardID stores the new
+// card id under the same key. Callers must hold s.mu.
+func (s *sessionState) scopeFor(agentID string, mainEm *emitv2.Emitter) (
+	em *emitv2.Emitter,
+	getMsgCardID func() string,
+	setMsgCardID func(string),
+) {
+	if agentID != "" && agentID != "main" {
+		if subEm, ok := s.subagents[agentID]; ok && subEm != nil {
+			return subEm,
+				func() string { return s.agentMessageCard[agentID] },
+				func(id string) {
+					if id == "" {
+						delete(s.agentMessageCard, agentID)
+					} else {
+						s.agentMessageCard[agentID] = id
+					}
+				}
+		}
+	}
+	return mainEm,
+		func() string { return s.messageCardID },
+		func(id string) { s.messageCardID = id }
 }
 
 // askUserQuestionToolName mirrors internal/tool/askuserquestion.ToolName.
@@ -253,26 +293,37 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 
 	switch ev.Type {
 	// ----- Message lifecycle -----
+	// Each case below routes via scopeFor(ev.AgentID) so sub-agent LLM
+	// text streams onto the sub-agent's own message card (parented to
+	// the agent card) instead of bleeding into the main session
+	// message and losing the nested-hierarchy visualisation in the UI.
 	case types.EngineEventMessageStart:
 		t.openTurnIfNeeded(s, em)
-		if s.messageCardID != "" {
+		scopeEm, getMsg, setMsg := s.scopeFor(ev.AgentID, em)
+		if cur := getMsg(); cur != "" {
 			// M4 已经预开了，只补 model 字段
-			em.Card(emitv2.CardMessage, s.messageCardID).Set(map[string]any{
+			scopeEm.Card(emitv2.CardMessage, cur).Set(map[string]any{
 				"model": ev.Model,
 			})
 			return
 		}
 		mid := nonEmpty(ev.MessageID, "msg_"+emitv2.NewCardID(emitv2.CardMessage))
-		s.messageCardID = mid
-		em.Card(emitv2.CardMessage, mid).Add(emitv2.MessagePayload{
+		setMsg(mid)
+		parent := s.turnCardID
+		if ev.AgentID != "" && ev.AgentID != "main" {
+			if agentCard := s.subAgentCard[ev.AgentID]; agentCard != "" {
+				parent = agentCard
+			}
+		}
+		scopeEm.Card(emitv2.CardMessage, mid).Add(emitv2.MessagePayload{
 			Role:  "assistant",
 			Model: ev.Model,
-		}, emitv2.WithParent(s.turnCardID))
+		}, emitv2.WithParent(parent))
 
 	case types.EngineEventText:
 		t.openTurnIfNeeded(s, em)
-		t.openMessageIfNeeded(s, em, "")
-		em.Card(emitv2.CardMessage, s.messageCardID).Append(emitv2.ChannelText, ev.Text)
+		scopeEm, getMsg, _ := t.openAgentMessageIfNeeded(s, em, ev.AgentID, "")
+		scopeEm.Card(emitv2.CardMessage, getMsg()).Append(emitv2.ChannelText, ev.Text)
 
 	case types.EngineEventToolUse:
 		// LLM signalled it wants to call a tool. The tool input streams
@@ -282,15 +333,19 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 
 	case types.EngineEventMessageDelta:
 		// Carries stop_reason + usage. We attach via Set on the open message.
-		if s.messageCardID == "" {
+		scopeEm, getMsg, _ := s.scopeFor(ev.AgentID, em)
+		cur := getMsg()
+		if cur == "" {
 			return
 		}
-		em.Card(emitv2.CardMessage, s.messageCardID).Set(map[string]any{
+		scopeEm.Card(emitv2.CardMessage, cur).Set(map[string]any{
 			"stop_reason": ev.StopReason,
 		})
 
 	case types.EngineEventMessageStop:
-		if s.messageCardID == "" {
+		scopeEm, getMsg, setMsg := s.scopeFor(ev.AgentID, em)
+		cur := getMsg()
+		if cur == "" {
 			return
 		}
 		var metrics *emitv2.Metrics
@@ -306,8 +361,8 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		if metrics != nil {
 			opts = append(opts, emitv2.WithMetrics(*metrics))
 		}
-		em.Card(emitv2.CardMessage, s.messageCardID).Close(emitv2.StatusOK, opts...)
-		s.messageCardID = ""
+		scopeEm.Card(emitv2.CardMessage, cur).Close(emitv2.StatusOK, opts...)
+		setMsg("")
 
 	// ----- System notices -----
 	case types.EngineEventSystemNotice:
@@ -426,9 +481,10 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 	case types.EngineEventToolStart:
 		t.openTurnIfNeeded(s, em)
 		input := parseJSONObject(ev.ToolInput)
+		scopeEm, getMsg, _ := s.scopeFor(ev.AgentID, em)
 		if existing, ok := s.tools[ev.ToolUseID]; ok {
 			// ToolQueued 已开卡 — 升级到 executing 而非重开
-			em.Card(emitv2.CardTool, existing).Set(map[string]any{
+			scopeEm.Card(emitv2.CardTool, existing).Set(map[string]any{
 				"phase":      emitv2.PhaseExecuting,
 				"phase_hint": t.pickPhrase(s, ev.ToolName, emitv2.PhaseExecuting, 0, nil),
 				"input":      input,
@@ -445,7 +501,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
 		s.tools[ev.ToolUseID] = toolCardID
 		s.toolNames[ev.ToolUseID] = ev.ToolName
-		opts := []emitv2.EmitOpt{emitv2.WithParent(parentForTool(s))}
+		opts := []emitv2.EmitOpt{emitv2.WithParent(parentForToolInScope(s, ev.AgentID, getMsg()))}
 		// Agent-spawning tools (scheduler / task) wrap entire sub-agent
 		// runs that legitimately last tens of minutes. The 120s tool-card
 		// orphan_timeout was incorrect for them — once the inner agent
@@ -458,7 +514,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		if isOrchestrationTool(ev.ToolName) {
 			opts = append(opts, emitv2.WithoutLifecycle())
 		}
-		em.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
+		scopeEm.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
 			Name:      ev.ToolName,
 			Target:    "server",
 			Intent:    ev.Intent,
@@ -505,7 +561,12 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		if errInfo != nil {
 			opts = append(opts, emitv2.WithError(errInfo))
 		}
-		em.Card(emitv2.CardTool, toolCardID).Close(status, opts...)
+		// Route close on the same sub-agent Emitter that opened the
+		// tool card; without this the close envelope's agent_id is
+		// "main" while the open's was the sub-agent's id, and the
+		// front-end watchdog can fail to pair them.
+		closeEm, _, _ := s.scopeFor(ev.AgentID, em)
+		closeEm.Card(emitv2.CardTool, toolCardID).Close(status, opts...)
 
 	case types.EngineEventToolCall:
 		// Client-side tool execution. Two paths:
@@ -881,11 +942,15 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		// callLLM retry after attempt 1 streamed partial text live.
 		// Close the in-progress message card so the stale prefix is
 		// discarded; the next EngineEventText chunk opens a fresh card.
-		if s.messageCardID == "" {
+		// Route by agent so a sub-agent retry doesn't accidentally
+		// reset the main session's message card.
+		scopeEm, getMsg, setMsg := s.scopeFor(ev.AgentID, em)
+		cur := getMsg()
+		if cur == "" {
 			return
 		}
-		em.Card(emitv2.CardMessage, s.messageCardID).Close(emitv2.StatusOK)
-		s.messageCardID = ""
+		scopeEm.Card(emitv2.CardMessage, cur).Close(emitv2.StatusOK)
+		setMsg("")
 
 	case types.EngineEventLLMRetry:
 		// Surface retry status to the wire. Same card-routing logic as
@@ -979,6 +1044,51 @@ func (t *Translator) openMessageIfNeeded(s *sessionState, em *emitv2.Emitter, mo
 		Role:  "assistant",
 		Model: model,
 	}, emitv2.WithParent(s.turnCardID))
+}
+
+// openAgentMessageIfNeeded mirrors openMessageIfNeeded for a specific
+// sub-agent scope: opens a fresh message card on the sub-agent's
+// Emitter (parented to the agent card so the wire envelope's
+// parent_card_id nests under the agent), and records it in
+// agentMessageCard. Falls back to the main-scope helper when agentID
+// resolves to the main emitter.
+func (t *Translator) openAgentMessageIfNeeded(s *sessionState, mainEm *emitv2.Emitter, agentID, model string) (em *emitv2.Emitter, getMsg func() string, setMsg func(string)) {
+	em, getMsg, setMsg = s.scopeFor(agentID, mainEm)
+	if getMsg() != "" {
+		return em, getMsg, setMsg
+	}
+	if em == mainEm {
+		// Main scope still needs a turn anchor.
+		t.openMessageIfNeeded(s, em, model)
+		return em, getMsg, setMsg
+	}
+	// Sub-agent scope: parent the message card to the sub-agent's
+	// agent card so the wire envelope's parent_card_id nests under L2/L3.
+	parentCard := s.subAgentCard[agentID]
+	mid := emitv2.NewCardID(emitv2.CardMessage)
+	em.Card(emitv2.CardMessage, mid).Add(emitv2.MessagePayload{
+		Role:  "assistant",
+		Model: model,
+	}, emitv2.WithParent(parentCard))
+	setMsg(mid)
+	return em, getMsg, setMsg
+}
+
+// parentForToolInScope returns the right tool parent card for the
+// agent whose scope is provided. Prefers the sub-agent's own current
+// message card (so the tool nests under the sub-agent's "回复" card),
+// falls back to the sub-agent card itself, then to the main scope
+// chain (legacy behavior).
+func parentForToolInScope(s *sessionState, agentID, scopeMsgCardID string) string {
+	if scopeMsgCardID != "" {
+		return scopeMsgCardID
+	}
+	if agentID != "" && agentID != "main" {
+		if id := s.subAgentCard[agentID]; id != "" {
+			return id
+		}
+	}
+	return parentForTool(s)
 }
 
 // parentForTool decides what card a tool attaches to. Prefer the most

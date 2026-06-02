@@ -45,6 +45,13 @@ type ToolExecutor struct {
 	// = no restriction (legacy compat).
 	agentScope tool.AgentScope
 
+	// agentID stamps every emitted ToolStart/ToolEnd event with the
+	// owning agent (== card_id in the wire envelope) so the translator
+	// can route tool cards under the correct sub-agent's Emitter
+	// instead of falling back to the main session's emitter. Empty =
+	// route via the main scope (legacy / L1 path).
+	agentID string
+
 	// statsRegistry, if non-nil, gets a RecordToolCall ping on each
 	// tool_end. Set via SetStatsRegistry at construction. nil = no-op
 	// (tests, ad-hoc executors).
@@ -93,6 +100,14 @@ func (te *ToolExecutor) SetTaskContract(c tool.TaskContract) {
 // non-empty; zero-value = no restriction (legacy compat).
 func (te *ToolExecutor) SetAgentScope(s tool.AgentScope) {
 	te.agentScope = s
+}
+
+// SetAgentID stamps every emitted ToolStart/ToolEnd event with this id
+// so the wire translator can route tool cards under the owning
+// sub-agent's Emitter. Without this every sub-agent's tool calls leak
+// into the main agent's stream and the UI loses tier hierarchy.
+func (te *ToolExecutor) SetAgentID(id string) {
+	te.agentID = id
 }
 
 // ExecuteBatch runs a batch of tool calls. Read-only and concurrency-safe tools
@@ -170,15 +185,19 @@ func (te *ToolExecutor) executeSingle(
 	if intent != "" {
 		out <- types.EngineEvent{
 			Type:      types.EngineEventAgentIntent,
+			AgentID:   te.agentID,
 			ToolUseID: tc.ID,
 			ToolName:  tc.Name,
 			Intent:    intent,
 		}
 	}
 
-	// Emit tool_start event.
+	// Emit tool_start event. AgentID lets the translator route the
+	// tool card under this sub-agent's Emitter instead of the main
+	// scope — without it the L2/L3 tool calls render under emma.
 	out <- types.EngineEvent{
 		Type:      types.EngineEventToolStart,
+		AgentID:   te.agentID,
 		ToolUseID: tc.ID,
 		ToolName:  tc.Name,
 		ToolInput: tc.Input,
@@ -194,9 +213,12 @@ func (te *ToolExecutor) executeSingle(
 	defer func() {
 		dur := time.Since(startedAt)
 
-		// Emit tool_end event.
+		// Emit tool_end event. AgentID mirrors tool_start so the
+		// translator closes the tool card under the same Emitter that
+		// opened it.
 		evt := types.EngineEvent{
 			Type:       types.EngineEventToolEnd,
+			AgentID:    te.agentID,
 			ToolUseID:  tc.ID,
 			ToolName:   tc.Name,
 			ToolResult: &result,

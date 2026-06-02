@@ -27,5 +27,6 @@ import (
 func dispatchTools(ctx context.Context, cfg *Config, calls []types.ToolCall, logger *zap.Logger) []types.ToolResult {
 	exec := toolexec.NewToolExecutor(cfg.Tools, cfg.PermChecker, logger, cfg.ToolTimeout, cfg.ApprovalFn)
 	exec.SetAgentScope(cfg.AgentScope)
+	exec.SetAgentID(cfg.AgentID)
 	return exec.ExecuteBatch(ctx, calls, cfg.Out)
 }
