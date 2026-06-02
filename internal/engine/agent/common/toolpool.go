@@ -9,23 +9,40 @@ import (
 // sub-agent cannot recursively spawn deeper.
 var dispatchToolNames = []string{"freelance", "scheduler", "task"}
 
-// BuildToolPool applies the standard 3-layer filter:
-//  1. Start from the full registry.
-//  2. AgentType blacklist (e.g. sync agents get task tool stripped).
-//  3. AllowedTools whitelist (caller-specified set).
-//  4. Optionally strip dispatch tools for strict leaves.
+// BuildToolPool produces the tool pool for a sub-agent.
+//
+// Key precedence rule: **AllowedTools whitelist is authoritative when
+// non-empty, and bypasses the AgentType blacklist**. This matches the
+// design intent recorded in:
+//   - tool/restrictions.go:93 → "freelance: bypassed by AgentDefinition.
+//     AllowedTools whitelist (scheduler)"
+//   - agent/definition.go scheduler block → "tool filter pipeline treats
+//     AllowedTools as authoritative — bypasses the AgentType blacklist
+//     (which would otherwise block task for sync sub-agents)"
+//
+// Without this bypass, AgentTypeSync's AllAgentDisallowed strips
+// `freelance` and `scheduler` before any whitelist can re-admit them,
+// so L2 react LLM never sees the dispatch tools its principles tell it
+// to use (regression observed when L2 in-module loop landed: LLM kept
+// hallucinating `<freelance>...` markup because the schema said the
+// tool was absent).
+//
+// Behavior:
+//  1. start from the full registry
+//  2. whitelist supplied → keep ONLY whitelisted tools, skip blacklist
+//     no whitelist        → apply AgentType blacklist
+//  3. optionally strip dispatch tools for strict leaves (applies after
+//     either branch so a whitelist that mistakenly named a dispatch
+//     tool still gets clamped)
 func BuildToolPool(registry *tool.Registry, allowed []string, agentType tool.AgentType, stripDispatch bool) *tool.ToolPool {
 	pool := tool.NewToolPool(registry, nil, nil)
 
-	// Step 2: AgentType blacklist applied via FilteredFor
-	pool = pool.FilteredFor(agentType)
-
-	// Step 3: AllowedTools whitelist (only when non-empty)
 	if len(allowed) > 0 {
 		pool = pool.FilterByNames(allowed)
+	} else {
+		pool = pool.FilteredFor(agentType)
 	}
 
-	// Step 4: strip dispatch tools for TierSubAgent
 	if stripDispatch {
 		pool = pool.WithoutNames(dispatchToolNames)
 	}
