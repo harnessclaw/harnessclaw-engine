@@ -31,6 +31,19 @@ type ChatRequest struct {
 	ContextWindow int     `json:"context_window,omitempty"`
 	Temperature   float64 `json:"temperature,omitempty"`
 	StopReason    string  `json:"stop_reason,omitempty"`
+
+	// Purpose labels the caller of this Chat() invocation so logs /
+	// metrics can tell apart distinct call sites that share the same
+	// provider. Examples:
+	//   "main_loop"        — the engine loop's per-turn assistant call
+	//   "compact_summary"  — LLMCompactor.summarize asking the model to
+	//                         summarise prior history before compaction
+	//   "emma_persona"     — emma L1 persona turn
+	//   "tool_intent"      — tool-side intent extraction
+	// Empty string is allowed (legacy callers) and rendered as
+	// "<unset>" in adapter dial logs. NOT forwarded to the provider —
+	// purely an observability tag.
+	Purpose string `json:"purpose,omitempty"`
 }
 
 // ToolSchema describes a tool for the LLM.

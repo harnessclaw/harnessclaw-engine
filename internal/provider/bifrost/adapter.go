@@ -274,11 +274,16 @@ func (a *Adapter) Chat(ctx context.Context, req *provider.ChatRequest) (*provide
 	}
 
 	dialStart := time.Now()
+	purpose := req.Purpose
+	if purpose == "" {
+		purpose = "<unset>"
+	}
 	a.logger.Debug("llm.call.dial",
 		zap.String("provider", string(a.providerKey)),
 		zap.String("model", model),
 		zap.Int("messages", len(req.Messages)),
 		zap.Int("tools", len(req.Tools)),
+		zap.String("purpose", purpose),
 	)
 
 	bifReq := a.buildChatRequest(model, req)
@@ -300,9 +305,12 @@ func (a *Adapter) Chat(ctx context.Context, req *provider.ChatRequest) (*provide
 		// On failure, try fallback if available.
 		if a.fallbackModel != "" && !a.IsUsingFallback() {
 			a.logger.Warn("bifrost: primary model failed, trying fallback",
-				zap.String("model", model),
-				zap.String("fallback", a.fallbackModel),
-				zap.String("error", bfErr.Error.Message),
+				append([]zap.Field{
+					zap.String("model", model),
+					zap.String("fallback", a.fallbackModel),
+					zap.String("error", bfErr.Error.Message),
+					zap.Duration("dial_elapsed", time.Since(dialStart)),
+				}, ctxStateFields(ctx)...)...,
 			)
 			a.mu.Lock()
 			a.usingFallback = true
@@ -311,9 +319,46 @@ func (a *Adapter) Chat(ctx context.Context, req *provider.ChatRequest) (*provide
 			bifReq.Model = a.fallbackModel
 			stream, bfErr = a.client.ChatCompletionStreamRequest(bfCtx, bifReq)
 			if bfErr != nil {
+				a.logger.Warn("bifrost: fallback also failed",
+					append([]zap.Field{
+						zap.String("model", a.fallbackModel),
+						zap.String("error", bfErr.Error.Message),
+						zap.Duration("dial_elapsed", time.Since(dialStart)),
+					}, ctxStateFields(ctx)...)...,
+				)
 				return nil, classifyBifrostError(bfErr, "bifrost: fallback also failed")
 			}
 		} else {
+			// Pre-stream failure — log enough to tell whether bifrost saw our
+			// ctx as already cancelled (engine-side) vs surfaced an upstream
+			// network/HTTP error. The "Request cancelled: client disconnected"
+			// bifrost message is ambiguous; ctx.Err() + context.Cause(ctx) at
+			// this exact point disambiguates the two.
+			a.logger.Warn("bifrost: stream request failed",
+				append([]zap.Field{
+					zap.String("model", model),
+					zap.String("purpose", purpose),
+					zap.String("error", bfErr.Error.Message),
+					zap.Duration("dial_elapsed", time.Since(dialStart)),
+					zap.Any("bfErr", formatBifrostError(bfErr)),
+				}, ctxStateFields(ctx)...)...,
+			)
+			// On 4xx surface the full bifrost error structure AND a
+			// shape-only dump of the outgoing request so we can spot
+			// the request-body bug that triggered it (empty text
+			// blocks, non-user first message, orphan tool_result, …).
+			// 4xx is non-retryable — without this dump operators have
+			// to reproduce just to see what the upstream complained
+			// about. Body excerpt is 4kB capped to keep log volume sane.
+			if bfErr.StatusCode != nil && *bfErr.StatusCode >= 400 && *bfErr.StatusCode < 500 {
+				a.logger.Warn("bifrost: 4xx upstream rejection — full error + request shape",
+					zap.Int("status", *bfErr.StatusCode),
+					zap.String("model", model),
+					zap.String("purpose", purpose),
+					zap.ByteString("bfErr_full", marshalBifrostErrorFull(bfErr)),
+					zap.ByteString("request_shape", marshalRequestShape(req)),
+				)
+			}
 			return nil, classifyBifrostError(bfErr, "bifrost: stream request failed")
 		}
 	}
@@ -328,10 +373,20 @@ func (a *Adapter) Chat(ctx context.Context, req *provider.ChatRequest) (*provide
 
 	go func() {
 		defer func() {
-			a.logger.Debug("llm.call.stream_closed",
+			fields := []zap.Field{
 				zap.String("model", model),
 				zap.Duration("total_elapsed", time.Since(dialStart)),
-			)
+			}
+			if streamErr != nil {
+				// Mid-stream error: surface ctx state so we can tell
+				// whether engine-side ctx was already cancelled (and
+				// who cancelled it) when bifrost saw the failure.
+				fields = append(fields, zap.String("stream_err", streamErr.Error()))
+				fields = append(fields, ctxStateFields(ctx)...)
+				a.logger.Warn("llm.call.stream_closed_with_error", fields...)
+			} else {
+				a.logger.Debug("llm.call.stream_closed", fields...)
+			}
 		}()
 		defer close(eventsCh)
 		streamErr = a.consumeStream(stream, eventsCh)
@@ -384,6 +439,31 @@ func (a *Adapter) IsUsingFallback() bool {
 }
 
 // ---------- Internal helpers ----------
+
+// ctxStateFields returns the ctx.Err()/Cause snapshot at the call site.
+// It exists to disambiguate bifrost's "Request cancelled: client disconnected"
+// — which fires for ANY caller-side ctx cancellation — from genuine upstream
+// failures. When ctx is still live, both fields will be present (ctx_err nil,
+// ctx_cause nil) and the failure is genuinely upstream.
+func ctxStateFields(ctx context.Context) []zap.Field {
+	fields := []zap.Field{}
+	if err := ctx.Err(); err != nil {
+		fields = append(fields, zap.String("ctx_err", err.Error()))
+	} else {
+		fields = append(fields, zap.String("ctx_err", "<nil/live>"))
+	}
+	if cause := context.Cause(ctx); cause != nil && cause != ctx.Err() {
+		fields = append(fields, zap.String("ctx_cause", cause.Error()))
+	} else if cause := context.Cause(ctx); cause != nil {
+		fields = append(fields, zap.String("ctx_cause", cause.Error()))
+	} else {
+		fields = append(fields, zap.String("ctx_cause", "<nil>"))
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		fields = append(fields, zap.Duration("ctx_deadline_in", time.Until(dl)))
+	}
+	return fields
+}
 
 // classifyBifrostError converts a Bifrost SDK error into a typed
 // *retry.APIError so the engine-level Retryer can branch on Type /
@@ -446,6 +526,151 @@ func joinStrings(parts []string, sep string) string {
 		result += sep + p
 	}
 	return result
+}
+
+// marshalBifrostErrorFull dumps the entire BifrostError struct as JSON
+// so 4xx forensic logs surface every field the SDK populated — Type /
+// Code / Message / Error.Error() / ExtraFields / Provider / RequestID /
+// EventID — without relying on formatBifrostError's curated subset.
+// Anthropic / OpenAI typically embed their JSON error body verbatim
+// into bfErr.Error.Message; this is the only way to read it back.
+// Returns a JSON byte slice; on marshal failure returns the literal
+// "{}" so logging never panics.
+func marshalBifrostErrorFull(bfErr *schemas.BifrostError) []byte {
+	if bfErr == nil {
+		return []byte("{}")
+	}
+	// Build a copy with the un-marshallable error.Error indirection
+	// replaced by its string form. json.Marshal otherwise drops the
+	// underlying error since `error` is an interface.
+	type errCopy struct {
+		Type    *string `json:"type,omitempty"`
+		Code    *string `json:"code,omitempty"`
+		Message string  `json:"message"`
+		Cause   string  `json:"cause,omitempty"`
+	}
+	dump := struct {
+		StatusCode  *int        `json:"status_code,omitempty"`
+		IsBifrost   bool        `json:"is_bifrost_error,omitempty"`
+		AllowRetry  bool        `json:"allow_retry,omitempty"`
+		Error       errCopy     `json:"error"`
+		ExtraFields any         `json:"extra_fields,omitempty"`
+	}{
+		StatusCode: bfErr.StatusCode,
+		Error: errCopy{
+			Type:    bfErr.Error.Type,
+			Code:    bfErr.Error.Code,
+			Message: bfErr.Error.Message,
+		},
+		ExtraFields: bfErr.ExtraFields,
+	}
+	if bfErr.Error.Error != nil {
+		dump.Error.Cause = bfErr.Error.Error.Error()
+	}
+	b, err := json.Marshal(dump)
+	if err != nil {
+		return []byte("{}")
+	}
+	// 4kB cap — defensive against future huge upstream payloads. Logs
+	// stay human-readable; longer payloads still answer the question.
+	const cap = 4096
+	if len(b) > cap {
+		return append(b[:cap], []byte(`..."}}`)...)
+	}
+	return b
+}
+
+// marshalRequestShape produces a structural-only JSON of the outgoing
+// request: per-message role, content-block types + a short text/tool
+// preview, plus tool-schema names. NO full text bodies — operators
+// don't need it and it inflates 4xx forensic logs by 100×. Targets
+// "spot the empty block / orphan tool_result / non-user first message"
+// scans, which is what we need right after a 400.
+func marshalRequestShape(req *provider.ChatRequest) []byte {
+	if req == nil {
+		return []byte("{}")
+	}
+	type blockShape struct {
+		Type     string `json:"type"`
+		TextLen  int    `json:"text_len,omitempty"`
+		Empty    bool   `json:"empty,omitempty"`
+		ToolName string `json:"tool_name,omitempty"`
+		ToolUseID string `json:"tool_use_id,omitempty"`
+	}
+	type msgShape struct {
+		Index   int          `json:"index"`
+		Role    string       `json:"role"`
+		Tokens  int          `json:"tokens,omitempty"`
+		Preview string       `json:"preview,omitempty"`
+		Blocks  []blockShape `json:"blocks"`
+	}
+	shapes := make([]msgShape, 0, len(req.Messages))
+	for i, m := range req.Messages {
+		ms := msgShape{Index: i, Role: string(m.Role), Tokens: m.Tokens}
+		var firstText string
+		for _, b := range m.Content {
+			bs := blockShape{Type: string(b.Type)}
+			switch b.Type {
+			case types.ContentTypeText:
+				bs.TextLen = len(b.Text)
+				bs.Empty = len(strings.TrimSpace(b.Text)) == 0
+				if firstText == "" && len(b.Text) > 0 {
+					if len(b.Text) > 80 {
+						firstText = b.Text[:80] + "…"
+					} else {
+						firstText = b.Text
+					}
+				}
+			case types.ContentTypeToolUse:
+				bs.ToolName = b.ToolName
+				bs.ToolUseID = b.ToolUseID
+			case types.ContentTypeToolResult:
+				bs.ToolName = b.ToolName
+				bs.ToolUseID = b.ToolUseID
+				bs.TextLen = len(b.ToolResult)
+				bs.Empty = len(strings.TrimSpace(b.ToolResult)) == 0
+			}
+			ms.Blocks = append(ms.Blocks, bs)
+		}
+		ms.Preview = firstText
+		shapes = append(shapes, ms)
+	}
+	toolNames := make([]string, 0, len(req.Tools))
+	for _, t := range req.Tools {
+		toolNames = append(toolNames, t.Name)
+	}
+	out := struct {
+		Purpose      string     `json:"purpose,omitempty"`
+		Model        string     `json:"model,omitempty"`
+		SystemLen    int        `json:"system_len"`
+		MaxTokens    int        `json:"max_tokens,omitempty"`
+		FirstRole    string     `json:"first_role,omitempty"`
+		MsgCount     int        `json:"msg_count"`
+		ToolCount    int        `json:"tool_count"`
+		ToolNames    []string   `json:"tool_names,omitempty"`
+		Messages     []msgShape `json:"messages"`
+	}{
+		Purpose:   req.Purpose,
+		Model:     req.Model,
+		SystemLen: len(req.System),
+		MaxTokens: req.MaxTokens,
+		MsgCount:  len(req.Messages),
+		ToolCount: len(req.Tools),
+		ToolNames: toolNames,
+		Messages:  shapes,
+	}
+	if len(req.Messages) > 0 {
+		out.FirstRole = string(req.Messages[0].Role)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return []byte("{}")
+	}
+	const cap = 8192
+	if len(b) > cap {
+		return append(b[:cap], []byte(`..."}`)...)
+	}
+	return b
 }
 
 func (a *Adapter) currentModel() string {
@@ -586,6 +811,24 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 	var pendingUsage *types.Usage
 	var reasoningBuf strings.Builder
 
+	// Per-stream event histogram. Counts the SHAPE of every upstream
+	// chunk so MessageEnd can publish what actually arrived — without
+	// this we cannot explain "completion_tokens=56 but text_chars=0":
+	// the 56 tokens must have ridden as a chunk type we ignored (no
+	// content + no tool_call + no reasoning + no finish_reason). A
+	// non-zero `chunks_other` on MessageEnd is the signal we silently
+	// dropped real model output. Counters are local to this stream;
+	// no cross-call aggregation.
+	var (
+		chunksTotal       int // every non-nil, non-error chunk we processed
+		chunksUsageOnly   int // pure usage chunk (no choices)
+		chunksTextDelta   int // delta.Content non-empty
+		chunksReasoning   int // delta.Reasoning non-empty
+		chunksToolCalls   int // delta.ToolCalls non-empty
+		chunksFinish      int // FinishReason set on the chunk
+		chunksOther       int // had Choices but produced no signal we forward
+	)
+
 	flushToolCalls := func() {
 		for _, tc := range toolCalls {
 			out <- types.StreamEvent{
@@ -603,22 +846,53 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 	emitMessageEnd := func() {
 		flushToolCalls()
 		reasoning := reasoningBuf.String()
+		// Always publish the stream-shape histogram so MessageEnd can
+		// answer "where did the completion tokens go?". Cheap (six ints)
+		// and the only way to detect silently-dropped upstream channels.
+		histFields := []zap.Field{
+			zap.Int("chunks_total", chunksTotal),
+			zap.Int("chunks_text_delta", chunksTextDelta),
+			zap.Int("chunks_tool_call_delta", chunksToolCalls),
+			zap.Int("chunks_reasoning_delta", chunksReasoning),
+			zap.Int("chunks_finish", chunksFinish),
+			zap.Int("chunks_usage_only", chunksUsageOnly),
+			zap.Int("chunks_other", chunksOther),
+		}
 		if a.logger != nil {
 			if pendingUsage != nil {
 				a.logger.Debug("bifrost stream MessageEnd",
-					zap.String("model", pendingModel),
-					zap.Bool("has_usage", true),
-					zap.Int("input_tokens", pendingUsage.InputTokens),
-					zap.Int("output_tokens", pendingUsage.OutputTokens),
-					zap.Int("cache_read", pendingUsage.CacheRead),
-					zap.Int("thinking", pendingUsage.ThinkingTokens),
-					zap.Int("reasoning_chars", len(reasoning)),
+					append([]zap.Field{
+						zap.String("model", pendingModel),
+						zap.Bool("has_usage", true),
+						zap.Int("input_tokens", pendingUsage.InputTokens),
+						zap.Int("output_tokens", pendingUsage.OutputTokens),
+						zap.Int("cache_read", pendingUsage.CacheRead),
+						zap.Int("thinking", pendingUsage.ThinkingTokens),
+						zap.Int("reasoning_chars", len(reasoning)),
+					}, histFields...)...,
 				)
+				// Smoking-gun guard: usage says the model generated
+				// tokens, but none of our forwarded channels caught
+				// anything. Warn so it leaves a unique fingerprint in
+				// the log even when surrounding INFO is quiet.
+				if pendingUsage.OutputTokens > 0 &&
+					chunksTextDelta == 0 && chunksToolCalls == 0 &&
+					chunksReasoning == 0 && pendingUsage.ThinkingTokens == 0 {
+					a.logger.Warn("bifrost stream: output_tokens > 0 but no text/tool/reasoning deltas — upstream returned a channel we don't forward",
+						append([]zap.Field{
+							zap.String("model", pendingModel),
+							zap.Int("output_tokens", pendingUsage.OutputTokens),
+							zap.String("stop_reason", pendingStopReason),
+						}, histFields...)...,
+					)
+				}
 			} else {
 				a.logger.Warn("bifrost stream MessageEnd without usage",
-					zap.String("model", pendingModel),
-					zap.Bool("has_usage", false),
-					zap.Int("reasoning_chars", len(reasoning)),
+					append([]zap.Field{
+						zap.String("model", pendingModel),
+						zap.Bool("has_usage", false),
+						zap.Int("reasoning_chars", len(reasoning)),
+					}, histFields...)...,
 				)
 			}
 		}
@@ -653,6 +927,7 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 		if chunk.BifrostChatResponse == nil {
 			continue
 		}
+		chunksTotal++
 
 		// Capture model name on the first chunk that reports one.
 		if pendingModel == "" && chunk.BifrostChatResponse.Model != "" {
@@ -702,6 +977,7 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 			// If finish_reason already arrived earlier, this is the last
 			// piece we needed — emit and exit. Otherwise keep reading,
 			// finish_reason may still be coming.
+			chunksUsageOnly++
 			if pendingFinish && pendingUsage != nil {
 				emitMessageEnd()
 				return nil
@@ -711,10 +987,13 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 		choice := chunk.BifrostChatResponse.Choices[0]
 
 		// Streaming delta.
+		chunkHadSignal := false
 		if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
 			delta := choice.ChatStreamResponseChoice.Delta
 
 			if delta.Content != nil && *delta.Content != "" {
+				chunksTextDelta++
+				chunkHadSignal = true
 				out <- types.StreamEvent{
 					Type: types.StreamEventText,
 					Text: *delta.Content,
@@ -734,11 +1013,17 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 			// requires but costs zero tokens.
 			thinkingEnabled := a.enableThinking == nil || *a.enableThinking
 			if thinkingEnabled && delta.Reasoning != nil && *delta.Reasoning != "" {
+				chunksReasoning++
+				chunkHadSignal = true
 				reasoningBuf.WriteString(*delta.Reasoning)
 			}
 
-			for _, tc := range delta.ToolCalls {
-				toolCalls = accumulateToolCall(toolCalls, tc)
+			if len(delta.ToolCalls) > 0 {
+				chunksToolCalls++
+				chunkHadSignal = true
+				for _, tc := range delta.ToolCalls {
+					toolCalls = accumulateToolCall(toolCalls, tc)
+				}
 			}
 		}
 
@@ -746,6 +1031,8 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 		// synthetic chunk (see header comment) lands AFTER this point on
 		// the bifrost chat path, so an early return here would lose it.
 		if choice.FinishReason != nil {
+			chunksFinish++
+			chunkHadSignal = true
 			pendingFinish = true
 			pendingStopReason = mapFinishReason(*choice.FinishReason)
 
@@ -755,6 +1042,14 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 				emitMessageEnd()
 				return nil
 			}
+		}
+		// Track chunks that had Choices but produced nothing we forward —
+		// a non-zero count at MessageEnd means the upstream sent payload
+		// on a channel we silently ignored (refusal text / annotations /
+		// future provider quirk). The Q1-style "56 tokens of nothing"
+		// fingerprint we hit on 2026-06-02 lives here.
+		if !chunkHadSignal {
+			chunksOther++
 		}
 	}
 
