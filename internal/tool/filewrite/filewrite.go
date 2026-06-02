@@ -16,6 +16,25 @@ import (
 
 const toolName = "write"
 
+// maxContentChars is the hard ceiling on a single write's content
+// length. Set at 25000 to accommodate typical document drafts (long
+// essays, full source files, structured config) while still preventing
+// pathological dumps that would blow past the model's per-turn output
+// cap (8192 tokens) when JSON-escaped. Above this we stop accepting
+// the write and tell the LLM to split, because the alternative is
+// watching it retry the same oversized payload until it exhausts
+// max_turns. Observed: a freelancer trying to dump a 6 KB docx-js
+// script into one write hit max_tokens truncation, then the next turn
+// re-fed a partial JSON to bifrost and crashed the entire sub-agent
+// stream.
+//
+// Trade-off at 25000: ASCII-heavy content (English code, plain text)
+// fits comfortably under the 8k-token wall (~6k tokens with overhead).
+// CJK-heavy content at the ceiling will exceed it (~12k tokens) and
+// hit truncation — but the LLM has the schema's maxLength hint plus
+// the truncation guards (defense lines 1+2) to recover.
+const maxContentChars = 25000
+
 // writeInput is the JSON structure the LLM sends to invoke the tool.
 type writeInput struct {
 	FilePath string `json:"file_path"`
@@ -55,8 +74,14 @@ func (t *FileWriteTool) InputSchema() map[string]any {
 				"description": filePathDesc,
 			},
 			"content": map[string]any{
-				"type":        "string",
-				"description": "要写入文件的内容。",
+				"type":      "string",
+				"maxLength": maxContentChars,
+				"description": fmt.Sprintf(
+					"要写入文件的内容；**单次最长 %d 字符**。超出请分多次：先 write 一个最小骨架，"+
+						"再用 edit 增量补全；或用 bash heredoc 分段追加每段 ≤ 1500 token。"+
+						"一次塞超过这个长度会被 max_tokens 截断而失败。",
+					maxContentChars,
+				),
 			},
 		},
 		"required": []string{"file_path", "content"},
@@ -89,6 +114,25 @@ func (t *FileWriteTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 	content := wi.Content
 	if content == "" {
 		return &types.ToolResult{Content: "content is required", IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
+	}
+	if n := len(content); n > maxContentChars {
+		return &types.ToolResult{
+			Content: fmt.Sprintf(
+				"content too large: %d chars > limit %d. A single write must stay under %d "+
+					"chars so the JSON arguments fit inside the model's 8192-token output "+
+					"cap. Split the file: write a minimal skeleton first, then use multiple "+
+					"`edit` calls to insert each section; or use `bash` heredoc to append "+
+					"chunks. DO NOT retry the same payload — it will be truncated again.",
+				n, maxContentChars, maxContentChars,
+			),
+			IsError:   true,
+			ErrorType: types.ToolErrorInvalidInput,
+			Metadata: map[string]any{
+				"file_path":     wi.FilePath,
+				"content_chars": n,
+				"limit":         maxContentChars,
+			},
+		}, nil
 	}
 
 	// Verify target directory exists.
@@ -135,12 +179,13 @@ func pathInScope(path string, allowed []string) bool {
 	return false
 }
 
-const fileWriteDescription = `把内容写入本地文件系统。
+var fileWriteDescription = fmt.Sprintf(`把内容写入本地文件系统。
 
 使用规范：
 - 目标路径已存在文件时会被覆盖。
 - file_path 必须是绝对路径，不能相对路径。
-- 写入前必须确保目标目录存在；不存在请用 Bash 先创建。`
+- 写入前必须确保目标目录存在；不存在请用 Bash 先创建。
+- content 单次最长 %d 字符。超出请分多次：先 write 骨架，再用 edit 增量补全；或用 bash heredoc 追加每段 ≤ 1500 token。一次塞太多会被 max_tokens 截断而失败。`, maxContentChars)
 
 // getDefaultWorkingDir returns the expanded default working directory path
 // for file operations, with cross-platform support.
