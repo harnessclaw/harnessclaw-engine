@@ -111,3 +111,54 @@ func TestLoadAllToRegistry_NewNonBuiltinLoads(t *testing.T) {
 		t.Error("non-builtin definition should load through")
 	}
 }
+
+// Regression: a stale "scheduler" record in the store (e.g. a legacy
+// user-facing 小时 builtin migrated from a pre-tier-system version)
+// must NOT overwrite the in-code RegisterBuiltins L2 scheduler. The
+// L2 scheduler carries the freelance tool in AllowedTools — losing it
+// silently bricks the L1→L2→L3 dispatch chain.
+func TestLoadAllToRegistry_PreservesReservedBuiltins(t *testing.T) {
+	store := newFakeStore()
+	reg := NewAgentDefinitionRegistry()
+	reg.RegisterBuiltins() // populates "scheduler" (L2, coordinator, has freelance)
+
+	// Simulate the stale store record: a "scheduler" with the wrong
+	// tool palette and agent_type that USED to be the user-facing
+	// scheduling assistant.
+	stale := &AgentDefinition{
+		Name:         "scheduler",
+		DisplayName:  "小时",
+		Description:  "stale",
+		AgentType:    "sync",
+		Profile:      "worker",
+		AllowedTools: []string{"read", "write", "edit", "bash", "glob"},
+		Source:       "builtin",
+	}
+	if _, err := store.Create(context.Background(), stale); err != nil {
+		t.Fatalf("create stale: %v", err)
+	}
+
+	svc := NewAgentService(store, reg, zap.NewNop())
+	if err := svc.LoadAllToRegistry(context.Background()); err != nil {
+		t.Fatalf("LoadAllToRegistry: %v", err)
+	}
+
+	got := reg.Get("scheduler")
+	if got == nil {
+		t.Fatal("scheduler vanished after LoadAllToRegistry")
+	}
+	if got.DisplayName == "小时" {
+		t.Error("stale store record overwrote builtin scheduler — L2 dispatch broken")
+	}
+	// Hard check: builtin must still expose freelance.
+	hasFreelance := false
+	for _, name := range got.AllowedTools {
+		if name == "freelance" {
+			hasFreelance = true
+			break
+		}
+	}
+	if !hasFreelance {
+		t.Errorf("L2 scheduler lost freelance tool after LoadAllToRegistry; AllowedTools=%v", got.AllowedTools)
+	}
+}

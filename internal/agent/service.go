@@ -175,7 +175,37 @@ func (s *AgentService) LoadAllToRegistry(ctx context.Context) error {
 		return fmt.Errorf("load agent definitions: %w", err)
 	}
 	loaded := 0
+	skipped := 0
 	for _, def := range defs {
+		// Reserved system-tier names: never let a sqlite-stored record
+		// (likely a stale builtin from before the tier system, or a
+		// user-created clash) overwrite the in-code RegisterBuiltins
+		// version. This was the root of L2's empty tool palette —
+		// LoadAllToRegistry was clobbering the
+		// AgentTypeCoordinator+freelance-bearing scheduler def with a
+		// legacy "user-facing 小时" record that had agent_type=sync and
+		// 5 unrelated tools.
+		if reservedTierName[def.Name] {
+			if existing := s.registry.Get(def.Name); existing != nil {
+				skipped++
+				s.logger.Warn("dropping stale store record for reserved tier name (builtin wins)",
+					zap.String("name", def.Name),
+					zap.String("stale_display_name", def.DisplayName),
+				)
+				// Best-effort: also delete the stale record from store
+				// so subsequent runs don't keep logging the warning and
+				// so /agents API doesn't surface a phantom entry. Failure
+				// here is non-fatal — the in-memory registry already has
+				// the right builtin.
+				if delErr := s.store.Delete(ctx, def.Name); delErr != nil {
+					s.logger.Warn("failed to delete stale store record",
+						zap.String("name", def.Name),
+						zap.Error(delErr),
+					)
+				}
+				continue
+			}
+		}
 		if err := s.registry.Register(def); err != nil {
 			s.logger.Warn("skipping invalid agent definition",
 				zap.String("name", def.Name),
@@ -187,7 +217,23 @@ func (s *AgentService) LoadAllToRegistry(ctx context.Context) error {
 	}
 	s.logger.Info("loaded agent definitions to registry",
 		zap.Int("loaded", loaded),
+		zap.Int("skipped_reserved", skipped),
 		zap.Int("total", len(defs)),
 	)
 	return nil
+}
+
+// reservedTierName lists agent names that map to in-code tier modules
+// (scheduler / freelancer / plan_agent / plan_executor_agent / plan)
+// where the AgentDefinition's tool palette + AgentType are load-bearing
+// for the module's behavior. Store records carrying these names — even
+// validation-passing ones — are silently dropped in LoadAllToRegistry
+// when an in-memory builtin already holds the slot, because overwriting
+// would silently break the dispatch.
+var reservedTierName = map[string]bool{
+	"scheduler":           true,
+	"freelancer":          true,
+	"plan":                true,
+	"plan_agent":          true,
+	"plan_executor_agent": true,
 }
