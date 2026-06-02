@@ -172,7 +172,7 @@ func TestConvertMessages_SystemPrompt(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hello"}}},
 	}
-	result := convertMessages(msgs, "You are helpful.", true)
+	result := convertMessages(msgs, "You are helpful.", true, nil)
 
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages (system + user), got %d", len(result))
@@ -192,7 +192,7 @@ func TestConvertMessages_NoSystemPrompt(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}},
 	}
-	result := convertMessages(msgs, "", true)
+	result := convertMessages(msgs, "", true, nil)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
 	}
@@ -222,7 +222,7 @@ func TestConvertMessages_ToolResult(t *testing.T) {
 			}},
 		},
 	}
-	result := convertMessages(msgs, "", true)
+	result := convertMessages(msgs, "", true, nil)
 
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages (assistant + tool), got %d", len(result))
@@ -248,7 +248,7 @@ func TestConvertMessages_ToolUse(t *testing.T) {
 			},
 		},
 	}
-	result := convertMessages(msgs, "", true)
+	result := convertMessages(msgs, "", true, nil)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
@@ -277,7 +277,7 @@ func TestConvertMessages_SkipSystemRole(t *testing.T) {
 		{Role: types.RoleSystem, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "system text"}}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}},
 	}
-	result := convertMessages(msgs, "", true)
+	result := convertMessages(msgs, "", true, nil)
 	// System role messages in the input are skipped (system prompt is separate param).
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message (system role skipped), got %d", len(result))
@@ -1233,7 +1233,7 @@ func TestConvertMessages_SkipsReasoningWhenDisabled(t *testing.T) {
 	}
 
 	// Include = true → reasoning forwarded.
-	withReasoning := convertMessages(msgs, "", true)
+	withReasoning := convertMessages(msgs, "", true, nil)
 	if len(withReasoning) != 1 || withReasoning[0].ChatAssistantMessage == nil ||
 		withReasoning[0].ChatAssistantMessage.Reasoning == nil ||
 		*withReasoning[0].ChatAssistantMessage.Reasoning != msgs[0].ReasoningContent {
@@ -1242,7 +1242,7 @@ func TestConvertMessages_SkipsReasoningWhenDisabled(t *testing.T) {
 
 	// Include = false → reasoning suppressed (no ChatAssistantMessage at all,
 	// because there are no tool_calls either).
-	withoutReasoning := convertMessages(msgs, "", false)
+	withoutReasoning := convertMessages(msgs, "", false, nil)
 	if len(withoutReasoning) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(withoutReasoning))
 	}
@@ -1475,7 +1475,7 @@ func TestConvertMessages_DropsOrphanToolResponses(t *testing.T) {
 		}},
 	}
 
-	result := convertMessages(msgs, "", false)
+	result := convertMessages(msgs, "", false, nil)
 
 	// Expect: user, assistant(toolcalls B), tool(B). Orphan tool(A) gone.
 	if len(result) != 3 {
@@ -1494,5 +1494,101 @@ func TestConvertMessages_DropsOrphanToolResponses(t *testing.T) {
 		result[2].ChatToolMessage.ToolCallID == nil ||
 		*result[2].ChatToolMessage.ToolCallID != "B" {
 		t.Errorf("msg[2] tool_call_id mismatch: %+v", result[2].ChatToolMessage)
+	}
+}
+
+// TestSanitizeToolSequence_StripsMidStreamUnansweredToolCalls reproduces
+// the failure mode that survives orphan-only dropping:
+//
+//   user -> assistant(text + tool_calls A) -> assistant(text + tool_calls B) -> tool(B)
+//
+// Pass 2 only drops orphan tool messages; it leaves the first assistant
+// with an unanswered tool_call A in the middle of the slice, and
+// DeepSeek/OpenAI then rejects the entire request with
+// `Messages with role 'tool' must be a response to a preceding message
+// with 'tool_calls'`. The fix: strip A from that middle assistant.
+//
+// The LAST assistant (B) is exempt because that's the live state where
+// loop.Run has just received the tool_calls and is about to execute
+// the tools — its tool_calls are legitimately pending, not orphan.
+func TestSanitizeToolSequence_StripsMidStreamUnansweredToolCalls(t *testing.T) {
+	core, recorded := observer.New(zap.DebugLevel)
+	logger := zap.New(core)
+
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "go"},
+		}},
+		// Mid-stream assistant: tool_call A never gets a response.
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "I'll start with A"},
+			{Type: types.ContentTypeToolUse, ToolUseID: "A", ToolName: "read", ToolInput: "{}"},
+		}},
+		// Last assistant: tool_call B is the pending one that the loop
+		// will satisfy in the next dispatch round.
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "now B"},
+			{Type: types.ContentTypeToolUse, ToolUseID: "B", ToolName: "read", ToolInput: "{}"},
+		}},
+	}
+
+	result := convertMessages(msgs, "", false, logger)
+
+	// user + assistant(text only, A stripped) + assistant(text + B kept)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result))
+	}
+	// Middle assistant: tool_call A stripped; text retained.
+	mid := result[1]
+	if mid.Role != schemas.ChatMessageRoleAssistant {
+		t.Errorf("msg[1] role = %s, want assistant", mid.Role)
+	}
+	if mid.ChatAssistantMessage != nil && len(mid.ChatAssistantMessage.ToolCalls) > 0 {
+		t.Errorf("msg[1] should have NO tool_calls (A was unanswered), got %d",
+			len(mid.ChatAssistantMessage.ToolCalls))
+	}
+	// Tail assistant: B kept (pending dispatch).
+	tail := result[2]
+	if tail.ChatAssistantMessage == nil || len(tail.ChatAssistantMessage.ToolCalls) != 1 {
+		t.Fatalf("msg[2] should keep pending tool_call B, got %+v", tail.ChatAssistantMessage)
+	}
+	if tail.ChatAssistantMessage.ToolCalls[0].ID == nil ||
+		*tail.ChatAssistantMessage.ToolCalls[0].ID != "B" {
+		t.Errorf("msg[2] tool_call id = %v, want B", tail.ChatAssistantMessage.ToolCalls[0].ID)
+	}
+
+	// Sanity: the sanitizer logged the strip.
+	if recorded.FilterMessageSnippet("sanitized tool message sequence").Len() == 0 {
+		t.Error("expected sanitizer to log the strip")
+	}
+}
+
+// TestSanitizeToolSequence_DropsEmptiedAssistant: when the stripped
+// assistant had ONLY tool_calls and no text/reasoning, dropping the
+// whole message is necessary — otherwise an empty assistant message
+// with an empty tool_calls array still trips OpenAI's validation
+// because the next tool message has no producer.
+func TestSanitizeToolSequence_DropsEmptiedAssistant(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "go"},
+		}},
+		// Mid-stream assistant: pure tool_call, no text. Unanswered.
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolUse, ToolUseID: "X", ToolName: "read", ToolInput: "{}"},
+		}},
+		// Last assistant: text only — keeps the conversation alive.
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "ok done"},
+		}},
+	}
+
+	result := convertMessages(msgs, "", false, nil)
+
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages (user + tail assistant), got %d", len(result))
+	}
+	if result[1].Role != schemas.ChatMessageRoleAssistant {
+		t.Errorf("msg[1] role = %s, want assistant", result[1].Role)
 	}
 }

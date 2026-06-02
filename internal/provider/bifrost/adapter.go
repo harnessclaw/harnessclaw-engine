@@ -480,7 +480,7 @@ func (a *Adapter) buildChatRequest(model string, req *provider.ChatRequest) *sch
 	bifReq := &schemas.BifrostChatRequest{
 		Provider: a.providerKey,
 		Model:    model,
-		Input:    convertMessages(req.Messages, req.System, includeReasoning),
+		Input:    convertMessages(req.Messages, req.System, includeReasoning, a.logger),
 	}
 
 	params := a.buildParams(req)
@@ -772,7 +772,7 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 // includeReasoning controls whether prior assistant ReasoningContent is
 // echoed back on the wire — disable to avoid input-token inflation when
 // the provider doesn't require it (most don't).
-func convertMessages(msgs []types.Message, systemPrompt string, includeReasoning bool) []schemas.ChatMessage {
+func convertMessages(msgs []types.Message, systemPrompt string, includeReasoning bool, logger *zap.Logger) []schemas.ChatMessage {
 	var result []schemas.ChatMessage
 
 	// System prompt as a system message.
@@ -810,7 +810,7 @@ func convertMessages(msgs []types.Message, systemPrompt string, includeReasoning
 	//   - a sub-agent session is reloaded after partial truncation.
 	// Letting the request fail strands the entire loop turn — better to
 	// drop the orphan and log it so the conversation continues.
-	result = dropOrphanToolMessages(result)
+	result = sanitizeToolSequence(result, logger)
 	// Trim cache_control breakpoints to Anthropic's per-request limit.
 	// Per-block cache_control is added eagerly in convertSingleMessage;
 	// this is a post-conversion clamp so a long multi-image
@@ -820,17 +820,30 @@ func convertMessages(msgs []types.Message, systemPrompt string, includeReasoning
 	return result
 }
 
-// dropOrphanToolMessages removes tool-role entries whose tool_call_id
-// is not opened by some preceding assistant message's tool_calls. See
-// the call site in convertMessages for the failure mode this guards
-// against. Walks the slice once; O(n) time, O(k) extra space where k
-// is the number of pending tool_call_ids.
-func dropOrphanToolMessages(msgs []schemas.ChatMessage) []schemas.ChatMessage {
+// sanitizeToolSequence enforces the OpenAI/DeepSeek constraint that a
+// `tool` role message must be the immediate response to an assistant
+// message that opened the matching tool_call. It does two things:
+//
+//  1. Build the set of tool_call_ids OPENED by all preceding assistant
+//     tool_calls in the slice — `openCalls`.
+//  2. Walk the slice. For each `tool` message, drop it if its
+//     tool_call_id isn't in openCalls.
+//  3. After dropping, scan ASSISTANT messages from the OTHER direction:
+//     if an assistant has tool_calls but the IMMEDIATELY-FOLLOWING
+//     messages don't cover every tool_call_id with a tool response,
+//     the wire request is still invalid (OpenAI: "Every tool_call must
+//     have a matching tool response"). Strip those unanswered tool_calls
+//     from the assistant message (keep its text/reasoning so the
+//     assistant turn isn't lost entirely).
+//
+// Logged at debug with shape info so we can see the orphan source
+// without reproducing the trace.
+func sanitizeToolSequence(msgs []schemas.ChatMessage, logger *zap.Logger) []schemas.ChatMessage {
 	if len(msgs) == 0 {
 		return msgs
 	}
+	// Pass 1: collect every tool_call_id any assistant ever opened.
 	openCalls := make(map[string]bool)
-	out := make([]schemas.ChatMessage, 0, len(msgs))
 	for i := range msgs {
 		m := &msgs[i]
 		if m.Role == schemas.ChatMessageRoleAssistant && m.ChatAssistantMessage != nil {
@@ -840,20 +853,100 @@ func dropOrphanToolMessages(msgs []schemas.ChatMessage) []schemas.ChatMessage {
 				}
 			}
 		}
+	}
+
+	// Pass 2: drop tool messages whose call_id isn't in openCalls, and
+	// record which call_ids actually got answered.
+	answered := make(map[string]bool)
+	out := make([]schemas.ChatMessage, 0, len(msgs))
+	droppedToolIDs := []string{}
+	for i := range msgs {
+		m := &msgs[i]
 		if m.Role == schemas.ChatMessageRoleTool {
 			id := ""
 			if m.ChatToolMessage != nil && m.ChatToolMessage.ToolCallID != nil {
 				id = *m.ChatToolMessage.ToolCallID
 			}
 			if id == "" || !openCalls[id] {
-				// Orphan — drop. Don't consume openCalls here either way;
-				// model may emit multiple tool messages for one call.
+				droppedToolIDs = append(droppedToolIDs, id)
 				continue
 			}
+			answered[id] = true
 		}
 		out = append(out, *m)
 	}
-	return out
+
+	// Pass 3: for any assistant with tool_calls that didn't all get a
+	// response (the SECOND failure mode orphan-only dropping misses),
+	// strip the unanswered tool_calls. Skip the LAST assistant in the
+	// slice — when loop.Run sends the request right after the model
+	// emitted tool_calls but before tool dispatch (which is what every
+	// LLM call does), the tail assistant message legitimately has
+	// "pending" tool_calls and the next message will be the tool
+	// results. Only ASSISTANT-WITH-TOOL_CALLS that have more messages
+	// after them in the slice without a matching tool response are
+	// truly broken.
+	strippedFromAssistants := 0
+	emptiedAssistants := 0
+	final := make([]schemas.ChatMessage, 0, len(out))
+	lastAssistantIdx := -1
+	for i := len(out) - 1; i >= 0; i-- {
+		if out[i].Role == schemas.ChatMessageRoleAssistant {
+			lastAssistantIdx = i
+			break
+		}
+	}
+	for i := range out {
+		m := &out[i]
+		if i != lastAssistantIdx &&
+			m.Role == schemas.ChatMessageRoleAssistant &&
+			m.ChatAssistantMessage != nil &&
+			len(m.ChatAssistantMessage.ToolCalls) > 0 {
+			kept := m.ChatAssistantMessage.ToolCalls[:0]
+			for _, tc := range m.ChatAssistantMessage.ToolCalls {
+				if tc.ID != nil && answered[*tc.ID] {
+					kept = append(kept, tc)
+				} else {
+					strippedFromAssistants++
+				}
+			}
+			m.ChatAssistantMessage.ToolCalls = kept
+			if len(kept) == 0 {
+				// Drop empty wrapper if the message had no text either.
+				hasText := false
+				if m.Content != nil {
+					if m.Content.ContentStr != nil && *m.Content.ContentStr != "" {
+						hasText = true
+					}
+					for _, b := range m.Content.ContentBlocks {
+						if b.Type == schemas.ChatContentBlockTypeText && b.Text != nil && *b.Text != "" {
+							hasText = true
+							break
+						}
+					}
+				}
+				if !hasText {
+					emptiedAssistants++
+					continue
+				}
+				// Has text → keep message but clear the assistant wrapper
+				// so the wire doesn't see an empty `tool_calls` array.
+				m.ChatAssistantMessage = nil
+			}
+		}
+		final = append(final, *m)
+	}
+
+	if logger != nil && (len(droppedToolIDs) > 0 || strippedFromAssistants > 0 || emptiedAssistants > 0) {
+		logger.Warn("bifrost: sanitized tool message sequence",
+			zap.Int("in", len(msgs)),
+			zap.Int("out", len(final)),
+			zap.Strings("dropped_orphan_tool_ids", droppedToolIDs),
+			zap.Int("stripped_unanswered_tool_calls", strippedFromAssistants),
+			zap.Int("emptied_assistants", emptiedAssistants),
+		)
+	}
+	return final
 }
 
 // maxCacheControlBreakpoints is Anthropic's per-request hard limit on

@@ -182,7 +182,7 @@ func TestConvertMessages_TextBlocksHaveNoCacheControl(t *testing.T) {
 			{Type: types.ContentTypeImage, MediaType: "image/png", Data: "AA=="},
 		}},
 	}
-	got := convertMessages(msgs, "", false)
+	got := convertMessages(msgs, "", false, nil)
 	blocks := got[0].Content.ContentBlocks
 	for _, b := range blocks {
 		if b.Type == schemas.ChatContentBlockTypeText && b.CacheControl != nil {
@@ -208,7 +208,7 @@ func TestConvertMessages_CapsAt4Breakpoints(t *testing.T) {
 		mkImageMsg("a"), mkImageMsg("b"), mkImageMsg("c"),
 		mkImageMsg("d"), mkImageMsg("e"), mkImageMsg("f"),
 	}
-	got := convertMessages(msgs, "", false)
+	got := convertMessages(msgs, "", false, nil)
 
 	var imageBlocks []schemas.ChatContentBlock
 	for _, m := range got {
@@ -247,7 +247,7 @@ func TestConvertMessages_NoCapWhenUnderLimit(t *testing.T) {
 			{Type: types.ContentTypeImage, MediaType: "image/png", Data: "b"},
 		}},
 	}
-	got := convertMessages(msgs, "", false)
+	got := convertMessages(msgs, "", false, nil)
 	for _, m := range got {
 		if m.Content == nil || m.Content.ContentBlocks == nil {
 			continue
