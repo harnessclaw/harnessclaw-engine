@@ -274,6 +274,8 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 		ToolTimeout:   cfg.ToolTimeout,
+		LLMAPITimeout:       cfg.LLMAPITimeout,
+		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
 		RootDir:       workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(planAgentMod)
@@ -290,6 +292,8 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 		ToolTimeout:   cfg.ToolTimeout,
+		LLMAPITimeout:       cfg.LLMAPITimeout,
+		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
 		RootDir:       workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(plExecutorMod)
@@ -305,6 +309,8 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 		ToolTimeout:   cfg.ToolTimeout,
+		LLMAPITimeout:       cfg.LLMAPITimeout,
+		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
 		RootDir:       workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(exploreMod)
@@ -320,6 +326,8 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 		ToolTimeout:   cfg.ToolTimeout,
+		LLMAPITimeout:       cfg.LLMAPITimeout,
+		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
 		RootDir:       workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(planDesignMod)
@@ -343,6 +351,8 @@ func New(
 		MaxTokens:         8192,
 		ContextWindow:     cfg.ContextWindow,
 		ToolTimeout:       cfg.ToolTimeout,
+		LLMAPITimeout:       cfg.LLMAPITimeout,
+		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
 		RootDir:           workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(freelancerMod)
@@ -363,6 +373,8 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 		ToolTimeout:   cfg.ToolTimeout,
+		LLMAPITimeout:       cfg.LLMAPITimeout,
+		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
 		RootDir:       workspace.DefaultRootDir(),
 	})
 	e.spawner.SetFallback(genericMod)
@@ -392,6 +404,8 @@ func New(
 		MaxTokens:     cfg.MaxTokens,
 		ContextWindow: cfg.ContextWindow,
 		ToolTimeout:   cfg.ToolTimeout,
+		LLMAPITimeout:       cfg.LLMAPITimeout,
+		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
 		RootDir:       workspace.DefaultRootDir(),
 		DefRegistry:   e.defRegistry,
 

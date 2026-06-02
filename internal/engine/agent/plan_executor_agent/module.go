@@ -46,6 +46,15 @@ type Deps struct {
 	// timeout (e.g. bash's defaultTimeout) still applies.
 	ToolTimeout time.Duration
 
+	// LLMAPITimeout caps total wall-clock for one LLM call inside the
+	// loop. Zero disables — stuck upstream streams will park the goroutine
+	// indefinitely. Tier modules fill this from emma.Config.
+	LLMAPITimeout time.Duration
+
+	// LLMFirstByteTimeout cancels when Chat returned but no first chunk
+	// arrived within the window. Zero disables. Same provenance.
+	LLMFirstByteTimeout time.Duration
+
 	// RootDir is the workspace root (e.g. ~/.harnessclaw/workspace).
 	// Combined with cfg.RootSessionID it yields the SessionRoot that
 	// meta_write / submit_task_result read from ctx.
@@ -152,6 +161,8 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		MaxTokens:      m.deps.MaxTokens,
 		ContextWindow:  m.deps.ContextWindow,
 		ToolTimeout:    m.deps.ToolTimeout,
+		LLMAPITimeout:       m.deps.LLMAPITimeout,
+		LLMFirstByteTimeout: m.deps.LLMFirstByteTimeout,
 		Out:            cfg.ParentOut,
 		AgentID:        sess.ID,
 		PermChecker:    permChecker,

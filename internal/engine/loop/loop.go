@@ -73,7 +73,13 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 		// could see the error but not the message sequence that caused
 		// it.
 		dumpLLMRequest(logger, cfg.AgentID, turn, messages, len(req.Tools), len(cfg.SystemPrompt), cfg.MaxTokens)
-		timeouts := llmcall.LLMTimeouts(0, 0) // use defaults
+		// Honor caller-supplied LLM timeouts. Previously this hard-coded
+		// LLMTimeouts(0, 0) with a "use defaults" comment that did
+		// nothing — the resulting sub-agent loop had NO API or first-
+		// byte watchdog, so a stuck upstream stream (anthropic dial
+		// without any chunk) parked the goroutine forever and only
+		// got reaped 5–10 min later by the wire card orphan watchdog.
+		timeouts := llmcall.LLMTimeouts(cfg.LLMAPITimeout, cfg.LLMFirstByteTimeout)
 		llmRes := llmcall.CallLLM(ctx, cfg.Provider, req, logger, cfg.Retryer,
 			timeouts, cfg.AgentID, cfg.Out, cfg.Out)
 		if llmRes == nil {

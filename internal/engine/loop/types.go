@@ -38,6 +38,24 @@ type Config struct {
 	ContextWindow int
 	ToolTimeout   time.Duration
 
+	// LLMAPITimeout caps the wall-clock duration of one LLM Chat call
+	// (full request → terminal stream chunk). Zero leaves the watchdog
+	// disarmed — appropriate for tests but DANGEROUS in production: a
+	// stuck upstream stream (no chunks arriving) blocks the loop
+	// forever and the orphan watchdog only catches it 5–10 minutes
+	// later via the card layer. Tier modules fill this from
+	// emma.Config.LLMAPITimeout so sub-agent loops inherit the same
+	// "request_timeout: 900s" semantics that protect the L1 loop.
+	LLMAPITimeout time.Duration
+
+	// LLMFirstByteTimeout cancels the call when Chat() returned ok but
+	// no stream chunk arrived within this window. Catches "gateway
+	// accepted the request but never emits bytes" black-hole failures
+	// without limiting overall generation time (the watchdog disarms
+	// on the first chunk). Zero disables. Same provenance as
+	// LLMAPITimeout.
+	LLMFirstByteTimeout time.Duration
+
 	Out     chan<- types.EngineEvent
 	AgentID string
 
