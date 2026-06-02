@@ -131,8 +131,19 @@ func TestCompact_FullCompact(t *testing.T) {
 	if len(result) != 5 {
 		t.Errorf("expected 5 messages after compact, got %d", len(result))
 	}
-	if result[0].Content[0].Text != "conversation summary here" {
-		t.Errorf("first message should be summary, got %q", result[0].Content[0].Text)
+	// Synthetic summary must be carried as a USER message — Anthropic
+	// requires the first non-system message to be role=user, and the
+	// summary always lands at index 0 here. Was previously assistant
+	// (legacy) which caused 400 when an original leading user turn got
+	// summarized away.
+	if result[0].Role != types.RoleUser {
+		t.Errorf("summary message role = %q, want %q", result[0].Role, types.RoleUser)
+	}
+	// Text must carry both the framing prefix (so the model reads it
+	// as injected context, not a real user turn) and the LLM summary.
+	want := "[Prior conversation summary]\nconversation summary here"
+	if got := result[0].Content[0].Text; got != want {
+		t.Errorf("first message text = %q, want %q", got, want)
 	}
 }
 

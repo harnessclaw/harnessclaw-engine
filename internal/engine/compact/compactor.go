@@ -4,6 +4,7 @@ package compact
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 
 	"go.uber.org/zap"
@@ -41,26 +42,65 @@ func NewLLMCompactor(p provider.Provider, logger *zap.Logger) *LLMCompactor {
 // ShouldCompact checks if token usage exceeds threshold.
 func (c *LLMCompactor) ShouldCompact(messages []types.Message, maxTokens int, threshold float64) bool {
 	if c.failureCount.Load() >= c.maxFailures {
-		return false // circuit breaker open
+		// Circuit-breaker open: skip compaction. Log so operators
+		// notice when ctx is sliding toward the model's input window
+		// limit because the compactor stopped helping. Once-per-call
+		// at DEBUG keeps volume sane for hot loops.
+		if c.logger != nil {
+			c.logger.Debug("compact.should: circuit breaker open — skipping compaction",
+				zap.Int32("failure_count", c.failureCount.Load()),
+				zap.Int32("max_failures", c.maxFailures),
+				zap.Int("messages", len(messages)),
+			)
+		}
+		return false
 	}
 
 	totalTokens := 0
 	for _, m := range messages {
 		totalTokens += m.Tokens
 	}
-	return float64(totalTokens) > float64(maxTokens)*threshold
+	should := float64(totalTokens) > float64(maxTokens)*threshold
+	// One line per ShouldCompact tick so we can correlate the spike to
+	// the matching Compact() call (or its absence when totalTokens is
+	// inflated by a misattributed Message.Tokens field — see loop.go
+	// buildAssistantMessage where Tokens = input+output, not the
+	// per-message size).
+	if c.logger != nil {
+		c.logger.Debug("compact.should",
+			zap.Int("total_tokens", totalTokens),
+			zap.Int("max_tokens", maxTokens),
+			zap.Float64("threshold", threshold),
+			zap.Bool("should_compact", should),
+			zap.Int("messages", len(messages)),
+		)
+	}
+	return should
 }
 
 // Compact compresses the message history via LLM summarization.
 func (c *LLMCompactor) Compact(ctx context.Context, messages []types.Message) ([]types.Message, error) {
+	inN := len(messages)
+	if c.logger != nil {
+		c.logger.Info("compact.begin",
+			zap.Int("in_msgs", inN),
+		)
+	}
 	if len(messages) < 4 {
 		// Too few messages to compact meaningfully.
+		if c.logger != nil {
+			c.logger.Debug("compact.skip: too few messages",
+				zap.Int("in_msgs", inN),
+			)
+		}
 		return messages, nil
 	}
 
 	// Micro-compact: if fewer than 10 messages, just truncate early ones.
 	if len(messages) < 10 {
-		return c.microCompact(messages), nil
+		out := c.microCompact(messages)
+		c.logCompactEnd("micro", inN, out, "", 0)
+		return out, nil
 	}
 
 	// Full compact: summarize the first 2/3 of messages via LLM call.
@@ -74,22 +114,81 @@ func (c *LLMCompactor) Compact(ctx context.Context, messages []types.Message) ([
 		return messages, err
 	}
 
+	// Empty/whitespace-only summary: the model returned no usable
+	// content (the 2026-06-02 freelancer 400 was caused by exactly
+	// this — a 56-completion-token response on a channel we don't
+	// forward yielded summary=""; we then constructed an
+	// assistant{text:""} as the new first message and Anthropic 400'd
+	// the next turn).
+	// Treat as a failure: bump the circuit breaker so repeated empty
+	// summaries open it, and fall back to microCompact so we still
+	// reduce ctx size without injecting a malformed assistant block.
+	if strings.TrimSpace(summary) == "" {
+		c.failureCount.Add(1)
+		if c.logger != nil {
+			c.logger.Warn("compact.summary_empty: summarize returned no text — falling back to microCompact",
+				zap.Int("in_msgs", inN),
+				zap.Int("summary_chars", len(summary)),
+				zap.Int32("failure_count", c.failureCount.Load()),
+			)
+		}
+		out := c.microCompact(messages)
+		c.logCompactEnd("fallback_micro_after_empty_summary", inN, out, "", 0)
+		return out, nil
+	}
+
 	c.failureCount.Store(0) // reset on success
 
 	// Replace older messages with a single summary message.
-	result := make([]types.Message, 0, len(messages)/3+1)
+	//
+	// Wrap as USER (not assistant). Anthropic's API requires the first
+	// non-system message to have role=user; making the synthetic
+	// summary an assistant message violates that whenever Compact()
+	// trims the original leading user turn into the summary half. The
+	// "[Prior conversation summary]" prefix makes the framing
+	// unambiguous for the model — it reads as injected context, not
+	// as a real user turn.
+	keepFrom := advancePastOrphanToolResults(messages, len(messages)*2/3)
+	result := make([]types.Message, 0, len(messages)-keepFrom+1)
 	result = append(result, types.Message{
-		Role: types.RoleAssistant,
+		Role: types.RoleUser,
 		Content: []types.ContentBlock{
-			{Type: types.ContentTypeText, Text: summary},
+			{Type: types.ContentTypeText, Text: "[Prior conversation summary]\n" + summary},
 		},
 	})
-	// Keep recent 1/3 of messages, but advance past any orphan tool_result
-	// at the boundary — its matching tool_call assistant is in the summary
-	// half and OpenAI rejects a tool message without a preceding tool_calls.
-	keepFrom := advancePastOrphanToolResults(messages, len(messages)*2/3)
 	result = append(result, messages[keepFrom:]...)
+	c.logCompactEnd("full", inN, result, summary, keepFrom)
 	return result, nil
+}
+
+// logCompactEnd is the single sink for "compact done" observability so
+// every exit path of Compact reports a consistent shape: input/output
+// counts, the role of the new first message (catches "summary became
+// assistant first" regressions), summary length + preview, and the
+// trim boundary. mode disambiguates which branch ran: "full",
+// "micro", "fallback_micro_after_empty_summary".
+func (c *LLMCompactor) logCompactEnd(mode string, inN int, out []types.Message, summary string, keepFrom int) {
+	if c.logger == nil {
+		return
+	}
+	firstRole := ""
+	if len(out) > 0 {
+		firstRole = string(out[0].Role)
+	}
+	preview := summary
+	if len(preview) > 120 {
+		preview = preview[:120] + "…"
+	}
+	c.logger.Info("compact.end",
+		zap.String("mode", mode),
+		zap.Int("in_msgs", inN),
+		zap.Int("out_msgs", len(out)),
+		zap.Int("summary_chars", len(summary)),
+		zap.String("summary_preview", preview),
+		zap.Int("keep_from", keepFrom),
+		zap.String("first_role", firstRole),
+		zap.Int32("failure_count", c.failureCount.Load()),
+	)
 }
 
 // microCompact keeps only the first message and the most recent half.
@@ -132,12 +231,25 @@ func containsToolResult(m types.Message) bool {
 
 // summarize calls the LLM to generate a conversation summary.
 func (c *LLMCompactor) summarize(ctx context.Context, messages []types.Message) (string, error) {
-	systemPrompt := "Summarize this conversation concisely, preserving all key decisions, code changes, file paths, and action items. Output only the summary."
+	// The "Reply with the summary text only. Do not call any tools."
+	// suffix is defensive: bifrost's adapter dial log on 2026-06-02
+	// showed a summarize call returning 56 completion tokens with
+	// text_chars=0 / tool_calls=0 / reasoning=0. The smoking-gun
+	// theory is the model attempted a tool-use we can't accept (we
+	// pass no Tools). Adding this line costs nothing on compliant
+	// models and steers stricter ones onto the text channel.
+	systemPrompt := "Summarize this conversation concisely, preserving all key decisions, code changes, file paths, and action items. " +
+		"Reply with the summary text only. Do not call any tools."
 
 	summarizeReq := &provider.ChatRequest{
 		Messages:  messages,
 		System:    systemPrompt,
 		MaxTokens: 2048,
+		// Purpose makes this call distinguishable from the engine's
+		// per-turn main loop in bifrost.dial logs — without it the
+		// "messages: 10 tools: 0" intermediate call shows up
+		// unattributed and looks like a ghost request.
+		Purpose: "compact_summary",
 	}
 
 	stream, err := c.provider.Chat(ctx, summarizeReq)
@@ -146,13 +258,35 @@ func (c *LLMCompactor) summarize(ctx context.Context, messages []types.Message) 
 	}
 
 	var summary string
+	var textEvents, toolEvents, errEvents int
+	var lastStopReason string
 	for evt := range stream.Events {
-		if evt.Type == types.StreamEventText {
+		switch evt.Type {
+		case types.StreamEventText:
+			textEvents++
 			summary += evt.Text
+		case types.StreamEventToolUse:
+			toolEvents++
+		case types.StreamEventMessageEnd:
+			lastStopReason = evt.StopReason
+		case types.StreamEventError:
+			errEvents++
 		}
 	}
 	if err := stream.Err(); err != nil {
 		return "", err
+	}
+	// Per-summarize trace so empty-summary incidents (text_chars=0 but
+	// the call returned successfully) can be tied to the upstream
+	// stop_reason and the event-shape we actually consumed.
+	if c.logger != nil {
+		c.logger.Debug("compact.summary",
+			zap.Int("chars", len(summary)),
+			zap.Int("text_events", textEvents),
+			zap.Int("tool_events", toolEvents),
+			zap.Int("error_events", errEvents),
+			zap.String("stop_reason", lastStopReason),
+		)
 	}
 	return summary, nil
 }
