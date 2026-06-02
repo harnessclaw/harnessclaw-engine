@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -241,5 +242,62 @@ func TestResolveAgentType(t *testing.T) {
 		if string(got) != tt.want {
 			t.Errorf("resolveAgentType(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+// TestAgentTool_Execute_PropagatesParentAgentID is the hierarchy regression
+// guard. The dispatching agent's session id (== card id in the wire
+// envelope) must land in SpawnConfig.ParentAgentID so the translator's
+// parentForSubAgent nests the L3 freelancer card under the L2 scheduler
+// card. Pre-fix the field was left empty, the translator fell through
+// to "most recent tool card" (emma's scheduler tool call), and L3
+// rendered as a sibling of L2 in the UI.
+func TestAgentTool_Execute_PropagatesParentAgentID(t *testing.T) {
+	spawner := &mockSpawner{result: &agent.SpawnResult{
+		Output:   "ok",
+		Terminal: &types.Terminal{Reason: types.TerminalCompleted},
+	}}
+	tool := New(spawner, zap.NewNop())
+
+	// Simulate the call site: L2 scheduler module sets its own sess.ID
+	// onto ctx via common.WithSubAgentStats → sessionstats.WithSessionID.
+	// When L2's LLM calls the freelance tool, that ctx flows through
+	// toolexec into agenttool.Execute.
+	ctx := sessionstats.WithSessionID(context.Background(), "L2_sess_xyz")
+
+	input := json.RawMessage(`{"prompt":"do work","subagent_type":"freelancer","description":"d"}`)
+	_, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if len(spawner.calls) != 1 {
+		t.Fatalf("expected 1 spawn call, got %d", len(spawner.calls))
+	}
+	if got := spawner.calls[0].ParentAgentID; got != "L2_sess_xyz" {
+		t.Errorf("ParentAgentID = %q, want L2_sess_xyz", got)
+	}
+}
+
+// TestAgentTool_Execute_NoSessionInCtxKeepsParentAgentIDEmpty preserves
+// the legacy behaviour for call sites that haven't wired sessionstats
+// onto ctx (e.g. ad-hoc tests, smoke clients). Empty ParentAgentID
+// triggers the translator's "most recent tool card" fallback, which is
+// the correct behaviour when we genuinely don't know the parent.
+func TestAgentTool_Execute_NoSessionInCtxKeepsParentAgentIDEmpty(t *testing.T) {
+	spawner := &mockSpawner{result: &agent.SpawnResult{
+		Output:   "ok",
+		Terminal: &types.Terminal{Reason: types.TerminalCompleted},
+	}}
+	tool := New(spawner, zap.NewNop())
+
+	input := json.RawMessage(`{"prompt":"do work","subagent_type":"freelancer","description":"d"}`)
+	_, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if got := spawner.calls[0].ParentAgentID; got != "" {
+		t.Errorf("ParentAgentID = %q, want empty (no session in ctx)", got)
 	}
 }

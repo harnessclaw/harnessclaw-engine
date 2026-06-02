@@ -137,6 +137,18 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 	}
 	cfg.RootSessionID = rootSID
 
+	// ParentAgentID is the dispatching agent's session id (== card id
+	// in the wire envelope). Without this, the translator's
+	// parentForSubAgent has no anchor to walk up to and falls back to
+	// "most recent tool card" — which is emma's scheduler tool call,
+	// so L3 freelancer renders as a sibling of L2 scheduler in the UI
+	// instead of nested under it. sessionstats.WithSessionID is set by
+	// the parent's WithSubAgentStats on its own ctx before dispatch, so
+	// SessionIDFromCtx(ctx) here returns the immediate parent's sess.ID.
+	if sid, ok := sessionstats.SessionIDFromCtx(ctx); ok && sid != "" {
+		cfg.ParentAgentID = sid
+	}
+
 	// candidate_skills is freelancer-only. Stash into cfg.Inputs for SpawnSync
 	// hydration. Non-freelancer dispatches that mistakenly include this field
 	// get a Warn so the operator notices the misconfiguration.
