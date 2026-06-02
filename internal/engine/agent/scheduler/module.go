@@ -68,6 +68,25 @@ func (m *Module) SubagentType() string { return "scheduler" }
 func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnResult, error) {
 	startTime := time.Now()
 
+	// Bootstrap the on-disk workspace lazily — only when L2 actually
+	// runs. plan_update / promote / meta_write all need
+	// session/<sid>/plan.json + tasks/ + deliverables/ in place, and
+	// L2 is the lowest tier that ever touches them. emma never writes
+	// to the workspace, so trivial L1-only queries (e.g. "what's the
+	// weather in hefei") leave no on-disk footprint at all.
+	rootSID := cfg.RootSessionID
+	if rootSID == "" {
+		rootSID = cfg.ParentSessionID
+	}
+	if m.deps.RootDir != "" && rootSID != "" {
+		if err := workspace.EnsureSession(m.deps.RootDir, rootSID); err != nil && m.deps.Logger != nil {
+			m.deps.Logger.Warn("scheduler module: workspace bootstrap failed",
+				zap.String("session_id", rootSID),
+				zap.Error(err),
+			)
+		}
+	}
+
 	sess, err := common.BuildSubSession(m.deps.SessionMgr, cfg.ParentSessionID)
 	if err != nil {
 		return nil, err

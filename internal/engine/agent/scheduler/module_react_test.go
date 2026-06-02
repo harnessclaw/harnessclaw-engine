@@ -2,6 +2,7 @@ package scheduler_test
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -142,5 +143,61 @@ func TestRunPlanLegacy_RequiresCoord(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "plan mode requires Deps.Coord") {
 		t.Errorf("error should mention Coord requirement, got: %v", err)
+	}
+}
+
+// TestRunReactLLM_BootstrapsWorkspace verifies that scheduler.Run
+// creates the session workspace lazily — the directory structure that
+// plan_update / promote / meta_write rely on appears only when L2
+// actually starts, not when the L1 (emma) loop first sees the user
+// message. Without this lazy-bootstrap, a trivial "weather" query
+// litters disk with empty session directories.
+func TestRunReactLLM_BootstrapsWorkspace(t *testing.T) {
+	rootDir := t.TempDir()
+	store := memory.New()
+	mgr := session.NewManager(store, zap.NewNop(), time.Hour)
+	promptBuilder := prompt.NewBuilder(prompt.NewRegistry(), zap.NewNop())
+
+	deps := scheduler.Deps{
+		Provider:      &fakeReactProvider{},
+		Registry:      tool.NewRegistry(),
+		SessionMgr:    mgr,
+		Retryer:       retry.New(retry.DefaultConfig(), zap.NewNop()),
+		PromptBuilder: promptBuilder,
+		Logger:        zap.NewNop(),
+		MaxTokens:     8192,
+		ContextWindow: 200000,
+		ToolTimeout:   10 * time.Second,
+		RootDir:       rootDir,
+		Spawner:       spawn.NewSpawner(zap.NewNop()),
+	}
+	m := scheduler.New(deps)
+
+	parentSess, _ := mgr.GetOrCreate(context.Background(), "parent-sess-bootstrap", "ws", "user")
+	cfg := &agent.SpawnConfig{
+		Prompt:          "do something",
+		SubagentType:    "scheduler",
+		ParentSessionID: parentSess.ID,
+		RootSessionID:   parentSess.ID,
+		CoordinatorMode: "react",
+	}
+
+	// Pre-condition: workspace dir doesn't exist yet.
+	sessionDir := rootDir + "/session/" + parentSess.ID
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Fatalf("workspace dir already exists before Run: %v", err)
+	}
+
+	_, err := m.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Post-condition: scheduler.Run created the layout.
+	for _, sub := range []string{"", "/tasks", "/deliverables", "/plan.json"} {
+		path := sessionDir + sub
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected %s to exist after Run, got %v", path, err)
+		}
 	}
 }

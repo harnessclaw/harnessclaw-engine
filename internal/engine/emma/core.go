@@ -443,19 +443,13 @@ func (e *Engine) Start(ctx context.Context) {
 // the session, applies @-mention routing if enabled, and runs the query
 // loop, emitting events on the returned channel.
 //
-// Side effect: idempotently bootstraps the on-disk workspace for the
-// session ({rootDir}/session/{sessionID}/{plan.json,tasks/,deliverables/})
-// so plan_update / meta_write / promote find the layout already in place.
+// Workspace bootstrap (plan.json + tasks/ + deliverables/) is deferred
+// to the L2 scheduler module entry point (see
+// internal/engine/agent/scheduler/module.go). emma itself never writes
+// to the workspace, so an unconditional bootstrap here was littering
+// disk with empty session directories for trivial queries like "weather
+// in hefei" that never dispatch a sub-agent.
 func (e *Engine) ProcessMessage(ctx context.Context, sessionID string, msg *types.Message) (<-chan types.EngineEvent, error) {
-	if root := workspace.DefaultRootDir(); root != "" {
-		if err := workspace.EnsureSession(root, sessionID); err != nil {
-			e.logger.Warn("ensure session workspace",
-				zap.String("session_id", sessionID),
-				zap.Error(err),
-			)
-		}
-	}
-
 	sess, err := e.sessionMgr.GetOrCreate(ctx, sessionID, "", "")
 	if err != nil {
 		return nil, fmt.Errorf("session get-or-create: %w", err)
