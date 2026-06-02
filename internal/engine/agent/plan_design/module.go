@@ -119,7 +119,7 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	sess.AddMessage(types.Message{
 		Role: types.RoleUser,
 		Content: []types.ContentBlock{{
-			Type: types.ContentTypeText, Text: cfg.Prompt,
+			Type: types.ContentTypeText, Text: common.SeedPrompt(cfg, m.deps.RootDir),
 		}},
 	})
 

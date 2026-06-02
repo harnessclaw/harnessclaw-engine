@@ -202,11 +202,15 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		ctx = tool.WithSkillTrackerValue(ctx, skillTracker)
 	}
 
-	// Seed session with the prompt as the first user message.
+	// Seed session with the prompt as the first user message. Prepend
+	// a workspace prelude (task_dir + task_id navigation hint) so the
+	// LLM doesn't have to call bash pwd just to find where to write
+	// the output file — previously freelancer produced files into
+	// random cwd paths because nothing told it where its task_dir was.
 	sess.AddMessage(types.Message{
 		Role: types.RoleUser,
 		Content: []types.ContentBlock{{
-			Type: types.ContentTypeText, Text: cfg.Prompt,
+			Type: types.ContentTypeText, Text: common.SeedPrompt(cfg, m.deps.RootDir),
 		}},
 	})
 
