@@ -169,9 +169,9 @@ func TestPost_Provider_RejectsDuplicate(t *testing.T) {
 func TestPost_Provider_RejectsMissingFields(t *testing.T) {
 	h, _ := setupTest(t)
 	for _, b := range []string{
-		`{"type":"openai"}`,       // missing name
-		`{"name":"x"}`,            // missing type
-		`{}`,                      // both missing
+		`{"type":"openai"}`, // missing name
+		`{"name":"x"}`,      // missing type
+		`{}`,                // both missing
 	} {
 		rec := doRequest(t, h, "POST", "/api/v1/providers", b)
 		if rec.Code != http.StatusBadRequest {
@@ -338,13 +338,13 @@ func TestPatch_Endpoint_UpdatesAndPersists(t *testing.T) {
 func TestPatch_Endpoint_AcceptsKnownModelType(t *testing.T) {
 	h, cfgPath := setupTest(t)
 	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
-		`{"model_type":["vision","tools"]}`)
+		`{"model_type":["vision","image_generation","tools"]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	cfg, _ := config.Load(cfgPath)
 	ep := cfg.LLM.Providers["alpha"].Endpoints["claude-46"]
-	if len(ep.ModelType) != 2 || ep.ModelType[0] != "vision" || ep.ModelType[1] != "tools" {
+	if len(ep.ModelType) != 3 || ep.ModelType[0] != "vision" || ep.ModelType[1] != "image_generation" || ep.ModelType[2] != "tools" {
 		t.Errorf("model_type not persisted: %v", ep.ModelType)
 	}
 }
@@ -502,8 +502,8 @@ func TestPatch_Agent_RejectsMalformed(t *testing.T) {
 		`{"primary":"alpha:claude-46","fallback_chain":["alpha:claude-46"]}`, // duplicates primary
 		`{"max_turns":0}`,                                                    // must be ≥ 1
 		`{"max_turns":-3}`,
-		`{"max_tool_calls":-1}`,                          // must be ≥ 0
-		`{"thinking_intensity":"super"}`,                 // not in low/medium/high
+		`{"max_tool_calls":-1}`,          // must be ≥ 0
+		`{"thinking_intensity":"super"}`, // not in low/medium/high
 		`{}`,
 	} {
 		rec := doRequest(t, h, "PATCH", "/api/v1/agent", body)

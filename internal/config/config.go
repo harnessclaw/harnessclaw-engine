@@ -449,7 +449,7 @@ type EndpointConfig struct {
 	// to one SupportsFlags field (see registry.SupportsFromTokens).
 	// Unset / empty → fall back to the manifest baseline.
 	//
-	// Valid tokens: vision / pdf / audio / video / reasoning / tools / search.
+	// Valid tokens: vision / pdf / audio / video / image_generation / reasoning / tools / search.
 	// Unknown tokens are dropped with a warn on startup; the PATCH
 	// endpoint rejects them with 400.
 	ModelType []string `mapstructure:"model_type" yaml:"model_type,omitempty"`

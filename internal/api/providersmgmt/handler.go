@@ -368,7 +368,7 @@ func (h *Handler) patchEndpoint(w http.ResponseWriter, r *http.Request, provName
 		known, unknown := modelregistry.FilterKnownTokens(*body.ModelType)
 		if len(unknown) > 0 {
 			writeError(w, http.StatusBadRequest, "invalid_model_type",
-				fmt.Sprintf("unknown tokens: %v; allowed: vision/pdf/audio/video/reasoning/tools/search", unknown))
+				fmt.Sprintf("unknown tokens: %v; allowed: vision/pdf/audio/video/image_generation/reasoning/tools/search", unknown))
 			return
 		}
 		// known may be nil when caller sent []  — preserve that distinction

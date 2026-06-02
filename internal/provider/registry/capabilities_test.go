@@ -15,15 +15,16 @@ func TestDeriveCapabilities_VisionGoesMultimodal(t *testing.T) {
 	}
 }
 
-func TestDeriveCapabilities_AllFour(t *testing.T) {
+func TestDeriveCapabilities_AllBuckets(t *testing.T) {
 	got := DeriveCapabilities(SupportsFlags{
 		PDFInput:        true,
+		ImageGeneration: true,
 		FunctionCalling: true,
 		Reasoning:       true,
 		WebSearch:       true,
 	})
 	sort.Strings(got)
-	want := []string{"multimodal", "reasoning", "search", "tools"}
+	want := []string{"image_generation", "multimodal", "reasoning", "search", "tools"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v want %v", got, want)
 	}
@@ -61,10 +62,13 @@ func TestAcceptsModality_UnknownReturnsFalse(t *testing.T) {
 	}
 }
 
-func TestSupportsFromTokens_AllSeven(t *testing.T) {
-	got := SupportsFromTokens([]string{"vision", "pdf", "audio", "video", "reasoning", "tools", "search"})
+func TestSupportsFromTokens_AllKnownTokens(t *testing.T) {
+	got := SupportsFromTokens([]string{"vision", "pdf", "audio", "video", "image_generation", "reasoning", "tools", "search"})
 	if !got.Vision || !got.PDFInput || !got.AudioInput || !got.VideoInput {
 		t.Error("multimodal flags missing")
+	}
+	if !got.ImageGeneration {
+		t.Error("image generation flag missing")
 	}
 	if !got.Reasoning || !got.FunctionCalling || !got.WebSearch {
 		t.Error("capability flags missing")
@@ -98,6 +102,9 @@ func TestMergeOverride_PreservesOperationalFlags(t *testing.T) {
 	}
 	if !got.FunctionCalling {
 		t.Error("override should set listed capability (tools→FunctionCalling)")
+	}
+	if got.ImageGeneration {
+		t.Error("override should clear unset capability (ImageGeneration)")
 	}
 	if !got.Streaming || !got.PromptCaching || !got.SystemMessages {
 		t.Errorf("operational flags must survive override: %+v", got)

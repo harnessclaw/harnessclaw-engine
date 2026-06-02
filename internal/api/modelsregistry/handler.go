@@ -49,7 +49,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // modelEntry is the wire shape returned by /api/v1/models. Embeds
 // ModelSpec so all manifest fields surface verbatim; adds a derived
-// `capabilities` array (multimodal/tools/reasoning/search) for
+// `capabilities` array (multimodal/image_generation/tools/reasoning/search) for
 // ergonomic UI consumption. The derived list is purely a presentation
 // hint — clients still receive the underlying supports.{vision,…}
 // flags and should use them for precise gating.
