@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/sessionstats"
 	"harnessclaw-go/internal/provider/retry"
@@ -88,6 +89,11 @@ type Config struct {
 	// SkillReader, when non-nil, enables runtime skill discovery for
 	// search_skill / load_skill tools.
 	SkillReader *skill.Reader
+
+	// BrowserAgent holds the browser-agent tool family configuration,
+	// forwarded to the browser-agent module so it can construct its
+	// SkillProvider.
+	BrowserAgent config.BrowserAgentConfig
 
 	// StatsRegistry, when non-nil, lets the engine attribute LLM /
 	// sub-agent / tool activity to the correct Tracker.

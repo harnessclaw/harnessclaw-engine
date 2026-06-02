@@ -114,17 +114,32 @@ func TestBrowserAgentConfig_DefaultsDisabled(t *testing.T) {
 	if cfg.Tools.BrowserAgent.MaxSteps != 30 {
 		t.Errorf("max_steps = %d, want 30", cfg.Tools.BrowserAgent.MaxSteps)
 	}
-	if cfg.Tools.BrowserAgent.DefaultVisibility != "visible" {
-		t.Errorf("default_visibility = %q, want visible", cfg.Tools.BrowserAgent.DefaultVisibility)
-	}
-	if cfg.Tools.BrowserAgent.PreferredSearchEngine != "duckduckgo" {
-		t.Errorf("preferred_search_engine = %q, want duckduckgo", cfg.Tools.BrowserAgent.PreferredSearchEngine)
+	if cfg.Tools.BrowserAgent.DefaultVisibility != "hidden" {
+		t.Errorf("default_visibility = %q, want hidden", cfg.Tools.BrowserAgent.DefaultVisibility)
 	}
 	if cfg.Tools.BrowserAgent.HumanTakeoverTimeout.String() != "2m0s" {
 		t.Errorf("human_takeover_timeout = %s, want 2m0s", cfg.Tools.BrowserAgent.HumanTakeoverTimeout)
 	}
 	if cfg.Tools.BrowserAgent.CLITimeout.String() != "25s" {
 		t.Errorf("cli_timeout = %s, want 25s", cfg.Tools.BrowserAgent.CLITimeout)
+	}
+	if cfg.Tools.BrowserAgent.SkillMaxBytes != 200000 {
+		t.Errorf("skill_max_bytes = %d, want 200000", cfg.Tools.BrowserAgent.SkillMaxBytes)
+	}
+	if cfg.Tools.BrowserAgent.MaxOutputBytes != 50000 {
+		t.Errorf("max_output_bytes = %d, want 50000", cfg.Tools.BrowserAgent.MaxOutputBytes)
+	}
+	if !cfg.Tools.BrowserAgent.ContentBoundaries {
+		t.Error("content_boundaries should default true")
+	}
+	if len(cfg.Tools.BrowserAgent.AllowedDomains) != 0 {
+		t.Errorf("allowed_domains should default empty, got %v", cfg.Tools.BrowserAgent.AllowedDomains)
+	}
+	if cfg.Tools.BrowserAgent.ActionPolicyPath != "" {
+		t.Errorf("action_policy_path = %q, want empty", cfg.Tools.BrowserAgent.ActionPolicyPath)
+	}
+	if len(cfg.Tools.BrowserAgent.ConfirmActions) != 0 {
+		t.Errorf("confirm_actions should default empty, got %v", cfg.Tools.BrowserAgent.ConfirmActions)
 	}
 }
 
@@ -135,14 +150,18 @@ func TestBrowserAgentConfig_YAMLRoundTrip(t *testing.T) {
 tools:
   browser_agent:
     enabled: true
-    binary_path: "/opt/harnessclaw/agent-browser"
     default_visibility: "visible"
     max_steps: 12
-    preferred_search_engine: "google"
     blocked_domains: ["blocked.example"]
     human_takeover_timeout: "45s"
     session_persistence: false
     cli_timeout: "9s"
+    skill_max_bytes: 123456
+    content_boundaries: true
+    max_output_bytes: 34567
+    allowed_domains: ["example.com"]
+    action_policy_path: "/tmp/browser-policy.yaml"
+    confirm_actions: ["upload", "download"]
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -155,17 +174,11 @@ tools:
 	if !got.Enabled {
 		t.Fatal("browser_agent.enabled should load true")
 	}
-	if got.BinaryPath != "/opt/harnessclaw/agent-browser" {
-		t.Errorf("binary_path = %q", got.BinaryPath)
-	}
 	if got.DefaultVisibility != "visible" {
 		t.Errorf("default_visibility = %q", got.DefaultVisibility)
 	}
 	if got.MaxSteps != 12 {
 		t.Errorf("max_steps = %d", got.MaxSteps)
-	}
-	if got.PreferredSearchEngine != "google" {
-		t.Errorf("preferred_search_engine = %q", got.PreferredSearchEngine)
 	}
 	if len(got.BlockedDomains) != 1 || got.BlockedDomains[0] != "blocked.example" {
 		t.Errorf("blocked_domains = %v", got.BlockedDomains)
@@ -178,5 +191,23 @@ tools:
 	}
 	if got.CLITimeout.String() != "9s" {
 		t.Errorf("cli_timeout = %s", got.CLITimeout)
+	}
+	if got.SkillMaxBytes != 123456 {
+		t.Errorf("skill_max_bytes = %d", got.SkillMaxBytes)
+	}
+	if !got.ContentBoundaries {
+		t.Error("content_boundaries should load true")
+	}
+	if got.MaxOutputBytes != 34567 {
+		t.Errorf("max_output_bytes = %d", got.MaxOutputBytes)
+	}
+	if len(got.AllowedDomains) != 1 || got.AllowedDomains[0] != "example.com" {
+		t.Errorf("allowed_domains = %v", got.AllowedDomains)
+	}
+	if got.ActionPolicyPath != "/tmp/browser-policy.yaml" {
+		t.Errorf("action_policy_path = %q", got.ActionPolicyPath)
+	}
+	if len(got.ConfirmActions) != 2 || got.ConfirmActions[0] != "upload" || got.ConfirmActions[1] != "download" {
+		t.Errorf("confirm_actions = %v", got.ConfirmActions)
 	}
 }

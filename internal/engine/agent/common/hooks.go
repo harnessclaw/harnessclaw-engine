@@ -33,7 +33,7 @@ func StopOnEndTurn() loop.TurnHook {
 func StopOnSubmitResult() loop.TurnHook {
 	return func(turn int, msg types.Message, _ []types.ToolResult) loop.Decision {
 		for _, b := range msg.Content {
-			if b.Type == types.ContentTypeToolUse && b.ToolName == "submit_task_result" {
+			if b.Type == types.ContentTypeToolUse && b.ToolName == submittool.ToolName {
 				return loop.Decision{Terminate: &types.Terminal{
 					Reason: types.TerminalCompleted, Turn: turn,
 				}}
@@ -70,25 +70,36 @@ func StopOnSubmitResult() loop.TurnHook {
 // to 1 so callers cannot accidentally disable enforcement. maxTurns ≤ 0
 // disables the budget-exhaustion nudge (legacy "no cap" behaviour).
 func ContractEnforcer(expected []types.ExpectedOutput, maxRetries, maxTurns int) loop.TurnHook {
-	return submitResultEnforcer(expected, nil, maxRetries, maxTurns)
+	return submitResultEnforcerForTool(submittool.ToolName, expected, nil, maxRetries, maxTurns)
 }
 
 // SubmitResultEnforcer validates submit_task_result completion.
 // expected covers file-producing agents; outputSchema covers
 // structured-result agents such as browser-agent.
 func SubmitResultEnforcer(expected []types.ExpectedOutput, outputSchema map[string]any, maxRetries int) loop.TurnHook {
-	return submitResultEnforcer(expected, outputSchema, maxRetries, 0)
+	return submitResultEnforcerForTool(submittool.ToolName, expected, outputSchema, maxRetries, 0)
 }
 
-func submitResultEnforcer(expected []types.ExpectedOutput, outputSchema map[string]any, maxRetries, maxTurns int) loop.TurnHook {
+// SubmitResultEnforcerForTool is SubmitResultEnforcer with a custom terminal
+// tool name. Browser Agent uses this to expose a narrow final-result wrapper
+// while still relying on submit_task_result metadata for server acceptance.
+func SubmitResultEnforcerForTool(finalToolName string, expected []types.ExpectedOutput, outputSchema map[string]any, maxRetries int) loop.TurnHook {
+	return submitResultEnforcerForTool(finalToolName, expected, outputSchema, maxRetries, 0)
+}
+
+func submitResultEnforcerForTool(finalToolName string, expected []types.ExpectedOutput, outputSchema map[string]any, maxRetries, maxTurns int) loop.TurnHook {
 	if maxRetries < 1 {
 		maxRetries = 1
+	}
+	finalToolName = strings.TrimSpace(finalToolName)
+	if finalToolName == "" {
+		finalToolName = submittool.ToolName
 	}
 	failures := 0
 	hardNudgeSent := false
 
 	return func(turn int, msg types.Message, toolResults []types.ToolResult) loop.Decision {
-		submitCall, submitResult := findSubmitCall(msg, toolResults)
+		submitCall, submitResult := findSubmitCall(msg, toolResults, finalToolName)
 		if submitCall == nil {
 			// No submit yet. If the LLM also issued no tool calls at all,
 			// it has likely stopped — nudge it back toward submitting.
@@ -97,7 +108,7 @@ func submitResultEnforcer(expected []types.ExpectedOutput, outputSchema map[stri
 					Role: types.RoleUser,
 					Content: []types.ContentBlock{{
 						Type: types.ContentTypeText,
-						Text: "Please submit your result via submit_task_result.",
+						Text: "Please submit your result via " + finalToolName + ".",
 					}},
 				}}}
 			}
@@ -148,8 +159,8 @@ func submitResultEnforcer(expected []types.ExpectedOutput, outputSchema map[stri
 				Content: []types.ContentBlock{{
 					Type:       types.ContentTypeToolResult,
 					ToolUseID:  submitCall.ToolUseID,
-					ToolName:   "submit_task_result",
-					ToolResult: "submit_task_result rejected: " + submitRejectionReason(submitResult) + ". Please call submit_task_result again with the required fields.",
+					ToolName:   finalToolName,
+					ToolResult: finalToolName + " rejected: " + submitRejectionReason(submitResult) + ". Please call " + finalToolName + " again with the required fields.",
 					IsError:    true,
 				}},
 			}}}
@@ -165,15 +176,15 @@ func submitResultEnforcer(expected []types.ExpectedOutput, outputSchema map[stri
 				}}
 			}
 			correction := fmt.Sprintf(
-				"submit_task_result rejected: %s. Please call submit_task_result again with the required fields.",
-				err.Error(),
+				"%s rejected: %s. Please call %s again with the required fields.",
+				finalToolName, err.Error(), finalToolName,
 			)
 			return loop.Decision{Inject: []types.Message{{
 				Role: types.RoleUser,
 				Content: []types.ContentBlock{{
 					Type:       types.ContentTypeToolResult,
 					ToolUseID:  submitCall.ToolUseID,
-					ToolName:   "submit_task_result",
+					ToolName:   finalToolName,
 					ToolResult: correction,
 					IsError:    true,
 				}},
@@ -189,15 +200,15 @@ func submitResultEnforcer(expected []types.ExpectedOutput, outputSchema map[stri
 				}}
 			}
 			correction := fmt.Sprintf(
-				"submit_task_result rejected: %s. Please call submit_task_result again with the required fields.",
-				err.Error(),
+				"%s rejected: %s. Please call %s again with the required fields.",
+				finalToolName, err.Error(), finalToolName,
 			)
 			return loop.Decision{Inject: []types.Message{{
 				Role: types.RoleUser,
 				Content: []types.ContentBlock{{
 					Type:       types.ContentTypeToolResult,
 					ToolUseID:  submitCall.ToolUseID,
-					ToolName:   "submit_task_result",
+					ToolName:   finalToolName,
 					ToolResult: correction,
 					IsError:    true,
 				}},
@@ -225,7 +236,7 @@ func hasToolCalls(msg types.Message) bool {
 // findSubmitCall returns a pointer to the first submit_task_result
 // tool_use block in the message plus its aligned tool result, when the
 // tool was executed in this turn.
-func findSubmitCall(msg types.Message, toolResults []types.ToolResult) (*types.ContentBlock, *types.ToolResult) {
+func findSubmitCall(msg types.Message, toolResults []types.ToolResult, finalToolName string) (*types.ContentBlock, *types.ToolResult) {
 	toolResultIdx := 0
 	for i, b := range msg.Content {
 		if b.Type != types.ContentTypeToolUse {
@@ -236,7 +247,7 @@ func findSubmitCall(msg types.Message, toolResults []types.ToolResult) (*types.C
 			result = &toolResults[toolResultIdx]
 		}
 		toolResultIdx++
-		if b.ToolName == "submit_task_result" {
+		if b.ToolName == finalToolName {
 			return &msg.Content[i], result
 		}
 	}

@@ -35,8 +35,9 @@ const MetadataKeyAccepted = "submission_accepted"
 
 // submission is the parsed input.
 type submission struct {
-	TaskID   string `json:"task_id"`
-	MetaPath string `json:"meta_path"`
+	TaskID   string         `json:"task_id"`
+	MetaPath string         `json:"meta_path"`
+	Result   map[string]any `json:"result"`
 }
 
 // Tool is the L3 task-submission tool.

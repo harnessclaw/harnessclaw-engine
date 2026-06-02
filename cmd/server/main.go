@@ -413,6 +413,7 @@ func main() {
 		DefRegistry:   agentDefReg,
 		SkillReader:   skillReader,
 		StatsRegistry: statsRegistry,
+		BrowserAgent:  cfg.Tools.BrowserAgent,
 		// MainAgentProfile / DisplayName / AllowedTools / MaxTurns are
 		// applied by WithEmmaConfig; setting non-default values here would
 		// be overwritten anyway.

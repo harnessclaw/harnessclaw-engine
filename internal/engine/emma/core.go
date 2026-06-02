@@ -359,15 +359,16 @@ func New(
 	e.spawner.Register(freelancerMod)
 
 	browserAgentMod := browseragentmod.New(browseragentmod.Deps{
-		Provider:      prov,
-		Registry:      reg,
-		SessionMgr:    mgr,
-		Compactor:     comp,
-		Retryer:       e.retryer,
-		PromptBuilder: promptBuilder,
-		Logger:        logger,
-		MaxTokens:     cfg.MaxTokens,
-		ContextWindow: cfg.ContextWindow,
+		Provider:           prov,
+		Registry:           reg,
+		SessionMgr:         mgr,
+		Compactor:          comp,
+		Retryer:            e.retryer,
+		PromptBuilder:      promptBuilder,
+		Logger:             logger,
+		MaxTokens:          cfg.MaxTokens,
+		ContextWindow:      cfg.ContextWindow,
+		BrowserAgentConfig: cfg.BrowserAgent,
 	})
 	e.spawner.Register(browserAgentMod)
 

@@ -231,3 +231,27 @@ func TestSubmitResultEnforcer_AcceptsStructuredSubmitToolResult(t *testing.T) {
 		t.Fatalf("Reason = %v, want completed", d.Terminate.Reason)
 	}
 }
+
+func TestSubmitResultEnforcer_AcceptsConfiguredFinalTool(t *testing.T) {
+	enforcer := common.SubmitResultEnforcerForTool("browser_agent_final_result", nil, map[string]any{
+		"type":     "object",
+		"required": []string{"content", "source"},
+	}, 2)
+	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
+		{Type: types.ContentTypeToolUse, ToolUseID: "s1", ToolName: "browser_agent_final_result", ToolInput: `{"content":"done","source":"browser"}`},
+	}}
+	results := []types.ToolResult{{
+		Content: `{"status":"accepted"}`,
+		Metadata: map[string]any{
+			"render_hint":                  submittool.MetadataRenderHint,
+			submittool.MetadataKeyAccepted: true,
+			"task_id":                      "browser_1",
+			"result":                       map[string]any{"content": "done", "source": "browser"},
+		},
+	}}
+
+	d := enforcer(1, msg, results)
+	if d.Terminate == nil {
+		t.Fatal("expected accepted final result to terminate")
+	}
+}

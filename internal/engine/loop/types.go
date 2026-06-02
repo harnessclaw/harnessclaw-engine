@@ -119,8 +119,9 @@ type Decision struct {
 
 // Result is what Run returns on natural completion.
 type Result struct {
-	Terminal    types.Terminal
-	Usage       types.Usage
-	NumTurns    int
-	LastMessage *types.Message // nil if no assistant message ever produced
+	Terminal        types.Terminal
+	Usage           types.Usage
+	NumTurns        int
+	LastMessage     *types.Message // nil if no assistant message ever produced
+	LastToolResults []types.ToolResult
 }

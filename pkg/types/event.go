@@ -40,16 +40,16 @@ type EngineEventType string
 
 const (
 	EngineEventText              EngineEventType = "text"
-	EngineEventToolUse           EngineEventType = "tool_use"            // LLM requests tool use (content block)
-	EngineEventToolStart         EngineEventType = "tool_start"          // server-side tool execution begins
-	EngineEventToolEnd           EngineEventType = "tool_end"            // server-side tool execution completes
-	EngineEventToolCall          EngineEventType = "tool_call"           // server→client: request client-side tool execution
-	EngineEventPermissionRequest EngineEventType = "permission_request"  // server→client: request permission approval
+	EngineEventToolUse           EngineEventType = "tool_use"           // LLM requests tool use (content block)
+	EngineEventToolStart         EngineEventType = "tool_start"         // server-side tool execution begins
+	EngineEventToolEnd           EngineEventType = "tool_end"           // server-side tool execution completes
+	EngineEventToolCall          EngineEventType = "tool_call"          // server→client: request client-side tool execution
+	EngineEventPermissionRequest EngineEventType = "permission_request" // server→client: request permission approval
 	EngineEventError             EngineEventType = "error"
 	EngineEventDone              EngineEventType = "done"
-	EngineEventMessageStart      EngineEventType = "message_start"      // LLM call begins streaming
-	EngineEventMessageDelta      EngineEventType = "message_delta"      // LLM call metadata (stop_reason, usage)
-	EngineEventMessageStop       EngineEventType = "message_stop"       // LLM call streaming ended
+	EngineEventMessageStart      EngineEventType = "message_start" // LLM call begins streaming
+	EngineEventMessageDelta      EngineEventType = "message_delta" // LLM call metadata (stop_reason, usage)
+	EngineEventMessageStop       EngineEventType = "message_stop"  // LLM call streaming ended
 
 	// EngineEventLLMHeartbeat fires periodically while an LLM call is
 	// in flight but no chunks have arrived (or are arriving slowly).
@@ -61,7 +61,7 @@ const (
 	// ancestor's orphan deadline. AgentID may be empty for the L1
 	// main-loop call; the translator falls back to the active message
 	// card in that case.
-	EngineEventLLMHeartbeat      EngineEventType = "llm_heartbeat"
+	EngineEventLLMHeartbeat EngineEventType = "llm_heartbeat"
 
 	// EngineEventLLMRetry fires from inside retry.Retryer just before it
 	// sleeps for the backoff delay between two attempts. Carries the
@@ -71,7 +71,7 @@ const (
 	// from "we hit a 5xx and are about to retry" — both look like the
 	// same silent wait. Translator renders it as a card.tick(kind=note)
 	// on the active agent/message card with a human-readable status.
-	EngineEventLLMRetry          EngineEventType = "llm_retry"
+	EngineEventLLMRetry EngineEventType = "llm_retry"
 
 	// EngineEventTextReset fires when callLLM is about to retry after
 	// attempt 1 streamed partial text live. Translator closes the
@@ -79,38 +79,38 @@ const (
 	// the next EngineEventText chunk from the fresh attempt opens a new
 	// card. Without this, a successful retry would append to the partial
 	// attempt-1 prefix, producing duplicated or inconsistent content.
-	EngineEventTextReset         EngineEventType = "text_reset"
-	EngineEventSubAgentStart     EngineEventType = "subagent_start"     // sub-agent session begins
-	EngineEventSubAgentEnd       EngineEventType = "subagent_end"       // sub-agent session completes
-	EngineEventSubAgentEvent     EngineEventType = "subagent_event"     // real-time sub-agent streaming event
+	EngineEventTextReset     EngineEventType = "text_reset"
+	EngineEventSubAgentStart EngineEventType = "subagent_start" // sub-agent session begins
+	EngineEventSubAgentEnd   EngineEventType = "subagent_end"   // sub-agent session completes
+	EngineEventSubAgentEvent EngineEventType = "subagent_event" // real-time sub-agent streaming event
 	// AgentIntent fires immediately before a tool executes, carrying the
 	// model-supplied "intent" field that every tool's input schema now
 	// requires. It gives the user a per-call progress sentence ("正在搜索
 	// vLLM 论文") without depending on prompt-side cooperation — the JSON
 	// schema validator forces the model to fill `intent` before the call
 	// is even dispatched. See ToolPool.Schemas / ToolExecutor.executeSingle.
-	EngineEventAgentIntent       EngineEventType = "agent_intent"
+	EngineEventAgentIntent EngineEventType = "agent_intent"
 
 	// Phase 1.5: @-mention routing
-	EngineEventAgentRouted     EngineEventType = "agent_routed"      // @-mention routed to agent
+	EngineEventAgentRouted EngineEventType = "agent_routed" // @-mention routed to agent
 
 	// Phase 2: Tasks
-	EngineEventTaskCreated     EngineEventType = "task_created"      // task created
-	EngineEventTaskUpdated     EngineEventType = "task_updated"      // task status/property changed
+	EngineEventTaskCreated EngineEventType = "task_created" // task created
+	EngineEventTaskUpdated EngineEventType = "task_updated" // task status/property changed
 
 	// Phase 3: Messaging
-	EngineEventAgentMessage    EngineEventType = "agent_message"     // inter-agent message
+	EngineEventAgentMessage EngineEventType = "agent_message" // inter-agent message
 
 	// Phase 4: Async agents
-	EngineEventAgentSpawned    EngineEventType = "agent_spawned"     // async agent launched
-	EngineEventAgentIdle       EngineEventType = "agent_idle"        // agent entered idle
-	EngineEventAgentCompleted  EngineEventType = "agent_completed"   // async agent done
-	EngineEventAgentFailed     EngineEventType = "agent_failed"      // async agent failed
+	EngineEventAgentSpawned   EngineEventType = "agent_spawned"   // async agent launched
+	EngineEventAgentIdle      EngineEventType = "agent_idle"      // agent entered idle
+	EngineEventAgentCompleted EngineEventType = "agent_completed" // async agent done
+	EngineEventAgentFailed    EngineEventType = "agent_failed"    // async agent failed
 
 	// Deliverable: file produced by sub-agent
-	EngineEventDeliverable     EngineEventType = "deliverable"       // sub-agent wrote a deliverable file
-	EngineEventPlanProposed    EngineEventType = "plan_proposed"     // plan coordinator → user: please review/edit before exec
-	EngineEventPlanApproved    EngineEventType = "plan_approved"     // user → plan coordinator: ok continue (with optional edits)
+	EngineEventDeliverable  EngineEventType = "deliverable"   // sub-agent wrote a deliverable file
+	EngineEventPlanProposed EngineEventType = "plan_proposed" // plan coordinator → user: please review/edit before exec
+	EngineEventPlanApproved EngineEventType = "plan_approved" // user → plan coordinator: ok continue (with optional edits)
 
 	// EngineEventStepDecisionRequested fires when the Scheduler /
 	// PlanCoordinator hits a failure that previously would have been
@@ -122,10 +122,10 @@ const (
 	EngineEventStepDecisionRequested EngineEventType = "step_decision_requested"
 
 	// Phase 5: Teams
-	EngineEventTeamCreated     EngineEventType = "team_created"      // team created
-	EngineEventTeamMemberJoin  EngineEventType = "team_member_join"  // member joined
-	EngineEventTeamMemberLeft  EngineEventType = "team_member_left"  // member left
-	EngineEventTeamDeleted     EngineEventType = "team_deleted"      // team dissolved
+	EngineEventTeamCreated    EngineEventType = "team_created"     // team created
+	EngineEventTeamMemberJoin EngineEventType = "team_member_join" // member joined
+	EngineEventTeamMemberLeft EngineEventType = "team_member_left" // member left
+	EngineEventTeamDeleted    EngineEventType = "team_deleted"     // team dissolved
 
 	// Trace lifecycle (one user-input → assistant-reply round).
 	// Emitted by the engine entry point (QueryEngine.ProcessMessage) at the
@@ -207,12 +207,13 @@ type EngineEvent struct {
 	Text              string             `json:"text,omitempty"`
 	ToolName          string             `json:"tool_name,omitempty"`
 	ToolInput         string             `json:"tool_input,omitempty"`
-	ToolUseID         string             `json:"tool_use_id,omitempty"`  // for tool_call events
+	ToolUseID         string             `json:"tool_use_id,omitempty"` // for tool_call events
+	AwaitSessionID    string             `json:"await_session_id,omitempty"`
 	ToolResult        *ToolResult        `json:"tool_result,omitempty"`
 	PermissionRequest *PermissionRequest `json:"permission_request,omitempty"` // for permission_request events
 	Error             error              `json:"-"`
 	Usage             *Usage             `json:"usage,omitempty"`
-	Terminal          *Terminal          `json:"terminal,omitempty"`     // set on EngineEventDone
+	Terminal          *Terminal          `json:"terminal,omitempty"` // set on EngineEventDone
 
 	// ErrorDetails carries provider/router-specific structured context
 	// for EngineEventError frames. The channel translator pulls keys it
@@ -220,10 +221,10 @@ type EngineEvent struct {
 	// into typed wire fields and ignores the rest. Used by the
 	// multimodal gate to forward the rich UnsupportedModalityError
 	// payload to the client.
-	ErrorDetails      map[string]any     `json:"error_details,omitempty"`
-	MessageID         string             `json:"message_id,omitempty"`  // set on message_start
-	Model             string             `json:"model,omitempty"`       // set on message_start
-	StopReason        string             `json:"stop_reason,omitempty"` // set on message_delta
+	ErrorDetails map[string]any `json:"error_details,omitempty"`
+	MessageID    string         `json:"message_id,omitempty"`  // set on message_start
+	Model        string         `json:"model,omitempty"`       // set on message_start
+	StopReason   string         `json:"stop_reason,omitempty"` // set on message_delta
 
 	// Intent is the model-supplied progress sentence on agent_intent events
 	// ("正在搜 vLLM 论文"). Stays empty for other event types.
@@ -234,17 +235,17 @@ type EngineEvent struct {
 	Bytes int `json:"bytes,omitempty"`
 
 	// Sub-agent fields (set on subagent_start / subagent_end)
-	AgentID       string   `json:"agent_id,omitempty"`
-	AgentName     string   `json:"agent_name,omitempty"`
-	AgentDesc     string   `json:"agent_desc,omitempty"`     // short label, 3-5 words ("调研 LLM 推理")
-	AgentTask     string   `json:"agent_task,omitempty"`     // full task prompt the parent dispatched (set on subagent_start so the user can see what each L3 was actually asked to do)
-	AgentType     string   `json:"agent_type,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
+	AgentName string `json:"agent_name,omitempty"`
+	AgentDesc string `json:"agent_desc,omitempty"` // short label, 3-5 words ("调研 LLM 推理")
+	AgentTask string `json:"agent_task,omitempty"` // full task prompt the parent dispatched (set on subagent_start so the user can see what each L3 was actually asked to do)
+	AgentType string `json:"agent_type,omitempty"`
 	// ParentAgentID is the agent_id of the parent agent that initiated
 	// this spawn (for subagent.start/end events). "main" when emma is
 	// the parent. Required for front-end agent tree rendering — the FE
 	// can't see the engine's ctx propagation, so the wire envelope must
 	// carry this explicitly.
-	ParentAgentID string   `json:"parent_agent_id,omitempty"`
+	ParentAgentID string `json:"parent_agent_id,omitempty"`
 	// ParentSessionID is the parent's session ID, paired with
 	// ParentAgentID for the same parent-tracking purpose. Distinct from
 	// ParentAgentID because a single parent agent can run across multiple
@@ -255,10 +256,10 @@ type EngineEvent struct {
 	// the agent card under the step card so the step's orphan watchdog
 	// receives heartbeats from inner agent activity. Empty for non-plan
 	// dispatches (legacy parent resolution applies).
-	ParentStepID  string   `json:"parent_step_id,omitempty"`
-	Duration      int64    `json:"duration_ms,omitempty"`
-	AgentStatus   string   `json:"agent_status,omitempty"` // for subagent_end: "completed", "error", "max_turns"
-	DeniedTools   []string `json:"denied_tools,omitempty"` // tools denied during sub-agent execution
+	ParentStepID string   `json:"parent_step_id,omitempty"`
+	Duration     int64    `json:"duration_ms,omitempty"`
+	AgentStatus  string   `json:"agent_status,omitempty"` // for subagent_end: "completed", "error", "max_turns"
+	DeniedTools  []string `json:"denied_tools,omitempty"` // tools denied during sub-agent execution
 
 	// SubagentType is the LLM-facing dispatch label — writer / researcher
 	// / analyst / developer / freelancer / etc. Distinct from AgentType
@@ -280,15 +281,15 @@ type EngineEvent struct {
 	LoadedSkills []LoadedSkillInfo `json:"loaded_skills,omitempty"`
 
 	// Task event fields (Phase 2+)
-	TaskEvent     *TaskEvent         `json:"task_event,omitempty"`
+	TaskEvent *TaskEvent `json:"task_event,omitempty"`
 	// Agent message fields (Phase 3+)
-	AgentMsg      *AgentMessageEvent `json:"agent_msg,omitempty"`
+	AgentMsg *AgentMessageEvent `json:"agent_msg,omitempty"`
 	// Team event fields (Phase 5+)
-	TeamEvent     *TeamEvent         `json:"team_event,omitempty"`
+	TeamEvent *TeamEvent `json:"team_event,omitempty"`
 	// Sub-agent real-time streaming content (for subagent_event type)
 	SubAgentEvent *SubAgentEventData `json:"subagent_event,omitempty"`
 	// Deliverable file produced by a sub-agent (for deliverable type)
-	Deliverable   *Deliverable       `json:"deliverable,omitempty"`
+	Deliverable *Deliverable `json:"deliverable,omitempty"`
 
 	// Artifacts is the list of cross-agent artifacts surfaced by this event.
 	// Doc §10: events carry references (lightweight metadata + ID), never
@@ -573,22 +574,22 @@ type PlanTaskInfo struct {
 // Naming preserved for backwards compatibility with internal callers;
 // the wire payload uses step_id rather than task_id (see protocol.go).
 type TaskDispatch struct {
-	TaskID        string   `json:"task_id"`
-	SubagentType  string   `json:"subagent_type,omitempty"`
-	AgentID       string   `json:"agent_id,omitempty"`
-	InputSummary  string   `json:"input_summary,omitempty"`
-	OutputSummary string   `json:"output_summary,omitempty"`
-	Attempts      int      `json:"attempts,omitempty"`
+	TaskID        string `json:"task_id"`
+	SubagentType  string `json:"subagent_type,omitempty"`
+	AgentID       string `json:"agent_id,omitempty"`
+	InputSummary  string `json:"input_summary,omitempty"`
+	OutputSummary string `json:"output_summary,omitempty"`
+	Attempts      int    `json:"attempts,omitempty"`
 	// ErrorType is the controlled enum string from emit.ErrorType
 	// (e.g. "tool_timeout"). Required on failed events.
 	ErrorType string `json:"error_type,omitempty"`
 	// ErrorCode is the free-form machine-readable subtype (e.g.
 	// "BASH_TIMEOUT"). Optional, scoped to the producing component.
-	ErrorCode string `json:"error_code,omitempty"`
-	Error     string `json:"error,omitempty"`        // developer-facing message
-	UserMessage string `json:"user_message,omitempty"` // user-facing fallback for L1
-	Retryable bool   `json:"retryable,omitempty"`
-	Reason    string `json:"reason,omitempty"` // for step_skipped
+	ErrorCode    string   `json:"error_code,omitempty"`
+	Error        string   `json:"error,omitempty"`        // developer-facing message
+	UserMessage  string   `json:"user_message,omitempty"` // user-facing fallback for L1
+	Retryable    bool     `json:"retryable,omitempty"`
+	Reason       string   `json:"reason,omitempty"`       // for step_skipped
 	Deliverables []string `json:"deliverables,omitempty"` // file paths produced
 }
 
@@ -610,16 +611,17 @@ type TaskEvent struct {
 //   - "tool_start"    — ToolName, ToolInput, ToolUseID
 //   - "tool_end"      — ToolName, ToolUseID, Output, IsError
 //   - "intent"        — ToolName, ToolUseID, Intent (model-supplied progress
-//                       sentence emitted just before a tool runs; lets the
-//                       client render "researcher 正在搜索 vLLM 论文" with
-//                       no prompt-side cooperation since the JSON schema
-//                       requires `intent` on every tool call)
+//     sentence emitted just before a tool runs; lets the
+//     client render "researcher 正在搜索 vLLM 论文" with
+//     no prompt-side cooperation since the JSON schema
+//     requires `intent` on every tool call)
 //
 // Reserved (not forwarded today, kept so message_id/error_message etc. don't
 // get re-invented later):
 //   - "message_start" / "message_delta" / "message_stop" — LLM call lifecycle;
 //     intentionally suppressed because tokens / stop_reason are technical
 //     metrics, not task-level information
+//
 // LoadedSkillInfo is the wire shape of one entry in EngineEvent.LoadedSkills.
 // Kept narrow on purpose — name + version is what front-ends need to
 // render a "loaded: docx@0.3" chip; the full SkillCard with description
@@ -636,7 +638,7 @@ type LoadedSkillInfo struct {
 }
 
 //   - "error"        — sub-agent internal failures (TODO: surface these so
-//                      LLM stream errors stop being invisible)
+//     LLM stream errors stop being invisible)
 //   - "text"         — emma owns user-facing prose
 type SubAgentEventData struct {
 	EventType string `json:"event_type"`            // inner event type
@@ -686,14 +688,14 @@ type TeamEvent struct {
 
 // PermissionRequest is sent to the client when a tool execution needs approval.
 type PermissionRequest struct {
-	RequestID     string             `json:"request_id"`      // unique ID for correlating the response
-	ToolUseID     string             `json:"tool_use_id"`     // correlate with the open tool card
+	RequestID     string             `json:"request_id"`  // unique ID for correlating the response
+	ToolUseID     string             `json:"tool_use_id"` // correlate with the open tool card
 	ToolName      string             `json:"tool_name"`
 	ToolInput     string             `json:"tool_input"`
-	Message       string             `json:"message"`         // human-readable description of what's being asked
+	Message       string             `json:"message"` // human-readable description of what's being asked
 	IsReadOnly    bool               `json:"is_read_only"`
-	Options       []PermissionOption `json:"options"`         // available choices for the client to display
-	PermissionKey string             `json:"permission_key"`  // session-allow granularity key (e.g. "Bash:git", "FileEdit:/src/main.go")
+	Options       []PermissionOption `json:"options"`        // available choices for the client to display
+	PermissionKey string             `json:"permission_key"` // session-allow granularity key (e.g. "Bash:git", "FileEdit:/src/main.go")
 }
 
 // PermissionOption describes one choice the client can present to the user.
@@ -716,10 +718,10 @@ const (
 
 // PermissionResponse is the client's answer to a PermissionRequest.
 type PermissionResponse struct {
-	RequestID string          `json:"request_id"`          // must match PermissionRequest.RequestID
+	RequestID string          `json:"request_id"` // must match PermissionRequest.RequestID
 	Approved  bool            `json:"approved"`
-	Scope     PermissionScope `json:"scope,omitempty"`     // "once" (default) or "session"
-	Message   string          `json:"message,omitempty"`   // optional reason for denial
+	Scope     PermissionScope `json:"scope,omitempty"`   // "once" (default) or "session"
+	Message   string          `json:"message,omitempty"` // optional reason for denial
 }
 
 // TerminalReason classifies why the query loop stopped.
@@ -727,16 +729,16 @@ type PermissionResponse struct {
 type TerminalReason string
 
 const (
-	TerminalCompleted          TerminalReason = "completed"            // LLM finished naturally (end_turn)
-	TerminalAbortedStreaming   TerminalReason = "aborted_streaming"    // user cancelled during LLM streaming
-	TerminalAbortedTools       TerminalReason = "aborted_tools"        // user cancelled during tool execution
-	TerminalMaxTurns           TerminalReason = "max_turns"            // engine.max_turns reached
-	TerminalPromptTooLong      TerminalReason = "prompt_too_long"      // context exceeds model limit after compaction
-	TerminalBlockingLimit      TerminalReason = "blocking_limit"       // rate-limit or credit exhaustion
-	TerminalModelError         TerminalReason = "model_error"          // unrecoverable LLM API error
-	TerminalImageError         TerminalReason = "image_error"          // image processing failure
-	TerminalStopHookPrevented  TerminalReason = "stop_hook_prevented"  // post-tool hook vetoed the stop
-	TerminalHookStopped        TerminalReason = "hook_stopped"         // hook forced an early stop
+	TerminalCompleted           TerminalReason = "completed"            // LLM finished naturally (end_turn)
+	TerminalAbortedStreaming    TerminalReason = "aborted_streaming"    // user cancelled during LLM streaming
+	TerminalAbortedTools        TerminalReason = "aborted_tools"        // user cancelled during tool execution
+	TerminalMaxTurns            TerminalReason = "max_turns"            // engine.max_turns reached
+	TerminalPromptTooLong       TerminalReason = "prompt_too_long"      // context exceeds model limit after compaction
+	TerminalBlockingLimit       TerminalReason = "blocking_limit"       // rate-limit or credit exhaustion
+	TerminalModelError          TerminalReason = "model_error"          // unrecoverable LLM API error
+	TerminalImageError          TerminalReason = "image_error"          // image processing failure
+	TerminalStopHookPrevented   TerminalReason = "stop_hook_prevented"  // post-tool hook vetoed the stop
+	TerminalHookStopped         TerminalReason = "hook_stopped"         // hook forced an early stop
 	TerminalUnsupportedModality TerminalReason = "unsupported_modality" // model can't accept a content block's modality
 )
 

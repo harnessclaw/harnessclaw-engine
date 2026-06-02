@@ -285,11 +285,12 @@ func TestTranslator_SubAgentClientToolCallUsesChildEmitter(t *testing.T) {
 		AgentType: "sync",
 	})
 	tr.Translate(em, "sess_browser_tool", &types.EngineEvent{
-		Type:      types.EngineEventToolCall,
-		AgentID:   "agent_browser",
-		ToolName:  "browser_session_create",
-		ToolUseID: "toolu_browser_session",
-		ToolInput: `{"visibility":"visible"}`,
+		Type:           types.EngineEventToolCall,
+		AgentID:        "agent_browser",
+		ToolName:       "browser_session_create",
+		ToolUseID:      "toolu_browser_session",
+		ToolInput:      `{"visibility":"visible"}`,
+		AwaitSessionID: "sess_browser_tool",
 	})
 
 	events := rec.FilterByCard("toolu_browser_session")
@@ -315,6 +316,9 @@ func TestTranslator_SubAgentClientToolCallUsesChildEmitter(t *testing.T) {
 	}
 	if payload.Name != "browser_session_create" {
 		t.Fatalf("tool name = %q", payload.Name)
+	}
+	if payload.AwaitSessionID != "sess_browser_tool" {
+		t.Fatalf("await_session_id = %q, want sess_browser_tool", payload.AwaitSessionID)
 	}
 	if payload.Input["visibility"] != "visible" {
 		t.Fatalf("tool input visibility = %v", payload.Input["visibility"])
@@ -408,6 +412,18 @@ func TestTranslator_SubAgentStart_FallsBackWhenNoStepID(t *testing.T) {
 		return
 	}
 	t.Fatal("no card.add for agent_x emitted")
+}
+
+func TestTranslator_SubAgentParentPrefersExplicitToolCallID(t *testing.T) {
+	s := &sessionState{
+		tools:        map[string]string{"toolu_browser": "tool_card"},
+		steps:        map[string]string{},
+		subAgentCard: map[string]string{"parent_agent": "parent_agent_card"},
+	}
+
+	if got := parentForSubAgent(s, "parent_agent", "toolu_browser"); got != "tool_card" {
+		t.Fatalf("parentForSubAgent = %q, want tool_card", got)
+	}
 }
 
 // TestPromoteToolMetadata_OmitsKnownKeys exercises the helper directly.

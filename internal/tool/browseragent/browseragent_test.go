@@ -39,6 +39,9 @@ func TestBrowserAgentTool_LongRunningAndSafety(t *testing.T) {
 	if !tl.IsLongRunning() {
 		t.Fatal("browser_agent must be long-running")
 	}
+	if tl.IsConcurrencySafe() {
+		t.Fatal("browser_agent must run serially because visible browser windows and Electron focus are shared process state")
+	}
 	if got := tool.EffectiveSafetyLevel(tl); got != tool.SafetyDangerous {
 		t.Fatalf("safety = %s, want %s", got, tool.SafetyDangerous)
 	}
@@ -59,6 +62,8 @@ func TestBrowserAgentTool_DescriptionAdvertisesRealBrowserSubAgent(t *testing.T)
 		"browser_agent",
 		"browser-agent 子 Agent",
 		"真实浏览器",
+		"一个目标站点或一个浏览器会话",
+		"拆成多个 browser_agent 调用",
 	} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q:\n%s", want, desc)
@@ -66,33 +71,57 @@ func TestBrowserAgentTool_DescriptionAdvertisesRealBrowserSubAgent(t *testing.T)
 	}
 }
 
-func TestBrowserAgentTool_PromptRequestsConfiguredVisibleSession(t *testing.T) {
+func TestBrowserAgentTool_GoalSchemaRequiresSingleBrowserTarget(t *testing.T) {
+	tl := New(&fakeSpawner{}, config.BrowserAgentConfig{Enabled: true, MaxSteps: 30}, zap.NewNop())
+	props := tl.InputSchema()["properties"].(map[string]any)
+	goal := props["goal"].(map[string]any)
+	desc := goal["description"].(string)
+	for _, want := range []string{
+		"单个目标站点",
+		"多个独立站点",
+		"多个 browser_agent 调用",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("goal schema description missing %q: %s", want, desc)
+		}
+	}
+}
+
+func TestBrowserAgentTool_PromptRequestsDefaultHiddenSession(t *testing.T) {
 	prompt := buildPrompt(input{
 		Goal:     "read the rendered page",
 		StartURL: "https://example.com",
-	}, 8, config.BrowserAgentConfig{DefaultVisibility: "visible"})
+	}, 8, config.BrowserAgentConfig{})
 
 	for _, want := range []string{
-		`visibility="visible"`,
-		"台前",
+		`visibility="hidden"`,
+		"浏览器窗口可见性：hidden",
 		"浏览器窗口",
-		"browser_navigate",
-		`submit_task_result`,
+		"agent_browser_command",
+		`browser_agent_final_result`,
 		`result`,
 		`content`,
 		`source`,
 		"全局持久 profile",
 		"关闭窗口后继续复用",
 		"不要传 task_id 或 partition",
+		"只处理一个目标站点或一个浏览器会话",
+		"多个互相独立的站点",
+		"应由主 Agent 拆成多个 browser_agent 调用",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
 	for _, forbidden := range []string{
-		"创建时传入 start_url",
+		"browser_navigate",
+		"browser_snapshot",
+		"browser_click",
+		"browser_fill",
+		"submit_task_result",
 		"meta_path",
 		"meta.json",
+		"让浏览器窗口显示在台前",
 	} {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("prompt should not mention %q:\n%s", forbidden, prompt)
@@ -147,5 +176,37 @@ func TestBrowserAgentTool_SpawnsBrowserSubAgent(t *testing.T) {
 	}
 	if !strings.Contains(spawner.cfg.Prompt, "collect prices") || !strings.Contains(spawner.cfg.Prompt, "https://example.com") {
 		t.Fatalf("prompt missing goal/start_url: %q", spawner.cfg.Prompt)
+	}
+}
+
+func TestBrowserAgentTool_BindsSpawnToCurrentToolCall(t *testing.T) {
+	spawner := &fakeSpawner{}
+	tl := New(spawner, config.BrowserAgentConfig{Enabled: true, MaxSteps: 30}, zap.NewNop())
+	ctx := tool.WithToolUseContext(context.Background(), &types.ToolUseContext{
+		Core: types.CoreContext{
+			SessionID:  "sess_parent",
+			ToolCallID: "toolu_browser_1",
+			ToolName:   "browser_agent",
+		},
+	})
+
+	res, err := tl.Execute(ctx, json.RawMessage(`{"goal":"collect prices"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("Execute returned error result: %+v", res)
+	}
+	if spawner.cfg == nil {
+		t.Fatal("SpawnSync was not called")
+	}
+	if spawner.cfg.ParentSessionID != "sess_parent" {
+		t.Fatalf("ParentSessionID = %q, want sess_parent", spawner.cfg.ParentSessionID)
+	}
+	if spawner.cfg.ParentAgentID != "main" {
+		t.Fatalf("ParentAgentID = %q, want main", spawner.cfg.ParentAgentID)
+	}
+	if spawner.cfg.ParentStepID != "toolu_browser_1" {
+		t.Fatalf("ParentStepID = %q, want toolu_browser_1", spawner.cfg.ParentStepID)
 	}
 }

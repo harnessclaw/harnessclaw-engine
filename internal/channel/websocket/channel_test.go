@@ -624,6 +624,53 @@ func TestChannel_PromptResponseUnknownRequestID(t *testing.T) {
 	}
 }
 
+func TestChannel_ToolResultUsesFrameSessionID(t *testing.T) {
+	var gotSessionID string
+	var got *types.ToolResultPayload
+	var mu sync.Mutex
+	handler := func(_ context.Context, m *types.IncomingMessage) error {
+		if m.ToolResult != nil {
+			mu.Lock()
+			gotSessionID = m.SessionID
+			got = m.ToolResult
+			mu.Unlock()
+		}
+		return nil
+	}
+	url, _ := startTestChannel(t, handler)
+	ws := dial(t, url)
+	send(t, ws, map[string]any{"type": "session.create", "session_id": "sess_display"})
+	_ = recv(t, ws)
+
+	send(t, ws, map[string]any{
+		"type":        "tool.result",
+		"session_id":  "sess_await",
+		"tool_use_id": "tooluse_browser",
+		"status":      "success",
+		"output":      "ok",
+	})
+
+	deadline := time.After(time.Second)
+	for {
+		mu.Lock()
+		ready := got != nil
+		sessionID := gotSessionID
+		mu.Unlock()
+		if ready {
+			if sessionID != "sess_await" {
+				t.Fatalf("IncomingMessage.SessionID = %q, want sess_await", sessionID)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for tool.result handler")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
 // TestChannel_AskUserQuestionCancelled verifies "decision=denied" maps to
 // status=cancelled in the bridged tool.result.
 func TestChannel_AskUserQuestionCancelled(t *testing.T) {
@@ -688,4 +735,3 @@ func TestChannel_AskUserQuestionCancelled(t *testing.T) {
 		t.Errorf("cancelled status = %q, want cancelled", got.Status)
 	}
 }
-

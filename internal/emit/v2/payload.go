@@ -51,16 +51,17 @@ type MessagePayload struct {
 // stripped from Metadata to avoid duplication; everything else flows
 // through verbatim.
 type ToolPayload struct {
-	Name        string         `json:"name"`
-	Target      string         `json:"target,omitempty"` // server | client
-	Intent      string         `json:"intent,omitempty"` // model-supplied progress sentence
-	Input       map[string]any `json:"input,omitempty"`
-	Output      string         `json:"output,omitempty"`
-	RenderHint  string         `json:"render_hint,omitempty"` // terminal | code | diff | search | ...
-	Language    string         `json:"language,omitempty"`
-	FilePath    string         `json:"file_path,omitempty"`
-	Artifacts   []ArtifactRef  `json:"artifacts,omitempty"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
+	Name           string         `json:"name"`
+	Target         string         `json:"target,omitempty"` // server | client
+	Intent         string         `json:"intent,omitempty"` // model-supplied progress sentence
+	AwaitSessionID string         `json:"await_session_id,omitempty"`
+	Input          map[string]any `json:"input,omitempty"`
+	Output         string         `json:"output,omitempty"`
+	RenderHint     string         `json:"render_hint,omitempty"` // terminal | code | diff | search | ...
+	Language       string         `json:"language,omitempty"`
+	FilePath       string         `json:"file_path,omitempty"`
+	Artifacts      []ArtifactRef  `json:"artifacts,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
 
 	// Phase 系列字段在 tool card 进入终态前由 card.set 事件流式更新。
 	// Phase 是机器可读的枚举；PhaseHint 是引擎用文案库解析好的中文，
@@ -74,18 +75,18 @@ type ToolPayload struct {
 
 // AgentPayload describes a sub-agent session.
 type AgentPayload struct {
-	Name          string `json:"name,omitempty"`
-	AgentType     string `json:"agent_type,omitempty"` // sync | async — runtime execution shape
+	Name      string `json:"name,omitempty"`
+	AgentType string `json:"agent_type,omitempty"` // sync | async — runtime execution shape
 	// SubagentType is the LLM-facing dispatch label (writer / researcher
 	// / analyst / freelancer / etc.). Front-ends render this on the
 	// agent card / metrics row so users can tell which worker did what;
 	// AgentType alone returns "sync" for every leaf and is useless for
 	// disambiguation in dashboards.
-	SubagentType  string `json:"subagent_type,omitempty"`
-	ParentAgentID string `json:"parent_agent_id,omitempty"`
-	TaskPrompt    string `json:"task_prompt,omitempty"` // full prompt the parent dispatched
-	OutputSummary string `json:"output_summary,omitempty"`
-	NumTurns      int    `json:"num_turns,omitempty"`
+	SubagentType  string        `json:"subagent_type,omitempty"`
+	ParentAgentID string        `json:"parent_agent_id,omitempty"`
+	TaskPrompt    string        `json:"task_prompt,omitempty"` // full prompt the parent dispatched
+	OutputSummary string        `json:"output_summary,omitempty"`
+	NumTurns      int           `json:"num_turns,omitempty"`
 	DeniedTools   []string      `json:"denied_tools,omitempty"`
 	Artifacts     []ArtifactRef `json:"artifacts,omitempty"`
 	// LoadedSkills is set on subagent_start for skill-aware agents
@@ -139,12 +140,12 @@ type StepPayload struct {
 type ArtifactPayload struct {
 	ArtifactID  string `json:"artifact_id"`
 	Name        string `json:"name"`
-	Type        string `json:"type,omitempty"`     // file | data | image | ...
+	Type        string `json:"type,omitempty"` // file | data | image | ...
 	MimeType    string `json:"mime_type,omitempty"`
 	SizeBytes   int    `json:"size_bytes,omitempty"`
 	Description string `json:"description,omitempty"`
-	Role        string `json:"role,omitempty"`     // draft_email | report | summary
-	URI         string `json:"uri,omitempty"`      // e.g. file:///tmp/xxx or artifact://...
+	Role        string `json:"role,omitempty"` // draft_email | report | summary
+	URI         string `json:"uri,omitempty"`  // e.g. file:///tmp/xxx or artifact://...
 	Version     int    `json:"version,omitempty"`
 	Thumbnail   string `json:"thumbnail,omitempty"`
 }
@@ -212,9 +213,9 @@ type SystemPayload struct {
 // error/output/metrics. The Builder builds this automatically from
 // status + options; producers don't construct it directly.
 type ClosePayload struct {
-	Status  Status     `json:"status"`
-	Error   *ErrorInfo `json:"error,omitempty"`
-	Inner   any        `json:"inner,omitempty"` // type-specific final payload (e.g. ToolPayload.Output)
+	Status Status     `json:"status"`
+	Error  *ErrorInfo `json:"error,omitempty"`
+	Inner  any        `json:"inner,omitempty"` // type-specific final payload (e.g. ToolPayload.Output)
 }
 
 // ----- card.append payload -----
@@ -243,15 +244,15 @@ type ProgressPayload struct {
 	ProgressPct    float64 `json:"progress_pct,omitempty"` // 0.0 — 1.0
 	ItemsProcessed int     `json:"items_processed,omitempty"`
 	ItemsTotal     int     `json:"items_total,omitempty"`
-	Unit           string  `json:"unit,omitempty"`     // e.g. "pages", "files"
+	Unit           string  `json:"unit,omitempty"` // e.g. "pages", "files"
 	ETAMs          int64   `json:"eta_ms,omitempty"`
 }
 
 // HeartbeatPayload is the inner payload for kind=heartbeat.
 type HeartbeatPayload struct {
-	Stage             string `json:"stage,omitempty"`
-	UptimeMs          int64  `json:"uptime_ms,omitempty"`
-	ActiveToolCardID  string `json:"active_tool_card_id,omitempty"`
+	Stage            string `json:"stage,omitempty"`
+	UptimeMs         int64  `json:"uptime_ms,omitempty"`
+	ActiveToolCardID string `json:"active_tool_card_id,omitempty"`
 }
 
 // IntentPayload is the inner payload for kind=intent.
@@ -318,12 +319,12 @@ type QuestionOption struct {
 
 // PlanReviewPromptPayload is the inner payload for kind=plan_review.
 type PlanReviewPromptPayload struct {
-	PlanID             string             `json:"plan_id"`
-	Goal               string             `json:"goal,omitempty"`
-	Rationale          string             `json:"rationale,omitempty"`
-	Steps              []PlanReviewStep   `json:"steps"`
-	AvailableSubagents []string           `json:"available_subagents,omitempty"`
-	RejectionReason    string             `json:"rejection_reason,omitempty"` // when this is a re-prompt after a rejected edit
+	PlanID             string           `json:"plan_id"`
+	Goal               string           `json:"goal,omitempty"`
+	Rationale          string           `json:"rationale,omitempty"`
+	Steps              []PlanReviewStep `json:"steps"`
+	AvailableSubagents []string         `json:"available_subagents,omitempty"`
+	RejectionReason    string           `json:"rejection_reason,omitempty"` // when this is a re-prompt after a rejected edit
 }
 
 // PlanReviewStep is one editable step in a plan review prompt.
@@ -369,8 +370,8 @@ type SessionPayload struct {
 
 // SessionOpenedPayload is the inner payload for kind=opened.
 type SessionOpenedPayload struct {
-	ProtocolVersion string         `json:"protocol_version"`
-	Model           string         `json:"model,omitempty"`
+	ProtocolVersion string          `json:"protocol_version"`
+	Model           string          `json:"model,omitempty"`
 	Capabilities    map[string]bool `json:"capabilities,omitempty"`
 }
 

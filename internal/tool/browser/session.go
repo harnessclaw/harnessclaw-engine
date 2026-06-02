@@ -48,7 +48,7 @@ func (t *SessionCreateTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"start_url": map[string]any{
 				"type":        "string",
-				"description": "可选起始 URL，仅用于任务记录和校验；创建会话后应使用 browser_navigate 打开该地址。",
+				"description": "可选起始 URL，仅用于任务记录和校验；创建会话后应使用 agent_browser_command 调用 official agent-browser open/goto 命令打开该地址。",
 				"format":      "uri",
 			},
 			"visibility": map[string]any{
@@ -261,7 +261,7 @@ const sessionCreateDescription = `创建独立的浏览器会话窗口，由 Ele
 
 浏览器使用客户端全局持久 profile；登录态、cookies、localStorage 和 IndexedDB 会跨聊天会话、跨浏览器 session、关闭窗口后继续复用。
 
-返回值应包含 session_id、window_id、当前 active_tab 和 cdp_endpoint。拿到 cdp_endpoint 后，后续 browser_navigate / browser_snapshot / browser_extract 调用必须把它作为 cdp_endpoint 参数传入。`
+返回值应包含 session_id、window_id、当前 active_tab 和 cdp_endpoint。HarnessClaw 会把最新 cdp_endpoint 绑定到当前 Browser Agent；后续 agent_browser_command 不要复用其他 Browser Agent 的 endpoint。`
 
 const sessionCloseDescription = `关闭 browser_session_create 创建的浏览器会话，由 Electron 客户端执行。
 

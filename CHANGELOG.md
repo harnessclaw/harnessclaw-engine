@@ -8,6 +8,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 ### Added
 - Endpoint config now carries an optional `group` display tag (yaml + POST/PATCH/GET). Used by the desktop client to bucket models by series in the Settings UI. Engine ignores the field for routing.
 
+### Fixed
+- Browser Agent now serializes top-level browser tasks, binds command CDP targets to the current browser session, and rejects cross-agent endpoint reuse to avoid multi-window race conditions.
+
 ## [0.0.15] - 2026-05-26
 
 ### Added

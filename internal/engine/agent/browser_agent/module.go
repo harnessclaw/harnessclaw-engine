@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/loop"
@@ -17,7 +18,9 @@ import (
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
+	"harnessclaw-go/internal/skill"
 	"harnessclaw-go/internal/tool"
+	browsertools "harnessclaw-go/internal/tool/browser"
 	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/pkg/types"
 )
@@ -25,15 +28,17 @@ import (
 const submitRetries = 3
 
 type Deps struct {
-	Provider      provider.Provider
-	Registry      *tool.Registry
-	SessionMgr    *session.Manager
-	Compactor     compact.Compactor
-	Retryer       *retry.Retryer
-	PromptBuilder *prompt.Builder
-	Logger        *zap.Logger
-	MaxTokens     int
-	ContextWindow int
+	Provider           provider.Provider
+	Registry           *tool.Registry
+	SessionMgr         *session.Manager
+	Compactor          compact.Compactor
+	Retryer            *retry.Retryer
+	PromptBuilder      *prompt.Builder
+	Logger             *zap.Logger
+	MaxTokens          int
+	ContextWindow      int
+	BrowserAgentConfig config.BrowserAgentConfig
+	SkillProvider      SkillProvider
 }
 
 type Module struct {
@@ -41,6 +46,9 @@ type Module struct {
 }
 
 func New(deps Deps) *Module {
+	if deps.SkillProvider == nil && deps.BrowserAgentConfig.Enabled {
+		deps.SkillProvider = NewAgentBrowserSkillProvider(deps.BrowserAgentConfig, deps.Logger)
+	}
 	return &Module{deps: deps}
 }
 
@@ -65,10 +73,24 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	if strings.TrimSpace(taskID) == "" {
 		taskID = "browser_" + sess.ID
 	}
+	browserBinding := browsertools.NewTaskBinding(taskID)
+	ctx = browsertools.WithTaskBinding(ctx, browserBinding)
+	defer m.cleanupHelperSession(ctx, taskID)
 
 	pool := common.BuildToolPool(m.deps.Registry, def.MaybeAugmentForSubAgent(), cfg.AgentType, true)
+
+	browserSkillBlock := ""
+	if m.deps.SkillProvider != nil {
+		full, err := m.deps.SkillProvider.Load(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("browser agent official skill load failed: %w", err)
+		}
+		browserSkillBlock = prompt.BuildLoadedSkillsBlock([]*skill.SkillFull{full})
+	}
+
 	sysPrompt := joinNonEmpty([]string{
 		def.SystemPrompt,
+		browserSkillBlock,
 		agent.RenderSubAgentContract(def),
 		common.BuildSubAgentPrompt(common.PromptArgs{
 			Ctx:               ctx,
@@ -111,6 +133,10 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	}
 
 	clientAwaitSession := m.clientAwaitSession(cfg)
+	finalEnforcer := common.SubmitResultEnforcerForTool(browsertools.FinalResultToolName, nil, def.OutputSchema, submitRetries)
+	permChecker := common.BuildInheritedChecker(
+		common.SessionApprovedTools(m.deps.SessionMgr, cfg.ParentSessionID),
+	)
 	loopRes, err := loop.Run(ctx, &loop.Config{
 		Session:            sess,
 		SystemPrompt:       sysPrompt,
@@ -125,9 +151,14 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		ContextWindow:      m.deps.ContextWindow,
 		Out:                cfg.ParentOut,
 		AgentID:            sess.ID,
+		PermChecker:        permChecker,
+		ApprovalFn:         nil,
 		TaskContract:       tool.TaskContract{TaskID: taskID, TaskStartedAt: cfg.TaskStartedAt, OutputSchema: def.OutputSchema},
 		ArtifactProducer:   tool.ArtifactProducer{AgentID: sess.ID, AgentRunID: sess.ID, TaskID: taskID, SessionID: sess.ID},
-		OnTurnComplete:     common.SubmitResultEnforcer(nil, def.OutputSchema, submitRetries),
+		OnTurnComplete: func(turn int, msg types.Message, results []types.ToolResult) loop.Decision {
+			browsertools.UpdateTaskBindingFromResults(msg, results, browserBinding)
+			return finalEnforcer(turn, msg, results)
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -178,11 +209,20 @@ func browserTaskPrompt(taskID, body string) string {
 	return joinNonEmpty([]string{
 		"<spawn-info>\n" +
 			"task_id: " + taskID + "\n" +
-			"submit_task_result: 调用 submit_task_result({\"task_id\":\"" + taskID + "\", \"result\":{\"content\":\"...\", \"source\":\"direct_access|search_fallback|api_fallback|partial\"}})。\n" +
-			"result 必须符合 output_schema；本 Agent 不需要写文件产物。\n" +
+			"final_result: 调用 browser_agent_final_result({\"content\":\"...\", \"source\":\"browser|partial\"})；框架会自动绑定 task_id。\n" +
+			"result 必须符合 output_schema；本 Agent 不需要写文件产物，也不要直接调用 submit_task_result。\n" +
 			"</spawn-info>",
 		"<task>\n" + body + "\n</task>",
 	}, "\n\n")
+}
+
+func (m *Module) cleanupHelperSession(ctx context.Context, taskID string) {
+	if !m.deps.BrowserAgentConfig.Enabled || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	if _, err := browsertools.CleanupHelperSession(context.WithoutCancel(ctx), m.deps.BrowserAgentConfig, nil, taskID); err != nil && m.deps.Logger != nil {
+		m.deps.Logger.Debug("browser agent helper cleanup failed", zap.String("task_id", taskID), zap.Error(err))
+	}
 }
 
 func acceptedSubmitContent(results []types.ToolResult) string {

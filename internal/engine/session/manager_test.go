@@ -93,6 +93,8 @@ func (s *reloadStub) SaveSession(context.Context, *Session) error { return nil }
 func (s *reloadStub) LoadSession(_ context.Context, _ string) (*Session, error) {
 	return s.loaded, nil
 }
-func (s *reloadStub) DeleteSession(context.Context, string) error                              { return nil }
-func (s *reloadStub) SaveSessionStats(context.Context, string, types.SessionStats) error       { return nil }
-func (s *reloadStub) LoadSessionStats(_ context.Context, _ string) (types.SessionStats, error) { return s.stats, nil }
+func (s *reloadStub) DeleteSession(context.Context, string) error                        { return nil }
+func (s *reloadStub) SaveSessionStats(context.Context, string, types.SessionStats) error { return nil }
+func (s *reloadStub) LoadSessionStats(_ context.Context, _ string) (types.SessionStats, error) {
+	return s.stats, nil
+}

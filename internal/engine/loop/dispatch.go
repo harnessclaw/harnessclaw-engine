@@ -108,10 +108,11 @@ func executeClientTools(ctx context.Context, cfg *Config, calls []types.ToolCall
 		awaits[i] = await.Result
 		select {
 		case cfg.Out <- types.EngineEvent{
-			Type:      types.EngineEventToolCall,
-			ToolUseID: call.ID,
-			ToolName:  call.Name,
-			ToolInput: call.Input,
+			Type:           types.EngineEventToolCall,
+			ToolUseID:      call.ID,
+			ToolName:       call.Name,
+			ToolInput:      call.Input,
+			AwaitSessionID: awaitSession.ID,
 		}:
 		case <-ctx.Done():
 			results[i] = types.ToolResult{Content: "execution cancelled", IsError: true}

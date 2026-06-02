@@ -43,7 +43,7 @@ func New(spawner agent.AgentSpawner, cfg config.BrowserAgentConfig, logger *zap.
 func (t *Tool) Name() string                  { return ToolName }
 func (t *Tool) Description() string           { return description }
 func (t *Tool) IsReadOnly() bool              { return false }
-func (t *Tool) IsConcurrencySafe() bool       { return true }
+func (t *Tool) IsConcurrencySafe() bool       { return false }
 func (t *Tool) IsEnabled() bool               { return t.cfg.Enabled }
 func (t *Tool) IsLongRunning() bool           { return true }
 func (t *Tool) SafetyLevel() tool.SafetyLevel { return tool.SafetyDangerous }
@@ -54,7 +54,7 @@ func (t *Tool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"goal": map[string]any{
 				"type":        "string",
-				"description": "浏览器任务目标，例如“打开小红书并提取今日热榜”。",
+				"description": "单个目标站点或单个浏览器会话的任务目标，例如“打开小红书并提取今日热榜”。如果用户需求包含多个独立站点、账号、窗口或浏览器会话，应拆成多个 browser_agent 调用。",
 				"minLength":   1,
 			},
 			"start_url": map[string]any{
@@ -131,6 +131,8 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	}
 	if tuc, ok := tool.GetToolUseContext(ctx); ok {
 		cfg.ParentSessionID = tuc.Core.SessionID
+		cfg.ParentAgentID = parentAgentIDFromContext(ctx, tuc)
+		cfg.ParentStepID = strings.TrimSpace(tuc.Core.ToolCallID)
 	}
 	if rootSID, ok := sessionstats.RootSessionIDFromCtx(ctx); ok {
 		cfg.RootSessionID = rootSID
@@ -161,6 +163,20 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	}, nil
 }
 
+func parentAgentIDFromContext(ctx context.Context, tuc *types.ToolUseContext) string {
+	if producer, ok := tool.GetArtifactProducer(ctx); ok {
+		if agentID := strings.TrimSpace(producer.AgentID); agentID != "" {
+			return agentID
+		}
+	}
+	if tuc != nil {
+		if agentID := strings.TrimSpace(tuc.Agent.AgentID); agentID != "" {
+			return agentID
+		}
+	}
+	return "main"
+}
+
 func parseInput(raw json.RawMessage) (input, error) {
 	var in input
 	if err := json.Unmarshal(raw, &in); err != nil {
@@ -187,29 +203,24 @@ func buildPrompt(in input, maxSteps int, cfg config.BrowserAgentConfig) string {
 		b.WriteString("\n")
 	}
 	b.WriteString(fmt.Sprintf("最大操作步数：%d\n", maxSteps))
-	if cfg.PreferredSearchEngine != "" {
-		b.WriteString("搜索降级优先使用：")
-		b.WriteString(cfg.PreferredSearchEngine)
-		b.WriteString("\n")
-	}
 	visibility := strings.TrimSpace(cfg.DefaultVisibility)
 	if visibility != "hidden" && visibility != "visible" {
-		visibility = "visible"
+		visibility = "hidden"
 	}
 	b.WriteString("浏览器窗口可见性：")
 	b.WriteString(visibility)
 	b.WriteString("\n")
-	b.WriteString("\n执行要求：先调用 browser_session_create 创建浏览器会话")
-	b.WriteString(fmt.Sprintf("，并传入 visibility=%q", visibility))
+	b.WriteString("\n任务边界：本 Browser Agent 只处理一个目标站点或一个浏览器会话；如果原始需求包含多个互相独立的站点、账号、窗口或浏览器会话，应由主 Agent 拆成多个 browser_agent 调用分别执行，不要在同一个 Browser Agent 内串联多个独立浏览器目标。\n")
+	b.WriteString(fmt.Sprintf("\n执行要求：先调用 browser_session_create 创建浏览器会话，并传入 visibility=%q", visibility))
 	if visibility == "visible" {
 		b.WriteString("，让浏览器窗口显示在台前，方便用户观察进度")
 	}
 	if strings.TrimSpace(in.StartURL) != "" {
-		b.WriteString("；创建完成后必须调用 browser_navigate 访问起始 URL，不要依赖 browser_session_create 加载 start_url")
+		b.WriteString("；创建完成后使用 agent_browser_command 打开起始 URL")
 	} else {
-		b.WriteString("；需要打开网页时必须调用 browser_navigate")
+		b.WriteString("；需要打开网页时使用 agent_browser_command")
 	}
-	b.WriteString("；浏览器使用客户端全局持久 profile，登录态、cookies、localStorage 和 IndexedDB 会跨聊天会话、跨浏览器 session、关闭窗口后继续复用，不要传 task_id 或 partition 创建隔离 profile；然后使用返回的 cdp_endpoint 调用浏览器操作；遇到登录、验证码、扫码、MFA 或站点确认时调用 browser_ask_human，让用户操作后调用 browser_session_state 取回当前 active_tab.cdp_endpoint 再继续；直接访问失败时按浏览器搜索、搜索 API、WebFetch 顺序降级；最后调用 submit_task_result，用 result 返回 content 和 source；普通 turn 完成后不要主动关闭浏览器，客户端会自动隐藏窗口；显式关闭也只关闭窗口/session 句柄，不清理登录态。")
+	b.WriteString("；浏览器使用客户端全局持久 profile，登录态、cookies、localStorage 和 IndexedDB 会跨聊天会话、跨浏览器 session、关闭窗口后继续复用，不要传 task_id 或 partition 创建隔离 profile；HarnessClaw 会把 browser_session_create 或 browser_session_state 返回的最新 cdp_endpoint 绑定到当前 Browser Agent，调用 agent_browser_command 时不要复用其他 Browser Agent 的 endpoint；遇到登录、验证码、扫码、MFA 或站点确认时调用 browser_ask_human，让用户操作后调用 browser_session_state 取回当前 active_tab.cdp_endpoint 再继续；不使用非浏览器降级路径，目标页面无法通过浏览器完成时返回 partial 和原因；最后调用 browser_agent_final_result，用 result 返回 content 和 source；普通 turn 完成后不要主动关闭浏览器，客户端会自动隐藏窗口；显式关闭也只关闭窗口/session 句柄，不清理登录态。")
 	return b.String()
 }
 
@@ -239,4 +250,6 @@ func validateStartURL(raw string, blocked []string) error {
 
 const description = `可以使用真实浏览器：当用户询问是否能使用浏览器时，应回答可以通过 browser_agent 工具启动 browser-agent 子 Agent。
 
-browser_agent 会启动专用 browser-agent 子 Agent 来完成网页信息采集任务，适合需要真实浏览器渲染、SPA 页面读取、目标网站直接访问和搜索降级的任务。`
+browser_agent 会启动专用 browser-agent 子 Agent 来完成网页信息采集任务，适合需要真实浏览器渲染、SPA 页面读取、目标网站直接访问和搜索降级的任务。
+
+每次 browser_agent 调用只处理一个目标站点或一个浏览器会话；如果用户需求包含多个互相独立的站点、账号、窗口或浏览器会话，主 Agent 应拆成多个 browser_agent 调用分别执行并汇总结果。`

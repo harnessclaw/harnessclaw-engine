@@ -356,10 +356,11 @@ func (e *Engine) executeClientTools(
 		}
 
 		out <- types.EngineEvent{
-			Type:      types.EngineEventToolCall,
-			ToolUseID: tc.ID,
-			ToolName:  tc.Name,
-			ToolInput: tc.Input,
+			Type:           types.EngineEventToolCall,
+			ToolUseID:      tc.ID,
+			ToolName:       tc.Name,
+			ToolInput:      tc.Input,
+			AwaitSessionID: sess.ID,
 		}
 	}
 
@@ -477,4 +478,3 @@ func (e *Engine) cumulativeUsageFor(sessionID string) types.Usage {
 		ThinkingTokens: int(s.ThinkingTokens),
 	}
 }
-

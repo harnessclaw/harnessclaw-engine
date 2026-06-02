@@ -111,6 +111,19 @@ func TestBrowserAgentDefinition(t *testing.T) {
 	}
 	for _, want := range []string{
 		"browser_session_create",
+		"browser_session_state",
+		"browser_session_close",
+		"browser_ask_human",
+		"agent_browser_command",
+		"browser_skill_reference",
+		"browser_agent_final_result",
+		"escalate_to_planner",
+	} {
+		if !containsString(def.AllowedTools, want) {
+			t.Fatalf("browser agent AllowedTools missing %q: %v", want, def.AllowedTools)
+		}
+	}
+	for _, forbidden := range []string{
 		"browser_navigate",
 		"browser_snapshot",
 		"browser_extract",
@@ -122,12 +135,13 @@ func TestBrowserAgentDefinition(t *testing.T) {
 		"browser_back",
 		"browser_wait",
 		"browser_tabs",
-		"browser_ask_human",
-		"browser_session_state",
-		"browser_session_close",
+		"web_search",
+		"tavily_search",
+		"web_fetch",
+		"submit_task_result",
 	} {
-		if !containsString(def.AllowedTools, want) {
-			t.Fatalf("browser agent AllowedTools missing %q: %v", want, def.AllowedTools)
+		if containsString(def.AllowedTools, forbidden) {
+			t.Fatalf("browser agent AllowedTools should not expose old wrapper %q: %v", forbidden, def.AllowedTools)
 		}
 	}
 	if len(def.OutputSchema) == 0 {

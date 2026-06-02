@@ -606,7 +606,8 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		}
 		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
 		s.tools[ev.ToolUseID] = toolCardID
-		opts := []emitv2.EmitOpt{emitv2.WithParent(parentForTool(s))}
+		scopeEm, getMsg, _ := s.scopeFor(ev.AgentID, em)
+		opts := []emitv2.EmitOpt{emitv2.WithParent(parentForToolInScope(s, ev.AgentID, getMsg()))}
 		// Symmetry with EngineEventToolStart path (line 287): orchestration
 		// tools (scheduler / task) wrap multi-minute sub-agent runs that
 		// legitimately outlast the CardTool 120s orphan watchdog. Opt them
@@ -616,11 +617,12 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		if isOrchestrationTool(ev.ToolName) {
 			opts = append(opts, emitv2.WithoutLifecycle())
 		}
-		em.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
-			Name:   ev.ToolName,
-			Target: "client",
-			Intent: ev.Intent,
-			Input:  input,
+		scopeEm.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
+			Name:           ev.ToolName,
+			Target:         "client",
+			Intent:         ev.Intent,
+			AwaitSessionID: ev.AwaitSessionID,
+			Input:          input,
 		}, opts...)
 
 	case types.EngineEventAgentIntent:
@@ -1102,15 +1104,16 @@ func parentForTool(s *sessionState) string {
 
 // parentForSubAgent decides what card a sub-agent attaches to. Plan /
 // orchestrate dispatches carry parentStepID so the agent card can be
-// rooted under the step card — without that routing the step card sits
-// silent for the entire sub-agent run and gets killed by the orphan
-// watchdog. Non-plan dispatches (parentStepID empty) fall back to the
+// rooted under the step card. Direct tool-dispatch spawns reuse the same
+// field for the parent tool_use_id so parallel tool calls do not race into
+// an arbitrary open tool card. Non-explicit dispatches fall back to the
 // legacy "parent agent → tool → message → turn" chain.
 func parentForSubAgent(s *sessionState, parentAgentID, parentStepID string) string {
-	// Plan / orchestrate: route under the step card so its watchdog
-	// receives heartbeats from inner agent activity.
 	if parentStepID != "" {
 		if id := s.steps[parentStepID]; id != "" {
+			return id
+		}
+		if id := s.tools[parentStepID]; id != "" {
 			return id
 		}
 	}

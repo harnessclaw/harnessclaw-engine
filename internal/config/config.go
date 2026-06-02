@@ -637,15 +637,19 @@ type TavilySearchConfig struct {
 
 // BrowserAgentConfig holds settings for the browser-agent tool family.
 type BrowserAgentConfig struct {
-	Enabled               bool          `mapstructure:"enabled"`
-	BinaryPath            string        `mapstructure:"binary_path"`
-	DefaultVisibility     string        `mapstructure:"default_visibility"`
-	MaxSteps              int           `mapstructure:"max_steps"`
-	PreferredSearchEngine string        `mapstructure:"preferred_search_engine"`
-	BlockedDomains        []string      `mapstructure:"blocked_domains"`
-	HumanTakeoverTimeout  time.Duration `mapstructure:"human_takeover_timeout"`
-	SessionPersistence    bool          `mapstructure:"session_persistence"`
-	CLITimeout            time.Duration `mapstructure:"cli_timeout"`
+	Enabled              bool          `mapstructure:"enabled"`
+	DefaultVisibility    string        `mapstructure:"default_visibility"`
+	MaxSteps             int           `mapstructure:"max_steps"`
+	BlockedDomains       []string      `mapstructure:"blocked_domains"`
+	HumanTakeoverTimeout time.Duration `mapstructure:"human_takeover_timeout"`
+	SessionPersistence   bool          `mapstructure:"session_persistence"`
+	CLITimeout           time.Duration `mapstructure:"cli_timeout"`
+	SkillMaxBytes        int           `mapstructure:"skill_max_bytes"`
+	ContentBoundaries    bool          `mapstructure:"content_boundaries"`
+	MaxOutputBytes       int           `mapstructure:"max_output_bytes"`
+	AllowedDomains       []string      `mapstructure:"allowed_domains"`
+	ActionPolicyPath     string        `mapstructure:"action_policy_path"`
+	ConfirmActions       []string      `mapstructure:"confirm_actions"`
 }
 
 // PermissionConfig holds tool permission control settings.
@@ -720,14 +724,18 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("tools::tavily_search::enabled", false)
 	v.SetDefault("tools::tavily_search::max_results", 5)
 	v.SetDefault("tools::browser_agent::enabled", false)
-	v.SetDefault("tools::browser_agent::binary_path", "agent-browser")
-	v.SetDefault("tools::browser_agent::default_visibility", "visible")
+	v.SetDefault("tools::browser_agent::default_visibility", "hidden")
 	v.SetDefault("tools::browser_agent::max_steps", 30)
-	v.SetDefault("tools::browser_agent::preferred_search_engine", "duckduckgo")
 	v.SetDefault("tools::browser_agent::blocked_domains", []string{})
 	v.SetDefault("tools::browser_agent::human_takeover_timeout", "120s")
 	v.SetDefault("tools::browser_agent::session_persistence", true)
 	v.SetDefault("tools::browser_agent::cli_timeout", "25s")
+	v.SetDefault("tools::browser_agent::skill_max_bytes", 200000)
+	v.SetDefault("tools::browser_agent::content_boundaries", true)
+	v.SetDefault("tools::browser_agent::max_output_bytes", 50000)
+	v.SetDefault("tools::browser_agent::allowed_domains", []string{})
+	v.SetDefault("tools::browser_agent::action_policy_path", "")
+	v.SetDefault("tools::browser_agent::confirm_actions", []string{})
 	v.SetDefault("permission::mode", "default")
 	v.SetDefault("skills::dirs", []string{"~/.harnessclaw/workspace/skills"})
 	v.SetDefault("console::enabled", true)
