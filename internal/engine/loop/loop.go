@@ -65,6 +65,14 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 			MaxTokens:     cfg.MaxTokens,
 			ContextWindow: cfg.ContextWindow,
 		}
+		// Dump the request shape (same format as emma/runner.go:115)
+		// so sub-agent LLM calls are debuggable without re-running.
+		// Previously only emma's main loop dumped, leaving sub-agent
+		// failures (e.g. "Messages with role 'tool' must be a response
+		// to a preceding message with 'tool_calls'") opaque — operators
+		// could see the error but not the message sequence that caused
+		// it.
+		dumpLLMRequest(logger, cfg.AgentID, turn, messages, len(req.Tools), len(cfg.SystemPrompt), cfg.MaxTokens)
 		timeouts := llmcall.LLMTimeouts(0, 0) // use defaults
 		llmRes := llmcall.CallLLM(ctx, cfg.Provider, req, logger, cfg.Retryer,
 			timeouts, cfg.AgentID, cfg.Out, cfg.Out)
@@ -118,6 +126,57 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 		Turn:    cfg.MaxTurns,
 	}
 	return res, nil
+}
+
+// dumpLLMRequest writes a one-block-per-turn debug summary of the
+// session messages headed to the LLM. Same shape as emma/runner.go's
+// dump so existing log-mining scripts work across L1 and sub-agent
+// turns. Cheap when zap level is above debug (Sugar/Field cost only).
+func dumpLLMRequest(logger *zap.Logger, agentID string, turn int, messages []types.Message, toolSchemas, sysPromptLen, maxTokens int) {
+	if logger == nil {
+		return
+	}
+	logger.Debug("========== LLM REQUEST DUMP START ==========",
+		zap.String("agent_id", agentID),
+		zap.Int("turn", turn),
+		zap.Int("message_count", len(messages)),
+		zap.Int("tool_schema_count", toolSchemas),
+		zap.Int("system_prompt_len", sysPromptLen),
+		zap.Int("max_tokens", maxTokens),
+	)
+	for i, m := range messages {
+		preview := ""
+		for _, cb := range m.Content {
+			if cb.Type == types.ContentTypeText && len(cb.Text) > 0 {
+				p := cb.Text
+				if len(p) > 200 {
+					p = p[:200] + "...[truncated]"
+				}
+				preview = p
+				break
+			}
+			if cb.Type == types.ContentTypeToolUse {
+				preview = fmt.Sprintf("[tool_use: %s]", cb.ToolName)
+				break
+			}
+			if cb.Type == types.ContentTypeToolResult {
+				p := cb.ToolResult
+				if len(p) > 100 {
+					p = p[:100] + "...[truncated]"
+				}
+				preview = fmt.Sprintf("[tool_result: %s] %s", cb.ToolName, p)
+				break
+			}
+		}
+		logger.Debug("llm request message",
+			zap.Int("index", i),
+			zap.String("role", string(m.Role)),
+			zap.Int("content_blocks", len(m.Content)),
+			zap.Int("tokens", m.Tokens),
+			zap.String("preview", preview),
+		)
+	}
+	logger.Debug("========== LLM REQUEST DUMP END ==========")
 }
 
 func buildAssistantMessage(text string, toolCalls []types.ToolCall,
