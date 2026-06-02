@@ -64,6 +64,11 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 			Tools:         cfg.Tools.Schemas(),
 			MaxTokens:     cfg.MaxTokens,
 			ContextWindow: cfg.ContextWindow,
+			// Purpose tags this as the per-turn assistant call so the
+			// bifrost adapter's dial logs can disentangle it from
+			// intermediate Chat() calls (compactor summarize, intent
+			// extraction, etc.) that share the same provider.
+			Purpose: "main_loop",
 		}
 		// Dump the request shape (same format as emma/runner.go:115)
 		// so sub-agent LLM calls are debuggable without re-running.
@@ -73,6 +78,15 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 		// could see the error but not the message sequence that caused
 		// it.
 		dumpLLMRequest(logger, cfg.AgentID, turn, messages, len(req.Tools), len(cfg.SystemPrompt), cfg.MaxTokens)
+		// Pre-flight shape check: scan for the four request-body
+		// pathologies that reliably trigger upstream HTTP 400 — empty
+		// text blocks, assistant messages with no content blocks,
+		// a non-user first message (Anthropic-strict), and orphan
+		// tool_result messages whose matching tool_use isn't on the
+		// preceding assistant. We only log here (no rewrite) so we get
+		// a unique fingerprint when the 400 hits, but tier modules can
+		// reuse the same data structure later for a sanitize pass.
+		preflightValidateMessages(logger, cfg.AgentID, turn, messages)
 		// Honor caller-supplied LLM timeouts. Previously this hard-coded
 		// LLMTimeouts(0, 0) with a "use defaults" comment that did
 		// nothing — the resulting sub-agent loop had NO API or first-
@@ -98,7 +112,55 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 		// Phase 3: assistant message.
 		assistantMsg := buildAssistantMessage(llmRes.TextBuf, llmRes.ToolCalls,
 			llmRes.LastUsage, llmRes.Reasoning)
+		// B6: empty assistant content blocks cannot be sent back to
+		// Anthropic (the next turn's request will 400 with "text
+		// content blocks must be non-empty" / "all messages must have
+		// non-empty content"). Surface a WARN so this leaves a unique
+		// fingerprint in the log even when the immediate turn doesn't
+		// fail — the 400 always materialises N turns later when the
+		// empty msg is replayed. Common triggers: refusal returned
+		// without text, mid-stream error wiping TextBuf, upstream
+		// "other" channel ate the output.
+		if len(assistantMsg.Content) == 0 && logger != nil {
+			stopReason := ""
+			if llmRes.LastUsage != nil {
+				// LastUsage doesn't carry stop_reason today, but
+				// llmRes.StopReason does — fall back if available
+				// via the type.
+				stopReason = llmRes.StopReason
+			}
+			logger.Warn("loop: assistant message has zero content blocks — replaying it next turn will likely 400",
+				zap.String("agent_id", cfg.AgentID),
+				zap.Int("turn", turn),
+				zap.Int("text_chars", len(llmRes.TextBuf)),
+				zap.Int("tool_calls", len(llmRes.ToolCalls)),
+				zap.Int("reasoning_chars", len(llmRes.Reasoning)),
+				zap.String("stop_reason", stopReason),
+			)
+		}
 		cfg.Session.AddMessage(assistantMsg)
+		// B8: trace Message.Tokens as recorded on the session message
+		// vs the raw usage we got from the provider. buildAssistantMessage
+		// stamps Tokens = InputTokens+OutputTokens (cumulative prompt
+		// size, not per-message size), and the compactor uses that
+		// field for its ShouldCompact aggregate — divergence here
+		// explains "Compactor triggered way earlier than total ctx
+		// would suggest". DEBUG so it stays free at INFO production.
+		if logger != nil && logger.Core().Enabled(zap.DebugLevel) {
+			var in, out int
+			if llmRes.LastUsage != nil {
+				in = llmRes.LastUsage.InputTokens
+				out = llmRes.LastUsage.OutputTokens
+			}
+			logger.Debug("session: assistant message added",
+				zap.String("agent_id", cfg.AgentID),
+				zap.Int("turn", turn),
+				zap.Int("content_blocks", len(assistantMsg.Content)),
+				zap.Int("msg_tokens_field", assistantMsg.Tokens),
+				zap.Int("usage_input_tokens", in),
+				zap.Int("usage_output_tokens", out),
+			)
+		}
 		res.LastMessage = &assistantMsg
 		res.NumTurns = turn
 		if llmRes.LastUsage != nil {
@@ -132,6 +194,117 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 		Turn:    cfg.MaxTurns,
 	}
 	return res, nil
+}
+
+// preflightValidateMessages scans the outgoing message slice for the
+// four request-body pathologies that produce upstream HTTP 400 on
+// Anthropic / OpenAI-strict providers:
+//
+//  1. Empty text content blocks  (text=="" inside ContentTypeText)
+//  2. Messages with no Content blocks at all (typically assistant)
+//  3. First non-system message not having role=user (Anthropic only)
+//  4. tool_result messages whose ToolUseID has no matching tool_use on
+//     the immediately preceding assistant message (OpenAI-strict;
+//     bifrost's convertMessages does drop these later but emitting a
+//     WARN here lets us spot the source while the trail is hot).
+//
+// Behaviour is observe-only: we never mutate `messages`. A 4xx hit after
+// this log gives operators the exact index/role/block that broke the
+// schema without re-running the failing job.
+//
+// Only logs when at least one issue is found, so the steady state is
+// silent.
+func preflightValidateMessages(logger *zap.Logger, agentID string, turn int, messages []types.Message) {
+	if logger == nil || len(messages) == 0 {
+		return
+	}
+	type issue struct {
+		Index   int    `json:"index"`
+		Role    string `json:"role"`
+		Block   int    `json:"block,omitempty"`
+		Kind    string `json:"kind"`
+		Detail  string `json:"detail,omitempty"`
+	}
+	var issues []issue
+
+	// Rule 3: first non-system must be user.
+	first := messages[0]
+	if first.Role != types.RoleUser {
+		issues = append(issues, issue{
+			Index: 0, Role: string(first.Role),
+			Kind:   "first_message_not_user",
+			Detail: "Anthropic requires the first non-system message to have role=user",
+		})
+	}
+
+	// Build a map of tool_use IDs visible on each assistant message so
+	// we can detect orphan tool_result entries (rule 4). Map value is
+	// the assistant message index that produced the ToolUse.
+	prevAssistantToolUseIDs := map[string]int{}
+	for i, m := range messages {
+		// Track tool_use ids on assistant for orphan detection.
+		if m.Role == types.RoleAssistant {
+			// Reset the map: tool_results must match the IMMEDIATELY
+			// preceding assistant — older assistant tool_use entries
+			// don't count for OpenAI-strict pairing.
+			prevAssistantToolUseIDs = map[string]int{}
+			for _, b := range m.Content {
+				if b.Type == types.ContentTypeToolUse && b.ToolUseID != "" {
+					prevAssistantToolUseIDs[b.ToolUseID] = i
+				}
+			}
+		}
+
+		// Rule 2: no content blocks.
+		if len(m.Content) == 0 {
+			issues = append(issues, issue{
+				Index: i, Role: string(m.Role),
+				Kind:   "message_no_content",
+				Detail: "message has zero content blocks",
+			})
+			continue
+		}
+
+		for bi, b := range m.Content {
+			switch b.Type {
+			case types.ContentTypeText:
+				// Rule 1: empty text block.
+				if len(b.Text) == 0 {
+					issues = append(issues, issue{
+						Index: i, Role: string(m.Role), Block: bi,
+						Kind: "empty_text_block",
+					})
+				}
+			case types.ContentTypeToolResult:
+				// Rule 4: orphan tool_result on user-role message.
+				if m.Role == types.RoleUser {
+					if _, ok := prevAssistantToolUseIDs[b.ToolUseID]; !ok {
+						issues = append(issues, issue{
+							Index: i, Role: string(m.Role), Block: bi,
+							Kind:   "orphan_tool_result",
+							Detail: "tool_use_id=" + b.ToolUseID + " has no matching tool_use on the preceding assistant message",
+						})
+					}
+				}
+			}
+		}
+	}
+
+	if len(issues) == 0 {
+		return
+	}
+	// Roles in order — useful for "spot the wrong sequence" eyeballing.
+	roles := make([]string, 0, len(messages))
+	for _, m := range messages {
+		roles = append(roles, string(m.Role))
+	}
+	logger.Warn("loop: pre-flight message-shape issues — upstream may reject this request",
+		zap.String("agent_id", agentID),
+		zap.Int("turn", turn),
+		zap.Int("message_count", len(messages)),
+		zap.Strings("roles", roles),
+		zap.Any("issues", issues),
+	)
 }
 
 // dumpLLMRequest writes a one-block-per-turn debug summary of the
