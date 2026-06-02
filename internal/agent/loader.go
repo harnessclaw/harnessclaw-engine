@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,19 +16,27 @@ import (
 // in the given directory (e.g., ".harnessclaw/agents/"). Files must have
 // .yaml or .yml extension. dir may originate from operator-supplied input
 // (see AgentService.ImportFromYAML / POST /console/v1/agents/import), so
-// traversal segments are rejected and each loaded file is verified to live
-// inside the cleaned root.
+// every read is performed through os.Root, which constrains all file
+// operations to the resolved directory and refuses any name that would
+// escape it.
 func (r *AgentDefinitionRegistry) LoadFromDirectory(dir string) error {
 	cleanDir := filepath.Clean(dir)
-	if cleanDir == ".." || strings.HasPrefix(cleanDir, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("invalid agent definitions dir: %q", dir)
-	}
-
-	entries, err := os.ReadDir(cleanDir)
+	root, err := os.OpenRoot(cleanDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil // directory doesn't exist — not an error
 		}
+		return fmt.Errorf("open agent definitions dir: %w", err)
+	}
+	defer root.Close()
+
+	rootDir, err := root.Open(".")
+	if err != nil {
+		return fmt.Errorf("open agent definitions dir: %w", err)
+	}
+	entries, err := rootDir.ReadDir(-1)
+	rootDir.Close()
+	if err != nil {
 		return fmt.Errorf("read agent definitions dir: %w", err)
 	}
 
@@ -40,21 +49,32 @@ func (r *AgentDefinitionRegistry) LoadFromDirectory(dir string) error {
 		if ext != ".yaml" && ext != ".yml" {
 			continue
 		}
-		path := filepath.Join(cleanDir, name)
-		rel, relErr := filepath.Rel(cleanDir, path)
-		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-			return fmt.Errorf("agent definition path escapes root: %s", path)
-		}
-		def, err := loadAgentDefinitionFile(path)
+		data, err := readFileWithinRoot(root, name)
 		if err != nil {
-			return fmt.Errorf("load agent definition %s: %w", path, err)
+			return fmt.Errorf("load agent definition %s: %w", name, err)
 		}
+		def, err := parseAgentDefinition(data)
+		if err != nil {
+			return fmt.Errorf("load agent definition %s: %w", name, err)
+		}
+		path := filepath.Join(cleanDir, name)
 		def.Source = path
 		if err := r.Register(def); err != nil {
 			return fmt.Errorf("register agent definition %s: %w", path, err)
 		}
 	}
 	return nil
+}
+
+// readFileWithinRoot reads name relative to root. os.Root rejects any name
+// containing parent traversal or absolute path segments.
+func readFileWithinRoot(root *os.Root, name string) ([]byte, error) {
+	f, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
 }
 
 // yamlAgentDef is the on-disk YAML representation of an agent definition.
@@ -82,12 +102,7 @@ type yamlSubAgent struct {
 	Profile   string `yaml:"profile"`
 }
 
-func loadAgentDefinitionFile(path string) (*AgentDefinition, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return nil, err
-	}
-
+func parseAgentDefinition(data []byte) (*AgentDefinition, error) {
 	var raw yamlAgentDef
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parse YAML: %w", err)
