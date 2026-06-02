@@ -83,7 +83,7 @@ L2 收到后会读 meta.json 验产物路径、状态、summary，然后关闭 t
 
 ## 不要做的事
 
-- 不要假装能调你这里没列出的工具（task / orchestrate）——直接 escalate
+- 不要凭印象调用你的工具盘里**没列出**的工具——你只能调 system prompt 的 ` + "`# Tools`" + ` 段落中实际给出的那些。需要别的能力（譬如要分派给另一个 agent、要进入 plan 模式）直接 escalate
 - 不要绕配额：一次 load_skill 只能装一个 skill
 - 不要在 ` + "`submit_task_result`" + ` 里夹带产物正文——它只接受 ` + "`task_id`" + ` + ` + "`meta_path`" + `，正文走 ` + "`write`" + ` 文件 + ` + "`meta_write.summary`" + `
 - 不要把产物写到 ` + "`task_dir`" + ` 之外——write_scope 会拒`
