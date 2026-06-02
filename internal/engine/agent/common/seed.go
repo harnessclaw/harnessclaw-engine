@@ -2,10 +2,29 @@ package common
 
 import (
 	"fmt"
+	"os"
 
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/workspace"
 )
+
+// EnsureTaskDir mkdir-Ps the per-task workspace directory the SeedPrompt
+// preamble advertises to the LLM. Without this the LLM is told "write
+// produce into {task_dir}" and the FIRST write/edit/bash call fails
+// with `directory does not exist; create it first` — the LLM then
+// burns turns shelling out `mkdir -p` before it can do anything
+// useful, and on bad days the recovery loop hangs the whole session.
+//
+// Idempotent (MkdirAll). No-op when rootDir / RootSessionID / TaskID
+// is missing — callers that don't know their per-task slot get the
+// session-level bootstrap from scheduler.Run's EnsureSession.
+func EnsureTaskDir(cfg *agent.SpawnConfig, rootDir string) error {
+	if cfg == nil || rootDir == "" || cfg.RootSessionID == "" || cfg.TaskID == "" {
+		return nil
+	}
+	dir := workspace.TaskDir(rootDir, cfg.RootSessionID, cfg.TaskID)
+	return os.MkdirAll(dir, 0o755)
+}
 
 // WorkspacePrelude returns a short, natural-language paragraph telling
 // a sub-agent where its work directory lives. Prepended to the user

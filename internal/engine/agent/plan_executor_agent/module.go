@@ -75,6 +75,12 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	startTime := time.Now()
 
 	sess, err := common.BuildSubSession(m.deps.SessionMgr, cfg.ParentSessionID)
+	if err == nil {
+		// mkdir the per-task workspace dir so the LLM does not have
+		// to shell out a recovery mkdir on its first write — see
+		// common.EnsureTaskDir docstring.
+		_ = common.EnsureTaskDir(cfg, m.deps.RootDir)
+	}
 	if err != nil {
 		return nil, err
 	}

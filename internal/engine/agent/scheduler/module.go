@@ -91,6 +91,10 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	if err != nil {
 		return nil, err
 	}
+	// mkdir the per-task workspace dir when L2 itself was given a
+	// task_id (rare for react, common for plan-mode legacy paths). See
+	// common.EnsureTaskDir docstring.
+	_ = common.EnsureTaskDir(cfg, m.deps.RootDir)
 
 	common.EmitSubagentStart(cfg.ParentOut, common.StartEvent{
 		AgentID:         sess.ID,
