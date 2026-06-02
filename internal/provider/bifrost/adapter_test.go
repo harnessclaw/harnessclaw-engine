@@ -199,7 +199,20 @@ func TestConvertMessages_NoSystemPrompt(t *testing.T) {
 }
 
 func TestConvertMessages_ToolResult(t *testing.T) {
+	// Pair the tool_result with its producing assistant tool_use so the
+	// orphan-message sanitiser doesn't drop it. See
+	// TestConvertMessages_DropsOrphanToolResponses for the case that
+	// requires the sanitiser.
 	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentBlock{{
+				Type:      types.ContentTypeToolUse,
+				ToolUseID: "tool-123",
+				ToolName:  "compute",
+				ToolInput: "{}",
+			}},
+		},
 		{
 			Role: types.RoleUser,
 			Content: []types.ContentBlock{{
@@ -211,17 +224,17 @@ func TestConvertMessages_ToolResult(t *testing.T) {
 	}
 	result := convertMessages(msgs, "", true)
 
-	if len(result) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(result))
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages (assistant + tool), got %d", len(result))
 	}
-	if result[0].Role != schemas.ChatMessageRoleTool {
-		t.Errorf("expected tool role, got %s", result[0].Role)
+	if result[1].Role != schemas.ChatMessageRoleTool {
+		t.Errorf("expected tool role on second msg, got %s", result[1].Role)
 	}
-	if result[0].ChatToolMessage == nil || result[0].ChatToolMessage.ToolCallID == nil {
+	if result[1].ChatToolMessage == nil || result[1].ChatToolMessage.ToolCallID == nil {
 		t.Fatal("expected ChatToolMessage with ToolCallID")
 	}
-	if *result[0].ChatToolMessage.ToolCallID != "tool-123" {
-		t.Errorf("unexpected tool call ID: %s", *result[0].ChatToolMessage.ToolCallID)
+	if *result[1].ChatToolMessage.ToolCallID != "tool-123" {
+		t.Errorf("unexpected tool call ID: %s", *result[1].ChatToolMessage.ToolCallID)
 	}
 }
 
@@ -1431,5 +1444,55 @@ func TestChat_PassthroughExtraParamsOnlyWhenQuirkSet(t *testing.T) {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestConvertMessages_DropsOrphanToolResponses is the regression guard
+// against `Messages with role 'tool' must be a response to a preceding
+// message with 'tool_calls'`. Reproduces the failure mode where a
+// tool_result reaches the wire without a matching tool_call:
+//   - tool_result_A appears with no preceding assistant tool_calls[A]
+//     (e.g. ContractEnforcer inject for a synthetic submit_task_result
+//     after the model never actually invoked it; or compactor trimmed
+//     the assistant message away).
+// The drop preserves valid tool_results that DO have a producing call.
+func TestConvertMessages_DropsOrphanToolResponses(t *testing.T) {
+	msgs := []types.Message{
+		// 1. user turn
+		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "go"}}},
+		// 2. assistant only emits tool_use B (no A)
+		{Role: types.RoleAssistant, Content: []types.ContentBlock{
+			{Type: types.ContentTypeText, Text: "calling B"},
+			{Type: types.ContentTypeToolUse, ToolUseID: "B", ToolName: "read", ToolInput: "{}"},
+		}},
+		// 3. orphan tool_result for A (must be dropped)
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "A", ToolName: "submit_task_result", ToolResult: "stale"},
+		}},
+		// 4. valid tool_result for B (kept)
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{Type: types.ContentTypeToolResult, ToolUseID: "B", ToolName: "read", ToolResult: "file body"},
+		}},
+	}
+
+	result := convertMessages(msgs, "", false)
+
+	// Expect: user, assistant(toolcalls B), tool(B). Orphan tool(A) gone.
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages after orphan drop, got %d: %+v", len(result), result)
+	}
+	if result[0].Role != schemas.ChatMessageRoleUser {
+		t.Errorf("msg[0] role = %s, want user", result[0].Role)
+	}
+	if result[1].Role != schemas.ChatMessageRoleAssistant {
+		t.Errorf("msg[1] role = %s, want assistant", result[1].Role)
+	}
+	if result[2].Role != schemas.ChatMessageRoleTool {
+		t.Errorf("msg[2] role = %s, want tool (kept B)", result[2].Role)
+	}
+	if result[2].ChatToolMessage == nil ||
+		result[2].ChatToolMessage.ToolCallID == nil ||
+		*result[2].ChatToolMessage.ToolCallID != "B" {
+		t.Errorf("msg[2] tool_call_id mismatch: %+v", result[2].ChatToolMessage)
 	}
 }

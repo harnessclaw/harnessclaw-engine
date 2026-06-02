@@ -796,6 +796,21 @@ func convertMessages(msgs []types.Message, systemPrompt string, includeReasoning
 			result = append(result, *bfMsg)
 		}
 	}
+	// Drop orphan tool messages — a "tool" role entry whose tool_call_id
+	// has no matching tool_call on a preceding assistant message. OpenAI
+	// (and DeepSeek's OpenAI-compatible endpoint) reject the request
+	// outright with `Messages with role 'tool' must be a response to a
+	// preceding message with 'tool_calls'`. Orphans arise when:
+	//   - the compactor's keep-tail boundary lands on a tool_result whose
+	//     producing assistant got summarised away (compactor advances
+	//     past these now, but a stale prefix from before the fix can
+	//     still surface);
+	//   - ContractEnforcer-style hooks inject a synthetic tool_result for
+	//     a tool_use_id that never appeared on an assistant message;
+	//   - a sub-agent session is reloaded after partial truncation.
+	// Letting the request fail strands the entire loop turn — better to
+	// drop the orphan and log it so the conversation continues.
+	result = dropOrphanToolMessages(result)
 	// Trim cache_control breakpoints to Anthropic's per-request limit.
 	// Per-block cache_control is added eagerly in convertSingleMessage;
 	// this is a post-conversion clamp so a long multi-image
@@ -803,6 +818,42 @@ func convertMessages(msgs []types.Message, systemPrompt string, includeReasoning
 	// upstream.
 	capImageCacheBreakpoints(result)
 	return result
+}
+
+// dropOrphanToolMessages removes tool-role entries whose tool_call_id
+// is not opened by some preceding assistant message's tool_calls. See
+// the call site in convertMessages for the failure mode this guards
+// against. Walks the slice once; O(n) time, O(k) extra space where k
+// is the number of pending tool_call_ids.
+func dropOrphanToolMessages(msgs []schemas.ChatMessage) []schemas.ChatMessage {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	openCalls := make(map[string]bool)
+	out := make([]schemas.ChatMessage, 0, len(msgs))
+	for i := range msgs {
+		m := &msgs[i]
+		if m.Role == schemas.ChatMessageRoleAssistant && m.ChatAssistantMessage != nil {
+			for _, tc := range m.ChatAssistantMessage.ToolCalls {
+				if tc.ID != nil && *tc.ID != "" {
+					openCalls[*tc.ID] = true
+				}
+			}
+		}
+		if m.Role == schemas.ChatMessageRoleTool {
+			id := ""
+			if m.ChatToolMessage != nil && m.ChatToolMessage.ToolCallID != nil {
+				id = *m.ChatToolMessage.ToolCallID
+			}
+			if id == "" || !openCalls[id] {
+				// Orphan — drop. Don't consume openCalls here either way;
+				// model may emit multiple tool messages for one call.
+				continue
+			}
+		}
+		out = append(out, *m)
+	}
+	return out
 }
 
 // maxCacheControlBreakpoints is Anthropic's per-request hard limit on
