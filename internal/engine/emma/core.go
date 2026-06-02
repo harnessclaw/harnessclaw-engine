@@ -6,6 +6,7 @@ package emma
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -38,6 +39,19 @@ import (
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
+)
+
+// Named ctx-cancel causes. Downstream (provider / bifrost / llmcall) calls
+// context.Cause(ctx) to distinguish these from anonymous cancellations.
+var (
+	// errEmmaSessionEnded is set when the ProcessMessage goroutine exits
+	// normally (query completed or terminal reached) and the deferred
+	// cancel() runs. Treat as "no upstream cancel happened".
+	errEmmaSessionEnded = errors.New("emma: ProcessMessage goroutine exited (normal)")
+
+	// errEmmaAborted is set by AbortSession — i.e. the user pressed stop /
+	// the client called the abort endpoint / a wire frame requested it.
+	errEmmaAborted = errors.New("emma: AbortSession invoked by caller")
 )
 
 // Engine is emma's concrete implementation that runs the 5-phase query loop.
@@ -73,6 +87,12 @@ type Engine struct {
 	// In-flight session tracking for abort support.
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
+	// causeCancels parallels `cancels` but carries the explicit cancel-cause
+	// function so AbortSession (and tracing) can attach a named cause to
+	// the context. Only populated for ProcessMessage-owned contexts; the
+	// public RegisterCancel API still accepts a plain context.CancelFunc
+	// for callers that don't need cause attribution.
+	causeCancels map[string]context.CancelCauseFunc
 
 	// Multi-agent support.
 	agentRegistry *agent.AgentRegistry
@@ -241,6 +261,7 @@ func New(
 		promptBuilder: promptBuilder,
 		promptProfile: promptProfile,
 		cancels:       make(map[string]context.CancelFunc),
+		causeCancels:  make(map[string]context.CancelCauseFunc),
 		emitSeq:       emit.NewSequencer(),
 		retryer:       retry.New(retryConfigFromCfg(cfg), logger),
 	}
@@ -386,32 +407,16 @@ func New(
 		RootDir:  workspace.DefaultRootDir(),
 	})
 
-	// Stage 7 scheduler — react mode runs an in-module LLM loop (plan/
-	// dispatch/integrate/check per principles/scheduler.go); plan mode
-	// still wraps the legacy enginesched.Coordinator. react mode needs
-	// the full provider/registry/compactor/retryer/promptBuilder stack
-	// to drive loop.Run; plan mode still needs Coord. Both modes share
-	// the same Deps so emma wires once. Spawner is reserved for the
-	// Stage-8 in-module plan port.
+	// L2 scheduler module — both react and plan modes delegate to the
+	// v3.1 scheduler Coordinator (kernel + dispatch/{react,plan}). The
+	// module itself is a thin shim that builds the per-spawn session,
+	// calls Coord.Run, and composes Output from the meta.json it wrote.
 	schedulerMod := agentscheduler.New(agentscheduler.Deps{
-		Provider:      prov,
-		Registry:      reg,
-		SessionMgr:    mgr,
-		Compactor:     comp,
-		Retryer:       e.retryer,
-		PromptBuilder: promptBuilder,
 		Logger:        logger,
-		MaxTokens:     cfg.MaxTokens,
-		ContextWindow: cfg.ContextWindow,
-		ToolTimeout:   cfg.ToolTimeout,
-		LLMAPITimeout:       cfg.LLMAPITimeout,
-		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
+		SessionMgr:    mgr,
 		RootDir:       workspace.DefaultRootDir(),
-		DefRegistry:   e.defRegistry,
-
-		Coord:         e.schedulerCoord,
-		Spawner:       e.spawner,
 		WorkspaceRoot: workspace.DefaultRootDir(),
+		Coord:         e.schedulerCoord,
 	})
 	e.spawner.Register(schedulerMod)
 
@@ -493,13 +498,20 @@ func (e *Engine) ProcessMessage(ctx context.Context, sessionID string, msg *type
 	}
 	ctx = emit.WithTrace(ctx, traceCtx)
 
-	qCtx, cancel := context.WithCancel(ctx)
+	// WithCancelCause lets every cancellation carry a typed reason
+	// (errEmmaSessionEnded / errEmmaAborted / parent ctx cause). Downstream
+	// providers can call context.Cause(ctx) to surface "session goroutine
+	// exited" vs "user pressed stop" vs "ws closed" instead of always
+	// seeing "context canceled".
+	qCtx, causeCancel := context.WithCancelCause(ctx)
+	cancel := func() { causeCancel(errEmmaSessionEnded) }
 
 	qCtx = sessionstats.WithSessionID(qCtx, sess.ID)
 	qCtx = sessionstats.WithAgentRunID(qCtx, mainAgentRunID)
 
 	e.mu.Lock()
 	e.cancels[sessionID] = cancel
+	e.causeCancels[sessionID] = causeCancel
 	e.mu.Unlock()
 
 	out := make(chan types.EngineEvent, 64)
@@ -509,6 +521,7 @@ func (e *Engine) ProcessMessage(ctx context.Context, sessionID string, msg *type
 		defer func() {
 			e.mu.Lock()
 			delete(e.cancels, sessionID)
+			delete(e.causeCancels, sessionID)
 			e.mu.Unlock()
 			cancel()
 			e.emitSeq.Drop(traceID)
@@ -617,15 +630,27 @@ func (e *Engine) DeregisterCancel(sid string) {
 func (e *Engine) AbortSession(_ context.Context, sessionID string) error {
 	e.mu.Lock()
 	cancel, ok := e.cancels[sessionID]
+	causeCancel, hasCause := e.causeCancels[sessionID]
 	if ok {
 		delete(e.cancels, sessionID)
+		delete(e.causeCancels, sessionID)
 	}
 	e.mu.Unlock()
 
 	if !ok {
 		return fmt.Errorf("no active query for session %s", sessionID)
 	}
-	cancel()
+	// Prefer the cause-aware cancel so downstream `context.Cause(ctx)` reads
+	// `errEmmaAborted` instead of the generic `context.Canceled`.
+	if hasCause {
+		causeCancel(errEmmaAborted)
+	} else {
+		cancel()
+	}
+	e.logger.Info("AbortSession invoked",
+		zap.String("session_id", sessionID),
+		zap.Bool("cause_aware", hasCause),
+	)
 
 	if sess := e.sessionMgr.Get(sessionID); sess != nil && sess.Awaits != nil {
 		sess.Awaits.AbortAll("aborted")
