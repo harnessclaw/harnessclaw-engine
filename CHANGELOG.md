@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-06-03
+
 ### Added
 - Endpoint config now carries an optional `group` display tag (yaml + POST/PATCH/GET). Used by the desktop client to bucket models by series in the Settings UI. Engine ignores the field for routing.
 - `provider.ChatRequest.Purpose` label disambiguates main-loop vs compactor-summarize vs other call sites in bifrost dial logs (`purpose=main_loop` / `purpose=compact_summary`).
@@ -17,6 +19,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 - `subagent_end status=failed` card.close payload now carries an `ErrorInfo` block built from `Terminal.Reason/Message/Turn` so clients render the actual failure cause instead of an opaque "failed" badge.
 - emma `ProcessMessage` now uses `context.WithCancelCause` and attaches typed cancel causes (`errEmmaAborted` on `AbortSession`, `errEmmaSessionEnded` on normal goroutine exit); the runner logs `ctx_cause` alongside `ctx_err` when an LLM error surfaces so operators can tell user-abort vs session-end vs upstream-cancel apart in a single line. `AbortSession` also logs at INFO with the cause-aware flag.
 - `cmd/ws_smoke`: one-shot WebSocket smoke client that dials the channel, opens a session, posts a single user message, streams frames until the turn closes (or a 90s budget elapses), and prints a per-frame-type tally — used to verify the L1→L2→L3 chain without the Electron UI.
+- `filewrite` tool caps `content` at 25k characters via JSON-schema `maxLength`, rejecting oversized writes at the schema layer before the tool body executes.
+- `fileread` tool sniffs leading bytes for binary magic (PE / ELF / Mach-O / image headers + null-byte heuristic) and refuses to pull binary blobs into the LLM context.
+- Browser Agent: client-routed browser tools wired end-to-end with an explicit browser-session lifecycle so the engine spawns / reuses / closes browser sessions per sub-agent invocation.
+- Scheduler L2 react palette gains `bash` so the L2 agent can run shell commands directly when its plan requires it, instead of always hopping through an L3 freelancer.
+- `agent/common` prepends a workspace prelude to every sub-agent's first user message, telling it the workspace root, available output paths, and `meta.json` contract up-front.
+- L3 freelancer surfaces residual workspace files in `meta.json` output and tightens the per-turn / total budget defaults to curb runaway loops.
+- Tool executor wraps `max_tokens`-truncated tool input with an actionable hint so the LLM can self-correct on the next turn instead of failing silently on a half-parsed argument.
+- `ToolTimeout` is plumbed from engine config through to the tool executor and propagated into sub-agent loops, so per-tool deadlines actually take effect end-to-end.
+- `AbortSession` aborts every pending `Awaits` (tool / perm / plan / step-decision) via `Awaits.AbortAll`; a session abort no longer leaves goroutines parked on closed channels.
+- Loop dumps per-turn LLM request shape (message-count / role pattern / content-block kinds) so sub-agent failures are diagnosable from logs alone.
+- emma forbids exploratory `freelance` dispatches at L1; exploratory work is delegated into the L2 scheduler which spawns explore sub-agents internally.
 
 ### Changed
 - L2 scheduler module (`internal/engine/agent/scheduler`): both `react` and `plan` modes now delegate to the v3.1 scheduler kernel (`enginesched.Coordinator` → `Scheduler.Submit` → `dispatch/{react,plan}`). The previous in-module react LLM loop is gone — react fires a single freelancer leaf via `SpawnAndWaitOne` and composes `SpawnResult.Output` from the meta.json the leaf wrote, matching the plan path. `Deps` slimmed to `Logger` / `SessionMgr` / `RootDir` / `WorkspaceRoot` / `Coord` (Provider / Registry / Compactor / Retryer / PromptBuilder / MaxTokens / ContextWindow / ToolTimeout / LLM timeouts / DefRegistry / Spawner removed — they now live inside `Coord`'s `QueryEngineFactory`). Both modes return an explicit `requires Deps.Coord` error when Coord is nil instead of nil-deref panicking.
@@ -25,9 +38,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 - LLMCompactor no longer constructs an `assistant{text:""}` block when summarize returns an empty/whitespace-only string — falls back to `microCompact` and increments the circuit-breaker count, preventing the empty-block from triggering an HTTP 400 on the next turn.
 - LLMCompactor synthetic summary is now a `user`-role message with a `[Prior conversation summary]\n` prefix instead of `assistant`, so Anthropic's "first non-system message must be role=user" constraint holds when the original leading user turn is summarized away.
 - LLMCompactor summarize prompt explicitly tells the model "Reply with the summary text only. Do not call any tools.", reducing the chance of completion tokens landing on a non-text channel that yields an empty summary.
-
-### Fixed
 - Browser Agent now serializes top-level browser tasks, binds command CDP targets to the current browser session, and rejects cross-agent endpoint reuse to avoid multi-window race conditions.
+- `agent/loader.LoadFromDirectory` blocks path traversal: agent-definition imports that resolve outside the agents root are rejected before any read (security fix, #31).
+- Browser Agent sub-agent inherits the parent's internal tool approvals so it can call MCP / workspace tools without re-prompting.
+- Browser Agent supports direct result submission: the browser sub-agent can call `submit_result` to terminate without an artificial trailing tool call.
+- `llmcall` guards malformed `tool_call` JSON from upstream and isolates the bifrost Chat dial from the watchdog goroutine, so a stuck Chat call no longer holds the watchdog timer.
+- bifrost provider sanitizes truncated `tool_use` arguments (closes unbalanced braces / quotes) before forwarding, keeping the stream alive when upstream truncates mid-token.
+- bifrost adapter strips mid-stream unanswered `tool_calls` and drops orphan `tool` messages before sending the next request, so a previous turn's incomplete tool round doesn't HTTP-400 the follow-up.
+- LLM API and first-byte timeouts propagate from engine config into sub-agent loops; a runaway sub-agent honours the same deadlines as the main loop.
+- `agent/common` pre-creates each task's workspace directory before the sub-agent's first write, so the LLM's first `filewrite` doesn't fail on a missing parent dir.
+- Workspace bootstrap is deferred to L2: emma-only queries (no L2 dispatch) leave no disk footprint, eliminating empty `tasks/` directories from short turns.
+- Compactor skips orphan `tool_result` blocks at the compaction boundary so the compacted history never starts with an unanswered tool result.
+- emma pins freelancer `MaxTokens` to 8192 and propagates `ToolTimeout`, so spawned L3 leaves use a sensible per-turn budget instead of inheriting an unset zero.
+- `toolpool`: `AllowedTools` whitelist now bypasses the `AgentType` blacklist, so an explicit per-agent allow-list always wins.
+- L3 freelancer is blocked from calling `orchestrate`; the tool-name leakage in freelancer principles is removed so the LLM stops attempting it.
+- Scheduler isolates its teaching example inside `<example>…</example>` tags so the model stops hallucinating the example's payload into real plans.
+- Scheduler uses `AgentDefinition.AllowedTools` as the L2 react palette whitelist, matching the rest of the tier-resolution path.
+- Sub-agent stream events are routed per agent id across translator / llmcall / toolexec, so concurrent sub-agents no longer cross-contaminate frame streams.
+- L3 card nesting: agent-tool propagates parent agent id from ctx so L3 cards render under their parent L2 card instead of the root.
 
 ## [0.0.15] - 2026-05-26
 
