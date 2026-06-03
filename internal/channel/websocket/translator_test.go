@@ -213,10 +213,10 @@ func TestTranslator_PlanReview_PausesAgentCardWatchdog(t *testing.T) {
 	// message → SubAgentStart opens an agent card.
 	tr.Translate(em, "sess_pr", &types.EngineEvent{Type: types.EngineEventMessageStart, MessageID: "msg_pr"})
 	tr.Translate(em, "sess_pr", &types.EngineEvent{
-		Type:        types.EngineEventSubAgentStart,
-		AgentID:     "agent_worker",
-		AgentName:   "scheduler",
-		AgentTask:   "plan a thing",
+		Type:      types.EngineEventSubAgentStart,
+		AgentID:   "agent_worker",
+		AgentName: "scheduler",
+		AgentTask: "plan a thing",
 	})
 
 	// The worker is now tracked.
@@ -267,6 +267,61 @@ func TestTranslator_PlanReview_PausesAgentCardWatchdog(t *testing.T) {
 	// (Suspend returns true because it's no longer paused).
 	if !tk.Suspend("agent_worker") {
 		t.Error("agent card should be unpaused after ResolvePlanReview; Suspend returned false")
+	}
+}
+
+func TestTranslator_SubAgentClientToolCallUsesChildEmitter(t *testing.T) {
+	em, rec := makeRecorderEmitter(t, "sess_browser_tool")
+	tr := NewTranslator(nil)
+
+	tr.Translate(em, "sess_browser_tool", &types.EngineEvent{
+		Type:      types.EngineEventMessageStart,
+		MessageID: "msg_browser_tool",
+	})
+	tr.Translate(em, "sess_browser_tool", &types.EngineEvent{
+		Type:      types.EngineEventSubAgentStart,
+		AgentID:   "agent_browser",
+		AgentName: "browser-agent",
+		AgentType: "sync",
+	})
+	tr.Translate(em, "sess_browser_tool", &types.EngineEvent{
+		Type:           types.EngineEventToolCall,
+		AgentID:        "agent_browser",
+		ToolName:       "browser_session_create",
+		ToolUseID:      "toolu_browser_session",
+		ToolInput:      `{"visibility":"visible"}`,
+		AwaitSessionID: "sess_browser_tool",
+	})
+
+	events := rec.FilterByCard("toolu_browser_session")
+	if len(events) == 0 {
+		t.Fatal("browser_session_create card was not emitted")
+	}
+	add := events[0]
+	if add.Type != emitv2.EventCardAdd {
+		t.Fatalf("event type = %s, want card.add", add.Type)
+	}
+	if add.Envelope.AgentID != "agent_browser" {
+		t.Fatalf("tool card agent_id = %q, want sub-agent agent_browser", add.Envelope.AgentID)
+	}
+	if add.Envelope.ParentCardID != "agent_browser" {
+		t.Fatalf("tool card parent = %q, want browser agent card", add.Envelope.ParentCardID)
+	}
+	payload, ok := add.Payload.(emitv2.ToolPayload)
+	if !ok {
+		t.Fatalf("payload type = %T, want ToolPayload", add.Payload)
+	}
+	if payload.Target != "client" {
+		t.Fatalf("tool target = %q, want client", payload.Target)
+	}
+	if payload.Name != "browser_session_create" {
+		t.Fatalf("tool name = %q", payload.Name)
+	}
+	if payload.AwaitSessionID != "sess_browser_tool" {
+		t.Fatalf("await_session_id = %q, want sess_browser_tool", payload.AwaitSessionID)
+	}
+	if payload.Input["visibility"] != "visible" {
+		t.Fatalf("tool input visibility = %v", payload.Input["visibility"])
 	}
 }
 
@@ -357,6 +412,18 @@ func TestTranslator_SubAgentStart_FallsBackWhenNoStepID(t *testing.T) {
 		return
 	}
 	t.Fatal("no card.add for agent_x emitted")
+}
+
+func TestTranslator_SubAgentParentPrefersExplicitToolCallID(t *testing.T) {
+	s := &sessionState{
+		tools:        map[string]string{"toolu_browser": "tool_card"},
+		steps:        map[string]string{},
+		subAgentCard: map[string]string{"parent_agent": "parent_agent_card"},
+	}
+
+	if got := parentForSubAgent(s, "parent_agent", "toolu_browser"); got != "tool_card" {
+		t.Fatalf("parentForSubAgent = %q, want tool_card", got)
+	}
 }
 
 // TestPromoteToolMetadata_OmitsKnownKeys exercises the helper directly.

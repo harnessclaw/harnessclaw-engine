@@ -8,8 +8,8 @@ import (
 	"time"
 
 	emitv2 "harnessclaw-go/internal/emit/v2"
-	"harnessclaw-go/internal/toolphrase"
 	"harnessclaw-go/internal/engine/wait"
+	"harnessclaw-go/internal/toolphrase"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -54,7 +54,7 @@ type promptIssuer interface {
 // defaults).
 func NewTranslator(picker *toolphrase.Picker) *Translator {
 	return &Translator{
-		sessions:   make(map[string]*sessionState),
+		sessions:     make(map[string]*sessionState),
 		phrasePicker: picker,
 	}
 }
@@ -80,9 +80,9 @@ type sessionState struct {
 	turnCardID    string
 	turnNo        int
 	messageCardID string
-	tools         map[string]string         // tool_use_id → tool card_id
+	tools         map[string]string          // tool_use_id → tool card_id
 	subagents     map[string]*emitv2.Emitter // agent_id → child Emitter (sub-agent scope)
-	subAgentCard  map[string]string         // agent_id → agent card_id
+	subAgentCard  map[string]string          // agent_id → agent card_id
 
 	// agentMessageCard tracks the currently-open message card for each
 	// sub-agent (keyed by agent_id == card_id from EmitSubagentStart).
@@ -91,9 +91,9 @@ type sessionState struct {
 	// turn-of-mind text bleed into emma's message stream, defeating the
 	// nested-card hierarchy that EmitSubagentStart sets up.
 	agentMessageCard map[string]string
-	plans         map[string]string         // plan_id → plan card_id
-	steps         map[string]string         // step_id → step card_id
-	pendingPerm   map[string]string         // request_id → ⟨request_id⟩ (for prompt.reply correlation)
+	plans            map[string]string // plan_id → plan card_id
+	steps            map[string]string // step_id → step card_id
+	pendingPerm      map[string]string // request_id → ⟨request_id⟩ (for prompt.reply correlation)
 
 	// askQuestion maps a v2.2 prompt.user request_id back to the
 	// originating engine tool_use_id. ask_user_question is a client-routed
@@ -146,14 +146,14 @@ type sessionState struct {
 
 func newSessionState() *sessionState {
 	return &sessionState{
-		tools:            make(map[string]string),
-		subagents:        make(map[string]*emitv2.Emitter),
-		subAgentCard:     make(map[string]string),
-		agentMessageCard: make(map[string]string),
-		plans:            make(map[string]string),
-		steps:            make(map[string]string),
-		pendingPerm:      make(map[string]string),
-		askQuestion:      make(map[string]string),
+		tools:               make(map[string]string),
+		subagents:           make(map[string]*emitv2.Emitter),
+		subAgentCard:        make(map[string]string),
+		agentMessageCard:    make(map[string]string),
+		plans:               make(map[string]string),
+		steps:               make(map[string]string),
+		pendingPerm:         make(map[string]string),
+		askQuestion:         make(map[string]string),
 		pendingPlan:         make(map[string]string),
 		pendingStepDecision: make(map[string]string),
 		pausedCards:         make(map[string][]string),
@@ -242,7 +242,6 @@ func (t *Translator) resumeForPrompt(s *sessionState, em *emitv2.Emitter, reqID 
 	delete(s.pausedCards, reqID)
 	em.ResumeChain(paused)
 }
-
 
 func (t *Translator) get(sessionID string) *sessionState {
 	t.mu.RLock()
@@ -607,7 +606,8 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		}
 		toolCardID := nonEmpty(ev.ToolUseID, emitv2.NewCardID(emitv2.CardTool))
 		s.tools[ev.ToolUseID] = toolCardID
-		opts := []emitv2.EmitOpt{emitv2.WithParent(parentForTool(s))}
+		scopeEm, getMsg, _ := s.scopeFor(ev.AgentID, em)
+		opts := []emitv2.EmitOpt{emitv2.WithParent(parentForToolInScope(s, ev.AgentID, getMsg()))}
 		// Symmetry with EngineEventToolStart path (line 287): orchestration
 		// tools (scheduler / task) wrap multi-minute sub-agent runs that
 		// legitimately outlast the CardTool 120s orphan watchdog. Opt them
@@ -617,11 +617,12 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		if isOrchestrationTool(ev.ToolName) {
 			opts = append(opts, emitv2.WithoutLifecycle())
 		}
-		em.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
-			Name:   ev.ToolName,
-			Target: "client",
-			Intent: ev.Intent,
-			Input:  input,
+		scopeEm.Card(emitv2.CardTool, toolCardID).Add(emitv2.ToolPayload{
+			Name:           ev.ToolName,
+			Target:         "client",
+			Intent:         ev.Intent,
+			AwaitSessionID: ev.AwaitSessionID,
+			Input:          input,
 		}, opts...)
 
 	case types.EngineEventAgentIntent:
@@ -1103,15 +1104,16 @@ func parentForTool(s *sessionState) string {
 
 // parentForSubAgent decides what card a sub-agent attaches to. Plan /
 // orchestrate dispatches carry parentStepID so the agent card can be
-// rooted under the step card — without that routing the step card sits
-// silent for the entire sub-agent run and gets killed by the orphan
-// watchdog. Non-plan dispatches (parentStepID empty) fall back to the
+// rooted under the step card. Direct tool-dispatch spawns reuse the same
+// field for the parent tool_use_id so parallel tool calls do not race into
+// an arbitrary open tool card. Non-explicit dispatches fall back to the
 // legacy "parent agent → tool → message → turn" chain.
 func parentForSubAgent(s *sessionState, parentAgentID, parentStepID string) string {
-	// Plan / orchestrate: route under the step card so its watchdog
-	// receives heartbeats from inner agent activity.
 	if parentStepID != "" {
 		if id := s.steps[parentStepID]; id != "" {
+			return id
+		}
+		if id := s.tools[parentStepID]; id != "" {
 			return id
 		}
 	}
@@ -1253,7 +1255,9 @@ func isOrchestrationTool(name string) bool {
 //  3. turn card — legacy behaviour, last resort
 //
 // With (1), the full chain becomes
-//   l3_agent → step → plan → scheduler_agent → tool → turn
+//
+//	l3_agent → step → plan → scheduler_agent → tool → turn
+//
 // and any heartbeat anywhere in that subtree refreshes the tool card.
 func parentForPlan(s *sessionState, ev *types.EngineEvent) string {
 	if ev != nil && ev.AgentID != "" {
@@ -1629,7 +1633,9 @@ func (t *Translator) ResolveStepDecision(sessionID, requestID string) string {
 // formatRetryNote renders an LLMRetryInfo as a short human-readable
 // line suitable for a card.tick(kind=note) text body. Format mirrors
 // the WARN log in retry.Retryer so server-side and wire stay consistent:
-//   "重试中 (3/10, 1.2s 后再试) — overloaded HTTP 529"
+//
+//	"重试中 (3/10, 1.2s 后再试) — overloaded HTTP 529"
+//
 // Falls back to attempt-only when classifier didn't tag the error.
 func formatRetryNote(info *types.LLMRetryInfo) string {
 	if info == nil {

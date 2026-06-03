@@ -16,6 +16,7 @@ import (
 	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/command"
 	"harnessclaw-go/internal/emit"
+	browseragentmod "harnessclaw-go/internal/engine/agent/browser_agent"
 	"harnessclaw-go/internal/engine/agent/explore"
 	"harnessclaw-go/internal/engine/agent/freelancer"
 	"harnessclaw-go/internal/engine/agent/generic"
@@ -116,13 +117,13 @@ type Option func(*Engine)
 //
 // emma tool palette rationale (post 3-tier refactor):
 //   - scheduler                   → THE delegation entry point. emma never
-//                                   picks between single-step / multi-step
-//                                   or specific sub-agents — the scheduler
-//                                   (L2) handles all decomposition.
+//     picks between single-step / multi-step
+//     or specific sub-agents — the scheduler
+//     (L2) handles all decomposition.
 //   - web_search / tavily_search  → emma's own *light* fact-finding for
-//                                   context gathering before dispatching.
+//     context gathering before dispatching.
 //   - ask_user_question           → clarification when the request is
-//                                   ambiguous.
+//     ambiguous.
 //
 // The task tool is intentionally NOT in this list — it lives inside the
 // L2 layer (the scheduler uses task internally to dispatch L3).
@@ -356,6 +357,20 @@ func New(
 		RootDir:           workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(freelancerMod)
+
+	browserAgentMod := browseragentmod.New(browseragentmod.Deps{
+		Provider:           prov,
+		Registry:           reg,
+		SessionMgr:         mgr,
+		Compactor:          comp,
+		Retryer:            e.retryer,
+		PromptBuilder:      promptBuilder,
+		Logger:             logger,
+		MaxTokens:          cfg.MaxTokens,
+		ContextWindow:      cfg.ContextWindow,
+		BrowserAgentConfig: cfg.BrowserAgent,
+	})
+	e.spawner.Register(browserAgentMod)
 
 	// Generic is the fallback for SubagentTypes not handled by a
 	// dedicated tier module above. It preserves the legacy "any

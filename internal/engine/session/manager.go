@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"harnessclaw-go/internal/engine/sessionstats"
-	"harnessclaw-go/pkg/types"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"harnessclaw-go/internal/engine/sessionstats"
+	"harnessclaw-go/pkg/types"
 )
 
 // Store defines the persistence interface that the session manager depends on.
@@ -97,15 +97,15 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID string, channelName
 
 	// Create new session
 	s := &Session{
-		ID:          sessionID,
-		State:       StateActive,
-		Messages:    make([]types.Message, 0),
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-		ChannelName: channelName,
-		UserID:      userID,
-		Metadata:    make(map[string]any),
-		Awaits:      NewAwaits(),
+		ID:           sessionID,
+		State:        StateActive,
+		Messages:     make([]types.Message, 0),
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+		ChannelName:  channelName,
+		UserID:       userID,
+		Metadata:     make(map[string]any),
+		Awaits:       NewAwaits(),
 		allowedTools: make(map[string]bool),
 	}
 	if s.ID == "" {

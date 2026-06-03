@@ -59,6 +59,95 @@ func TestSubmit_HappyPath(t *testing.T) {
 	}
 }
 
+func TestSubmit_AcceptsStructuredResultWhenOutputSchemaSet(t *testing.T) {
+	root := t.TempDir()
+	sid, tid := "sess_a", "browser_weibo_trending"
+	if err := workspace.EnsureSession(root, sid); err != nil {
+		t.Fatal(err)
+	}
+	schema := map[string]any{
+		"type":     "object",
+		"required": []string{"content", "source"},
+		"properties": map[string]any{
+			"content": map[string]any{"type": "string"},
+			"source": map[string]any{
+				"type": "string",
+				"enum": []string{"direct_access", "search_fallback", "api_fallback", "partial"},
+			},
+		},
+	}
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{
+		SessionRoot: workspace.SessionRoot(root, sid),
+		TaskID:      tid,
+		Agent:       "browser-agent",
+	})
+	ctx = tool.WithTaskContract(ctx, tool.TaskContract{
+		TaskID:       tid,
+		OutputSchema: schema,
+	})
+
+	raw, _ := json.Marshal(map[string]any{
+		"task_id": tid,
+		"result": map[string]any{
+			"content": "微博热搜前 50 条",
+			"source":  "direct_access",
+		},
+	})
+	res, err := New().Execute(ctx, raw)
+	if err != nil {
+		t.Fatalf("execute err: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("expected structured result accept, got error: %s", res.Content)
+	}
+	if accepted, _ := res.Metadata[MetadataKeyAccepted].(bool); !accepted {
+		t.Errorf("submission_accepted = false; want true")
+	}
+	if got, _ := res.Metadata["summary"].(string); got != "微博热搜前 50 条" {
+		t.Errorf("summary = %q", got)
+	}
+	result, ok := res.Metadata["result"].(map[string]any)
+	if !ok || result["source"] != "direct_access" {
+		t.Fatalf("metadata result = %#v", res.Metadata["result"])
+	}
+}
+
+func TestSubmit_RejectsStructuredResultAgainstOutputSchema(t *testing.T) {
+	root := t.TempDir()
+	sid, tid := "sess_a", "browser_bad"
+	if err := workspace.EnsureSession(root, sid); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{
+		SessionRoot: workspace.SessionRoot(root, sid),
+		TaskID:      tid,
+		Agent:       "browser-agent",
+	})
+	ctx = tool.WithTaskContract(ctx, tool.TaskContract{
+		TaskID: tid,
+		OutputSchema: map[string]any{
+			"type":     "object",
+			"required": []string{"content", "source"},
+			"properties": map[string]any{
+				"content": map[string]any{"type": "string"},
+				"source":  map[string]any{"type": "string"},
+			},
+		},
+	})
+
+	raw, _ := json.Marshal(map[string]any{
+		"task_id": tid,
+		"result":  map[string]any{"content": "missing source"},
+	})
+	res, _ := New().Execute(ctx, raw)
+	if !res.IsError {
+		t.Fatalf("schema-invalid result should reject: %+v", res)
+	}
+	if !strings.Contains(res.Content, "source") {
+		t.Fatalf("error should mention missing source, got: %s", res.Content)
+	}
+}
+
 func TestSubmit_RejectsAbsoluteMetaPath(t *testing.T) {
 	root := t.TempDir()
 	raw, _ := json.Marshal(map[string]any{"task_id": "t_001", "meta_path": filepath.Join(root, "absolute.json")})

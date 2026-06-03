@@ -112,6 +112,7 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 		var toolResults []types.ToolResult
 		if len(llmRes.ToolCalls) > 0 {
 			toolResults = dispatchTools(ctx, cfg, llmRes.ToolCalls, logger)
+			res.LastToolResults = toolResults
 			appendToolResultsToSession(cfg.Session, llmRes.ToolCalls, toolResults)
 		}
 

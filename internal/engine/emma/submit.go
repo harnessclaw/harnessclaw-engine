@@ -9,7 +9,7 @@ import (
 
 // SubmitToolResult implements engine.Engine. Delivers a client-side tool
 // execution result back to the engine so the query loop can continue with
-// the next LLM turn. Routes directly to sess.Awaits — no facade layer.
+// the next LLM turn.
 func (e *Engine) SubmitToolResult(_ context.Context, sessionID string, result *types.ToolResultPayload) error {
 	sess := e.sessionMgr.Get(sessionID)
 	if sess == nil {

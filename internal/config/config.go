@@ -323,10 +323,10 @@ type LogConfig struct {
 
 // LLMConfig holds LLM provider settings.
 type LLMConfig struct {
-	Providers map[string]ProviderConfig `mapstructure:"providers"`
-	Bifrost         BifrostConfig             `mapstructure:"bifrost"`
-	MaxRetries      int                       `mapstructure:"max_retries"`
-	APITimeout      time.Duration             `mapstructure:"api_timeout"`
+	Providers  map[string]ProviderConfig `mapstructure:"providers"`
+	Bifrost    BifrostConfig             `mapstructure:"bifrost"`
+	MaxRetries int                       `mapstructure:"max_retries"`
+	APITimeout time.Duration             `mapstructure:"api_timeout"`
 	// FirstByteTimeout caps how long the engine waits between Chat()
 	// returning and the FIRST stream chunk landing. Disarms once the
 	// first chunk arrives, so legitimate slow streams aren't penalised
@@ -334,8 +334,8 @@ type LLMConfig struct {
 	// a byte" pathology that otherwise stays silent until the 10-min
 	// orphan watchdog fires. Sized for upstream gateways that take
 	// 10-20s for first byte under normal load.
-	FirstByteTimeout time.Duration `mapstructure:"first_byte_timeout"`
-	ProxyURL         string        `mapstructure:"proxy_url"`
+	FirstByteTimeout time.Duration     `mapstructure:"first_byte_timeout"`
+	ProxyURL         string            `mapstructure:"proxy_url"`
 	CustomHeaders    map[string]string `mapstructure:"custom_headers"`
 
 	// DefaultMaxTokens is the response cap inherited by endpoints
@@ -598,15 +598,16 @@ type HTTPChannelConfig struct {
 
 // ToolsConfig holds per-tool settings.
 type ToolsConfig struct {
-	Bash      ToolConfig      `mapstructure:"bash"`
-	FileRead  ToolConfig      `mapstructure:"file_read"`
-	FileEdit  ToolConfig      `mapstructure:"file_edit"`
-	FileWrite ToolConfig      `mapstructure:"file_write"`
-	Grep      ToolConfig      `mapstructure:"grep"`
-	Glob      ToolConfig      `mapstructure:"glob"`
-	WebFetch  ToolConfig      `mapstructure:"web_fetch"`
+	Bash         ToolConfig         `mapstructure:"bash"`
+	FileRead     ToolConfig         `mapstructure:"file_read"`
+	FileEdit     ToolConfig         `mapstructure:"file_edit"`
+	FileWrite    ToolConfig         `mapstructure:"file_write"`
+	Grep         ToolConfig         `mapstructure:"grep"`
+	Glob         ToolConfig         `mapstructure:"glob"`
+	WebFetch     ToolConfig         `mapstructure:"web_fetch"`
 	WebSearch    WebSearchConfig    `mapstructure:"web_search"`
 	TavilySearch TavilySearchConfig `mapstructure:"tavily_search"`
+	BrowserAgent BrowserAgentConfig `mapstructure:"browser_agent"`
 }
 
 // ToolConfig holds individual tool settings.
@@ -632,6 +633,23 @@ type TavilySearchConfig struct {
 	Enabled    bool   `mapstructure:"enabled"`
 	APIKey     string `mapstructure:"api_key"`
 	MaxResults int    `mapstructure:"max_results"`
+}
+
+// BrowserAgentConfig holds settings for the browser-agent tool family.
+type BrowserAgentConfig struct {
+	Enabled              bool          `mapstructure:"enabled"`
+	DefaultVisibility    string        `mapstructure:"default_visibility"`
+	MaxSteps             int           `mapstructure:"max_steps"`
+	BlockedDomains       []string      `mapstructure:"blocked_domains"`
+	HumanTakeoverTimeout time.Duration `mapstructure:"human_takeover_timeout"`
+	SessionPersistence   bool          `mapstructure:"session_persistence"`
+	CLITimeout           time.Duration `mapstructure:"cli_timeout"`
+	SkillMaxBytes        int           `mapstructure:"skill_max_bytes"`
+	ContentBoundaries    bool          `mapstructure:"content_boundaries"`
+	MaxOutputBytes       int           `mapstructure:"max_output_bytes"`
+	AllowedDomains       []string      `mapstructure:"allowed_domains"`
+	ActionPolicyPath     string        `mapstructure:"action_policy_path"`
+	ConfirmActions       []string      `mapstructure:"confirm_actions"`
 }
 
 // PermissionConfig holds tool permission control settings.
@@ -705,6 +723,19 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("tools::web_search::limit", 5)
 	v.SetDefault("tools::tavily_search::enabled", false)
 	v.SetDefault("tools::tavily_search::max_results", 5)
+	v.SetDefault("tools::browser_agent::enabled", false)
+	v.SetDefault("tools::browser_agent::default_visibility", "hidden")
+	v.SetDefault("tools::browser_agent::max_steps", 30)
+	v.SetDefault("tools::browser_agent::blocked_domains", []string{})
+	v.SetDefault("tools::browser_agent::human_takeover_timeout", "120s")
+	v.SetDefault("tools::browser_agent::session_persistence", true)
+	v.SetDefault("tools::browser_agent::cli_timeout", "25s")
+	v.SetDefault("tools::browser_agent::skill_max_bytes", 200000)
+	v.SetDefault("tools::browser_agent::content_boundaries", true)
+	v.SetDefault("tools::browser_agent::max_output_bytes", 50000)
+	v.SetDefault("tools::browser_agent::allowed_domains", []string{})
+	v.SetDefault("tools::browser_agent::action_policy_path", "")
+	v.SetDefault("tools::browser_agent::confirm_actions", []string{})
 	v.SetDefault("permission::mode", "default")
 	v.SetDefault("skills::dirs", []string{"~/.harnessclaw/workspace/skills"})
 	v.SetDefault("console::enabled", true)

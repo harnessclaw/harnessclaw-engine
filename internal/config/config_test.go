@@ -96,3 +96,118 @@ llm:
 		t.Errorf("gpt-3 group = %q, want \"\" (omitted)", got)
 	}
 }
+
+func TestBrowserAgentConfig_DefaultsDisabled(t *testing.T) {
+	tmp := t.TempDir()
+	p := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(p, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Tools.BrowserAgent.Enabled {
+		t.Fatal("browser agent should default to disabled")
+	}
+	if cfg.Tools.BrowserAgent.MaxSteps != 30 {
+		t.Errorf("max_steps = %d, want 30", cfg.Tools.BrowserAgent.MaxSteps)
+	}
+	if cfg.Tools.BrowserAgent.DefaultVisibility != "hidden" {
+		t.Errorf("default_visibility = %q, want hidden", cfg.Tools.BrowserAgent.DefaultVisibility)
+	}
+	if cfg.Tools.BrowserAgent.HumanTakeoverTimeout.String() != "2m0s" {
+		t.Errorf("human_takeover_timeout = %s, want 2m0s", cfg.Tools.BrowserAgent.HumanTakeoverTimeout)
+	}
+	if cfg.Tools.BrowserAgent.CLITimeout.String() != "25s" {
+		t.Errorf("cli_timeout = %s, want 25s", cfg.Tools.BrowserAgent.CLITimeout)
+	}
+	if cfg.Tools.BrowserAgent.SkillMaxBytes != 200000 {
+		t.Errorf("skill_max_bytes = %d, want 200000", cfg.Tools.BrowserAgent.SkillMaxBytes)
+	}
+	if cfg.Tools.BrowserAgent.MaxOutputBytes != 50000 {
+		t.Errorf("max_output_bytes = %d, want 50000", cfg.Tools.BrowserAgent.MaxOutputBytes)
+	}
+	if !cfg.Tools.BrowserAgent.ContentBoundaries {
+		t.Error("content_boundaries should default true")
+	}
+	if len(cfg.Tools.BrowserAgent.AllowedDomains) != 0 {
+		t.Errorf("allowed_domains should default empty, got %v", cfg.Tools.BrowserAgent.AllowedDomains)
+	}
+	if cfg.Tools.BrowserAgent.ActionPolicyPath != "" {
+		t.Errorf("action_policy_path = %q, want empty", cfg.Tools.BrowserAgent.ActionPolicyPath)
+	}
+	if len(cfg.Tools.BrowserAgent.ConfirmActions) != 0 {
+		t.Errorf("confirm_actions should default empty, got %v", cfg.Tools.BrowserAgent.ConfirmActions)
+	}
+}
+
+func TestBrowserAgentConfig_YAMLRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	p := filepath.Join(tmp, "cfg.yaml")
+	if err := os.WriteFile(p, []byte(`
+tools:
+  browser_agent:
+    enabled: true
+    default_visibility: "visible"
+    max_steps: 12
+    blocked_domains: ["blocked.example"]
+    human_takeover_timeout: "45s"
+    session_persistence: false
+    cli_timeout: "9s"
+    skill_max_bytes: 123456
+    content_boundaries: true
+    max_output_bytes: 34567
+    allowed_domains: ["example.com"]
+    action_policy_path: "/tmp/browser-policy.yaml"
+    confirm_actions: ["upload", "download"]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	got := cfg.Tools.BrowserAgent
+	if !got.Enabled {
+		t.Fatal("browser_agent.enabled should load true")
+	}
+	if got.DefaultVisibility != "visible" {
+		t.Errorf("default_visibility = %q", got.DefaultVisibility)
+	}
+	if got.MaxSteps != 12 {
+		t.Errorf("max_steps = %d", got.MaxSteps)
+	}
+	if len(got.BlockedDomains) != 1 || got.BlockedDomains[0] != "blocked.example" {
+		t.Errorf("blocked_domains = %v", got.BlockedDomains)
+	}
+	if got.HumanTakeoverTimeout.String() != "45s" {
+		t.Errorf("human_takeover_timeout = %s", got.HumanTakeoverTimeout)
+	}
+	if got.SessionPersistence {
+		t.Error("session_persistence should load false")
+	}
+	if got.CLITimeout.String() != "9s" {
+		t.Errorf("cli_timeout = %s", got.CLITimeout)
+	}
+	if got.SkillMaxBytes != 123456 {
+		t.Errorf("skill_max_bytes = %d", got.SkillMaxBytes)
+	}
+	if !got.ContentBoundaries {
+		t.Error("content_boundaries should load true")
+	}
+	if got.MaxOutputBytes != 34567 {
+		t.Errorf("max_output_bytes = %d", got.MaxOutputBytes)
+	}
+	if len(got.AllowedDomains) != 1 || got.AllowedDomains[0] != "example.com" {
+		t.Errorf("allowed_domains = %v", got.AllowedDomains)
+	}
+	if got.ActionPolicyPath != "/tmp/browser-policy.yaml" {
+		t.Errorf("action_policy_path = %q", got.ActionPolicyPath)
+	}
+	if len(got.ConfirmActions) != 2 || got.ConfirmActions[0] != "upload" || got.ConfirmActions[1] != "download" {
+		t.Errorf("confirm_actions = %v", got.ConfirmActions)
+	}
+}

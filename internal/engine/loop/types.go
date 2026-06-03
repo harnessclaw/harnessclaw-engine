@@ -33,6 +33,12 @@ type Config struct {
 	Retryer      *retry.Retryer
 	Logger       *zap.Logger
 
+	// ClientAwaitSession is the user-facing session that receives
+	// client-routed tool results. Sub-agent loops can run on their own
+	// Session while browser/Electron results return through the root
+	// WebSocket session.
+	ClientAwaitSession *session.Session
+
 	MaxTurns      int
 	MaxTokens     int
 	ContextWindow int
@@ -55,6 +61,13 @@ type Config struct {
 	// on the first chunk). Zero disables. Same provenance as
 	// LLMAPITimeout.
 	LLMFirstByteTimeout time.Duration
+
+	// TaskContract and ArtifactProducer are attached to server-side tool
+	// execution contexts. submit_task_result uses TaskContract for
+	// structured result validation; artifact-producing tools use the
+	// producer stamp for lineage metadata.
+	TaskContract     tool.TaskContract
+	ArtifactProducer tool.ArtifactProducer
 
 	Out     chan<- types.EngineEvent
 	AgentID string
@@ -106,8 +119,9 @@ type Decision struct {
 
 // Result is what Run returns on natural completion.
 type Result struct {
-	Terminal    types.Terminal
-	Usage       types.Usage
-	NumTurns    int
-	LastMessage *types.Message // nil if no assistant message ever produced
+	Terminal        types.Terminal
+	Usage           types.Usage
+	NumTurns        int
+	LastMessage     *types.Message // nil if no assistant message ever produced
+	LastToolResults []types.ToolResult
 }

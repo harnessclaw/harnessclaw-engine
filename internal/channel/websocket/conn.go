@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	sendBufSize     = 256
-	pingInterval    = 30 * time.Second
-	writeTimeout    = 10 * time.Second
+	sendBufSize  = 256
+	pingInterval = 30 * time.Second
+	writeTimeout = 10 * time.Second
 )
 
 // Conn is one live WebSocket connection. Created by Channel.upgrade,
@@ -66,9 +66,11 @@ func (c *Conn) trySend(frame []byte) error {
 //
 // Specifically built to diagnose "client sees X steps but only Y
 // closes": each step lifecycle ought to show up as
-//   card.add  kind=step  card_id=sN
-//   card.set  kind=step  status=running
-//   card.close kind=step  status=ok|failed|skipped
+//
+//	card.add  kind=step  card_id=sN
+//	card.set  kind=step  status=running
+//	card.close kind=step  status=ok|failed|skipped
+//
 // Any step missing a card.close (status=skipped is the common gap
 // after a user-cancel / dep-failure / scheduler bail) jumps out of
 // this log immediately.
@@ -352,10 +354,10 @@ func (c *Conn) handleSessionCreate(raw []byte) {
 // MessageHandler attached to the channel.
 func (c *Conn) handleUserMessage(ctx context.Context, raw []byte) {
 	var f struct {
-		Text             string                 `json:"text"`
-		Content          []userContentBlock     `json:"content"`
-		CoordinatorMode  string                 `json:"coordinator_mode"`
-		PlanConfirmation string                 `json:"plan_confirmation"`
+		Text             string             `json:"text"`
+		Content          []userContentBlock `json:"content"`
+		CoordinatorMode  string             `json:"coordinator_mode"`
+		PlanConfirmation string             `json:"plan_confirmation"`
 	}
 	if err := json.Unmarshal(raw, &f); err != nil {
 		c.sendError("invalid_input", "user.message parse: "+err.Error())
@@ -405,6 +407,7 @@ func (c *Conn) handleUserMessage(ctx context.Context, raw []byte) {
 // handleToolResult parses tool.result and dispatches to engine handler.
 func (c *Conn) handleToolResult(ctx context.Context, raw []byte) {
 	var f struct {
+		SessionID string            `json:"session_id"`
 		ToolUseID string            `json:"tool_use_id"`
 		Status    string            `json:"status"`
 		Output    string            `json:"output"`
@@ -414,9 +417,13 @@ func (c *Conn) handleToolResult(ctx context.Context, raw []byte) {
 		c.sendError("invalid_input", "tool.result parse: "+err.Error())
 		return
 	}
+	sessionID := c.sessionID
+	if f.SessionID != "" {
+		sessionID = f.SessionID
+	}
 	in := &types.IncomingMessage{
 		ChannelName: "websocket",
-		SessionID:   c.sessionID,
+		SessionID:   sessionID,
 		UserID:      c.userID,
 		ToolResult: &types.ToolResultPayload{
 			ToolUseID: f.ToolUseID,
