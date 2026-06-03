@@ -283,7 +283,13 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		PermChecker:    permChecker,
 		ApprovalFn:     nil, // sub-agents have no approval UI
 		AgentScope:     common.BuildAgentScope(cfg, m.deps.RootDir, "freelancer"),
-		OnTurnComplete: common.ContractEnforcer(cfg.ExpectedOutputs, contractRetries, maxTurns),
+		// Pass the freelancer deps.Logger into ContractEnforcer so
+		// budget-exhaustion nudges, validation retries, and the
+		// terminate-on-valid-submit branch all leave a structured
+		// trail. Previously this hook was silent and "why did the
+		// LLM get a '2 turns left' user message" had to be inferred
+		// from the message dump.
+		OnTurnComplete: common.ContractEnforcerWithLogger(cfg.ExpectedOutputs, contractRetries, maxTurns, m.deps.Logger),
 	})
 
 	if err != nil {

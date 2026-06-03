@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"go.uber.org/zap"
 	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/tool/submittool"
 	"harnessclaw-go/pkg/types"
@@ -70,24 +71,36 @@ func StopOnSubmitResult() loop.TurnHook {
 // to 1 so callers cannot accidentally disable enforcement. maxTurns ≤ 0
 // disables the budget-exhaustion nudge (legacy "no cap" behaviour).
 func ContractEnforcer(expected []types.ExpectedOutput, maxRetries, maxTurns int) loop.TurnHook {
-	return submitResultEnforcerForTool(submittool.ToolName, expected, nil, maxRetries, maxTurns)
+	return submitResultEnforcerForTool(submittool.ToolName, expected, nil, maxRetries, maxTurns, nil)
+}
+
+// ContractEnforcerWithLogger is the logging-aware variant of
+// ContractEnforcer. It records every branch decision (initial-submit
+// nudge, budget-exhaustion hard nudge, validation failure,
+// terminate-on-valid-submit) at INFO so "why did this sub-agent get
+// the '2 turns left' message?" is answerable from the log alone.
+//
+// logger may be nil; passing nil produces the legacy silent behaviour
+// (kept for tests and callers that don't have a logger handy).
+func ContractEnforcerWithLogger(expected []types.ExpectedOutput, maxRetries, maxTurns int, logger *zap.Logger) loop.TurnHook {
+	return submitResultEnforcerForTool(submittool.ToolName, expected, nil, maxRetries, maxTurns, logger)
 }
 
 // SubmitResultEnforcer validates submit_task_result completion.
 // expected covers file-producing agents; outputSchema covers
 // structured-result agents such as browser-agent.
 func SubmitResultEnforcer(expected []types.ExpectedOutput, outputSchema map[string]any, maxRetries int) loop.TurnHook {
-	return submitResultEnforcerForTool(submittool.ToolName, expected, outputSchema, maxRetries, 0)
+	return submitResultEnforcerForTool(submittool.ToolName, expected, outputSchema, maxRetries, 0, nil)
 }
 
 // SubmitResultEnforcerForTool is SubmitResultEnforcer with a custom terminal
 // tool name. Browser Agent uses this to expose a narrow final-result wrapper
 // while still relying on submit_task_result metadata for server acceptance.
 func SubmitResultEnforcerForTool(finalToolName string, expected []types.ExpectedOutput, outputSchema map[string]any, maxRetries int) loop.TurnHook {
-	return submitResultEnforcerForTool(finalToolName, expected, outputSchema, maxRetries, 0)
+	return submitResultEnforcerForTool(finalToolName, expected, outputSchema, maxRetries, 0, nil)
 }
 
-func submitResultEnforcerForTool(finalToolName string, expected []types.ExpectedOutput, outputSchema map[string]any, maxRetries, maxTurns int) loop.TurnHook {
+func submitResultEnforcerForTool(finalToolName string, expected []types.ExpectedOutput, outputSchema map[string]any, maxRetries, maxTurns int, logger *zap.Logger) loop.TurnHook {
 	if maxRetries < 1 {
 		maxRetries = 1
 	}
@@ -98,12 +111,22 @@ func submitResultEnforcerForTool(finalToolName string, expected []types.Expected
 	failures := 0
 	hardNudgeSent := false
 
+	logInfo := func(msg string, fields ...zap.Field) {
+		if logger != nil {
+			logger.Info(msg, fields...)
+		}
+	}
+
 	return func(turn int, msg types.Message, toolResults []types.ToolResult) loop.Decision {
 		submitCall, submitResult := findSubmitCall(msg, toolResults, finalToolName)
 		if submitCall == nil {
 			// No submit yet. If the LLM also issued no tool calls at all,
 			// it has likely stopped — nudge it back toward submitting.
 			if !hasToolCalls(msg) {
+				logInfo("contract_enforcer: no-tool-call nudge — asking LLM to submit",
+					zap.Int("turn", turn),
+					zap.Int("max_turns", maxTurns),
+				)
 				return loop.Decision{Inject: []types.Message{{
 					Role: types.RoleUser,
 					Content: []types.ContentBlock{{
@@ -121,6 +144,11 @@ func submitResultEnforcerForTool(finalToolName string, expected []types.Expected
 				if remaining < 1 {
 					remaining = 1
 				}
+				logInfo("contract_enforcer: budget_exhaustion hard nudge injected",
+					zap.Int("turn", turn),
+					zap.Int("max_turns", maxTurns),
+					zap.Int("remaining_turns", remaining),
+				)
 				return loop.Decision{Inject: []types.Message{{
 					Role: types.RoleUser,
 					Content: []types.ContentBlock{{
@@ -169,12 +197,24 @@ func submitResultEnforcerForTool(finalToolName string, expected []types.Expected
 		if err := validateSubmitInput(submitCall.ToolInput, expected); err != nil {
 			failures++
 			if failures > maxRetries {
+				logInfo("contract_enforcer: validation retries exhausted — terminating",
+					zap.Int("turn", turn),
+					zap.Int("failures", failures),
+					zap.Int("max_retries", maxRetries),
+					zap.String("error", err.Error()),
+				)
 				return loop.Decision{Terminate: &types.Terminal{
 					Reason:  types.TerminalCompleted,
 					Message: "contract validation exhausted retries: " + err.Error(),
 					Turn:    turn,
 				}}
 			}
+			logInfo("contract_enforcer: validation failed — injecting correction tool_result",
+				zap.Int("turn", turn),
+				zap.Int("failures", failures),
+				zap.Int("max_retries", maxRetries),
+				zap.String("error", err.Error()),
+			)
 			correction := fmt.Sprintf(
 				"%s rejected: %s. Please call %s again with the required fields.",
 				finalToolName, err.Error(), finalToolName,
@@ -216,6 +256,9 @@ func submitResultEnforcerForTool(finalToolName string, expected []types.Expected
 		}
 
 		// Schema OK → terminate.
+		logInfo("contract_enforcer: valid submit_task_result — terminating loop",
+			zap.Int("turn", turn),
+		)
 		return loop.Decision{Terminate: &types.Terminal{
 			Reason: types.TerminalCompleted, Turn: turn,
 		}}

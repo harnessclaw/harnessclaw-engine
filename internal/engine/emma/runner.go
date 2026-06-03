@@ -175,11 +175,36 @@ func (e *Engine) run(
 			out <- types.EngineEvent{Type: types.EngineEventMessageStop}
 
 			if ctx.Err() != nil {
+				// ctx-state log so we can tell WHY the ctx was already
+				// cancelled by the time the LLM error surfaced
+				// (errEmmaAborted / errEmmaSessionEnded / parent ctx).
+				cause := context.Cause(ctx)
+				causeStr := "<nil>"
+				if cause != nil {
+					causeStr = cause.Error()
+				}
+				logger.Warn("LLM call returned with ctx already cancelled",
+					zap.String("session_id", sess.ID),
+					zap.Int("turn", ls.turn),
+					zap.String("ctx_err", ctx.Err().Error()),
+					zap.String("ctx_cause", causeStr),
+					zap.Error(llmErr),
+				)
 				return types.Terminal{Reason: types.TerminalAbortedStreaming, Message: "query cancelled", Turn: ls.turn}
+			}
+			// ctx was still live when the error fired — the cancellation
+			// (if any) came from bifrost/upstream, not from the engine.
+			// Surface ctx.Cause anyway in case a subtree got a deadline.
+			cause := context.Cause(ctx)
+			causeStr := "<nil>"
+			if cause != nil {
+				causeStr = cause.Error()
 			}
 			logger.Error("LLM call failed after retries",
 				zap.String("session_id", sess.ID),
 				zap.Int("turn", ls.turn),
+				zap.String("ctx_err", "<nil/live>"),
+				zap.String("ctx_cause", causeStr),
 				zap.Error(llmErr),
 			)
 			return types.Terminal{Reason: types.TerminalModelError, Message: llmErr.Error(), Turn: ls.turn}

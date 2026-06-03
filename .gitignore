@@ -14,6 +14,7 @@ cmd/test/
 # Compiled E2E binaries built from cmd/test/ — stay at repo root, never committed
 /plan_e2e
 /sched_e2e
+/ws_smoke
 
 # Build output
 dist/

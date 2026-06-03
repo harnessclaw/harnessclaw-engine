@@ -729,6 +729,16 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 		status := emitv2.StatusOK
 		if ev.AgentStatus == "error" || ev.AgentStatus == "failed" {
 			status = emitv2.StatusFailed
+			// Attach an ErrorInfo built from Terminal so the client can
+			// render WHY the sub-agent failed. Previously close payload
+			// only carried {subagent_type, num_turns} and the UI
+			// rendered an opaque "failed" badge — operators had to grep
+			// service.log to find the underlying llm.call / contract
+			// error. The 2026-06-02 freelancer 400 was the canonical
+			// case: card.close.payload had no error field at all.
+			if errInfo := errorInfoFromTerminal(ev.Terminal); errInfo != nil {
+				opts = append(opts, emitv2.WithError(errInfo))
+			}
 		}
 		child.Card(emitv2.CardAgent, agentCardID).Close(status, opts...)
 
@@ -1398,6 +1408,53 @@ func buildEngineErrorInfo(ev *types.EngineEvent) *emitv2.ErrorInfo {
 		}
 		info = info.WithDetails(details)
 	}
+	return info
+}
+
+// errorInfoFromTerminal builds a wire ErrorInfo from the sub-agent
+// loop's Terminal struct so the front-end can show the actual cause
+// of a `subagent_end status=failed` instead of an opaque badge.
+//
+// Mapping table (Terminal.Reason → emitv2.ErrorType):
+//
+//	TerminalModelError       → model_error      (upstream LLM API failed)
+//	TerminalMaxTurns         → max_turns
+//	TerminalAbortedStreaming → user_aborted
+//	TerminalAbortedTools     → user_aborted
+//	default / TerminalCompleted (failed status)
+//	                          → internal        (genuinely unknown — message
+//	                                              still carried so operators
+//	                                              can grep)
+//
+// Returns nil when the Terminal pointer is nil — caller decides whether
+// to fall back to a generic "internal" badge. The Terminal.Message
+// field (e.g. the bifrost 400 string) is forwarded as ErrorInfo.Message
+// so it shows up next to the badge in the client.
+func errorInfoFromTerminal(term *types.Terminal) *emitv2.ErrorInfo {
+	if term == nil {
+		return nil
+	}
+	typ := emitv2.ErrorTypeInternal
+	switch term.Reason {
+	case types.TerminalModelError:
+		typ = emitv2.ErrorTypeModelError
+	case types.TerminalMaxTurns:
+		typ = emitv2.ErrorTypeMaxTurns
+	case types.TerminalAbortedStreaming, types.TerminalAbortedTools:
+		typ = emitv2.ErrorTypeUserAborted
+	}
+	msg := term.Message
+	if msg == "" {
+		msg = string(term.Reason)
+	}
+	info := emitv2.NewError(typ, msg)
+	// Stash the raw Terminal.Reason so the client can branch on the
+	// engine-internal taxonomy too (e.g. distinguish model_error vs
+	// user_aborted without a fragile string match on Message).
+	info = info.WithDetails(map[string]any{
+		"terminal_reason": string(term.Reason),
+		"terminal_turn":   term.Turn,
+	})
 	return info
 }
 
