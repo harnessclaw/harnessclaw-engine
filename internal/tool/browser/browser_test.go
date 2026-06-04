@@ -453,7 +453,7 @@ func TestSessionStateTool_ClientRouted(t *testing.T) {
 	}
 }
 
-func TestCommandRunner_ExecutesConfiguredBinaryDirectly(t *testing.T) {
+func TestCommandRunner_ExecutesResolvedBinaryDirectly(t *testing.T) {
 	runner := &CommandRunner{binaryPath: "/opt/harnessclaw/bin/agent-browser-darwin-arm64"}
 	cmd := runner.command(context.Background(), []string{"--json", "snapshot"})
 
@@ -464,13 +464,26 @@ func TestCommandRunner_ExecutesConfiguredBinaryDirectly(t *testing.T) {
 	assertArgs(t, cmd.Args, wantArgs)
 }
 
-func TestNewCommandRunner_UsesConfiguredBinaryPath(t *testing.T) {
-	runner := NewCommandRunner(config.BrowserAgentConfig{
-		BinaryPath: "  /tmp/runtime/bin/agent-browser-darwin-arm64  ",
-	})
+func TestNewCommandRunner_UsesEnvBinaryPath(t *testing.T) {
+	t.Setenv("CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH", "  /tmp/runtime/bin/agent-browser-darwin-arm64  ")
+
+	runner := NewCommandRunner(config.BrowserAgentConfig{})
 
 	if runner.binaryPath != "/tmp/runtime/bin/agent-browser-darwin-arm64" {
 		t.Fatalf("binaryPath = %q", runner.binaryPath)
+	}
+}
+
+func TestNewCommandRunner_DoesNotResolveBareAgentBrowserCommand(t *testing.T) {
+	t.Setenv("CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH", "")
+
+	runner := NewCommandRunner(config.BrowserAgentConfig{})
+
+	if runner.binaryPath == "agent-browser" {
+		t.Fatal("binaryPath must not fall back to PATH lookup")
+	}
+	if runner.binaryPath != "" && !filepath.IsAbs(runner.binaryPath) {
+		t.Fatalf("binaryPath = %q, want absolute bundled sidecar path", runner.binaryPath)
 	}
 }
 

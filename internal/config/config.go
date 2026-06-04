@@ -638,7 +638,6 @@ type TavilySearchConfig struct {
 // BrowserAgentConfig holds settings for the browser-agent tool family.
 type BrowserAgentConfig struct {
 	Enabled              bool          `mapstructure:"enabled"`
-	BinaryPath           string        `mapstructure:"binary_path"`
 	DefaultVisibility    string        `mapstructure:"default_visibility"`
 	MaxSteps             int           `mapstructure:"max_steps"`
 	BlockedDomains       []string      `mapstructure:"blocked_domains"`
@@ -725,7 +724,6 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("tools::tavily_search::enabled", false)
 	v.SetDefault("tools::tavily_search::max_results", 5)
 	v.SetDefault("tools::browser_agent::enabled", false)
-	v.SetDefault("tools::browser_agent::binary_path", "")
 	v.SetDefault("tools::browser_agent::default_visibility", "hidden")
 	v.SetDefault("tools::browser_agent::max_steps", 30)
 	v.SetDefault("tools::browser_agent::blocked_domains", []string{})
@@ -758,7 +756,6 @@ func Load(configPath string) (*Config, error) {
 	v.SetEnvPrefix("CLAUDE")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
-	_ = v.BindEnv("tools::browser_agent::binary_path", "CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH")
 
 	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {

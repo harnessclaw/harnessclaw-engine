@@ -22,8 +22,10 @@ type CommandRunner struct {
 	binaryPath string
 }
 
-func NewCommandRunner(cfg config.BrowserAgentConfig) *CommandRunner {
-	return &CommandRunner{binaryPath: browserBinary(cfg)}
+const agentBrowserBinaryPathEnv = "CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH"
+
+func NewCommandRunner(_ config.BrowserAgentConfig) *CommandRunner {
+	return &CommandRunner{binaryPath: browserBinary()}
 }
 
 func (r *CommandRunner) Run(ctx context.Context, args []string) ([]byte, error) {
@@ -34,8 +36,8 @@ func (r *CommandRunner) command(ctx context.Context, args []string) *exec.Cmd {
 	return exec.CommandContext(ctx, r.binaryPath, args...)
 }
 
-func browserBinary(cfg config.BrowserAgentConfig) string {
-	if path := strings.TrimSpace(cfg.BinaryPath); path != "" {
+func browserBinary() string {
+	if path := strings.TrimSpace(os.Getenv(agentBrowserBinaryPathEnv)); path != "" {
 		return path
 	}
 	return packagedAgentBrowserBinaryPath()
@@ -49,11 +51,15 @@ func cliTimeout(cfg config.BrowserAgentConfig) time.Duration {
 }
 
 func packagedAgentBrowserBinaryPath() string {
+	name := agentBrowserBinaryName()
+	if name == "" {
+		return ""
+	}
 	exe, err := os.Executable()
 	if err != nil {
-		return agentBrowserBinaryName()
+		return filepath.Join(string(os.PathSeparator), "missing-harnessclaw-runtime", name)
 	}
-	return filepath.Join(filepath.Dir(exe), agentBrowserBinaryName())
+	return filepath.Join(filepath.Dir(exe), name)
 }
 
 func agentBrowserBinaryName() string {

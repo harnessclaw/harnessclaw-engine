@@ -193,19 +193,18 @@ flowchart LR
 
 - Electron 发布流程仍负责打包桌面应用。
 - 但 Browser Agent 运行时的准备规则来自引擎，不在前端里重写。
-- 打包后的应用中，引擎和 `agent-browser` 放在同一个 `resources/bin` 目录，引擎可以使用打包后回退定位找到伴随文件。
+- 打包后的应用中，引擎和 `agent-browser` 放在同一个 `resources/bin` 目录；桌面端启动内置引擎时会显式注入包内 `agent-browser` 绝对路径。
 
 ### 4.3 引擎内部定位顺序
 
-推荐定位顺序：
+定位顺序：
 
-1. 显式配置路径：`tools.browser_agent.binary_path`
-2. 环境变量映射：`CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH`
-3. 打包后回退定位：`dirname(os.Executable()) / agent-browser-<平台>-<架构>`
+1. 环境变量映射：`CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH`
+2. 打包后定位：`dirname(os.Executable()) / agent-browser-<平台>-<架构>`
 
-本地 `make run` 使用第 1 或第 2 种。
+本地 `make run` 使用第 1 种。
 
-打包运行使用第 3 种。
+打包运行由桌面端注入第 1 种；独立运行 engine runtime bundle 时使用第 2 种。`tools.browser_agent.binary_path` 不再作为配置入口，旧配置中的该字段会被忽略，避免把发布包内的锁定版本短路成 `$PATH` 上的裸命令。
 
 ## 5. 统一后的流程
 

@@ -111,9 +111,6 @@ func TestBrowserAgentConfig_DefaultsDisabled(t *testing.T) {
 	if cfg.Tools.BrowserAgent.Enabled {
 		t.Fatal("browser agent should default to disabled")
 	}
-	if cfg.Tools.BrowserAgent.BinaryPath != "" {
-		t.Errorf("binary_path = %q, want empty", cfg.Tools.BrowserAgent.BinaryPath)
-	}
 	if cfg.Tools.BrowserAgent.MaxSteps != 30 {
 		t.Errorf("max_steps = %d, want 30", cfg.Tools.BrowserAgent.MaxSteps)
 	}
@@ -153,7 +150,6 @@ func TestBrowserAgentConfig_YAMLRoundTrip(t *testing.T) {
 tools:
   browser_agent:
     enabled: true
-    binary_path: "/opt/harnessclaw/bin/agent-browser-darwin-arm64"
     default_visibility: "visible"
     max_steps: 12
     blocked_domains: ["blocked.example"]
@@ -177,9 +173,6 @@ tools:
 	got := cfg.Tools.BrowserAgent
 	if !got.Enabled {
 		t.Fatal("browser_agent.enabled should load true")
-	}
-	if got.BinaryPath != "/opt/harnessclaw/bin/agent-browser-darwin-arm64" {
-		t.Errorf("binary_path = %q", got.BinaryPath)
 	}
 	if got.DefaultVisibility != "visible" {
 		t.Errorf("default_visibility = %q", got.DefaultVisibility)
@@ -216,22 +209,5 @@ tools:
 	}
 	if len(got.ConfirmActions) != 2 || got.ConfirmActions[0] != "upload" || got.ConfirmActions[1] != "download" {
 		t.Errorf("confirm_actions = %v", got.ConfirmActions)
-	}
-}
-
-func TestBrowserAgentConfig_BinaryPathFromEnv(t *testing.T) {
-	tmp := t.TempDir()
-	p := filepath.Join(tmp, "cfg.yaml")
-	if err := os.WriteFile(p, []byte(`{}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH", "/tmp/runtime/bin/agent-browser-darwin-arm64")
-
-	cfg, err := Load(p)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Tools.BrowserAgent.BinaryPath != "/tmp/runtime/bin/agent-browser-darwin-arm64" {
-		t.Fatalf("binary_path = %q", cfg.Tools.BrowserAgent.BinaryPath)
 	}
 }
