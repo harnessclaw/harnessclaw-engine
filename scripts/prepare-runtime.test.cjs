@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict')
+const { spawnSync } = require('node:child_process')
 const { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs')
 const { tmpdir } = require('node:os')
 const { join } = require('node:path')
@@ -97,6 +98,38 @@ test('copies supplied agent-browser binary without executing target platform bin
   } finally {
     rmSync(outputDir, { recursive: true, force: true })
     rmSync(sourceDir, { recursive: true, force: true })
+  }
+})
+
+test('archive bundle excludes local runtime cache manifest from bin directory', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'harnessclaw-runtime-archive-'))
+  try {
+    const sourcePath = join(tempRoot, 'agent-browser-darwin-x64')
+    writeFileSync(sourcePath, 'not a host executable')
+    const env = {
+      AGENT_BROWSER_NATIVE_BINARY: sourcePath,
+      AGENT_BROWSER_VERSION: '0.27.1',
+    }
+    const plan = createRuntimePlan({
+      argv: [
+        '--platform', 'darwin',
+        '--arch', 'x64',
+        '--archive-path', join(tempRoot, 'runtime.zip'),
+        '--bundle-root', join(tempRoot, 'bundle'),
+      ],
+      env,
+    })
+    plan.includeEngine = false
+
+    await prepareRuntime(plan, env)
+
+    const list = spawnSync('unzip', ['-Z1', plan.archivePath], { encoding: 'utf8' })
+    assert.equal(list.status, 0)
+    assert.equal(list.stdout.includes('manifest.json'), true)
+    assert.equal(list.stdout.includes('bin/agent-browser-darwin-x64'), true)
+    assert.equal(list.stdout.includes('bin/harnessclaw-runtime-manifest.json'), false)
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 

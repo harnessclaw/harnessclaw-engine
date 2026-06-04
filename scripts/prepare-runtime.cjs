@@ -352,6 +352,7 @@ function runtimeManifestForPlan(plan, source) {
 }
 
 function writeOutputRuntimeManifest(plan, source) {
+  if (plan.archivePath) return
   writeFileSync(outputRuntimeManifestPath(plan), `${JSON.stringify(runtimeManifestForPlan(plan, source), null, 2)}\n`, 'utf8')
 }
 
