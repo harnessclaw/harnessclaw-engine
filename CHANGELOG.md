@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-06-04
+
+### Changed
+- Browser Agent now resolves its native binary only from `CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH` or the packaged sidecar next to the engine executable. YAML `tools.browser_agent.binary_path` is no longer a runtime input, so stale local config cannot redirect packaged apps to a bare `agent-browser` command on `$PATH`.
+
+### Fixed
+- Packaged desktop launches can no longer be short-circuited by old configs that set `binary_path: "agent-browser"`; the locked sidecar binary in the runtime bundle remains authoritative.
+
 ## [0.0.17] - 2026-06-04
 
 ### Added
