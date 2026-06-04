@@ -18,6 +18,7 @@ cmd/test/
 
 # Build output
 dist/
+.runtime/
 
 # Test
 *.test
@@ -46,6 +47,9 @@ vendor/
 
 # docs — local-only design / draft notes (API references under docs/api/ and protocol docs are tracked)
 docs/*
+!docs/design/
+docs/design/*
+!docs/design/native-binary-runtime.md
 !docs/api/console-api.md
 !docs/api/tools-catalog.md
 !docs/protocols/websocket.md

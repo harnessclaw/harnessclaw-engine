@@ -216,6 +216,21 @@ func TestBrowserSkillReferenceTool_ReadsWhitelistedReference(t *testing.T) {
 	}
 }
 
+func TestBrowserSkillReferenceTool_ReadsEmbeddedReference(t *testing.T) {
+	tl := NewSkillReferenceTool(testBrowserConfig())
+
+	res, err := tl.Execute(context.Background(), json.RawMessage(`{"path":"references/session-management.md"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("embedded reference read failed: %+v", res)
+	}
+	if !strings.Contains(res.Content, "# Session Management") {
+		t.Fatalf("content = %q", res.Content[:min(120, len(res.Content))])
+	}
+}
+
 func TestBrowserSkillReferenceTool_RejectsUnsafePaths(t *testing.T) {
 	root := seedSkillRoot(t)
 	tl := NewSkillReferenceToolForTest(testBrowserConfig(), root)
@@ -447,6 +462,16 @@ func TestCommandRunner_ExecutesConfiguredBinaryDirectly(t *testing.T) {
 	}
 	wantArgs := []string{runner.binaryPath, "--json", "snapshot"}
 	assertArgs(t, cmd.Args, wantArgs)
+}
+
+func TestNewCommandRunner_UsesConfiguredBinaryPath(t *testing.T) {
+	runner := NewCommandRunner(config.BrowserAgentConfig{
+		BinaryPath: "  /tmp/runtime/bin/agent-browser-darwin-arm64  ",
+	})
+
+	if runner.binaryPath != "/tmp/runtime/bin/agent-browser-darwin-arm64" {
+		t.Fatalf("binaryPath = %q", runner.binaryPath)
+	}
 }
 
 func testBrowserConfig() config.BrowserAgentConfig {

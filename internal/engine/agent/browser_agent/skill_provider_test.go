@@ -28,7 +28,25 @@ func writeSkill(t *testing.T, body string) string {
 	return path
 }
 
-func TestAgentBrowserSkillProvider_LoadsPackagedSkill(t *testing.T) {
+func TestAgentBrowserSkillProvider_LoadsEmbeddedSkill(t *testing.T) {
+	p := NewAgentBrowserSkillProvider(defaultCfg(), zap.NewNop())
+
+	full, err := p.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if full.Path != "embedded://agent-browser/SKILL.md" {
+		t.Fatalf("Path = %q", full.Path)
+	}
+	if !strings.Contains(full.Body, "# Browser Automation with agent-browser") {
+		t.Fatalf("embedded body missing agent-browser skill content")
+	}
+	if !strings.HasPrefix(full.Body, adapterHeader) {
+		t.Fatalf("embedded body missing adapter header")
+	}
+}
+
+func TestAgentBrowserSkillProvider_LoadsInjectedFileSkill(t *testing.T) {
 	cfg := defaultCfg()
 	sourcePath := writeSkill(t, "OFFICIAL PACKAGED SKILL BODY")
 	p := newAgentBrowserSkillProviderForTest(cfg, sourcePath, zap.NewNop())
@@ -40,8 +58,8 @@ func TestAgentBrowserSkillProvider_LoadsPackagedSkill(t *testing.T) {
 	if full.Name != "agent-browser/core" {
 		t.Errorf("Name = %q, want agent-browser/core", full.Name)
 	}
-	if full.Version != "packaged" {
-		t.Errorf("Version = %q, want packaged", full.Version)
+	if full.Version != "embedded" {
+		t.Errorf("Version = %q, want embedded", full.Version)
 	}
 	if full.Path != sourcePath {
 		t.Errorf("Path = %q, want %q", full.Path, sourcePath)
@@ -82,17 +100,17 @@ func TestAgentBrowserSkillProvider_LoadsOnlyMainSkillBody(t *testing.T) {
 	}
 }
 
-func TestAgentBrowserSkillProvider_MissingPackagedSkillFails(t *testing.T) {
+func TestAgentBrowserSkillProvider_MissingInjectedFileSkillFails(t *testing.T) {
 	cfg := defaultCfg()
 	sourcePath := filepath.Join(t.TempDir(), "missing", "SKILL.md")
 	p := newAgentBrowserSkillProviderForTest(cfg, sourcePath, zap.NewNop())
 
 	_, err := p.Load(context.Background())
 	if err == nil {
-		t.Fatal("expected error for missing packaged skill, got nil")
+		t.Fatal("expected error for missing injected file skill, got nil")
 	}
 	if !strings.Contains(err.Error(), sourcePath) {
-		t.Fatalf("error should include packaged skill path, got %q", err.Error())
+		t.Fatalf("error should include injected file skill path, got %q", err.Error())
 	}
 }
 

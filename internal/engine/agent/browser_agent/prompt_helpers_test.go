@@ -18,8 +18,8 @@ func buildSystemPrompt() string {
 	fakeSkill := &skill.SkillFull{
 		SkillCard: skill.SkillCard{
 			Name:    "agent-browser/core",
-			Version: "packaged",
-			Path:    "resources/skills/agent-browser/SKILL.md",
+			Version: "embedded",
+			Path:    "embedded://agent-browser/SKILL.md",
 		},
 		Body: adapterHeader + "\n\nOFFICIAL CORE SKILL BODY\n\nAlways call browser_agent_final_result when done.",
 	}

@@ -1,8 +1,15 @@
-.PHONY: build run test lint clean
+.PHONY: build run prepare-runtime runtime-bundle test lint clean
 
 APP_NAME := harnessclaw-engine
 BUILD_DIR := ./dist
 CMD := ./cmd/server
+NODE ?= node
+CONFIG ?= ./configs/config.yaml
+OUTPUT_DIR ?= .runtime/bin
+ARCHIVE_DIR ?= dist
+PLATFORM ?=
+ARCH ?=
+export GOTOOLCHAIN ?= auto
 
 # Build the binary
 build:
@@ -10,8 +17,17 @@ build:
 	go build -o $(BUILD_DIR)/$(APP_NAME) $(CMD)
 
 # Run the server
-run:
-	go run $(CMD) -config ./configs/config_self.yaml
+run: prepare-runtime
+	CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH="$$(HARNESSCLAW_RUNTIME_PLATFORM="$(PLATFORM)" HARNESSCLAW_RUNTIME_ARCH="$(ARCH)" $(NODE) scripts/prepare-runtime.cjs --output-dir "$(OUTPUT_DIR)" --print-agent-browser-path)" go run $(CMD) -config $(CONFIG)
+
+# Prepare native runtime sidecars for local standalone engine runs.
+prepare-runtime:
+	HARNESSCLAW_RUNTIME_PLATFORM="$(PLATFORM)" HARNESSCLAW_RUNTIME_ARCH="$(ARCH)" $(NODE) scripts/prepare-runtime.cjs --output-dir "$(OUTPUT_DIR)"
+
+# Build a publishable engine runtime bundle:
+# dist/harnessclaw-engine-runtime-<platform>-<arch>.zip
+runtime-bundle:
+	HARNESSCLAW_RUNTIME_PLATFORM="$(PLATFORM)" HARNESSCLAW_RUNTIME_ARCH="$(ARCH)" $(NODE) scripts/prepare-runtime.cjs --include-engine --archive-dir "$(ARCHIVE_DIR)"
 
 # Run tests
 test:

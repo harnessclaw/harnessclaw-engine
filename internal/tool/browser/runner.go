@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"harnessclaw-go/internal/config"
@@ -21,8 +22,8 @@ type CommandRunner struct {
 	binaryPath string
 }
 
-func NewCommandRunner(_ config.BrowserAgentConfig) *CommandRunner {
-	return &CommandRunner{binaryPath: browserBinary()}
+func NewCommandRunner(cfg config.BrowserAgentConfig) *CommandRunner {
+	return &CommandRunner{binaryPath: browserBinary(cfg)}
 }
 
 func (r *CommandRunner) Run(ctx context.Context, args []string) ([]byte, error) {
@@ -33,7 +34,10 @@ func (r *CommandRunner) command(ctx context.Context, args []string) *exec.Cmd {
 	return exec.CommandContext(ctx, r.binaryPath, args...)
 }
 
-func browserBinary() string {
+func browserBinary(cfg config.BrowserAgentConfig) string {
+	if path := strings.TrimSpace(cfg.BinaryPath); path != "" {
+		return path
+	}
 	return packagedAgentBrowserBinaryPath()
 }
 

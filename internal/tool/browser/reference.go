@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"harnessclaw-go/internal/browseragentresources"
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
@@ -20,8 +21,9 @@ const (
 
 type SkillReferenceTool struct {
 	tool.BaseTool
-	cfg  config.BrowserAgentConfig
-	root string
+	cfg       config.BrowserAgentConfig
+	root      string
+	readEmbed func(string) ([]byte, error)
 }
 
 type referenceInput struct {
@@ -29,7 +31,7 @@ type referenceInput struct {
 }
 
 func NewSkillReferenceTool(cfg config.BrowserAgentConfig) *SkillReferenceTool {
-	return &SkillReferenceTool{cfg: cfg, root: packagedAgentBrowserSkillRoot()}
+	return &SkillReferenceTool{cfg: cfg, readEmbed: browseragentresources.ReadReference}
 }
 
 func NewSkillReferenceToolForTest(cfg config.BrowserAgentConfig, root string) *SkillReferenceTool {
@@ -38,7 +40,7 @@ func NewSkillReferenceToolForTest(cfg config.BrowserAgentConfig, root string) *S
 
 func (t *SkillReferenceTool) Name() string { return SkillReferenceToolName }
 func (t *SkillReferenceTool) Description() string {
-	return "按需读取 packaged agent-browser skill 的受控 reference 或 template 文件。仅在主 SKILL.md 信息不足时使用。"
+	return "按需读取 embedded agent-browser skill 的受控 reference 或 template 文件。仅在主 SKILL.md 信息不足时使用。"
 }
 func (t *SkillReferenceTool) IsReadOnly() bool              { return true }
 func (t *SkillReferenceTool) IsEnabled() bool               { return t.cfg.Enabled }
@@ -77,20 +79,7 @@ func (t *SkillReferenceTool) Execute(_ context.Context, raw json.RawMessage) (*t
 		return invalidReferenceResult(err.Error()), nil
 	}
 
-	root := strings.TrimSpace(t.root)
-	if root == "" {
-		return &types.ToolResult{
-			Content:   "browser_skill_reference root is not configured",
-			IsError:   true,
-			ErrorType: types.ToolErrorDependencyFail,
-		}, nil
-	}
-	abs := filepath.Join(root, filepath.FromSlash(rel))
-	if !isWithinRoot(root, abs) {
-		return invalidReferenceResult("path escapes packaged agent-browser skill root"), nil
-	}
-
-	body, err := os.ReadFile(abs)
+	body, err := t.readReference(rel)
 	if err != nil {
 		return &types.ToolResult{
 			Content:   fmt.Sprintf("browser_skill_reference read failed at %s: %v", rel, err),
@@ -124,7 +113,7 @@ func cleanReferencePath(raw string) (string, error) {
 	}
 	clean := filepath.ToSlash(filepath.Clean(trimmed))
 	if clean == "." || strings.HasPrefix(clean, "../") || clean == ".." {
-		return "", fmt.Errorf("path must stay inside packaged agent-browser skill")
+		return "", fmt.Errorf("path must stay inside embedded agent-browser skill")
 	}
 	dir, base := filepath.Split(clean)
 	dir = strings.TrimSuffix(dir, "/")
@@ -157,11 +146,17 @@ func invalidReferenceResult(msg string) *types.ToolResult {
 	}
 }
 
-func packagedAgentBrowserSkillRoot() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return filepath.Join("skills", "agent-browser")
+func (t *SkillReferenceTool) readReference(rel string) ([]byte, error) {
+	if t.readEmbed != nil {
+		return t.readEmbed(rel)
 	}
-	resourcesDir := filepath.Dir(filepath.Dir(exe))
-	return filepath.Join(resourcesDir, "skills", "agent-browser")
+	root := strings.TrimSpace(t.root)
+	if root == "" {
+		return nil, fmt.Errorf("browser_skill_reference root is not configured")
+	}
+	abs := filepath.Join(root, filepath.FromSlash(rel))
+	if !isWithinRoot(root, abs) {
+		return nil, fmt.Errorf("path escapes agent-browser skill root")
+	}
+	return os.ReadFile(abs)
 }

@@ -45,6 +45,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
@@ -55,6 +59,11 @@ jobs:
           go build -trimpath -ldflags="-s -w" \
             -o dist/harnessclaw-engine-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }} \
             ./cmd/server
+
+      - name: Build runtime bundle
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/prepare-runtime.cjs --platform "${{ matrix.goos }}" --arch "${{ matrix.goarch }}" --include-engine --archive-dir dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

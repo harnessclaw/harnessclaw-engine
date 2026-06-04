@@ -262,6 +262,7 @@ tools:
     # max_results: 5
   browser_agent:
     enabled: false
+    binary_path: ""        # set by make run via CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH
     default_visibility: "hidden"
     max_steps: 30
     blocked_domains: []

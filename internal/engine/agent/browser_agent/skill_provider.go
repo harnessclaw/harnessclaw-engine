@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/browseragentresources"
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/skill"
 )
@@ -31,19 +31,21 @@ type SkillProvider interface {
 	Load(ctx context.Context) (*skill.SkillFull, error)
 }
 
-// AgentBrowserSkillProvider loads the packaged official skill from local app
-// resources. Browser-agent is a bundled operation layer, not a PATH dependency.
+// AgentBrowserSkillProvider loads the embedded official skill from the engine.
+// Browser-agent is a bundled operation layer, not a PATH dependency.
 type AgentBrowserSkillProvider struct {
 	cfg        config.BrowserAgentConfig
 	sourcePath string
+	readBody   func() (string, error)
 	logger     *zap.Logger
 }
 
-// NewAgentBrowserSkillProvider creates a provider backed by packaged resources.
+// NewAgentBrowserSkillProvider creates a provider backed by embedded resources.
 func NewAgentBrowserSkillProvider(cfg config.BrowserAgentConfig, logger *zap.Logger) *AgentBrowserSkillProvider {
 	return &AgentBrowserSkillProvider{
 		cfg:        cfg,
-		sourcePath: packagedSkillPath(),
+		sourcePath: browseragentresources.SkillPath,
+		readBody:   browseragentresources.SkillBody,
 		logger:     logger,
 	}
 }
@@ -52,23 +54,28 @@ func newAgentBrowserSkillProviderForTest(cfg config.BrowserAgentConfig, sourcePa
 	return &AgentBrowserSkillProvider{
 		cfg:        cfg,
 		sourcePath: sourcePath,
+		readBody:   func() (string, error) { return readSkillBodyFromFile(sourcePath) },
 		logger:     logger,
 	}
 }
 
-// Load returns the packaged official skill.
+// Load returns the embedded official skill.
 func (p *AgentBrowserSkillProvider) Load(ctx context.Context) (*skill.SkillFull, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	sourcePath := strings.TrimSpace(p.sourcePath)
-	body, err := readPackagedSkillBody(sourcePath)
+	readBody := p.readBody
+	if readBody == nil {
+		readBody = browseragentresources.SkillBody
+	}
+	body, err := readBody()
 	if err != nil {
 		return nil, err
 	}
 	if body == "" {
-		return nil, fmt.Errorf("agent-browser packaged skill is empty at %s", sourcePath)
+		return nil, fmt.Errorf("agent-browser embedded skill is empty at %s", sourcePath)
 	}
 
 	maxBytes := p.cfg.SkillMaxBytes
@@ -81,26 +88,17 @@ func (p *AgentBrowserSkillProvider) Load(ctx context.Context) (*skill.SkillFull,
 	return &skill.SkillFull{
 		SkillCard: skill.SkillCard{
 			Name:    "agent-browser/core",
-			Version: "packaged",
+			Version: "embedded",
 			Path:    sourcePath,
 		},
 		Body: fullBody,
 	}, nil
 }
 
-func packagedSkillPath() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return filepath.Join("skills", "agent-browser", "SKILL.md")
-	}
-	resourcesDir := filepath.Dir(filepath.Dir(exe))
-	return filepath.Join(resourcesDir, "skills", "agent-browser", "SKILL.md")
-}
-
-func readPackagedSkillBody(sourcePath string) (string, error) {
+func readSkillBodyFromFile(sourcePath string) (string, error) {
 	main, err := os.ReadFile(sourcePath)
 	if err != nil {
-		return "", fmt.Errorf("agent-browser packaged skill read failed at %s: %w", sourcePath, err)
+		return "", fmt.Errorf("agent-browser skill read failed at %s: %w", sourcePath, err)
 	}
 	return strings.TrimSpace(string(main)), nil
 }
