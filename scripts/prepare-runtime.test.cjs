@@ -75,6 +75,31 @@ test('uses direct release asset URLs for pinned agent-browser versions', () => {
   )
 })
 
+test('copies supplied agent-browser binary without executing target platform binary', async () => {
+  const outputDir = mkdtempSync(join(tmpdir(), 'harnessclaw-runtime-'))
+  const sourceDir = mkdtempSync(join(tmpdir(), 'harnessclaw-runtime-source-'))
+  try {
+    const sourcePath = join(sourceDir, 'agent-browser-darwin-x64')
+    writeFileSync(sourcePath, 'not a host executable')
+    const env = {
+      AGENT_BROWSER_NATIVE_BINARY: sourcePath,
+      AGENT_BROWSER_VERSION: '0.27.1',
+    }
+    const plan = createRuntimePlan({
+      argv: ['--platform', 'darwin', '--arch', 'x64', '--output-dir', outputDir],
+      env,
+    })
+
+    await prepareRuntime(plan, env)
+
+    assert.equal(readFileSync(plan.agentBrowser.targetPath, 'utf8'), 'not a host executable')
+    assert.equal(existsSync(join(outputDir, 'harnessclaw-runtime-manifest.json')), true)
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true })
+    rmSync(sourceDir, { recursive: true, force: true })
+  }
+})
+
 test('reuses prepared agent-browser when output manifest matches', async () => {
   const outputDir = mkdtempSync(join(tmpdir(), 'harnessclaw-runtime-'))
   try {

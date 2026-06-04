@@ -302,10 +302,6 @@ function agentBrowserReleaseTag(version) {
   return `v${String(version).replace(/^v/, '')}`
 }
 
-function normalizeAgentBrowserVersion(version) {
-  return String(version || '').trim().replace(/^v/, '')
-}
-
 function directAgentBrowserAssetUrl(plan) {
   const version = String(plan.agentBrowserVersion || '').trim()
   if (!version || version === 'latest') return ''
@@ -410,32 +406,6 @@ function buildEngine(plan, env = process.env) {
   process.stdout.write(`Built ${plan.engine.fileName} to ${plan.engine.targetPath}\n`)
 }
 
-function verifyAgentBrowserBinary(plan, binaryPath) {
-  const expectedVersion = normalizeAgentBrowserVersion(plan.agentBrowserVersion)
-  if (!expectedVersion || expectedVersion === 'latest') return
-
-  const result = spawnSync(binaryPath, ['--version'], {
-    encoding: 'utf8',
-    maxBuffer: 1024 * 1024,
-  })
-  const output = `${result.stdout || ''}${result.stderr || ''}`.trim()
-  if (result.error) {
-    throw new Error(`agent-browser version check failed at ${binaryPath}: ${result.error.message}`)
-  }
-  if (result.status !== 0) {
-    throw new Error(`agent-browser version check failed at ${binaryPath}: exit ${result.status}${output ? `: ${output}` : ''}`)
-  }
-
-  const match = output.match(/(?:agent-browser\s+)?v?(\d+\.\d+\.\d+(?:[-+][^\s]+)?)/)
-  if (!match) {
-    throw new Error(`agent-browser version check failed at ${binaryPath}: cannot parse version from "${output}"`)
-  }
-  const actualVersion = normalizeAgentBrowserVersion(match[1])
-  if (actualVersion !== expectedVersion) {
-    throw new Error(`agent-browser version mismatch at ${binaryPath}: expected ${expectedVersion}, got ${actualVersion}`)
-  }
-}
-
 function installAgentBrowserFromPath(sourcePath, plan, sourceLabel) {
   const tempPath = `${plan.agentBrowser.targetPath}.${process.pid}.tmp`
   rmSync(tempPath, { force: true })
@@ -444,7 +414,6 @@ function installAgentBrowserFromPath(sourcePath, plan, sourceLabel) {
     if (plan.platform !== 'windows') {
       chmodSync(tempPath, 0o755)
     }
-    verifyAgentBrowserBinary(plan, tempPath)
     renameSync(tempPath, plan.agentBrowser.targetPath)
   } finally {
     rmSync(tempPath, { force: true })
@@ -461,7 +430,6 @@ async function installAgentBrowserFromUrl(url, headers, plan, sourceLabel) {
     if (plan.platform !== 'windows') {
       chmodSync(tempPath, 0o755)
     }
-    verifyAgentBrowserBinary(plan, tempPath)
     renameSync(tempPath, plan.agentBrowser.targetPath)
   } finally {
     rmSync(tempPath, { force: true })
@@ -509,7 +477,6 @@ function copyAgentBrowserFromRuntimeBundle(plan) {
     if (plan.platform !== 'windows') {
       chmodSync(tempPath, 0o755)
     }
-    verifyAgentBrowserBinary(plan, tempPath)
     renameSync(tempPath, plan.agentBrowser.targetPath)
   } catch (error) {
     process.stderr.write(`Warning: ignored ${archivePath}: ${error.message}\n`)
@@ -519,22 +486,6 @@ function copyAgentBrowserFromRuntimeBundle(plan) {
   }
   writeOutputRuntimeManifest(plan, archivePath)
   process.stdout.write(`Restored ${plan.agentBrowser.fileName} from ${archivePath} to ${plan.agentBrowser.targetPath}\n`)
-  return true
-}
-
-function reuseExistingAgentBrowser(plan, error) {
-  if (!existsSync(plan.agentBrowser.targetPath)) return false
-  try {
-    verifyAgentBrowserBinary(plan, plan.agentBrowser.targetPath)
-  } catch (verifyError) {
-    process.stderr.write(`Warning: agent-browser download failed (${error.message}); existing binary is not reusable: ${verifyError.message}\n`)
-    return false
-  }
-  if (plan.platform !== 'windows') {
-    chmodSync(plan.agentBrowser.targetPath, 0o755)
-  }
-  writeOutputRuntimeManifest(plan, 'existing')
-  process.stderr.write(`Warning: agent-browser download failed (${error.message}); reusing ${plan.agentBrowser.targetPath}\n`)
   return true
 }
 
@@ -550,17 +501,11 @@ async function downloadAgentBrowser(plan, env = process.env) {
   }
 
   if (preparedAgentBrowserMatches(plan)) {
-    try {
-      verifyAgentBrowserBinary(plan, plan.agentBrowser.targetPath)
-      if (plan.platform !== 'windows') {
-        chmodSync(plan.agentBrowser.targetPath, 0o755)
-      }
-      process.stdout.write(`Reusing prepared ${plan.agentBrowser.fileName} at ${plan.agentBrowser.targetPath}\n`)
-      return
-    } catch (error) {
-      rmSync(outputRuntimeManifestPath(plan), { force: true })
-      process.stderr.write(`Warning: prepared ${plan.agentBrowser.fileName} is invalid (${error.message}); refreshing\n`)
+    if (plan.platform !== 'windows') {
+      chmodSync(plan.agentBrowser.targetPath, 0o755)
     }
+    process.stdout.write(`Reusing prepared ${plan.agentBrowser.fileName} at ${plan.agentBrowser.targetPath}\n`)
+    return
   }
 
   const token = env.AGENT_BROWSER_GITHUB_TOKEN || env.GH_TOKEN || env.GITHUB_TOKEN
@@ -591,7 +536,6 @@ async function downloadAgentBrowser(plan, env = process.env) {
     await installAgentBrowserFromUrl(asset.browser_download_url, headers, plan, `agent-browser ${release.tag_name}`)
   } catch (error) {
     if (copyAgentBrowserFromRuntimeBundle(plan)) return
-    if (reuseExistingAgentBrowser(plan, error)) return
     throw error
   }
 }
