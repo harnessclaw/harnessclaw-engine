@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+## [0.0.17] - 2026-06-04
+
+### Added
+- Added engine-owned Browser Agent runtime bundling: release builds now publish `harnessclaw-engine-runtime-<platform>-<arch>.zip` assets containing the engine binary, the pinned `agent-browser` native binary, and a runtime manifest.
+- Embedded the Browser Agent skill, references, and templates into the engine via Go resources so the desktop app no longer carries Browser Agent skill files.
+- Added explicit Browser Agent binary path configuration through `tools.browser_agent.binary_path` and `CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH`.
+
+### Changed
+- Browser Agent binary discovery now prefers the configured path and then the sidecar binary next to the engine executable, matching the packaged runtime layout.
+
 ## [0.0.16] - 2026-06-03
 
 ### Added
