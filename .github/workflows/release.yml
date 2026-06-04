@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -21,23 +21,29 @@ jobs:
           - goos: linux
             goarch: amd64
             suffix: ""
+            runtime: true
           - goos: linux
             goarch: arm64
             suffix: ""
+            runtime: true
           # macOS
           - goos: darwin
             goarch: amd64
             suffix: ""
+            runtime: true
           - goos: darwin
             goarch: arm64
             suffix: ""
+            runtime: true
           # Windows
           - goos: windows
             goarch: amd64
             suffix: ".exe"
+            runtime: true
           - goos: windows
             goarch: arm64
             suffix: ".exe"
+            runtime: false
 
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +68,7 @@ jobs:
             ./cmd/server
 
       - name: Build runtime bundle
+        if: matrix.runtime
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/prepare-runtime.cjs --platform "${{ matrix.goos }}" --arch "${{ matrix.goarch }}" --include-engine --archive-dir dist
