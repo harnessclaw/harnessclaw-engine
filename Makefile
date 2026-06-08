@@ -18,16 +18,16 @@ build:
 
 # Run the server
 run: prepare-runtime
-	CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH="$$(HARNESSCLAW_RUNTIME_PLATFORM="$(PLATFORM)" HARNESSCLAW_RUNTIME_ARCH="$(ARCH)" $(NODE) scripts/prepare-runtime.cjs --output-dir "$(OUTPUT_DIR)" --print-agent-browser-path)" go run $(CMD) -config $(CONFIG)
+	CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH="$$(HARNESSCLAW_RUNTIME_PLATFORM="$(PLATFORM)" HARNESSCLAW_RUNTIME_ARCH="$(ARCH)" $(NODE) build/prepare-runtime.cjs --output-dir "$(OUTPUT_DIR)" --print-agent-browser-path)" go run $(CMD) -config $(CONFIG)
 
 # Prepare native runtime sidecars for local standalone engine runs.
 prepare-runtime:
-	HARNESSCLAW_RUNTIME_PLATFORM="$(PLATFORM)" HARNESSCLAW_RUNTIME_ARCH="$(ARCH)" $(NODE) scripts/prepare-runtime.cjs --output-dir "$(OUTPUT_DIR)"
+	HARNESSCLAW_RUNTIME_PLATFORM="$(PLATFORM)" HARNESSCLAW_RUNTIME_ARCH="$(ARCH)" $(NODE) build/prepare-runtime.cjs --output-dir "$(OUTPUT_DIR)"
 
 # Build a publishable engine runtime bundle:
 # dist/harnessclaw-engine-runtime-<platform>-<arch>.zip
 runtime-bundle:
-	HARNESSCLAW_RUNTIME_PLATFORM="$(PLATFORM)" HARNESSCLAW_RUNTIME_ARCH="$(ARCH)" $(NODE) scripts/prepare-runtime.cjs --include-engine --archive-dir "$(ARCHIVE_DIR)"
+	HARNESSCLAW_RUNTIME_PLATFORM="$(PLATFORM)" HARNESSCLAW_RUNTIME_ARCH="$(ARCH)" $(NODE) build/prepare-runtime.cjs --include-engine --archive-dir "$(ARCHIVE_DIR)"
 
 # Run tests
 test:

@@ -71,7 +71,7 @@ jobs:
         if: matrix.runtime
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/prepare-runtime.cjs --platform "${{ matrix.goos }}" --arch "${{ matrix.goarch }}" --include-engine --archive-dir dist
+        run: node build/prepare-runtime.cjs --platform "${{ matrix.goos }}" --arch "${{ matrix.goarch }}" --include-engine --archive-dir dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
