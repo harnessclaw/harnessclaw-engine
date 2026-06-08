@@ -68,6 +68,7 @@ import (
 	"harnessclaw-go/internal/tool/filewrite"
 	"harnessclaw-go/internal/tool/glob"
 	"harnessclaw-go/internal/tool/grep"
+	"harnessclaw-go/internal/tool/imagegen"
 	"harnessclaw-go/internal/tool/listloadedskills"
 	"harnessclaw-go/internal/tool/loadskill"
 	"harnessclaw-go/internal/tool/metatool"
@@ -336,6 +337,13 @@ func main() {
 	modelReg := modelregistry.NewRegistry(regManifest)
 
 	llmProvider, providerMgr := initProvider(cfg.LLM, cfg.Agent, cfg.SourcePath, modelReg, logger)
+	if workspaceRootDir != "" && providerMgr != nil {
+		t := imagegen.New(providerMgr, modelReg, workspaceRootDir, logger)
+		if err := registry.Register(t); err != nil {
+			logger.Fatal("failed to register image generation tool", zap.Error(err))
+		}
+		logger.Info("image generation tool registered", zap.String("name", t.Name()))
+	}
 
 	// Session-metrics registry: a single in-process registry holds the
 	// per-session Tracker (cumulative LLM/tool/sub-agent counters). The

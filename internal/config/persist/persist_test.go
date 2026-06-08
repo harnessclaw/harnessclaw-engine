@@ -88,8 +88,9 @@ func TestSetAgent_ReplacesInPlace(t *testing.T) {
 	path := writeTemp(t, sampleYAML)
 	f, _ := Load(path)
 	if err := f.SetAgent(config.AgentConfig{
-		Primary:       "beta:gpt-5",
-		FallbackChain: []string{"alpha:claude-46"},
+		Primary:         "beta:gpt-5",
+		FallbackChain:   []string{"alpha:claude-46"},
+		ImageGeneration: "beta:gpt-5",
 	}); err != nil {
 		t.Fatalf("SetAgent: %v", err)
 	}
@@ -105,6 +106,9 @@ func TestSetAgent_ReplacesInPlace(t *testing.T) {
 	}
 	if got := cfg.Agent.FallbackChain; len(got) != 1 || got[0] != "alpha:claude-46" {
 		t.Fatalf("agent.fallback_chain = %v, want [alpha:claude-46]", got)
+	}
+	if cfg.Agent.ImageGeneration != "beta:gpt-5" {
+		t.Fatalf("agent.image_generation = %q, want beta:gpt-5", cfg.Agent.ImageGeneration)
 	}
 	raw, _ := os.ReadFile(path)
 	if !strings.Contains(string(raw), "# --- LLM ---") {
