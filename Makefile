@@ -1,4 +1,4 @@
-.PHONY: build run prepare-runtime runtime-bundle test lint clean
+.PHONY: build run kill-ports prepare-runtime runtime-bundle test lint clean
 
 APP_NAME := harnessclaw-engine
 BUILD_DIR := ./dist
@@ -9,6 +9,8 @@ OUTPUT_DIR ?= .runtime/bin
 ARCHIVE_DIR ?= dist
 PLATFORM ?=
 ARCH ?=
+WS_PORT ?= 8081
+CONSOLE_PORT ?= 8090
 export GOTOOLCHAIN ?= auto
 
 # Build the binary
@@ -17,8 +19,19 @@ build:
 	go build -o $(BUILD_DIR)/$(APP_NAME) $(CMD)
 
 # Run the server
-run: prepare-runtime
+run: kill-ports prepare-runtime
 	CLAUDE_TOOLS_BROWSER_AGENT_BINARY_PATH="$$(HARNESSCLAW_RUNTIME_PLATFORM="$(PLATFORM)" HARNESSCLAW_RUNTIME_ARCH="$(ARCH)" $(NODE) scripts/prepare-runtime.cjs --output-dir "$(OUTPUT_DIR)" --print-agent-browser-path)" go run $(CMD) -config $(CONFIG)
+
+# Clear stale local listeners before binding dev ports.
+kill-ports:
+	@for port in $(WS_PORT) $(CONSOLE_PORT); do \
+		pids="$$(lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null || true)"; \
+		if [ -n "$$pids" ]; then \
+			echo "Killing listeners on port $$port: $$pids"; \
+			kill $$pids 2>/dev/null || true; \
+			sleep 0.2; \
+		fi; \
+	done
 
 # Prepare native runtime sidecars for local standalone engine runs.
 prepare-runtime:

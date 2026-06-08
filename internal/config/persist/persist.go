@@ -109,7 +109,7 @@ func (f *File) SetAgent(cfg config.AgentConfig) error {
 	// is small enough that comment loss on agent.* keys is acceptable
 	// (user comments belong on the surrounding free-form yaml).
 	for _, k := range []string{
-		"primary", "fallback_chain",
+		"primary", "fallback_chain", "image_generation",
 		"max_tokens", "temperature", "context_window",
 		"max_turns", "max_tool_calls", "thinking_intensity",
 	} {
@@ -128,6 +128,9 @@ func (f *File) SetAgent(cfg config.AgentConfig) error {
 			})
 		}
 		setKey(agent, "fallback_chain", seq)
+	}
+	if cfg.ImageGeneration != "" {
+		appendScalar(agent, "image_generation", cfg.ImageGeneration)
 	}
 	if cfg.MaxTokens != 0 {
 		appendInt(agent, "max_tokens", cfg.MaxTokens)

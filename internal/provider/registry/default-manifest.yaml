@@ -19,6 +19,8 @@ providers:
     endpoints:
       chat_completions: /v1/chat/completions
       models_list: /v1/models
+      images_generations: /v1/images/generations
+      image_edits: /v1/images/edits
 
   gpt-image:
     display_name: GPT Image
@@ -256,6 +258,24 @@ models:
       source: "OpenAI API docs"
       last_verified: 2026-06-02T00:00:00Z
       notes: "Image generation and editing model; use image generation/edit endpoints rather than chat fallback routing."
+      upstream_model_card: https://developers.openai.com/api/docs/models/gpt-image-2
+
+  "openai/gpt-image-2":
+    provider: openai
+    model_id: gpt-image-2
+    display_name: "GPT Image 2"
+    family: gpt-image
+    generation: "2"
+    modalities: { input: [text, image], output: [image] }
+    supports:
+      vision: true
+      image_generation: true
+    limits: { context_window: 0, max_input_tokens: 0, max_output_tokens: 0, request_timeout_ms_recommended: 120000 }
+    defaults: { temperature: 1.0, top_p: 1.0, max_output_tokens_default: 0 }
+    metadata:
+      source: "OpenAI API docs"
+      last_verified: 2026-06-02T00:00:00Z
+      notes: "Image generation and editing model under the OpenAI provider; use image generation/edit endpoints rather than chat fallback routing."
       upstream_model_card: https://developers.openai.com/api/docs/models/gpt-image-2
 
   "anthropic/claude-opus-4-7":

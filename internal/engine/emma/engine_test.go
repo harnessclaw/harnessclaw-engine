@@ -147,6 +147,7 @@ func TestEngine_DefaultEmmaConfigConstants(t *testing.T) {
 		"web_search":        true,
 		"tavily_search":     true,
 		"ask_user_question": true,
+		"image_generate":    true,
 	}
 	if len(cfg.AllowedTools) != len(wantTools) {
 		t.Errorf("DefaultEmmaConfig AllowedTools length = %d, want %d",
