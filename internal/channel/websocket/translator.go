@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	emitv2 "harnessclaw-go/internal/emit/v2"
-	"harnessclaw-go/internal/engine/wait"
-	"harnessclaw-go/internal/toolphrase"
+	emitv2 "harnessclaw-go/internal/channel/emit/v2"
+	"harnessclaw-go/internal/legacy/wait"
+	"harnessclaw-go/internal/legacy/toolphrase"
 	"harnessclaw-go/pkg/types"
 )
 

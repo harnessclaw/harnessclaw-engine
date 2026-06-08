@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	emitv2 "harnessclaw-go/internal/emit/v2"
+	emitv2 "harnessclaw-go/internal/channel/emit/v2"
 	"harnessclaw-go/pkg/types"
 )
 

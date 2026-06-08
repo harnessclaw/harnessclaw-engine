@@ -27,19 +27,27 @@ func startTestChannel(t *testing.T, handler func(ctx context.Context, msg *types
 	ch = New(cfg, nil, logger)
 
 	// Initialise the bits Start() would set up, minus the blocking listener.
-	ch.handler = handler
 	ctx, cancel := context.WithCancel(context.Background())
 	ch.connCtx = ctx
 	ch.connCanc = cancel
 	ch.tracker.Start()
 	ch.healthy.Store(true)
 
+	// Stand-in for the old push-style handler: spawn a goroutine that
+	// drains messages and invokes handler, mimicking the router's
+	// role, so existing tests don't need to change.
+	go func() {
+		for msg := range ch.messages {
+			_ = handler(ctx, msg)
+		}
+	}()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc(cfg.Path, ch.upgrade)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(func() {
 		srv.Close()
-		_ = ch.Stop(context.Background())
+		_ = ch.Close()
 	})
 	wsURL = "ws" + strings.TrimPrefix(srv.URL, "http") + cfg.Path
 	return wsURL, ch

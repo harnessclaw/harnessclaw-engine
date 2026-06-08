@@ -9,7 +9,7 @@ import (
 
 	"harnessclaw-go/internal/msgbus"
 	"harnessclaw-go/internal/msgbus/store"
-	sqlitepkg "harnessclaw-go/internal/storage/sqlite"
+	sqlitepkg "harnessclaw-go/internal/persistence/sqlite"
 )
 
 func newSQLiteForTest(t *testing.T) *store.SQLite {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"harnessclaw-go/internal/engine/sessionstats"
+	"harnessclaw-go/internal/legacy/sessionstats"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/pkg/types"
 )

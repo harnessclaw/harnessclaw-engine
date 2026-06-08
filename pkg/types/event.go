@@ -1,6 +1,6 @@
 package types
 
-import "harnessclaw-go/internal/emit"
+import "harnessclaw-go/internal/channel/emit"
 
 // StreamEventType classifies events emitted by an LLM provider stream.
 type StreamEventType string

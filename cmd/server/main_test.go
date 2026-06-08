@@ -12,14 +12,14 @@ import (
 
 	"go.uber.org/zap"
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/engine/emma"
+	"harnessclaw-go/internal/engine/agent/builtin/emma"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/session"
 	
-	"harnessclaw-go/internal/permission"
+	"harnessclaw-go/internal/engine/permission"
 	"harnessclaw-go/internal/provider/bifrost"
-	"harnessclaw-go/internal/storage/memory"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/memory"
+	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"harnessclaw-go/internal/engine/multimodal"
+	"harnessclaw-go/internal/legacy/multimodal"
 )
 
 func TestCheckInlineSizeCaps_AllowsSmallPayload(t *testing.T) {

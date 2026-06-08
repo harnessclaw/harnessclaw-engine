@@ -11,9 +11,9 @@ import (
 	"go.uber.org/zap"
 	"nhooyr.io/websocket"
 
-	emitv2 "harnessclaw-go/internal/emit/v2"
-	"harnessclaw-go/internal/engine/multimodal"
-	"harnessclaw-go/internal/engine/wait"
+	emitv2 "harnessclaw-go/internal/channel/emit/v2"
+	"harnessclaw-go/internal/legacy/multimodal"
+	"harnessclaw-go/internal/legacy/wait"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -399,7 +399,7 @@ func (c *Conn) handleUserMessage(ctx context.Context, raw []byte) {
 			}
 		}
 	}
-	if err := c.ch.handler(ctx, in); err != nil {
+	if err := c.ch.publish(ctx, in); err != nil {
 		c.sendError("internal", err.Error())
 	}
 }
@@ -435,7 +435,7 @@ func (c *Conn) handleToolResult(ctx context.Context, raw []byte) {
 		in.ToolResult.ErrorCode = string(f.Error.Type)
 		in.ToolResult.ErrorMessage = f.Error.Message
 	}
-	if err := c.ch.handler(ctx, in); err != nil {
+	if err := c.ch.publish(ctx, in); err != nil {
 		c.sendError("internal", err.Error())
 	}
 }
@@ -480,7 +480,7 @@ func (c *Conn) handlePromptResponse(ctx context.Context, raw []byte) {
 			Output:       output,
 			ErrorMessage: errMsg,
 		}
-		if err := c.ch.handler(ctx, in); err != nil {
+		if err := c.ch.publish(ctx, in); err != nil {
 			c.sendError("internal", err.Error())
 		}
 		c.forgetWait(ctx, f.RequestID) // live path: also delete from SQLite to prevent accumulation
@@ -507,7 +507,7 @@ func (c *Conn) handlePromptResponse(ctx context.Context, raw []byte) {
 			Decision:  sd.Decision,
 			Note:      sd.Note,
 		}
-		if err := c.ch.handler(ctx, in); err != nil {
+		if err := c.ch.publish(ctx, in); err != nil {
 			c.sendError("internal", err.Error())
 		}
 		c.forgetWait(ctx, f.RequestID)
@@ -531,7 +531,7 @@ func (c *Conn) handlePromptResponse(ctx context.Context, raw []byte) {
 			UpdatedSteps: planShape.UpdatedSteps,
 			Reason:       planShape.Reason,
 		}
-		if err := c.ch.handler(ctx, in); err != nil {
+		if err := c.ch.publish(ctx, in); err != nil {
 			c.sendError("internal", err.Error())
 		}
 		c.forgetWait(ctx, f.RequestID)
@@ -554,7 +554,7 @@ func (c *Conn) handlePromptResponse(ctx context.Context, raw []byte) {
 			Scope:     types.PermissionScope(perm.Scope),
 			Message:   perm.Message,
 		}
-		if err := c.ch.handler(ctx, in); err != nil {
+		if err := c.ch.publish(ctx, in); err != nil {
 			c.sendError("internal", err.Error())
 		}
 		c.forgetWait(ctx, f.RequestID)
