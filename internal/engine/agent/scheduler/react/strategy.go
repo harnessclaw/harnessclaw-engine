@@ -1,44 +1,40 @@
 // Package react implements the react dispatch strategy used by the
-// scheduler L2 module. It is a thin wrapper around the legacy
-// enginesched.Coordinator: build a TaskSpec with Hint.Kind=react and
-// hand it off. The Coordinator runs the heavy lifting (router selection,
-// L3 dispatch through msgbus, ConsumerPool, etc.) and writes the result
-// meta.json under the workspace.
+// scheduler L2 module. It is a thin wrapper around agentrun: build a
+// TaskSpec with Hint.Kind=react and hand it off via
+// agentrun.ModeScheduled. The Runner forwards the call to the wired
+// SchedulerBackend (currently enginesched.Coordinator) and returns
+// the resulting MetaRef.
 //
-// Why we don't reimplement the loop here: the legacy Coordinator already
-// owns a full ReAct kernel + ConsumerPool stack that handles concurrent
-// L3 spawns and forwards their events to the supplied out channel.
-// Rebuilding that with loop.Run for Stage 7 would duplicate hundreds of
-// lines for no migration benefit — Stage 8 is when the legacy stack
-// finally goes away and this strategy will be rewritten to drive
-// loop.Run directly with the scheduler tool palette.
+// Migrated from direct enginesched.Coordinator.Run as part of the
+// agentrun unification (P4) — the strategy no longer takes a hard
+// dependency on the scheduler package.
 package react
 
 import (
 	"context"
 
-	enginesched "harnessclaw-go/internal/engine/scheduler"
-	"harnessclaw-go/internal/engine/scheduler/spec"
-	schedulertypes "harnessclaw-go/internal/engine/scheduler/types"
+	"harnessclaw-go/internal/engine/agent/runAgent/agentrun"
+	"harnessclaw-go/internal/engine/agent/scheduler/spec"
+	schedulertypes "harnessclaw-go/internal/engine/agent/scheduler/types"
 	"harnessclaw-go/pkg/types"
 )
 
-// Strategy wraps the legacy Coordinator's react path.
+// Strategy dispatches react-mode tasks through the agentrun runner.
 type Strategy struct {
-	coord *enginesched.Coordinator
+	rt *agentrun.Runner
 }
 
-// New builds a Strategy bound to the given Coordinator.
-func New(coord *enginesched.Coordinator) *Strategy {
-	return &Strategy{coord: coord}
+// New builds a Strategy bound to the given agentrun.Runner. The runner
+// must be constructed with WithScheduler(...) wired to a Coordinator;
+// callers that pass an unconfigured runner get ErrSchedulerNotConfigured
+// on Run.
+func New(rt *agentrun.Runner) *Strategy {
+	return &Strategy{rt: rt}
 }
 
-// Run dispatches the goal to the Coordinator with Hint.Kind=react. The
-// returned MetaRef points at the meta.json the L3 leaf wrote; the
-// caller is responsible for reading it back into a SpawnResult.
-//
-// outCh is forwarded into the Coordinator so L3 sub-agent lifecycle
-// events (start/end, tool calls, intents) reach the parent stream.
+// Run dispatches the goal through agentrun.ModeScheduled with
+// Hint.Kind=react. outCh is forwarded into the scheduler so L3
+// sub-agent lifecycle events reach the parent stream.
 func (s *Strategy) Run(
 	ctx context.Context,
 	goal string,
@@ -55,5 +51,13 @@ func (s *Strategy) Run(
 		Hint:          spec.Hint{Kind: schedulertypes.KindReact},
 		ParentAgentID: parentAgentID,
 	}
-	return s.coord.Run(ctx, sp, outCh)
+	res, err := s.rt.Run(ctx, agentrun.Request{
+		Spec:   &sp,
+		Mode:   agentrun.ModeScheduled,
+		Events: outCh,
+	})
+	if err != nil {
+		return "", err
+	}
+	return res.MetaRef, nil
 }

@@ -1,49 +1,38 @@
 // Package plan implements the plan dispatch strategy used by the
-// scheduler L2 module.
+// scheduler L2 module. It is a thin wrapper around agentrun: build a
+// TaskSpec with Hint.Kind=plan and hand it off via
+// agentrun.ModeScheduled. The runner forwards the call to the wired
+// SchedulerBackend (currently enginesched.Coordinator) which drives
+// the two-phase plan_agent → guard → plan_executor_agent flow inside
+// internal/engine/scheduler/dispatch/plan.
 //
-// During Stage 7 this is a thin wrapper around the legacy
-// enginesched.Coordinator: build a TaskSpec with Hint.Kind=plan and
-// hand it off. The Coordinator's internal plan strategy (in
-// internal/engine/scheduler/dispatch/plan/strategy.go) does the actual
-// two-phase work — plan_agent (writes plan.json) → guard
-// (requireNonEmptyPlan reads {workspace}/session/{sid}/plan.json) →
-// plan_executor_agent (dispatches freelancers via the freelance tool,
-// integrates results). Because plan_agent and plan_executor_agent are
-// already routed through spawn in Stages 4–5, those leaf dispatches
-// still flow through the new module path even though the L2
-// orchestration of the two phases lives in the legacy package.
-//
-// Stage 8 will replace this wrapper with an in-module re-port that uses
-// the injected *spawn.Spawner directly, dropping the msgbus →
-// QueryEngineFactory → SpawnSync round-trip entirely.
+// Migrated from direct enginesched.Coordinator.Run as part of the
+// agentrun unification (P4).
 package plan
 
 import (
 	"context"
 
-	enginesched "harnessclaw-go/internal/engine/scheduler"
-	"harnessclaw-go/internal/engine/scheduler/spec"
-	schedulertypes "harnessclaw-go/internal/engine/scheduler/types"
+	"harnessclaw-go/internal/engine/agent/runAgent/agentrun"
+	"harnessclaw-go/internal/engine/agent/scheduler/spec"
+	schedulertypes "harnessclaw-go/internal/engine/agent/scheduler/types"
 	"harnessclaw-go/pkg/types"
 )
 
-// Strategy wraps the legacy Coordinator's plan path.
+// Strategy dispatches plan-mode tasks through the agentrun runner.
 type Strategy struct {
-	coord *enginesched.Coordinator
+	rt *agentrun.Runner
 }
 
-// New builds a Strategy bound to the given Coordinator.
-func New(coord *enginesched.Coordinator) *Strategy {
-	return &Strategy{coord: coord}
+// New builds a Strategy bound to the given agentrun.Runner. The runner
+// must be constructed with WithScheduler(...) wired to a Coordinator.
+func New(rt *agentrun.Runner) *Strategy {
+	return &Strategy{rt: rt}
 }
 
-// Run dispatches the goal to the Coordinator with Hint.Kind=plan. The
-// Coordinator's internal plan dispatch.Strategy handles phase 1
-// (plan_agent) → guard → phase 2 (plan_executor_agent). Returns the
-// MetaRef of the final integrated result.
-//
-// outCh is forwarded into the Coordinator so both phases' L3 events
-// reach the parent stream.
+// Run dispatches the goal through agentrun.ModeScheduled with
+// Hint.Kind=plan. outCh is forwarded into the scheduler so both
+// phases' L3 events reach the parent stream.
 func (s *Strategy) Run(
 	ctx context.Context,
 	goal string,
@@ -60,5 +49,13 @@ func (s *Strategy) Run(
 		Hint:          spec.Hint{Kind: schedulertypes.KindPlan},
 		ParentAgentID: parentAgentID,
 	}
-	return s.coord.Run(ctx, sp, outCh)
+	res, err := s.rt.Run(ctx, agentrun.Request{
+		Spec:   &sp,
+		Mode:   agentrun.ModeScheduled,
+		Events: outCh,
+	})
+	if err != nil {
+		return "", err
+	}
+	return res.MetaRef, nil
 }

@@ -8,16 +8,16 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/engine/agent/scheduler"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/storage/memory"
+	"harnessclaw-go/internal/memory"
 )
 
-// Both modes (react and plan) now delegate to the v3.1 Coordinator —
-// Module.Run must reject either mode when Deps.Coord is missing, with a
-// clear error message rather than a nil deref panic.
-func TestRun_RequiresCoord(t *testing.T) {
+// Both modes (react and plan) now delegate to agentrun.ModeScheduled —
+// Module.Run must reject either mode when Deps.Runner is missing, with
+// a clear error message rather than a nil deref panic.
+func TestRun_RequiresRunner(t *testing.T) {
 	for _, mode := range []string{"react", "plan"} {
 		t.Run(mode, func(t *testing.T) {
 			store := memory.New()
@@ -26,7 +26,7 @@ func TestRun_RequiresCoord(t *testing.T) {
 				Logger:     zap.NewNop(),
 				SessionMgr: mgr,
 				RootDir:    t.TempDir(),
-				// Coord: nil — both modes must reject explicitly.
+				// Runner: nil — both modes must reject explicitly.
 			})
 
 			parentSess, _ := mgr.GetOrCreate(context.Background(), "parent-sess-"+mode, "ws", "user")
@@ -40,10 +40,10 @@ func TestRun_RequiresCoord(t *testing.T) {
 
 			_, err := m.Run(context.Background(), cfg)
 			if err == nil {
-				t.Fatalf("expected error when %s mode used without Coord", mode)
+				t.Fatalf("expected error when %s mode used without Runner", mode)
 			}
-			if !strings.Contains(err.Error(), "requires Deps.Coord") {
-				t.Errorf("error should mention Coord requirement, got: %v", err)
+			if !strings.Contains(err.Error(), "requires Deps.Runner") {
+				t.Errorf("error should mention Runner requirement, got: %v", err)
 			}
 		})
 	}

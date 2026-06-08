@@ -6,7 +6,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/engine/llmcall"
+	"harnessclaw-go/internal/legacy/llmcall"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/pkg/types"
 )

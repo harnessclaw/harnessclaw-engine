@@ -10,11 +10,11 @@ import (
 
 	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/permission"
+	"harnessclaw-go/internal/engine/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
-	"harnessclaw-go/internal/storage/memory"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/memory"
+	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 

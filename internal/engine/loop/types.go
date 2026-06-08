@@ -13,11 +13,11 @@ import (
 
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/engine/toolexec"
-	"harnessclaw-go/internal/permission"
+	"harnessclaw-go/internal/legacy/toolexec"
+	"harnessclaw-go/internal/engine/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 

@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/engine/sessionstats"
+	"harnessclaw-go/internal/legacy/sessionstats"
 )
 
 // statsPersistDebounce is the window over which tracker mutations are

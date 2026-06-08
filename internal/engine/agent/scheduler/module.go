@@ -24,13 +24,13 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/engine/agent/common"
+	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/legacy/engine_agent_common"
 	"harnessclaw-go/internal/engine/agent/scheduler/plan"
 	"harnessclaw-go/internal/engine/agent/scheduler/react"
 	"harnessclaw-go/internal/engine/session"
-	schedulertypes "harnessclaw-go/internal/engine/scheduler/types"
-	"harnessclaw-go/internal/workspace"
+	schedulertypes "harnessclaw-go/internal/engine/agent/scheduler/types"
+	"harnessclaw-go/internal/legacy/workspace"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -41,13 +41,15 @@ type Module struct {
 	planStrategy  *plan.Strategy
 }
 
-// New constructs a scheduler Module. Coord may be nil if only react mode
-// is exercised; plan mode requires Coord to be non-nil.
+// New constructs a scheduler Module. Runner must be wired with
+// WithScheduler(...) — without it both react and plan strategies are
+// left nil and Module.Run returns an explicit "requires Deps.Runner"
+// error.
 func New(deps Deps) *Module {
 	m := &Module{deps: deps}
-	if deps.Coord != nil {
-		m.reactStrategy = react.New(deps.Coord)
-		m.planStrategy = plan.New(deps.Coord)
+	if deps.Runner != nil {
+		m.reactStrategy = react.New(deps.Runner)
+		m.planStrategy = plan.New(deps.Runner)
 	}
 	return m
 }
@@ -126,7 +128,7 @@ func (m *Module) runReactKernel(ctx context.Context, cfg *agent.SpawnConfig,
 	sess *session.Session, startTime time.Time) (*agent.SpawnResult, error) {
 
 	if m.reactStrategy == nil {
-		return nil, fmt.Errorf("scheduler module: react mode requires Deps.Coord to be set")
+		return nil, fmt.Errorf("scheduler module: react mode requires Deps.Runner to be set")
 	}
 
 	dispatchSessionID := cfg.ParentSessionID
@@ -176,7 +178,7 @@ func (m *Module) runPlanLegacy(ctx context.Context, cfg *agent.SpawnConfig,
 	sess *session.Session, startTime time.Time) (*agent.SpawnResult, error) {
 
 	if m.planStrategy == nil {
-		return nil, fmt.Errorf("scheduler module: plan mode requires Deps.Coord to be set")
+		return nil, fmt.Errorf("scheduler module: plan mode requires Deps.Runner to be set")
 	}
 
 	dispatchSessionID := cfg.ParentSessionID
