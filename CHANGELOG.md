@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+### Fixed
+- Browser Agent now defaults to enabled in fresh engine configs, matching the packaged desktop sidecar flow.
+
 ## [0.0.18] - 2026-06-04
 
 ### Changed
