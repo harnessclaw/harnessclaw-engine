@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/command"
+	"harnessclaw-go/internal/commands"
 )
 
 // Loader discovers and loads skills from configured directories.
