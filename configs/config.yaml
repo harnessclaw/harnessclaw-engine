@@ -261,7 +261,7 @@ tools:
     api_key: ""          # set via CLAUDE_TOOLS_TAVILY_SEARCH_API_KEY or config_self.yaml
     # max_results: 5
   browser_agent:
-    enabled: false
+    enabled: true
     default_visibility: "hidden"
     max_steps: 30
     blocked_domains: []

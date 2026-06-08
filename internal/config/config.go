@@ -723,7 +723,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("tools::web_search::limit", 5)
 	v.SetDefault("tools::tavily_search::enabled", false)
 	v.SetDefault("tools::tavily_search::max_results", 5)
-	v.SetDefault("tools::browser_agent::enabled", false)
+	v.SetDefault("tools::browser_agent::enabled", true)
 	v.SetDefault("tools::browser_agent::default_visibility", "hidden")
 	v.SetDefault("tools::browser_agent::max_steps", 30)
 	v.SetDefault("tools::browser_agent::blocked_domains", []string{})

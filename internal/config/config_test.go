@@ -97,7 +97,7 @@ llm:
 	}
 }
 
-func TestBrowserAgentConfig_DefaultsDisabled(t *testing.T) {
+func TestBrowserAgentConfig_DefaultsEnabled(t *testing.T) {
 	tmp := t.TempDir()
 	p := filepath.Join(tmp, "cfg.yaml")
 	if err := os.WriteFile(p, []byte(`{}`), 0o600); err != nil {
@@ -108,8 +108,8 @@ func TestBrowserAgentConfig_DefaultsDisabled(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.Tools.BrowserAgent.Enabled {
-		t.Fatal("browser agent should default to disabled")
+	if !cfg.Tools.BrowserAgent.Enabled {
+		t.Fatal("browser agent should default to enabled")
 	}
 	if cfg.Tools.BrowserAgent.MaxSteps != 30 {
 		t.Errorf("max_steps = %d, want 30", cfg.Tools.BrowserAgent.MaxSteps)
