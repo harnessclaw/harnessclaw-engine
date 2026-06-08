@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/agent"
+	"harnessclaw-go/internal/legacy/agent"
 )
 
 // ServerConfig holds console API server settings.

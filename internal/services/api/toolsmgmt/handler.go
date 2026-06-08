@@ -28,7 +28,7 @@ import (
 
 	"harnessclaw-go/internal/config"
 	persistPkg "harnessclaw-go/internal/config/persist"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tools"
 )
 
 // Handler implements http.Handler for the tools management API.

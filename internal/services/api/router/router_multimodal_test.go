@@ -49,17 +49,23 @@ type recordingChannel struct {
 	frames []*types.EngineEvent
 }
 
-func (c *recordingChannel) Name() string                                                      { return "websocket" }
-func (c *recordingChannel) Start(_ context.Context, _ channel.MessageHandler) error           { return nil }
-func (c *recordingChannel) Stop(_ context.Context) error                                      { return nil }
-func (c *recordingChannel) Send(_ context.Context, _ string, _ *types.Message) error          { return nil }
-func (c *recordingChannel) SendEvent(_ context.Context, _ string, ev *types.EngineEvent) error {
+func (c *recordingChannel) Name() string                            { return "websocket" }
+func (c *recordingChannel) Start(_ context.Context) error           { return nil }
+func (c *recordingChannel) Close() error                            { return nil }
+func (c *recordingChannel) Health() error                           { return nil }
+func (c *recordingChannel) Messages() <-chan *types.IncomingMessage { return nil }
+func (c *recordingChannel) Reply(_ context.Context, _ string, msg channel.Outbound) error {
+	if msg.Stream == nil {
+		return nil
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.frames = append(c.frames, ev)
+	for evt := range msg.Stream {
+		evt := evt
+		c.frames = append(c.frames, &evt)
+	}
 	return nil
 }
-func (c *recordingChannel) Health() error { return nil }
 
 // stubModelInfo lets us pin a specific (key, supports) pair without
 // dragging in the full registry.
@@ -81,7 +87,7 @@ func TestRouter_ConvertsImageBlocksIntoEngineMessage(t *testing.T) {
 		key:      "anthropic:claude-opus-4-7",
 		supports: registry.SupportsFlags{Vision: true},
 	}
-	r := New(eng, map[string]channel.Channel{"websocket": ch}, nil, info, zap.NewNop())
+	r := New(eng, map[string]channel.Duplex{"websocket": ch}, nil, info, zap.NewNop())
 
 	err := r.Handle(context.Background(), &types.IncomingMessage{
 		ChannelName: "websocket",
@@ -122,7 +128,7 @@ func TestRouter_RejectsImageWhenModelLacksVision(t *testing.T) {
 		key:      "anthropic:claude-haiku-4-5",
 		supports: registry.SupportsFlags{}, // no Vision
 	}
-	r := New(eng, map[string]channel.Channel{"websocket": ch}, nil, info, zap.NewNop())
+	r := New(eng, map[string]channel.Duplex{"websocket": ch}, nil, info, zap.NewNop())
 
 	err := r.Handle(context.Background(), &types.IncomingMessage{
 		ChannelName: "websocket",
@@ -172,7 +178,7 @@ func TestRouter_RejectsImageWhenModelLacksVision(t *testing.T) {
 func TestRouter_PassesWhenModelInfoNil(t *testing.T) {
 	eng := &captureEngine{}
 	ch := &recordingChannel{}
-	r := New(eng, map[string]channel.Channel{"websocket": ch}, nil, nil, zap.NewNop())
+	r := New(eng, map[string]channel.Duplex{"websocket": ch}, nil, nil, zap.NewNop())
 
 	err := r.Handle(context.Background(), &types.IncomingMessage{
 		ChannelName: "websocket",
@@ -198,7 +204,7 @@ func TestRouter_PassesWhenModelInfoNil(t *testing.T) {
 func TestRouter_RejectsMalformedContentWithInvalidInput(t *testing.T) {
 	eng := &captureEngine{}
 	ch := &recordingChannel{}
-	r := New(eng, map[string]channel.Channel{"websocket": ch}, nil, stubModelInfo{}, zap.NewNop())
+	r := New(eng, map[string]channel.Duplex{"websocket": ch}, nil, stubModelInfo{}, zap.NewNop())
 
 	err := r.Handle(context.Background(), &types.IncomingMessage{
 		ChannelName: "websocket",

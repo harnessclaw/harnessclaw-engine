@@ -24,7 +24,7 @@ func TestRouter_RespectsEndpointOverride(t *testing.T) {
 		key:      "anthropic:x",
 		supports: registry.SupportsFlags{Vision: true}, // simulating override result
 	}
-	r := New(eng, map[string]channel.Channel{"websocket": ch}, nil, info, zap.NewNop())
+	r := New(eng, map[string]channel.Duplex{"websocket": ch}, nil, info, zap.NewNop())
 	err := r.Handle(context.Background(), &types.IncomingMessage{
 		ChannelName: "websocket", SessionID: "s",
 		Content: []types.IncomingContentBlock{

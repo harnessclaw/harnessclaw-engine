@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/engine/sessionstats"
+	"harnessclaw-go/internal/legacy/sessionstats"
 	"harnessclaw-go/pkg/types"
 )
 

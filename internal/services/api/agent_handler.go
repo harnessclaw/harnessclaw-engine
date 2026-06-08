@@ -7,8 +7,8 @@ import (
 
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
-	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/tools"
 )
 
 // AgentHandler handles agent definition CRUD endpoints.

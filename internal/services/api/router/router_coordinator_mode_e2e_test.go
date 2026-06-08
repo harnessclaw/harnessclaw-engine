@@ -15,7 +15,7 @@ import (
 	"harnessclaw-go/internal/channel"
 	ws "harnessclaw-go/internal/channel/websocket"
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -92,13 +92,18 @@ func TestE2E_WebSocketCoordinatorModeWiring(t *testing.T) {
 	)
 
 	eng := &modeCapturingEngine{}
-	channels := map[string]channel.Channel{"websocket": ch}
+	channels := map[string]channel.Duplex{"websocket": ch}
 	r := New(eng, channels, nil, nil, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go ch.Start(ctx, r.Handle)
+	_ = ch.Start(ctx)
+	go func() {
+		for msg := range ch.Messages() {
+			_ = r.Handle(ctx, msg)
+		}
+	}()
 	time.Sleep(150 * time.Millisecond)
 
 	conn, _, err := websocket.Dial(ctx, "ws://"+addr+"/ws", nil)

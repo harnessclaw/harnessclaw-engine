@@ -12,9 +12,9 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/tool"
-	"harnessclaw-go/internal/tool/tavilysearch"
-	"harnessclaw-go/internal/tool/websearch"
+	"harnessclaw-go/internal/tools"
+	"harnessclaw-go/internal/tools/builtin/tavilysearch"
+	"harnessclaw-go/internal/tools/builtin/websearch"
 )
 
 // newTestHandler builds a Handler with a tool.Registry that already

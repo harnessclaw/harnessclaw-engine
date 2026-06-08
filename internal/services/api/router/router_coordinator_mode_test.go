@@ -7,7 +7,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/channel"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -39,21 +39,21 @@ func (m *modeRecordingEngine) SubmitStepDecision(_ context.Context, _ string, _ 
 }
 func (m *modeRecordingEngine) AbortSession(_ context.Context, _ string) error { return nil }
 
-// noopChannel implements channel.Channel; SendEvent never gets called in
+// noopChannel implements channel.Duplex; Reply never gets called in
 // these tests because ProcessMessage returns an immediately-closed
 // channel.
 type noopChannel struct{}
 
-func (noopChannel) Name() string                                                       { return "noop" }
-func (noopChannel) Start(_ context.Context, _ channel.MessageHandler) error            { return nil }
-func (noopChannel) Stop(_ context.Context) error                                       { return nil }
-func (noopChannel) Send(_ context.Context, _ string, _ *types.Message) error           { return nil }
-func (noopChannel) SendEvent(_ context.Context, _ string, _ *types.EngineEvent) error  { return nil }
-func (noopChannel) Health() error                                                      { return nil }
+func (noopChannel) Name() string                                                  { return "noop" }
+func (noopChannel) Start(_ context.Context) error                                 { return nil }
+func (noopChannel) Close() error                                                  { return nil }
+func (noopChannel) Health() error                                                 { return nil }
+func (noopChannel) Messages() <-chan *types.IncomingMessage                       { return nil }
+func (noopChannel) Reply(_ context.Context, _ string, _ channel.Outbound) error   { return nil }
 
 func TestRouter_AttachesCoordinatorModeToCtx(t *testing.T) {
 	eng := &modeRecordingEngine{}
-	r := New(eng, map[string]channel.Channel{"noop": noopChannel{}}, nil, nil, zap.NewNop())
+	r := New(eng, map[string]channel.Duplex{"noop": noopChannel{}}, nil, nil, zap.NewNop())
 
 	msg := &types.IncomingMessage{
 		ChannelName:     "noop",
@@ -71,7 +71,7 @@ func TestRouter_AttachesCoordinatorModeToCtx(t *testing.T) {
 
 func TestRouter_NoModeWhenIncomingHasNone(t *testing.T) {
 	eng := &modeRecordingEngine{}
-	r := New(eng, map[string]channel.Channel{"noop": noopChannel{}}, nil, nil, zap.NewNop())
+	r := New(eng, map[string]channel.Duplex{"noop": noopChannel{}}, nil, nil, zap.NewNop())
 
 	msg := &types.IncomingMessage{
 		ChannelName: "noop",
@@ -93,7 +93,7 @@ func TestRouter_ModePassesThroughUnchanged(t *testing.T) {
 	for _, mode := range []string{"react", "plan", "garbage", "Plan"} {
 		t.Run(mode, func(t *testing.T) {
 			eng := &modeRecordingEngine{}
-			r := New(eng, map[string]channel.Channel{"noop": noopChannel{}}, nil, nil, zap.NewNop())
+			r := New(eng, map[string]channel.Duplex{"noop": noopChannel{}}, nil, nil, zap.NewNop())
 			msg := &types.IncomingMessage{
 				ChannelName:     "noop",
 				SessionID:       "s",

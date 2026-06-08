@@ -8,10 +8,10 @@ import (
 
 	"harnessclaw-go/internal/channel"
 	"harnessclaw-go/internal/engine"
-	"harnessclaw-go/internal/engine/multimodal"
+	"harnessclaw-go/internal/legacy/multimodal"
 	"harnessclaw-go/internal/provider/registry"
-	"harnessclaw-go/internal/router/middleware"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/services/api/router/middleware"
+	"harnessclaw-go/internal/tools"
 	pkgerr "harnessclaw-go/pkg/errors"
 	"harnessclaw-go/pkg/types"
 )
@@ -36,7 +36,7 @@ type ModelInfoProvider interface {
 // events back to the originating channel.
 type Router struct {
 	engine    engine.Engine
-	channels  map[string]channel.Channel // channel registry keyed by name
+	channels  map[string]channel.Duplex // channel registry keyed by name
 	modelInfo ModelInfoProvider          // optional; nil disables gating
 	handler   middleware.Handler
 	logger    *zap.Logger
@@ -45,7 +45,7 @@ type Router struct {
 // New creates a router with the given engine, channel registry,
 // middleware chain, and optional model-info provider for capability
 // gating. Pass nil for modelInfo when gating isn't desired (tests).
-func New(eng engine.Engine, channels map[string]channel.Channel, middlewares []middleware.Middleware, modelInfo ModelInfoProvider, logger *zap.Logger) *Router {
+func New(eng engine.Engine, channels map[string]channel.Duplex, middlewares []middleware.Middleware, modelInfo ModelInfoProvider, logger *zap.Logger) *Router {
 	r := &Router{
 		engine:    eng,
 		channels:  channels,
@@ -176,14 +176,12 @@ func (r *Router) coreHandler(ctx context.Context, msg *types.IncomingMessage) er
 	// the readPump would be blocked until the entire query loop finishes, creating
 	// a deadlock for any protocol that requires mid-query client→server messages.
 	go func() {
-		for evt := range events {
-			if sendErr := ch.SendEvent(ctx, msg.SessionID, &evt); sendErr != nil {
-				r.logger.Error("failed to send event to channel",
-					zap.String("channel", msg.ChannelName),
-					zap.String("session_id", msg.SessionID),
-					zap.Error(sendErr),
-				)
-			}
+		if sendErr := ch.Reply(ctx, msg.SessionID, channel.Outbound{Stream: events}); sendErr != nil {
+			r.logger.Error("failed to reply to channel",
+				zap.String("channel", msg.ChannelName),
+				zap.String("session_id", msg.SessionID),
+				zap.Error(sendErr),
+			)
 		}
 	}()
 
@@ -198,7 +196,7 @@ func (r *Router) emitInvalidInput(ctx context.Context, msg *types.IncomingMessag
 	if !ok {
 		return
 	}
-	ev := &types.EngineEvent{
+	ev := types.EngineEvent{
 		Type:  types.EngineEventError,
 		Error: cause,
 		Terminal: &types.Terminal{
@@ -206,7 +204,7 @@ func (r *Router) emitInvalidInput(ctx context.Context, msg *types.IncomingMessag
 			Message: cause.Error(),
 		},
 	}
-	_ = ch.SendEvent(ctx, msg.SessionID, ev)
+	_ = ch.Reply(ctx, msg.SessionID, channel.Outbound{Stream: singleEvent(ev)})
 }
 
 // emitUnsupportedModality sends an error frame carrying the rich
@@ -219,7 +217,7 @@ func (r *Router) emitUnsupportedModality(ctx context.Context, msg *types.Incomin
 	if !ok {
 		return
 	}
-	ev := &types.EngineEvent{
+	ev := types.EngineEvent{
 		Type:  types.EngineEventError,
 		Error: cause,
 		Terminal: &types.Terminal{
@@ -235,5 +233,15 @@ func (r *Router) emitUnsupportedModality(ctx context.Context, msg *types.Incomin
 			"error_code":          "model_lacks_modality",
 		}
 	}
-	_ = ch.SendEvent(ctx, msg.SessionID, ev)
+	_ = ch.Reply(ctx, msg.SessionID, channel.Outbound{Stream: singleEvent(ev)})
+}
+
+// singleEvent wraps one EngineEvent into a 1-element read-only channel,
+// used by emitInvalidInput / emitUnsupportedModality where there is no
+// engine round-trip — just a single error frame to ship out.
+func singleEvent(ev types.EngineEvent) <-chan types.EngineEvent {
+	ch := make(chan types.EngineEvent, 1)
+	ch <- ev
+	close(ch)
+	return ch
 }
