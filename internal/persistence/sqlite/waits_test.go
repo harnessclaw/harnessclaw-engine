@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"harnessclaw-go/internal/engine/wait"
+	"harnessclaw-go/internal/legacy/wait"
 )
 
 // newTestWaitStore opens a fresh DB and a WaitStore over it. Reuses

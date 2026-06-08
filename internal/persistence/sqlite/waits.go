@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"harnessclaw-go/internal/engine/wait"
+	"harnessclaw-go/internal/legacy/wait"
 )
 
 // WaitStore is the SQLite-backed implementation of wait.Store. It shares
