@@ -24,7 +24,6 @@ import (
 	"harnessclaw-go/internal/legacy/prompt"
 	"harnessclaw-go/internal/legacy/prompt/sections"
 	"harnessclaw-go/internal/legacy/sessionstats"
-	"harnessclaw-go/internal/legacy/spawn"
 	"harnessclaw-go/internal/legacy/workspace"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
@@ -95,13 +94,6 @@ type Engine struct {
 	// skillReader provides runtime skill discovery for search_skill /
 	// load_skill tools (used by freelancer L3). nil disables them.
 	skillReader *skill.Reader
-
-	// spawner is the spawn primitive. After Stage 8, every sub-agent
-	// spawn — sync and async — goes through this Spawner via the tier
-	// modules registered below (plan_agent, plan_executor_agent,
-	// explore, plan_design, freelancer, scheduler) plus the generic
-	// fallback for unknown SubagentTypes.
-	spawner *spawn.Spawner
 
 	// emitSeq dispenses per-trace sequence numbers for the emit envelope.
 	emitSeq *emit.Sequencer
@@ -327,13 +319,8 @@ func (e *Engine) Config() Config { return e.config }
 // PromptProfile returns the profile currently driving the main-agent loop.
 func (e *Engine) PromptProfile() *prompt.AgentProfile { return e.promptProfile }
 
-// Spawner exposes the underlying spawn.Spawner so callers can wire it
-// into tools and infrastructure that need to dispatch sub-agents.
-//
-// emma.Engine no longer implements agent.AgentSpawner directly; tools
-// and the engine's Coordinator/PlanExecutor/QueryEngineFactory take
-// *spawn.Spawner via this accessor.
-func (e *Engine) Spawner() *spawn.Spawner { return e.spawner }
+// （删）原 Engine.Spawner() 暴露 *spawn.Spawner —— 新架构里调用方走
+// Engine.Scheduler() 拿 scheduler.Scheduler 接口分发。
 
 // SetAgentRegistry configures the agent registry for async agent support.
 func (e *Engine) SetAgentRegistry(reg *agent.AgentRegistry) { e.agentRegistry = reg }
