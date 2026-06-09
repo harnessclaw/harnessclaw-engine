@@ -449,7 +449,7 @@ func main() {
 	// auto-detects the async path for tools that need run_in_background.
 	agentRun := agentrun.New(eng.Spawner())
 
-	if err := registry.Register(agenttool.New(agentRun, logger)); err != nil {
+	if err := registry.Register(agenttool.New(eng.Scheduler(), agentDefReg, logger)); err != nil {
 		logger.Fatal("failed to register task tool", zap.Error(err))
 	}
 	logger.Info("task tool registered")

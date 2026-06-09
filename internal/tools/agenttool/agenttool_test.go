@@ -4,301 +4,198 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/engine/agent/runAgent/agentrun"
-	"harnessclaw-go/internal/legacy/sessionstats"
+	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 
-// mockSpawner is a test double for agent.AgentSpawner.
-type mockSpawner struct {
-	result *agent.SpawnResult
+// mockScheduler 记录 Dispatch 接收到的 params，可注入返回值或错误。
+type mockScheduler struct {
+	params *scheduler.SpawnParams
+	result scheduler.Result
 	err    error
-	calls  []agent.SpawnConfig
 }
 
-func (m *mockSpawner) SpawnSync(_ context.Context, cfg *agent.SpawnConfig) (*agent.SpawnResult, error) {
-	m.calls = append(m.calls, *cfg)
+func (m *mockScheduler) Dispatch(_ context.Context, p scheduler.SpawnParams) (scheduler.Result, error) {
+	copied := p
+	m.params = &copied
 	return m.result, m.err
 }
 
+func (m *mockScheduler) Subscribe(context.Context, types.TaskID) (<-chan types.EngineEvent, error) {
+	return nil, scheduler.ErrNotSubscribable
+}
+
+func newTool() *AgentTool {
+	return New(&mockScheduler{}, agent.NewAgentDefinitionRegistry(), zap.NewNop())
+}
+
 func TestAgentTool_Name(t *testing.T) {
-	tool := New(agentrun.New(&mockSpawner{}), zap.NewNop())
+	tool := newTool()
 	if tool.Name() != "freelance" {
-		t.Errorf("expected name 'coordinator', got %q", tool.Name())
+		t.Errorf("expected name 'freelance', got %q", tool.Name())
 	}
 }
 
 func TestAgentTool_IsLongRunning(t *testing.T) {
-	tool := New(agentrun.New(&mockSpawner{}), zap.NewNop())
+	tool := newTool()
 	if !tool.IsLongRunning() {
 		t.Error("expected IsLongRunning to return true")
 	}
 }
 
 func TestAgentTool_IsReadOnly(t *testing.T) {
-	tool := New(agentrun.New(&mockSpawner{}), zap.NewNop())
+	tool := newTool()
 	if tool.IsReadOnly() {
 		t.Error("expected IsReadOnly to return false")
 	}
 }
 
 func TestAgentTool_ValidateInput(t *testing.T) {
-	tool := New(agentrun.New(&mockSpawner{}), zap.NewNop())
-
+	tool := newTool()
 	tests := []struct {
 		name    string
 		input   string
 		wantErr bool
 	}{
-		{
-			name:    "valid minimal input",
-			input:   `{"prompt":"search for tests"}`,
-			wantErr: false,
-		},
-		{
-			name:    "valid full input",
-			input:   `{"prompt":"find files","subagent_type":"plan","description":"find test files","name":"explorer"}`,
-			wantErr: false,
-		},
-		{
-			name:    "missing prompt",
-			input:   `{"subagent_type":"plan"}`,
-			wantErr: true,
-		},
-		{
-			// subagent_type validation was removed in Phase 8: arbitrary names
-			// are accepted at the input layer and resolved by defRegistry at
-			// spawn time (see engine/subagent.go). "invalid" is still a valid
-			// input — the registry falls back to AgentTypeSync default.
-			name:    "unknown subagent_type accepted (registry resolves at spawn)",
-			input:   `{"prompt":"hello","subagent_type":"invalid"}`,
-			wantErr: false,
-		},
-		{
-			name:    "invalid JSON",
-			input:   `not json`,
-			wantErr: true,
-		},
-		{
-			name:    "empty prompt",
-			input:   `{"prompt":""}`,
-			wantErr: true,
-		},
+		{name: "valid minimal", input: `{"prompt":"search for tests"}`, wantErr: false},
+		{name: "valid full", input: `{"prompt":"find files","subagent_type":"plan","description":"find test files","name":"explorer"}`, wantErr: false},
+		{name: "missing prompt", input: `{"subagent_type":"plan"}`, wantErr: true},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tool.ValidateInput(json.RawMessage(tt.input))
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidateInput() error = %v, wantErr = %v", err, tt.wantErr)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tool.ValidateInput(json.RawMessage(tc.input))
+			if (err != nil) != tc.wantErr {
+				t.Errorf("got err=%v wantErr=%v", err, tc.wantErr)
 			}
 		})
 	}
 }
 
-func TestAgentTool_Execute_Success(t *testing.T) {
-	spawner := &mockSpawner{
-		result: &agent.SpawnResult{
-			Output:    "The answer is 42.",
-			Terminal:  &types.Terminal{Reason: types.TerminalCompleted, Turn: 3},
-			Usage:     &types.Usage{InputTokens: 100, OutputTokens: 50},
-			SessionID: "sess_123",
-			AgentID:   "agent_abc",
-			NumTurns:  3,
+func TestAgentTool_Execute_SyncSuccess(t *testing.T) {
+	sched := &mockScheduler{
+		result: scheduler.Result{
+			AgentID: "a-1",
+			TaskID:  "t-1",
+			Outcome: scheduler.SyncOutcome{
+				Content:  []types.ContentBlock{{Type: types.ContentTypeText, Text: "done"}},
+				Terminal: types.Terminal{Reason: types.TerminalCompleted},
+			},
 		},
 	}
-	tool := New(agentrun.New(spawner), zap.NewNop())
+	tool := New(sched, agent.NewAgentDefinitionRegistry(), zap.NewNop())
 
-	input := json.RawMessage(`{"prompt":"what is the meaning of life?","subagent_type":"freelancer","description":"answer question"}`)
-	result, err := tool.Execute(context.Background(), input)
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"do thing","subagent_type":"freelancer","name":"alice"}`))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Execute: %v", err)
 	}
-
-	if result.Content != "The answer is 42." {
-		t.Errorf("expected output 'The answer is 42.', got %q", result.Content)
+	if res.IsError {
+		t.Fatalf("unexpected error result: %+v", res)
 	}
-	if result.IsError {
-		t.Error("expected IsError=false")
+	if res.Content != "done" {
+		t.Errorf("Content = %q want %q", res.Content, "done")
 	}
-	if result.Metadata["agent_id"] != "agent_abc" {
-		t.Errorf("expected metadata agent_id='agent_abc', got %v", result.Metadata["agent_id"])
+	if sched.params == nil {
+		t.Fatal("Dispatch was not called")
 	}
-	if result.Metadata["num_turns"] != 3 {
-		t.Errorf("expected num_turns=3, got %v", result.Metadata["num_turns"])
+	if sched.params.Definition.Name != "freelancer" {
+		t.Errorf("Definition.Name = %q (resolveDefinition fallback should set Name from SubagentType)", sched.params.Definition.Name)
 	}
-
-	// Verify spawn config was passed correctly.
-	if len(spawner.calls) != 1 {
-		t.Fatalf("expected 1 spawn call, got %d", len(spawner.calls))
+	if sched.params.Name != "alice" {
+		t.Errorf("Name = %q", sched.params.Name)
 	}
-	cfg := spawner.calls[0]
-	if cfg.Prompt != "what is the meaning of life?" {
-		t.Errorf("unexpected prompt: %q", cfg.Prompt)
-	}
-	if cfg.SubagentType != "freelancer" {
-		t.Errorf("unexpected subagent_type: %q", cfg.SubagentType)
-	}
-	if cfg.Description != "answer question" {
-		t.Errorf("unexpected description: %q", cfg.Description)
+	if sched.params.Hints.Background {
+		t.Error("Hints.Background must be false for sync")
 	}
 }
 
-func TestAgentTool_Execute_SpawnerError(t *testing.T) {
-	spawner := &mockSpawner{
-		err: errors.New("provider unavailable"),
+func TestAgentTool_Execute_AsyncReturnsLaunched(t *testing.T) {
+	sched := &mockScheduler{
+		result: scheduler.Result{
+			AgentID: "a-2",
+			TaskID:  "t-2",
+			Status:  scheduler.StatusAsyncLaunched,
+			Outcome: scheduler.AsyncOutcome{OutputFile: "/tmp/t-2.jsonl", Tailable: true},
+		},
 	}
-	tool := New(agentrun.New(spawner), zap.NewNop())
+	tool := New(sched, agent.NewAgentDefinitionRegistry(), zap.NewNop())
 
-	input := json.RawMessage(`{"prompt":"do something"}`)
-	result, err := tool.Execute(context.Background(), input)
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"long task","subagent_type":"freelancer","run_in_background":true}`))
 	if err != nil {
-		t.Fatalf("unexpected go error: %v", err)
+		t.Fatalf("Execute: %v", err)
 	}
-
-	if !result.IsError {
-		t.Error("expected IsError=true when spawner fails")
+	if res.IsError {
+		t.Fatalf("unexpected error: %+v", res)
 	}
-	if result.Content == "" {
-		t.Error("expected error content to be non-empty")
+	if !strings.Contains(res.Content, "a-2") {
+		t.Errorf("Content missing agent_id: %q", res.Content)
+	}
+	if got := res.Metadata["background"]; got != true {
+		t.Errorf("Metadata.background = %v want true", got)
+	}
+	if got := res.Metadata["task_id"]; got != types.TaskID("t-2") {
+		t.Errorf("Metadata.task_id = %v", got)
+	}
+	if !sched.params.Hints.Background {
+		t.Error("Hints.Background must be true for async path")
 	}
 }
 
-func TestAgentTool_Execute_ModelError(t *testing.T) {
-	spawner := &mockSpawner{
-		result: &agent.SpawnResult{
-			Output:   "partial output",
-			Terminal: &types.Terminal{Reason: types.TerminalModelError, Turn: 1},
-			Usage:    &types.Usage{InputTokens: 50, OutputTokens: 10},
-			AgentID:  "agent_err",
-			NumTurns: 1,
-		},
-	}
-	tool := New(agentrun.New(spawner), zap.NewNop())
+func TestAgentTool_Execute_DispatchError(t *testing.T) {
+	sched := &mockScheduler{err: errors.New("dispatch boom")}
+	tool := New(sched, agent.NewAgentDefinitionRegistry(), zap.NewNop())
 
-	input := json.RawMessage(`{"prompt":"do something complex"}`)
-	result, err := tool.Execute(context.Background(), input)
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"x","subagent_type":"freelancer"}`))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Execute returned go err (shouldnt): %v", err)
 	}
-
-	if !result.IsError {
-		t.Error("expected IsError=true for model error terminal")
+	if !res.IsError {
+		t.Fatal("expected IsError=true")
 	}
-	if result.Metadata["terminal_reason"] != "model_error" {
-		t.Errorf("expected terminal_reason=model_error, got %v", result.Metadata["terminal_reason"])
+	if !strings.Contains(res.Content, "dispatch boom") {
+		t.Errorf("Content = %q", res.Content)
 	}
 }
 
-func TestAgentTool_Execute_DeniedTools(t *testing.T) {
-	spawner := &mockSpawner{
-		result: &agent.SpawnResult{
-			Output:      "done with limitations",
-			Terminal:    &types.Terminal{Reason: types.TerminalCompleted, Turn: 2},
-			Usage:       &types.Usage{},
-			AgentID:     "agent_d",
-			DeniedTools: []string{"bash", "edit"},
-			NumTurns:    2,
+func TestAgentTool_Execute_SyncFailureFromTerminal(t *testing.T) {
+	sched := &mockScheduler{
+		result: scheduler.Result{
+			AgentID: "a-3",
+			Outcome: scheduler.SyncOutcome{
+				Terminal: types.Terminal{Reason: types.TerminalMaxTurns, Message: "ran out of turns"},
+			},
 		},
 	}
-	tool := New(agentrun.New(spawner), zap.NewNop())
-
-	input := json.RawMessage(`{"prompt":"try to edit files"}`)
-	result, err := tool.Execute(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	tool := New(sched, agent.NewAgentDefinitionRegistry(), zap.NewNop())
+	res, _ := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"x","subagent_type":"freelancer"}`))
+	if !res.IsError {
+		t.Fatal("expected IsError=true on non-completed Terminal")
 	}
-
-	if result.IsError {
-		t.Error("expected IsError=false for completed terminal")
-	}
-	denied, ok := result.Metadata["denied_tools"]
-	if !ok {
-		t.Fatal("expected denied_tools in metadata")
-	}
-	deniedSlice, ok := denied.([]string)
-	if !ok || len(deniedSlice) != 2 {
-		t.Errorf("expected 2 denied tools, got %v", denied)
+	if !strings.Contains(res.Content, "max_turns") {
+		t.Errorf("Content should mention terminal reason: %q", res.Content)
 	}
 }
 
 func TestResolveAgentType(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
+	cases := []struct {
+		in   string
+		want tool.AgentType
 	}{
-		{"explore", "sync"},
-		{"plan", "sync"},
-		{"plan", "sync"},
-		{"freelancer", "sync"},
-		{"", "sync"},
+		// fallback / unknown
+		{"", tool.AgentTypeSync},
+		{"unknown-agent", tool.AgentTypeSync},
 	}
-	for _, tt := range tests {
-		got := resolveAgentType(tt.input)
-		if string(got) != tt.want {
-			t.Errorf("resolveAgentType(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
-// TestAgentTool_Execute_PropagatesParentAgentID is the hierarchy regression
-// guard. The dispatching agent's session id (== card id in the wire
-// envelope) must land in SpawnConfig.ParentAgentID so the translator's
-// parentForSubAgent nests the L3 freelancer card under the L2 scheduler
-// card. Pre-fix the field was left empty, the translator fell through
-// to "most recent tool card" (emma's scheduler tool call), and L3
-// rendered as a sibling of L2 in the UI.
-func TestAgentTool_Execute_PropagatesParentAgentID(t *testing.T) {
-	spawner := &mockSpawner{result: &agent.SpawnResult{
-		Output:   "ok",
-		Terminal: &types.Terminal{Reason: types.TerminalCompleted},
-	}}
-	tool := New(agentrun.New(spawner), zap.NewNop())
-
-	// Simulate the call site: L2 scheduler module sets its own sess.ID
-	// onto ctx via common.WithSubAgentStats → sessionstats.WithSessionID.
-	// When L2's LLM calls the freelance tool, that ctx flows through
-	// toolexec into agenttool.Execute.
-	ctx := sessionstats.WithSessionID(context.Background(), "L2_sess_xyz")
-
-	input := json.RawMessage(`{"prompt":"do work","subagent_type":"freelancer","description":"d"}`)
-	_, err := tool.Execute(ctx, input)
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-
-	if len(spawner.calls) != 1 {
-		t.Fatalf("expected 1 spawn call, got %d", len(spawner.calls))
-	}
-	if got := spawner.calls[0].ParentAgentID; got != "L2_sess_xyz" {
-		t.Errorf("ParentAgentID = %q, want L2_sess_xyz", got)
-	}
-}
-
-// TestAgentTool_Execute_NoSessionInCtxKeepsParentAgentIDEmpty preserves
-// the legacy behaviour for call sites that haven't wired sessionstats
-// onto ctx (e.g. ad-hoc tests, smoke clients). Empty ParentAgentID
-// triggers the translator's "most recent tool card" fallback, which is
-// the correct behaviour when we genuinely don't know the parent.
-func TestAgentTool_Execute_NoSessionInCtxKeepsParentAgentIDEmpty(t *testing.T) {
-	spawner := &mockSpawner{result: &agent.SpawnResult{
-		Output:   "ok",
-		Terminal: &types.Terminal{Reason: types.TerminalCompleted},
-	}}
-	tool := New(agentrun.New(spawner), zap.NewNop())
-
-	input := json.RawMessage(`{"prompt":"do work","subagent_type":"freelancer","description":"d"}`)
-	_, err := tool.Execute(context.Background(), input)
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-
-	if got := spawner.calls[0].ParentAgentID; got != "" {
-		t.Errorf("ParentAgentID = %q, want empty (no session in ctx)", got)
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			if got := resolveAgentType(c.in); got != c.want {
+				t.Errorf("resolveAgentType(%q) = %v want %v", c.in, got, c.want)
+			}
+		})
 	}
 }

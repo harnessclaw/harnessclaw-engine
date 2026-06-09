@@ -10,15 +10,14 @@ package agenttool
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/engine/agent/runAgent/agentrun"
-	"harnessclaw-go/internal/legacy/sessionstats"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
@@ -33,13 +32,17 @@ const ToolName = "freelance"
 // AgentTool spawns sub-agents to handle complex, multi-step tasks.
 type AgentTool struct {
 	tool.BaseTool
-	rt     *agentrun.Runner
+	sched  scheduler.Scheduler
+	defReg *agent.AgentDefinitionRegistry
 	logger *zap.Logger
 }
 
-// New creates an AgentTool backed by the given agentrun.Runner.
-func New(rt *agentrun.Runner, logger *zap.Logger) *AgentTool {
-	return &AgentTool{rt: rt, logger: logger}
+// New creates an AgentTool backed by the given scheduler.Scheduler and
+// AgentDefinition registry. defReg is used to resolve the AgentDefinition
+// from the input.SubagentType string; nil falls back to a synthetic minimal
+// Definition with just Name set.
+func New(sched scheduler.Scheduler, defReg *agent.AgentDefinitionRegistry, logger *zap.Logger) *AgentTool {
+	return &AgentTool{sched: sched, defReg: defReg, logger: logger}
 }
 
 func (t *AgentTool) Name() string            { return ToolName }
@@ -92,78 +95,33 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		return &types.ToolResult{Content: err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
-	// Resolve agent type from subagent_type string.
-	agentType := resolveAgentType(input.SubagentType)
+	// Resolve agent definition from SubagentType:
+	//   1) registry lookup (preferred, uses real definition data: AllowedTools/Profile/etc)
+	//   2) fallback to a synthetic minimal Definition with just Name + AgentType set
+	def := t.resolveDefinition(input)
 
-	// Build spawn config.
-	//
-	// No wall-clock Timeout: a 5-minute parent deadline propagates down to
-	// every LLM call the sub-agent makes; one slow Chat() (Xunfei "Engine
-	// Busy" can return at 2m12s) can starve the rest of the run. Per-call
-	// guards (LLMAPITimeout / LLMFirstByteTimeout), retry.Retryer, the
-	// orphan watchdog with parent-chain heartbeats, and the step_decision
-	// prompt already cover the failure modes the old timeout was guarding
-	// against. User cancellation still flows through the parent ctx.
-	cfg := &agent.SpawnConfig{
-		Prompt:       input.Prompt,
-		AgentType:    agentType,
-		SubagentType: input.SubagentType,
-		Description:  input.Description,
-		Name:         input.Name,
-		Model:        input.Model,
-		Fork:         input.Fork,
-		// Forward the deliverable contract (doc §3 mechanisms 3+4): when
-		// declared, the framework refuses to terminate the L3 loop until
-		// submit_task_result validates against this list. Empty = no
-		// contract; sub-agent terminates on plain end_turn (legacy path).
-		ExpectedOutputs: input.ExpectedOutputs,
-		// TaskID gives every artifact this dispatch produces a uniform
-		// producer.task_id stamp — submit_task_result's M4 validation
-		// rejects refs whose stamp doesn't match. Generated here from
-		// the tool_use_id so each Task tool invocation is its own task.
-		TaskID:        deriveTaskID(ctx),
-		TaskStartedAt: time.Now().UTC(),
+	// 透传父事件 channel —— sub-agent 事件实时到 client。
+	var events chan<- types.EngineEvent
+	if out, ok := tool.GetEventOut(ctx); ok {
+		events = out
 	}
 
-	// Extract parent session ID from context if available.
+	// 父 session
+	var parentSess types.SessionID
 	if tuc, ok := tool.GetToolUseContext(ctx); ok {
-		cfg.ParentSessionID = tuc.Core.SessionID
+		parentSess = types.SessionID(tuc.Core.SessionID)
 	}
 
-	// Root session: prefer ctx's RootSessionID (propagated from SpawnSync when
-	// this Task tool runs inside a sub-agent), fall back to ParentSessionID
-	// (covers the L1→L2 case where the immediate parent is the root).
-	rootSID, _ := sessionstats.RootSessionIDFromCtx(ctx)
-	if rootSID == "" {
-		rootSID = cfg.ParentSessionID
-	}
-	cfg.RootSessionID = rootSID
-
-	// ParentAgentID is the dispatching agent's session id (== card id
-	// in the wire envelope). Without this, the translator's
-	// parentForSubAgent has no anchor to walk up to and falls back to
-	// "most recent tool card" — which is emma's scheduler tool call,
-	// so L3 freelancer renders as a sibling of L2 scheduler in the UI
-	// instead of nested under it. sessionstats.WithSessionID is set by
-	// the parent's WithSubAgentStats on its own ctx before dispatch, so
-	// SessionIDFromCtx(ctx) here returns the immediate parent's sess.ID.
-	if sid, ok := sessionstats.SessionIDFromCtx(ctx); ok && sid != "" {
-		cfg.ParentAgentID = sid
-	}
-
-	// candidate_skills is freelancer-only. Stash into cfg.Inputs for SpawnSync
-	// hydration. Non-freelancer dispatches that mistakenly include this field
-	// get a Warn so the operator notices the misconfiguration.
+	// Inputs：候选 skill 仅 freelancer 使用
+	var inputs map[string]any
 	if len(input.CandidateSkills) > 0 {
 		if input.SubagentType == "freelancer" {
-			if cfg.Inputs == nil {
-				cfg.Inputs = map[string]any{}
-			}
+			inputs = map[string]any{}
 			arr := make([]any, len(input.CandidateSkills))
 			for i, s := range input.CandidateSkills {
 				arr[i] = s
 			}
-			cfg.Inputs["candidate_skills"] = arr
+			inputs["candidate_skills"] = arr
 		} else {
 			t.logger.Warn("Task: candidate_skills ignored for non-freelancer subagent_type",
 				zap.String("subagent_type", input.SubagentType),
@@ -172,87 +130,33 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		}
 	}
 
-	// Extract the parent event output channel so subagent events reach the client.
-	if out, ok := tool.GetEventOut(ctx); ok {
-		cfg.ParentOut = out
+	params := scheduler.SpawnParams{
+		Definition:  def,
+		Prompt:      input.Prompt,
+		Name:        input.Name,
+		Description: input.Description,
+		Hints:       scheduler.Hints{Background: input.RunInBackground},
+		Parent:      &scheduler.ParentRef{SessionID: parentSess},
+		InvokedBy:   scheduler.Invoker{Kind: scheduler.InvokerLLM, Source: ToolName},
+		Inputs:      inputs,
+		Events:      events,
+		Overrides:   scheduler.Overrides{Model: input.Model, MaxTurns: 0},
 	}
-
-	// DEBUG: dispatch.in — what L2 (or whoever called Task) handed to
-	// this tool. Logs the full contract so operators can diagnose
-	// "L3 didn't write the right artifact" by comparing the contract
-	// the LLM passed against what came back in dispatch.out.
-	t.logger.Debug("dispatch.in",
-		zap.String("tool", "freelance"),
-		zap.String("parent_session_id", cfg.ParentSessionID),
-		zap.String("subagent_type", input.SubagentType),
-		zap.String("name", input.Name),
-		zap.Int("prompt_len", len(input.Prompt)),
-		zap.String("prompt_preview", truncate(input.Prompt, 400)),
-		zap.Int("expected_outputs", len(input.ExpectedOutputs)),
-		zap.Strings("expected_roles", expectedRoleList(input.ExpectedOutputs)),
-		zap.String("task_id", cfg.TaskID),
-		zap.Bool("fork", input.Fork),
-		zap.Bool("run_in_background", input.RunInBackground),
-	)
 
 	t.logger.Info("spawning sub-agent",
 		zap.String("subagent_type", input.SubagentType),
 		zap.String("description", input.Description),
 		zap.String("name", input.Name),
 		zap.String("model", input.Model),
-		zap.Bool("fork", input.Fork),
 		zap.Bool("run_in_background", input.RunInBackground),
 	)
 
-	// Async mode: launch in background, return agent ID immediately.
-	if input.RunInBackground {
-		agentID, err := t.rt.RunBackground(ctx, agentrun.Request{Cfg: cfg, Mode: agentrun.ModeInproc})
-		if errors.Is(err, agentrun.ErrAsyncNotSupported) {
-			return &types.ToolResult{
-				Content:   "async spawning not supported by this engine configuration",
-				IsError:   true,
-				ErrorType: types.ToolErrorInternal,
-			}, nil
-		}
-		if err != nil {
-			t.logger.Error("Task: async spawn failed",
-				zap.Error(err),
-				zap.String("subagent_type", input.SubagentType),
-				zap.String("name", input.Name),
-				zap.Duration("duration", time.Since(startTime)),
-			)
-			return &types.ToolResult{
-				Content:   fmt.Sprintf("Failed to spawn async agent: %s", err.Error()),
-				IsError:   true,
-				ErrorType: types.ToolErrorInternal,
-			}, nil
-		}
-		return &types.ToolResult{
-			Content: fmt.Sprintf("Agent launched in background with ID: %s", agentID),
-			Metadata: map[string]any{
-				"render_hint": "agent",
-				"agent_id":    agentID,
-				"background":  true,
-				"duration_ms": time.Since(startTime).Milliseconds(),
-			},
-		}, nil
-	}
-
-	// Sync mode: spawn and wait for the sub-agent to complete.
-	runRes, err := t.rt.Run(ctx, agentrun.Request{Cfg: cfg, Mode: agentrun.ModeInproc})
-	var result *agent.SpawnResult
-	if runRes != nil {
-		result = runRes.SpawnResult
-	}
+	res, err := t.sched.Dispatch(ctx, params)
 	if err != nil {
 		t.logger.Error("sub-agent spawn failed",
 			zap.Error(err),
 			zap.Duration("duration", time.Since(startTime)),
 		)
-		// Sub-agent failures from the spawner are typically transient
-		// (model_error / network / contract). Mark dependency_fail so
-		// the parent agent gets the right hint that an inner step
-		// fell over, not a malformed input.
 		return &types.ToolResult{
 			Content:   fmt.Sprintf("Agent execution failed: %s", err.Error()),
 			IsError:   true,
@@ -260,121 +164,126 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		}, nil
 	}
 
-	t.logger.Info("sub-agent completed",
-		zap.String("agent_id", result.AgentID),
-		zap.String("session_id", result.SessionID),
-		zap.Int("num_turns", result.NumTurns),
-		zap.Duration("duration", time.Since(startTime)),
-		zap.Int("denied_tools", len(result.DeniedTools)),
-	)
+	// 按 Outcome 类型分支：sync 返完整结果；async 返 launched 消息
+	switch outcome := res.Outcome.(type) {
+	case scheduler.AsyncOutcome:
+		return &types.ToolResult{
+			Content: fmt.Sprintf("Agent launched in background with ID: %s", res.AgentID),
+			Metadata: map[string]any{
+				"render_hint": "agent",
+				"agent_id":    res.AgentID,
+				"task_id":     res.TaskID,
+				"background":  true,
+				"output_file": outcome.OutputFile,
+				"duration_ms": time.Since(startTime).Milliseconds(),
+			},
+		}, nil
 
-	// Build metadata for observability.
-	metadata := map[string]any{
-		"render_hint": "agent",
-		"agent_id":    result.AgentID,
-		"session_id":  result.SessionID,
-		"num_turns":   result.NumTurns,
-		"duration_ms": time.Since(startTime).Milliseconds(),
-	}
-	if result.Usage != nil {
-		metadata["input_tokens"] = result.Usage.InputTokens
-		metadata["output_tokens"] = result.Usage.OutputTokens
-	}
-	if len(result.DeniedTools) > 0 {
-		metadata["denied_tools"] = result.DeniedTools
-	}
-	if result.Terminal != nil {
-		metadata["terminal_reason"] = string(result.Terminal.Reason)
-	}
-	// Surface produced artifacts so the executor can lift them onto the
-	// tool.end event. Same rationale as scheduler: gives the WebSocket
-	// a single anchor point for "what came out of this Task call" without
-	// the frontend having to aggregate from sub-agent events.
-	if len(result.SubmittedArtifacts) > 0 {
-		metadata["artifacts"] = result.SubmittedArtifacts
-	}
-	if len(result.Deliverables) > 0 {
-		metadata["deliverables"] = result.Deliverables
-		metadata["has_deliverables"] = true
-	}
+	case scheduler.SyncOutcome:
+		metadata := map[string]any{
+			"render_hint": "agent",
+			"agent_id":    res.AgentID,
+			"task_id":     res.TaskID,
+			"tool_calls":  outcome.ToolCalls,
+			"duration_ms": time.Since(startTime).Milliseconds(),
+			"input_tokens":  res.Usage.InputTokens,
+			"output_tokens": res.Usage.OutputTokens,
+		}
+		if outcome.Terminal.Reason != "" {
+			metadata["terminal_reason"] = string(outcome.Terminal.Reason)
+		}
+		if len(outcome.DeniedTools) > 0 {
+			metadata["denied_tools"] = outcome.DeniedTools
+		}
+		if len(outcome.Artifacts) > 0 {
+			metadata["artifacts"] = outcome.Artifacts
+		}
+		if len(outcome.Deliverables) > 0 {
+			metadata["deliverables"] = outcome.Deliverables
+			metadata["has_deliverables"] = true
+		}
 
-	// Emit deliverable events for each file produced by the sub-agent.
-	if out, ok := tool.GetEventOut(ctx); ok && len(result.Deliverables) > 0 {
-		for _, d := range result.Deliverables {
-			d := d // capture
-			out <- types.EngineEvent{
-				Type:        types.EngineEventDeliverable,
-				AgentID:     result.AgentID,
-				AgentName:   cfg.Name,
-				Deliverable: &d,
-			}
+		// 失败路径：Terminal 不是 completed 当作 error
+		isError := outcome.Terminal.Reason != "" && outcome.Terminal.Reason != types.TerminalCompleted
+		content := concatText(outcome.Content)
+		if isError {
+			content = formatFailure(input, outcome)
+			t.logger.Warn("Task: sub-agent failed",
+				zap.String("agent_id", string(res.AgentID)),
+				zap.String("subagent_type", input.SubagentType),
+				zap.String("terminal_reason", string(outcome.Terminal.Reason)),
+				zap.String("terminal_message", truncate(outcome.Terminal.Message, 200)),
+			)
 		}
-	}
 
-	// Determine if the sub-agent ended in an error state. On hard errors
-	// the loop often produced empty Output; returning that to the parent
-	// LLM as IsError=true with no content tempts the parent to fabricate
-	// "what happened". BuildFailureContent renders a structured report
-	// (reason / detail / contract_failures) the parent can quote back
-	// to the user honestly. See agent/failure.go.
-	isError := agent.IsTerminalError(result)
-	content := result.Output
-	if isError {
-		label := input.Name
-		if label == "" {
-			label = input.SubagentType
-		}
-		if label == "" {
-			label = "sub-agent"
-		}
-		content = agent.BuildFailureContent(result, label)
-		// Failure-side logging policy: log the actual reason / message /
-		// first few failures, not just counts. Without this an operator
-		// staring at logs sees "contract_failures=2" and has to dig into
-		// the WebSocket / tool_result content to find what they were —
-		// painful when iterating on scheduler prompts. The truncation
-		// below stops a 50-failure cascade from blowing the log line.
-		var reason, msg string
-		if result.Terminal != nil {
-			reason = string(result.Terminal.Reason)
-			msg = result.Terminal.Message
-		}
-		t.logger.Warn("Task: sub-agent failed",
-			zap.String("agent_id", result.AgentID),
-			zap.String("subagent_type", input.SubagentType),
-			zap.String("name", input.Name),
-			zap.String("terminal_reason", reason),
-			zap.String("terminal_message", truncate(msg, 200)),
-			zap.Int("contract_failures", len(result.ContractFailures)),
-			zap.Strings("failure_sample", failureSample(result.ContractFailures, 3)),
-			zap.Bool("needs_planning", result.NeedsPlanning),
-			zap.String("escalation_reason", truncate(result.EscalationReason, 200)),
+		t.logger.Info("sub-agent completed",
+			zap.String("agent_id", string(res.AgentID)),
+			zap.String("task_id", string(res.TaskID)),
+			zap.Int("tool_calls", outcome.ToolCalls),
+			zap.Duration("duration", time.Since(startTime)),
+			zap.Int("denied_tools", len(outcome.DeniedTools)),
 		)
+
+		return &types.ToolResult{
+			Content:  content,
+			IsError:  isError,
+			Metadata: metadata,
+		}, nil
+
+	default:
+		return &types.ToolResult{
+			Content:   "Agent: unexpected outcome type",
+			IsError:   true,
+			ErrorType: types.ToolErrorInternal,
+		}, nil
 	}
+}
 
-	// DEBUG: dispatch.out — exactly what the calling LLM (typically L2
-	// scheduler) will see as tool_result.Content. The
-	// submitted_artifacts count is the field to watch: 0 with isError=false
-	// means the L3 finished but nothing came back across the contract —
-	// either the dispatch had no expected_outputs, or the framework's
-	// gating let it through inappropriately.
-	t.logger.Debug("dispatch.out",
-		zap.String("tool", "freelance"),
-		zap.String("subagent_type", input.SubagentType),
-		zap.Bool("is_error", isError),
-		zap.Int("content_len", len(content)),
-		zap.String("content_preview", truncate(content, 600)),
-		zap.Int("submitted_artifacts", len(result.SubmittedArtifacts)),
-		zap.Int("deliverables", len(result.Deliverables)),
-		zap.Int("contract_failures", len(result.ContractFailures)),
-		zap.Duration("duration", time.Since(startTime)),
-	)
+// resolveDefinition 从 registry 查找 SubagentType 对应的 AgentDefinition；
+// 找不到时返回最小骨架 Definition（让 Runtime.LLM 用 AgentType 默认工具池）。
+func (t *AgentTool) resolveDefinition(in *agentInput) agent.AgentDefinition {
+	if t.defReg != nil {
+		if def := t.defReg.Get(in.SubagentType); def != nil {
+			return *def
+		}
+	}
+	return agent.AgentDefinition{
+		Name:      in.SubagentType,
+		AgentType: resolveAgentType(in.SubagentType),
+	}
+}
 
-	return &types.ToolResult{
-		Content:  content,
-		IsError:  isError,
-		Metadata: metadata,
-	}, nil
+// concatText 把 SyncOutcome.Content 的 text block 拼接成一段输出。
+func concatText(blocks []types.ContentBlock) string {
+	var sb strings.Builder
+	for _, b := range blocks {
+		if b.Type == types.ContentTypeText {
+			sb.WriteString(b.Text)
+		}
+	}
+	return sb.String()
+}
+
+// formatFailure 把失败 SyncOutcome 渲染成给父 LLM 看的 content。
+// 不再调用 agent.BuildFailureContent —— 它依赖 ContractFailures / NeedsPlanning
+// 等 L2-only 字段，新 Outcome 没有这些。简化为 reason + message 摘要。
+func formatFailure(in *agentInput, outcome scheduler.SyncOutcome) string {
+	label := in.Name
+	if label == "" {
+		label = in.SubagentType
+	}
+	if label == "" {
+		label = "sub-agent"
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "[%s failed] reason=%s", label, outcome.Terminal.Reason)
+	if outcome.Terminal.Message != "" {
+		fmt.Fprintf(&sb, "\n%s", outcome.Terminal.Message)
+	}
+	if txt := concatText(outcome.Content); txt != "" {
+		fmt.Fprintf(&sb, "\n\nLast output:\n%s", txt)
+	}
+	return sb.String()
 }
 
 // InterruptBehavior implements tool.InterruptibleTool.
