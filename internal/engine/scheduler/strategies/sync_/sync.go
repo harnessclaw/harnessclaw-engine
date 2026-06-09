@@ -1,0 +1,187 @@
+package sync_
+
+import (
+	"context"
+	"time"
+
+	"harnessclaw-go/internal/engine/scheduler"
+	"harnessclaw-go/internal/engine/scheduler/diskout"
+	"harnessclaw-go/internal/engine/scheduler/runtime"
+	"harnessclaw-go/internal/engine/scheduler/tasks"
+	pkgtypes "harnessclaw-go/pkg/types"
+)
+
+type Strategy struct {
+	rt      runtime.Runtime
+	taskMgr tasks.Manager
+	diskOut diskout.Store // 仅 Ctrl+B 切换时用
+}
+
+func New(deps scheduler.Deps) *Strategy {
+	return &Strategy{rt: deps.Runtime, taskMgr: deps.TaskMgr, diskOut: deps.DiskOutput}
+}
+
+func (s *Strategy) Name() string                          { return "sync" }
+func (s *Strategy) CanHandle(_ scheduler.SpawnParams) bool { return true } // 兜底
+
+func (s *Strategy) Subscribe(context.Context, pkgtypes.TaskID) (<-chan pkgtypes.EngineEvent, error) {
+	return nil, scheduler.ErrNotSubscribable
+}
+
+func (s *Strategy) Spawn(ctx context.Context, p scheduler.SpawnParams, st *scheduler.SpawnState) (scheduler.Result, error) {
+	startedAt := time.Now()
+
+	bgSignal := s.taskMgr.RegisterForeground(ctx, st.TaskID, st.AgentID)
+	defer s.taskMgr.UnregisterForeground(st.TaskID)
+
+	msgs, err := s.rt.Run(ctx, runtime.RunParams{
+		AgentID:    st.AgentID,
+		Definition: p.Definition,
+		Prompt:     p.Prompt,
+		Inputs:     p.Inputs,
+		InputPaths: p.InputPaths,
+		Overrides: runtime.Overrides{
+			Model:      p.Overrides.Model,
+			MaxTurns:   p.Overrides.MaxTurns,
+			Permission: p.Overrides.Permission,
+		},
+	})
+	if err != nil {
+		return scheduler.Result{}, err
+	}
+
+	var (
+		content   []pkgtypes.ContentBlock
+		toolCalls int
+		terminal  pkgtypes.Terminal
+		usage     pkgtypes.Usage
+	)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return scheduler.Result{}, ctx.Err()
+
+		case <-bgSignal:
+			return s.handoffToBackground(ctx, p, st, msgs, content, usage, toolCalls, startedAt)
+
+		case evt, ok := <-msgs:
+			if !ok {
+				return scheduler.Result{
+					Status:     scheduler.StatusCompleted,
+					StartedAt:  startedAt,
+					FinishedAt: time.Now(),
+					Usage:      usage,
+					Outcome: scheduler.SyncOutcome{
+						Content: content, Terminal: terminal, ToolCalls: toolCalls,
+					},
+				}, nil
+			}
+			if p.Events != nil {
+				select {
+				case p.Events <- evt:
+				default:
+				}
+			}
+			s.accumulate(evt, &content, &toolCalls, &terminal, &usage)
+		}
+	}
+}
+
+func (s *Strategy) handoffToBackground(
+	ctx context.Context, p scheduler.SpawnParams, st *scheduler.SpawnState,
+	msgs <-chan pkgtypes.EngineEvent,
+	contentSoFar []pkgtypes.ContentBlock,
+	_ pkgtypes.Usage, _ int, startedAt time.Time,
+) (scheduler.Result, error) {
+	bgCtx, bgCancel := context.WithCancel(context.WithoutCancel(ctx))
+	st.AbortCtx, st.AbortCancel = bgCtx, bgCancel
+
+	err := s.taskMgr.Register(bgCtx, tasks.RegisterParams{
+		TaskID:       st.TaskID,
+		AgentID:      st.AgentID,
+		Name:         p.Name,
+		Description:  p.Description,
+		SubagentType: p.Definition.Name,
+		Strategy:     "sync→async",
+		StartedAt:    startedAt,
+		InvokedBy: tasks.InvokerSnapshot{
+			Kind:     string(p.InvokedBy.Kind),
+			Source:   p.InvokedBy.Source,
+			ParentID: p.InvokedBy.ParentID,
+		},
+	})
+	if err != nil {
+		bgCancel()
+		return scheduler.Result{}, err
+	}
+
+	writer, err := s.diskOut.Open(st.TaskID)
+	if err != nil {
+		bgCancel()
+		return scheduler.Result{}, err
+	}
+
+	// 已收的 content backfill 写盘
+	for _, blk := range contentSoFar {
+		_ = writer.AppendBlock(blk)
+	}
+
+	go func() {
+		defer writer.Close()
+		defer bgCancel()
+		for evt := range msgs {
+			_ = writer.Append(evt)
+			_ = s.taskMgr.Tick(bgCtx, st.TaskID, evt)
+			// 切后台后不再 fan-out 给 p.Events
+		}
+		_ = s.taskMgr.Complete(bgCtx, st.TaskID)
+	}()
+
+	return scheduler.Result{
+		Status:     scheduler.StatusAsyncLaunched,
+		StartedAt:  startedAt,
+		FinishedAt: time.Now(),
+		Outcome: scheduler.AsyncOutcome{
+			OutputFile: s.diskOut.Path(st.TaskID),
+			Tailable:   true,
+		},
+	}, nil
+}
+
+// accumulate 按 EngineEvent.Type 分支累计 SyncOutcome 的输出字段。
+// 字段映射参考 pkg/types/event.go 的事件类型。
+func (s *Strategy) accumulate(evt pkgtypes.EngineEvent,
+	content *[]pkgtypes.ContentBlock, toolCalls *int,
+	terminal *pkgtypes.Terminal, usage *pkgtypes.Usage,
+) {
+	switch evt.Type {
+	case pkgtypes.EngineEventText:
+		// 文本流：把所有 text chunk 拼到当前 ContentBlock 末尾；
+		// 简化处理：每次新增一个 block（消费方拼接也无害），后续可改为
+		// "同一 message_start 内合并"。
+		*content = append(*content, pkgtypes.ContentBlock{
+			Type: pkgtypes.ContentTypeText,
+			Text: evt.Text,
+		})
+	case pkgtypes.EngineEventToolUse, pkgtypes.EngineEventToolCall:
+		*toolCalls++
+	case pkgtypes.EngineEventMessageDelta:
+		// message_delta 携带 Usage / stop_reason
+		if evt.Usage != nil {
+			*usage = *evt.Usage
+		}
+	case pkgtypes.EngineEventDone:
+		// 终止帧：Terminal + 最终 Usage
+		if evt.Terminal != nil {
+			*terminal = *evt.Terminal
+		}
+		if evt.Usage != nil {
+			*usage = *evt.Usage
+		}
+	}
+	// 其他事件类型对 SyncOutcome 累计无影响 —— 已经透传给 p.Events，前端 UI 看得到。
+}
+
+// 编译期接口实现检查
+var _ scheduler.Strategy = (*Strategy)(nil)
