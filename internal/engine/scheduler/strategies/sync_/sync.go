@@ -51,10 +51,13 @@ func (s *Strategy) Spawn(ctx context.Context, p scheduler.SpawnParams, st *sched
 	}
 
 	var (
-		content   []pkgtypes.ContentBlock
-		toolCalls int
-		terminal  pkgtypes.Terminal
-		usage     pkgtypes.Usage
+		content      []pkgtypes.ContentBlock
+		toolCalls    int
+		terminal     pkgtypes.Terminal
+		usage        pkgtypes.Usage
+		deliverables []pkgtypes.Deliverable
+		denied       []string
+		artifacts    []pkgtypes.ArtifactRef
 	)
 
 	for {
@@ -73,7 +76,12 @@ func (s *Strategy) Spawn(ctx context.Context, p scheduler.SpawnParams, st *sched
 					FinishedAt: time.Now(),
 					Usage:      usage,
 					Outcome: scheduler.SyncOutcome{
-						Content: content, Terminal: terminal, ToolCalls: toolCalls,
+						Content:      content,
+						Terminal:     terminal,
+						ToolCalls:    toolCalls,
+						Deliverables: deliverables,
+						DeniedTools:  denied,
+						Artifacts:    artifacts,
 					},
 				}, nil
 			}
@@ -83,7 +91,7 @@ func (s *Strategy) Spawn(ctx context.Context, p scheduler.SpawnParams, st *sched
 				default:
 				}
 			}
-			s.accumulate(evt, &content, &toolCalls, &terminal, &usage)
+			s.accumulate(evt, &content, &toolCalls, &terminal, &usage, &deliverables, &denied, &artifacts)
 		}
 	}
 }
@@ -154,7 +162,18 @@ func (s *Strategy) handoffToBackground(
 func (s *Strategy) accumulate(evt pkgtypes.EngineEvent,
 	content *[]pkgtypes.ContentBlock, toolCalls *int,
 	terminal *pkgtypes.Terminal, usage *pkgtypes.Usage,
+	deliverables *[]pkgtypes.Deliverable, denied *[]string,
+	artifacts *[]pkgtypes.ArtifactRef,
 ) {
+	// Artifacts 可能挂在任意事件类型（tool_end / subagent_end / 自定义）
+	if len(evt.Artifacts) > 0 {
+		*artifacts = append(*artifacts, evt.Artifacts...)
+	}
+	// DeniedTools 主要挂 subagent_end，但任意带 DeniedTools 的帧都吸收
+	if len(evt.DeniedTools) > 0 {
+		*denied = append(*denied, evt.DeniedTools...)
+	}
+
 	switch evt.Type {
 	case pkgtypes.EngineEventText:
 		// 文本流：把所有 text chunk 拼到当前 ContentBlock 末尾；
@@ -166,6 +185,10 @@ func (s *Strategy) accumulate(evt pkgtypes.EngineEvent,
 		})
 	case pkgtypes.EngineEventToolUse, pkgtypes.EngineEventToolCall:
 		*toolCalls++
+	case pkgtypes.EngineEventDeliverable:
+		if evt.Deliverable != nil {
+			*deliverables = append(*deliverables, *evt.Deliverable)
+		}
 	case pkgtypes.EngineEventMessageDelta:
 		// message_delta 携带 Usage / stop_reason
 		if evt.Usage != nil {
