@@ -3,30 +3,29 @@
 // 故意放在 internal/engine/loop/runtime 而非 scheduler/runtime/llm，
 // 这样 scheduler 包严格零 LLM import —— 满足 spec 目标 4「LLM 解耦」。
 //
-// PR-1 状态：本文件是骨架（stub）。真正的 LLM 装配逻辑（建 sub-session
-// + 建 ToolPool + 建 SystemPrompt + 调 loop.Run）在 PR-3 emma 切换时
-// port 自 internal/engine/agent/runAgent/runner/runner.go:139-280 (RunLeaf)。
-//
-// 留 stub 的原因：
-//   - PR-1 没有 E2E smoke 测，无法验证 port 正确性
-//   - PR-3 emma 切换时会同步加 smoke 测，那时是 port 的合适时机
-//   - 当前 stub 足够让 scheduler 包 + 调用方 compile-time wiring 通过
+// 内容 = runner.RunLeaf 的整体逻辑 + Option B 适配（loop.Out → 返回 channel）。
+// 不重新实现 LLM 循环 —— loop.Run 仍是同一个 kernel；本文件只做
+// SpawnParams → loop.Config 装配 + channel 桥。
 package loopruntime
 
 import (
 	"context"
+	"time"
 
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/engine/compact"
+	"harnessclaw-go/internal/engine/loop"
+	"harnessclaw-go/internal/engine/scheduler/middlewares"
 	"harnessclaw-go/internal/engine/scheduler/runtime"
 	"harnessclaw-go/internal/engine/session"
+	legacyagent "harnessclaw-go/internal/legacy/agent"
+	common "harnessclaw-go/internal/legacy/engine_agent_common"
 	"harnessclaw-go/internal/legacy/prompt"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/tools"
 	pkgtypes "harnessclaw-go/pkg/types"
-	"time"
 )
 
 // LLM 是 scheduler.Runtime 的实际实现。
@@ -80,22 +79,130 @@ func NewLLM(a LLMArgs) *LLM {
 
 // Run 启动 agent 执行循环。
 //
-// PR-1 stub: 立刻返回一个 close 掉的 channel，伴随一条 EngineEventError，
-// 把 Terminal.Reason 标记为 "not_implemented"。
-// PR-3 将这里 port 自 runner.RunLeaf —— 见包注释。
+// 把 RunParams 装配成 loop.Config：建子 session、建工具池、建 system prompt、
+// 喂第一条 user 消息，然后在 goroutine 里跑 loop.Run，把 loop 写到 events
+// channel 的事件透传给调用方（Option B 桥）。
+//
+// 终止：loop.Run 返回 → 关 channel。期间出错的话最后多发一帧 EngineEventError
+// 携带 Terminal.Reason。
 func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.EngineEvent, error) {
-	events := make(chan pkgtypes.EngineEvent, 1)
+	ac, _ := middlewares.AgentCtxFrom(ctx)
+
+	// 从 RunParams + ctx 合成 legacy SpawnConfig，供老 helper 复用。
+	// SpawnConfig 是过渡期 carrier —— 后续 PR-4 删 SpawnConfig 后这里改成
+	// 直接 inline 各 helper 的逻辑。
+	cfg := &legacyagent.SpawnConfig{
+		Prompt:          p.Prompt,
+		AgentType:       p.Definition.AgentType,
+		SubagentType:    p.Definition.Name, // observability label（spec 调和决策）
+		Name:            p.Definition.Name,
+		Model:           p.Overrides.Model,
+		MaxTurns:        p.Overrides.MaxTurns,
+		ParentSessionID: string(ac.SessionID),
+		ParentAgentID:   string(ac.ParentAgentID),
+		RootSessionID:   string(ac.RootSessionID),
+		TaskID:          string(ac.TaskID),
+		InputPaths:      p.InputPaths,
+	}
+
+	// 1. 建子 session（runner.RunLeaf:139）
+	sess, err := common.BuildSubSession(r.SessionMgr, cfg.ParentSessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. 预创 task 目录（runner.RunLeaf:145）
+	_ = common.EnsureTaskDir(cfg, r.Cfg.RootDir)
+
+	// 3. 工具池（runner.RunLeaf:151-155）
+	pool := common.BuildToolPool(r.Registry, p.Definition.AllowedTools, p.Definition.AgentType, false)
+
+	// 4. Profile + system prompt（runner.RunLeaf:158-180）
+	profile := resolveProfile(p.Definition.Profile)
+	sysPrompt := common.BuildSubAgentPrompt(common.PromptArgs{
+		Ctx:               ctx,
+		Session:           sess,
+		Profile:           profile,
+		Builder:           r.PromptBuilder,
+		WorkerDisplayName: cfg.Name,
+		SubagentType:      cfg.SubagentType,
+		ContextWindow:     r.Cfg.ContextWindow,
+		Registry:          r.Registry,
+	})
+
+	// 5. Seed 第一条 user 消息（runner.RunLeaf:198-203）
+	sess.AddMessage(pkgtypes.Message{
+		Role: pkgtypes.RoleUser,
+		Content: []pkgtypes.ContentBlock{{
+			Type: pkgtypes.ContentTypeText,
+			Text: common.SeedPrompt(cfg, r.Cfg.RootDir),
+		}},
+	})
+
+	// 6. MaxTurns 优先级：Overrides > Definition.MaxTurns > 10
+	maxTurns := p.Overrides.MaxTurns
+	if maxTurns <= 0 {
+		maxTurns = p.Definition.MaxTurns
+	}
+	if maxTurns <= 0 {
+		maxTurns = 10
+	}
+
+	// 7. 权限 checker（runner.RunLeaf:214-216）
+	permChecker := common.BuildInheritedChecker(
+		common.SessionApprovedTools(r.SessionMgr, cfg.ParentSessionID),
+	)
+
+	// 8. AgentScope（runner.RunLeaf:256）
+	scope := common.BuildAgentScope(cfg, r.Cfg.RootDir, "leaf")
+
+	// 9. Option B 桥：开 channel，goroutine 跑 loop，loop 的 sink 就是 channel
+	events := make(chan pkgtypes.EngineEvent, 64)
 	go func() {
 		defer close(events)
-		events <- pkgtypes.EngineEvent{
-			Type: pkgtypes.EngineEventError,
-			Terminal: &pkgtypes.Terminal{
-				Reason:  pkgtypes.TerminalModelError,
-				Message: "loopruntime.LLM.Run: stub — PR-3 will port runner.RunLeaf body here",
-			},
+		_, rerr := loop.Run(ctx, &loop.Config{
+			Session:             sess,
+			SystemPrompt:        sysPrompt,
+			Tools:               pool,
+			Provider:            r.Provider,
+			Compactor:           r.Compactor,
+			Retryer:             r.Retryer,
+			Logger:              r.Logger,
+			MaxTurns:            maxTurns,
+			MaxTokens:           r.Cfg.MaxTokens,
+			ContextWindow:       r.Cfg.ContextWindow,
+			ToolTimeout:         r.Cfg.ToolTimeout,
+			LLMAPITimeout:       r.Cfg.LLMAPITimeout,
+			LLMFirstByteTimeout: r.Cfg.LLMFirstByteTimeout,
+			Out:                 events,
+			AgentID:             string(p.AgentID),
+			PermChecker:         permChecker,
+			AgentScope:          scope,
+			OnTurnComplete:      common.StopOnEndTurn(),
+		})
+		if rerr != nil {
+			events <- pkgtypes.EngineEvent{
+				Type: pkgtypes.EngineEventError,
+				Terminal: &pkgtypes.Terminal{
+					Reason:  pkgtypes.TerminalModelError,
+					Message: rerr.Error(),
+				},
+			}
 		}
 	}()
 	return events, nil
+}
+
+// resolveProfile 把 Definition.Profile 字符串解析成 *prompt.AgentProfile。
+// 空 → WorkerProfile（与 runner.RunLeaf:302-310 一致）。
+func resolveProfile(name string) *prompt.AgentProfile {
+	if name == "" {
+		return prompt.WorkerProfile
+	}
+	if p, ok := prompt.GetBuiltInProfiles()[name]; ok && p != nil {
+		return p
+	}
+	return prompt.WorkerProfile
 }
 
 // 编译期接口实现检查
