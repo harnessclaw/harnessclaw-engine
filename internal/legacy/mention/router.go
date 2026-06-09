@@ -5,17 +5,17 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/engine/agent/runAgent/agentrun"
+	"harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/pkg/types"
 )
 
 // Router detects @agent_name at the start of a user message and, if
-// the named agent is registered, spawns it directly (bypassing the
-// host engine's main loop).
+// the named agent is registered, spawns it directly via the new
+// scheduler.Scheduler dispatch entry (sync mode).
 type Router struct {
-	rt     *agentrun.Runner
+	sched  scheduler.Scheduler
 	defReg *agent.AgentDefinitionRegistry
 	parser *agent.MentionParser
 	logger *zap.Logger
@@ -23,9 +23,9 @@ type Router struct {
 
 // NewRouter constructs a Router. parser may be created from defReg via
 // agent.NewMentionParser; passed in to allow reuse / testing.
-func NewRouter(rt *agentrun.Runner, defReg *agent.AgentDefinitionRegistry, parser *agent.MentionParser) *Router {
+func NewRouter(sched scheduler.Scheduler, defReg *agent.AgentDefinitionRegistry, parser *agent.MentionParser) *Router {
 	return &Router{
-		rt:     rt,
+		sched:  sched,
 		defReg: defReg,
 		parser: parser,
 		logger: zap.NewNop(),
@@ -78,22 +78,21 @@ func (r *Router) TryRoute(ctx context.Context, sess *session.Session, msg *types
 			)
 		}
 
-		// SubagentType MUST be def.Name (the registry key), not
-		// def.Profile (a prompt-profile selector).
-		cfg := &agent.SpawnConfig{
-			Prompt:          promptText,
-			SubagentType:    def.Name,
-			Name:            def.Name,
-			Description:     def.Description,
-			AgentType:       def.AgentType,
-			Model:           def.Model,
-			MaxTurns:        def.MaxTurns,
-			ParentSessionID: sess.ID,
-			ParentAgentID:   "main",
-			ParentOut:       out,
-		}
-
-		runRes, err := r.rt.Run(ctx, agentrun.Request{Cfg: cfg, Mode: agentrun.ModeInproc})
+		// 走新 scheduler.Dispatch（sync 模式默认）。
+		// p.Events 透传给父订阅者；strategy 内部 fan-out 每帧 evt 给 out。
+		res, err := r.sched.Dispatch(ctx, scheduler.SpawnParams{
+			Definition:  *def,
+			Prompt:      promptText,
+			Name:        def.Name,
+			Description: def.Description,
+			Parent: &scheduler.ParentRef{
+				AgentID:   "main",
+				SessionID: types.SessionID(sess.ID),
+			},
+			InvokedBy: scheduler.Invoker{Kind: scheduler.InvokerMention, Source: def.Name},
+			Overrides: scheduler.Overrides{Model: def.Model, MaxTurns: def.MaxTurns},
+			Events:    out,
+		})
 		if err != nil {
 			out <- types.EngineEvent{Type: types.EngineEventError, Error: err}
 			out <- types.EngineEvent{
@@ -106,11 +105,15 @@ func (r *Router) TryRoute(ctx context.Context, sess *session.Session, msg *types
 			}
 			return
 		}
-		result := runRes.SpawnResult
+		// Sync 路径才有 SyncOutcome —— 拿 Terminal / Usage 发 Done event。
+		var terminal *types.Terminal
+		if sync, ok := res.Outcome.(scheduler.SyncOutcome); ok {
+			terminal = &sync.Terminal
+		}
 		out <- types.EngineEvent{
 			Type:     types.EngineEventDone,
-			Terminal: result.Terminal,
-			Usage:    result.Usage,
+			Terminal: terminal,
+			Usage:    &res.Usage,
 		}
 	}()
 	return out

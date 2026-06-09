@@ -467,11 +467,10 @@ func New(
 	// provided. Holds the spawner so emma's ProcessMessage can offload
 	// agent dispatch without recomputing routing or owning a parser.
 	if e.defRegistry != nil {
-		// Reuses the same agentrun.Runner constructed above so the
-		// mention router goes through the same dispatcher every other
-		// caller uses.
+		// mention router 走新 scheduler.Scheduler 接口。
+		// agentRun 字段保留是给其他还未迁移的 tools 用。
 		e.mentionRouter = mention.NewRouter(
-			agentRun,
+			e.sched,
 			e.defRegistry,
 			agent.NewMentionParser(e.defRegistry),
 		)
