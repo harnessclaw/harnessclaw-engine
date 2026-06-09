@@ -8,13 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/engine/agent/runAgent/agentrun"
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/legacy/sessionstats"
+	"harnessclaw-go/internal/engine/scheduler"
+	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
@@ -23,7 +21,7 @@ const ToolName = "browser_agent"
 
 type Tool struct {
 	tool.BaseTool
-	rt     *agentrun.Runner
+	sched  scheduler.Scheduler
 	cfg    config.BrowserAgentConfig
 	logger *zap.Logger
 }
@@ -34,11 +32,11 @@ type input struct {
 	MaxSteps int    `json:"max_steps,omitempty"`
 }
 
-func New(rt *agentrun.Runner, cfg config.BrowserAgentConfig, logger *zap.Logger) *Tool {
+func New(sched scheduler.Scheduler, cfg config.BrowserAgentConfig, logger *zap.Logger) *Tool {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Tool{rt: rt, cfg: cfg, logger: logger.Named("browseragent")}
+	return &Tool{sched: sched, cfg: cfg, logger: logger.Named("browseragent")}
 }
 
 func (t *Tool) Name() string                  { return ToolName }
@@ -104,65 +102,86 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	if err := t.ValidateInput(raw); err != nil {
 		return &types.ToolResult{Content: err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
-	if t.rt == nil {
-		return &types.ToolResult{Content: "browser_agent has no agentrun.Runner", IsError: true, ErrorType: types.ToolErrorInternal}, nil
+	if t.sched == nil {
+		return &types.ToolResult{Content: "browser_agent has no scheduler", IsError: true, ErrorType: types.ToolErrorInternal}, nil
 	}
 
 	maxSteps := in.MaxSteps
 	if maxSteps == 0 {
 		maxSteps = t.maxSteps()
 	}
-	taskID := "browser_" + uuid.New().String()[:8]
-	cfg := &agent.SpawnConfig{
-		Prompt:       buildPrompt(in, maxSteps, t.cfg),
-		AgentType:    tool.AgentTypeSync,
-		SubagentType: agent.BrowserAgentName,
-		Name:         agent.BrowserAgentName,
-		Description:  "浏览器任务",
-		MaxTurns:     maxSteps,
-		Timeout:      5 * time.Minute,
-		TaskID:       taskID,
-		Inputs: map[string]any{
-			"goal":      strings.TrimSpace(in.Goal),
-			"max_steps": maxSteps,
-		},
+
+	// 用内置 BrowserAgentDefinition；新 scheduler 通过 SpawnParams.Definition 驱动 Runtime.LLM。
+	def := agent.BrowserAgentDefinition()
+
+	inputs := map[string]any{
+		"goal":      strings.TrimSpace(in.Goal),
+		"max_steps": maxSteps,
 	}
 	if strings.TrimSpace(in.StartURL) != "" {
-		cfg.Inputs["start_url"] = strings.TrimSpace(in.StartURL)
+		inputs["start_url"] = strings.TrimSpace(in.StartURL)
 	}
+
+	// 父 session / event 通道
+	var parentSess types.SessionID
 	if tuc, ok := tool.GetToolUseContext(ctx); ok {
-		cfg.ParentSessionID = tuc.Core.SessionID
-		cfg.ParentAgentID = parentAgentIDFromContext(ctx, tuc)
-		cfg.ParentStepID = strings.TrimSpace(tuc.Core.ToolCallID)
+		parentSess = types.SessionID(tuc.Core.SessionID)
 	}
-	if rootSID, ok := sessionstats.RootSessionIDFromCtx(ctx); ok {
-		cfg.RootSessionID = rootSID
-	}
+	var events chan<- types.EngineEvent
 	if out, ok := tool.GetEventOut(ctx); ok {
-		cfg.ParentOut = out
+		events = out
 	}
 
 	t.logger.Info("spawning browser sub-agent", zap.Int("max_steps", maxSteps), zap.Bool("has_start_url", in.StartURL != ""))
-	runRes, err := t.rt.Run(ctx, agentrun.Request{Cfg: cfg, Mode: agentrun.ModeInproc})
+
+	res, err := t.sched.Dispatch(ctx, scheduler.SpawnParams{
+		Definition:  *def,
+		Prompt:      buildPrompt(in, maxSteps, t.cfg),
+		Name:        agent.BrowserAgentName,
+		Description: "浏览器任务",
+		Parent:      &scheduler.ParentRef{SessionID: parentSess},
+		InvokedBy:   scheduler.Invoker{Kind: scheduler.InvokerLLM, Source: ToolName},
+		Inputs:      inputs,
+		Events:      events,
+		Overrides:   scheduler.Overrides{MaxTurns: maxSteps, Timeout: 5 * time.Minute},
+	})
 	if err != nil {
 		return &types.ToolResult{Content: "Browser Agent execution failed: " + err.Error(), IsError: true, ErrorType: types.ToolErrorDependencyFail}, nil
 	}
-	result := runRes.SpawnResult
+
+	sync, ok := res.Outcome.(scheduler.SyncOutcome)
+	if !ok {
+		return &types.ToolResult{Content: "Browser Agent: expected SyncOutcome", IsError: true, ErrorType: types.ToolErrorInternal}, nil
+	}
+
 	meta := map[string]any{
 		"render_hint":   "agent",
-		"session_id":    result.SessionID,
-		"agent_id":      result.AgentID,
-		"num_turns":     result.NumTurns,
+		"agent_id":      res.AgentID,
+		"task_id":       res.TaskID,
 		"subagent_type": agent.BrowserAgentName,
+		"tool_calls":    sync.ToolCalls,
 	}
-	if result.Terminal != nil {
-		meta["terminal_reason"] = string(result.Terminal.Reason)
+	if sync.Terminal.Reason != "" {
+		meta["terminal_reason"] = string(sync.Terminal.Reason)
 	}
+
+	isError := sync.Terminal.Reason != "" && sync.Terminal.Reason != types.TerminalCompleted
 	return &types.ToolResult{
-		Content:  result.Output,
-		IsError:  agent.IsTerminalError(result),
+		Content:  concatText(sync.Content),
+		IsError:  isError,
 		Metadata: meta,
 	}, nil
+}
+
+// concatText 把 ContentBlock 列表的 text 字段拼接成单段输出。
+func concatText(blocks []types.ContentBlock) string {
+	var sb strings.Builder
+	for _, b := range blocks {
+		if b.Type == types.ContentTypeText {
+			sb.WriteString(b.Text)
+		}
+	}
+	return sb.String()
 }
 
 func parentAgentIDFromContext(ctx context.Context, tuc *types.ToolUseContext) string {

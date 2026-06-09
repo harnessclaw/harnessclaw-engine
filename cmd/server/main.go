@@ -462,7 +462,7 @@ func main() {
 	}
 	logger.Info("scheduler tool registered")
 	if cfg.Tools.BrowserAgent.Enabled {
-		if err := registry.Register(browseragent.New(agentRun, cfg.Tools.BrowserAgent, logger)); err != nil {
+		if err := registry.Register(browseragent.New(eng.Scheduler(), cfg.Tools.BrowserAgent, logger)); err != nil {
 			logger.Fatal("failed to register browser agent tool", zap.Error(err))
 		}
 		logger.Info("browser agent tool registered")
