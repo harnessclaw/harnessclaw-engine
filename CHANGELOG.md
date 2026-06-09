@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+## [0.0.21-beta.1] - 2026-06-09
+
+### Fixed
+- Image generation requests now use a longer HTTP/TLS budget and bypass the generic tool executor timeout, so slower image providers can complete instead of failing after the default tool deadline.
+
 ## [0.0.21-beta.0] - 2026-06-09
 
 ### Added
