@@ -46,9 +46,9 @@ func TestRun_TerminatesWhenHookReturnsTerminal(t *testing.T) {
 		Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hello"}},
 	})
 
-	hook := func(turn int, msg types.Message, toolResults []types.ToolResult) loop.Decision {
+	hook := func(snap loop.TurnSnapshot) loop.Decision {
 		return loop.Decision{Terminate: &types.Terminal{
-			Reason: types.TerminalCompleted, Turn: turn,
+			Reason: types.TerminalCompleted, Turn: snap.Turn,
 		}}
 	}
 
@@ -114,9 +114,9 @@ func TestRun_InjectsMessagesBeforeNextTurn(t *testing.T) {
 	})
 
 	hookCalls := 0
-	hook := func(turn int, msg types.Message, _ []types.ToolResult) loop.Decision {
+	hook := func(snap loop.TurnSnapshot) loop.Decision {
 		hookCalls++
-		if turn == 1 {
+		if snap.Turn == 1 {
 			return loop.Decision{Inject: []types.Message{{
 				Role: types.RoleUser,
 				Content: []types.ContentBlock{{
@@ -125,7 +125,7 @@ func TestRun_InjectsMessagesBeforeNextTurn(t *testing.T) {
 			}}}
 		}
 		return loop.Decision{Terminate: &types.Terminal{
-			Reason: types.TerminalCompleted, Turn: turn,
+			Reason: types.TerminalCompleted, Turn: snap.Turn,
 		}}
 	}
 
@@ -239,11 +239,11 @@ func TestRun_RoutesClientRoutedToolsThroughSessionAwaits(t *testing.T) {
 			Out:                out,
 			AgentID:            "a_client",
 			PermChecker:        permission.BypassChecker{},
-			OnTurnComplete: func(turn int, msg types.Message, results []types.ToolResult) loop.Decision {
-				if len(results) != 1 || results[0].Content != "browser ready" {
-					t.Errorf("tool results = %+v, want browser ready", results)
+			OnTurnComplete: func(snap loop.TurnSnapshot) loop.Decision {
+				if len(snap.ToolResults) != 1 || snap.ToolResults[0].Content != "browser ready" {
+					t.Errorf("tool results = %+v, want browser ready", snap.ToolResults)
 				}
-				return loop.Decision{Terminate: &types.Terminal{Reason: types.TerminalCompleted, Turn: turn}}
+				return loop.Decision{Terminate: &types.Terminal{Reason: types.TerminalCompleted, Turn: snap.Turn}}
 			},
 		})
 		if err != nil {
@@ -298,7 +298,7 @@ func TestRun_MaxTurnsHit(t *testing.T) {
 	sess, _ := mgr.GetOrCreate(context.Background(), "t3", "ws", "u")
 	sess.AddMessage(types.Message{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "go"}}})
 
-	hook := func(_ int, _ types.Message, _ []types.ToolResult) loop.Decision {
+	hook := func(_ loop.TurnSnapshot) loop.Decision {
 		return loop.Decision{} // never terminate
 	}
 	out := make(chan types.EngineEvent, 64)

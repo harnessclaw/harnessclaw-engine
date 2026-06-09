@@ -15,13 +15,6 @@ import (
 
 	"harnessclaw-go/internal/channel/emit"
 	"harnessclaw-go/internal/commands"
-	browseragentmod "harnessclaw-go/internal/engine/agent/builtin/browser_agent"
-	"harnessclaw-go/internal/engine/agent/builtin/explore"
-	"harnessclaw-go/internal/engine/agent/builtin/freelancer"
-	"harnessclaw-go/internal/engine/agent/builtin/generic"
-	"harnessclaw-go/internal/engine/agent/builtin/plan_agent"
-	"harnessclaw-go/internal/engine/agent/builtin/plan_design"
-	"harnessclaw-go/internal/engine/agent/builtin/plan_executor_agent"
 	schedulerpkg "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/permission"
@@ -279,141 +272,16 @@ func New(
 		e.statsRegistry = cfg.StatsRegistry
 	}
 
-	// spawner hosts the tier modules. Every SubagentType is dispatched
-	// here — migrated tiers via Register, unknown types via the generic
-	// fallback below. Deps (provider, registry, sessionMgr, compactor,
-	// retryer, promptBuilder, MaxTokens, ContextWindow) come straight
-	// off the engine.
-	e.spawner = spawn.NewSpawner(logger)
-	planAgentMod := plan_agent.New(plan_agent.Deps{
-		Provider:            prov,
-		Registry:            reg,
-		SessionMgr:          mgr,
-		Compactor:           comp,
-		Retryer:             e.retryer,
-		PromptBuilder:       promptBuilder,
-		Logger:              logger,
-		MaxTokens:           cfg.MaxTokens,
-		ContextWindow:       cfg.ContextWindow,
-		ToolTimeout:         cfg.ToolTimeout,
-		LLMAPITimeout:       cfg.LLMAPITimeout,
-		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
-		RootDir:             workspace.DefaultRootDir(),
-	})
-	e.spawner.Register(planAgentMod)
-
-	// Stage 5 thin modules — same Deps shape as plan_agent.
-	plExecutorMod := plan_executor_agent.New(plan_executor_agent.Deps{
-		Provider:            prov,
-		Registry:            reg,
-		SessionMgr:          mgr,
-		Compactor:           comp,
-		Retryer:             e.retryer,
-		PromptBuilder:       promptBuilder,
-		Logger:              logger,
-		MaxTokens:           cfg.MaxTokens,
-		ContextWindow:       cfg.ContextWindow,
-		ToolTimeout:         cfg.ToolTimeout,
-		LLMAPITimeout:       cfg.LLMAPITimeout,
-		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
-		RootDir:             workspace.DefaultRootDir(),
-	})
-	e.spawner.Register(plExecutorMod)
-
-	exploreMod := explore.New(explore.Deps{
-		Provider:            prov,
-		Registry:            reg,
-		SessionMgr:          mgr,
-		Compactor:           comp,
-		Retryer:             e.retryer,
-		PromptBuilder:       promptBuilder,
-		Logger:              logger,
-		MaxTokens:           cfg.MaxTokens,
-		ContextWindow:       cfg.ContextWindow,
-		ToolTimeout:         cfg.ToolTimeout,
-		LLMAPITimeout:       cfg.LLMAPITimeout,
-		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
-		RootDir:             workspace.DefaultRootDir(),
-	})
-	e.spawner.Register(exploreMod)
-
-	planDesignMod := plan_design.New(plan_design.Deps{
-		Provider:            prov,
-		Registry:            reg,
-		SessionMgr:          mgr,
-		Compactor:           comp,
-		Retryer:             e.retryer,
-		PromptBuilder:       promptBuilder,
-		Logger:              logger,
-		MaxTokens:           cfg.MaxTokens,
-		ContextWindow:       cfg.ContextWindow,
-		ToolTimeout:         cfg.ToolTimeout,
-		LLMAPITimeout:       cfg.LLMAPITimeout,
-		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
-		RootDir:             workspace.DefaultRootDir(),
-	})
-	e.spawner.Register(planDesignMod)
-
-	// Stage 6 freelancer — substantial L3 with skill hydration +
-	// SearchGapDetector + ContractEnforcer. Skill reader and def
-	// registry are optional (may be nil when not configured); the
-	// module degrades gracefully — no candidate preloading, no gap
-	// check — preserving the legacy "feature disabled" semantics.
-	freelancerMod := freelancer.New(freelancer.Deps{
-		Provider:            prov,
-		Registry:            reg,
-		SessionMgr:          mgr,
-		Compactor:           comp,
-		Retryer:             e.retryer,
-		PromptBuilder:       promptBuilder,
-		Logger:              logger,
-		SkillReader:         e.skillReader,
-		DefRegistry:         e.defRegistry,
-		SearchGapDetector:   freelancer.NewSearchGapDetector(logger),
-		MaxTokens:           8192,
-		ContextWindow:       cfg.ContextWindow,
-		ToolTimeout:         cfg.ToolTimeout,
-		LLMAPITimeout:       cfg.LLMAPITimeout,
-		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
-		RootDir:             workspace.DefaultRootDir(),
-	})
-	e.spawner.Register(freelancerMod)
-
-	browserAgentMod := browseragentmod.New(browseragentmod.Deps{
-		Provider:           prov,
-		Registry:           reg,
-		SessionMgr:         mgr,
-		Compactor:          comp,
-		Retryer:            e.retryer,
-		PromptBuilder:      promptBuilder,
-		Logger:             logger,
-		MaxTokens:          cfg.MaxTokens,
-		ContextWindow:      cfg.ContextWindow,
-		BrowserAgentConfig: cfg.BrowserAgent,
-	})
-	e.spawner.Register(browserAgentMod)
-
-	// Generic is the fallback for SubagentTypes not handled by a
-	// dedicated tier module above. It preserves the legacy "any
-	// TierSubAgent spins up with declared AllowedTools" behavior so
-	// arbitrary agent definitions (e.g. researcher-test) keep working
-	// after the spawn → spawner migration.
-	genericMod := generic.New(generic.Deps{
-		Provider:            prov,
-		Registry:            reg,
-		SessionMgr:          mgr,
-		Compactor:           comp,
-		Retryer:             e.retryer,
-		PromptBuilder:       promptBuilder,
-		Logger:              logger,
-		MaxTokens:           cfg.MaxTokens,
-		ContextWindow:       cfg.ContextWindow,
-		ToolTimeout:         cfg.ToolTimeout,
-		LLMAPITimeout:       cfg.LLMAPITimeout,
-		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
-		RootDir:             workspace.DefaultRootDir(),
-	})
-	e.spawner.SetFallback(genericMod)
+	// 老的 spawn.Spawner + builtin module 注册已删除：
+	// 新 scheduler.Runtime.LLM 用 SpawnParams.Definition 驱动 sub-agent loop，
+	// 不再走 SubagentType → spawn.Module 路由。每种 sub-agent 的差异（freelancer
+	// 的 skill 注入 / explore 的 OnPoolBuilt 等）后续按需在 Runtime 内 inline 或
+	// 通过 Definition 数据描述（如 LoadedSkills / OnPoolBuiltHook 字段）。
+	_ = prov
+	_ = mgr
+	_ = comp
+	_ = promptBuilder
+	_ = reg
 
 	// 新 scheduler dispatch 入口。callsite 已全部迁移；
 	// 旧的 schedulerCoord / agentRun / agentscheduler.Module 已删（这次清理）。

@@ -3,17 +3,37 @@ package common_test
 import (
 	"testing"
 
+	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/legacy/engine_agent_common"
 	"harnessclaw-go/internal/tools/builtin/submittool"
 	"harnessclaw-go/pkg/types"
 )
+
+// snap builds a TurnSnapshot from the old (turn, msg, results) triple so
+// existing test bodies translate one-to-one. HadToolCalls is derived from
+// msg.Content to match what loop.Run would compute.
+func snap(turn int, msg types.Message, results []types.ToolResult) loop.TurnSnapshot {
+	hasTC := false
+	for _, b := range msg.Content {
+		if b.Type == types.ContentTypeToolUse {
+			hasTC = true
+			break
+		}
+	}
+	return loop.TurnSnapshot{
+		Turn:         turn,
+		AssistantMsg: msg,
+		ToolResults:  results,
+		HadToolCalls: hasTC,
+	}
+}
 
 func TestStopOnEndTurn_TerminatesWhenNoToolCalls(t *testing.T) {
 	hook := common.StopOnEndTurn()
 	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
 		{Type: types.ContentTypeText, Text: "done"},
 	}}
-	d := hook(1, msg, nil)
+	d := hook(snap(1, msg, nil))
 	if d.Terminate == nil {
 		t.Fatal("expected Terminate non-nil")
 	}
@@ -27,7 +47,7 @@ func TestStopOnEndTurn_ContinuesWhenToolCallsPresent(t *testing.T) {
 	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ToolUseID: "t1", ToolName: "read"},
 	}}
-	d := hook(1, msg, []types.ToolResult{{Content: "ok"}})
+	d := hook(snap(1, msg, []types.ToolResult{{Content: "ok"}}))
 	if d.Terminate != nil {
 		t.Errorf("expected continue, got terminate %v", d.Terminate)
 	}
@@ -38,7 +58,7 @@ func TestStopOnSubmitResult_TerminatesOnSubmit(t *testing.T) {
 	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ToolUseID: "s1", ToolName: "submit_task_result", ToolInput: `{}`},
 	}}
-	d := hook(1, msg, nil)
+	d := hook(snap(1, msg, nil))
 	if d.Terminate == nil {
 		t.Fatal("expected terminate when submit_task_result called")
 	}
@@ -52,7 +72,7 @@ func TestStopOnSubmitResult_TerminatesOnEndTurn(t *testing.T) {
 	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
 		{Type: types.ContentTypeText, Text: "all done"},
 	}}
-	d := hook(1, msg, nil)
+	d := hook(snap(1, msg, nil))
 	if d.Terminate == nil {
 		t.Fatal("expected terminate on natural end_turn")
 	}
@@ -63,7 +83,7 @@ func TestStopOnSubmitResult_ContinuesOnOtherTool(t *testing.T) {
 	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ToolUseID: "r1", ToolName: "read", ToolInput: `{"path":"foo"}`},
 	}}
-	d := hook(1, msg, []types.ToolResult{{Content: "ok"}})
+	d := hook(snap(1, msg, []types.ToolResult{{Content: "ok"}}))
 	if d.Terminate != nil {
 		t.Errorf("expected continue for non-submit tool, got %v", d.Terminate)
 	}
@@ -78,7 +98,7 @@ func TestContractEnforcer_AcceptsValidSubmit(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ToolName: "submit_task_result",
 			ToolUseID: "s1", ToolInput: `{"artifacts":[{"role":"result","path":"out.md"}]}`},
 	}}
-	d := enforcer(1, goodSubmit, []types.ToolResult{{Content: "ok"}})
+	d := enforcer(snap(1, goodSubmit, []types.ToolResult{{Content: "ok"}}))
 	if d.Terminate == nil {
 		t.Fatal("expected terminate on valid submit")
 	}
@@ -98,7 +118,7 @@ func TestContractEnforcer_RetryUntilLimitThenFail(t *testing.T) {
 	}}
 	badResult := []types.ToolResult{{Content: "ok", IsError: false}}
 
-	d1 := enforcer(1, badSubmit, badResult)
+	d1 := enforcer(snap(1, badSubmit, badResult))
 	if d1.Terminate != nil {
 		t.Errorf("turn 1 should inject correction, not terminate; got %v", d1.Terminate)
 	}
@@ -106,12 +126,12 @@ func TestContractEnforcer_RetryUntilLimitThenFail(t *testing.T) {
 		t.Error("turn 1 should inject correction message")
 	}
 
-	d2 := enforcer(2, badSubmit, badResult)
+	d2 := enforcer(snap(2, badSubmit, badResult))
 	if d2.Terminate != nil {
 		t.Error("turn 2 should still retry")
 	}
 
-	d3 := enforcer(3, badSubmit, badResult)
+	d3 := enforcer(snap(3, badSubmit, badResult))
 	if d3.Terminate == nil {
 		t.Fatal("turn 3 should terminate after exhausting retries")
 	}
@@ -124,7 +144,7 @@ func TestContractEnforcer_NudgesWhenNoToolCalls(t *testing.T) {
 	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
 		{Type: types.ContentTypeText, Text: "I'm thinking..."},
 	}}
-	d := enforcer(1, msg, nil)
+	d := enforcer(snap(1, msg, nil))
 	if d.Terminate != nil {
 		t.Errorf("should not terminate when no submit yet; got %v", d.Terminate)
 	}
@@ -142,12 +162,12 @@ func TestContractEnforcer_HardNudgeOnBudgetExhaustion(t *testing.T) {
 	busyMsg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ToolUseID: "e1", ToolName: "edit", ToolInput: `{}`},
 	}}
-	if d := enforcer(5, busyMsg, []types.ToolResult{{Content: "ok"}}); len(d.Inject) != 0 {
+	if d := enforcer(snap(5, busyMsg, []types.ToolResult{{Content: "ok"}})); len(d.Inject) != 0 {
 		t.Errorf("mid-loop tool_use should not trigger nudge; got %d injects", len(d.Inject))
 	}
 
 	// turn 9 = maxTurns - 1, still in tool_use → hard nudge fires.
-	d := enforcer(9, busyMsg, []types.ToolResult{{Content: "ok"}})
+	d := enforcer(snap(9, busyMsg, []types.ToolResult{{Content: "ok"}}))
 	if len(d.Inject) != 1 {
 		t.Fatalf("turn 9 with tool_use should inject hard nudge; got %d injects", len(d.Inject))
 	}
@@ -156,7 +176,7 @@ func TestContractEnforcer_HardNudgeOnBudgetExhaustion(t *testing.T) {
 	}
 
 	// Already nudged — turn 10 must not nudge again.
-	d2 := enforcer(10, busyMsg, []types.ToolResult{{Content: "ok"}})
+	d2 := enforcer(snap(10, busyMsg, []types.ToolResult{{Content: "ok"}}))
 	if len(d2.Inject) != 0 {
 		t.Errorf("hard nudge should fire at most once; turn 10 got %d injects", len(d2.Inject))
 	}
@@ -170,7 +190,7 @@ func TestContractEnforcer_NoHardNudgeWhenMaxTurnsZero(t *testing.T) {
 		{Type: types.ContentTypeToolUse, ToolUseID: "e1", ToolName: "edit", ToolInput: `{}`},
 	}}
 	for _, turn := range []int{1, 50, 9999} {
-		if d := enforcer(turn, busyMsg, []types.ToolResult{{Content: "ok"}}); len(d.Inject) != 0 {
+		if d := enforcer(snap(turn, busyMsg, []types.ToolResult{{Content: "ok"}})); len(d.Inject) != 0 {
 			t.Errorf("maxTurns=0 must disable hard nudge; turn %d got %d injects", turn, len(d.Inject))
 		}
 	}
@@ -196,7 +216,7 @@ func TestContractEnforcer_ContinuesOnOtherTool(t *testing.T) {
 	msg := types.Message{Role: types.RoleAssistant, Content: []types.ContentBlock{
 		{Type: types.ContentTypeToolUse, ToolUseID: "r1", ToolName: "read", ToolInput: `{}`},
 	}}
-	d := enforcer(1, msg, []types.ToolResult{{Content: "ok"}})
+	d := enforcer(snap(1, msg, []types.ToolResult{{Content: "ok"}}))
 	if d.Terminate != nil {
 		t.Errorf("should continue when non-submit tool called; got %v", d.Terminate)
 	}
@@ -223,7 +243,7 @@ func TestSubmitResultEnforcer_AcceptsStructuredSubmitToolResult(t *testing.T) {
 		},
 	}}
 
-	d := enforcer(1, msg, results)
+	d := enforcer(snap(1, msg, results))
 	if d.Terminate == nil {
 		t.Fatal("expected accepted submit result to terminate")
 	}
@@ -250,7 +270,7 @@ func TestSubmitResultEnforcer_AcceptsConfiguredFinalTool(t *testing.T) {
 		},
 	}}
 
-	d := enforcer(1, msg, results)
+	d := enforcer(snap(1, msg, results))
 	if d.Terminate == nil {
 		t.Fatal("expected accepted final result to terminate")
 	}

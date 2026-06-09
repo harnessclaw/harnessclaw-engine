@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go.uber.org/zap"
@@ -10,6 +11,11 @@ import (
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/pkg/types"
 )
+
+// defaultAutoCompactThreshold is applied when Config.AutoCompactThreshold
+// is zero. 0.8 was the previously hard-coded value; keeping it as the
+// default preserves L3 sub-agent behaviour.
+const defaultAutoCompactThreshold = 0.8
 
 // Run drives the loop until OnTurnComplete returns Terminate, ctx is
 // cancelled, or MaxTurns is reached.
@@ -38,6 +44,11 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 		logger = zap.NewNop()
 	}
 
+	threshold := cfg.AutoCompactThreshold
+	if threshold == 0 {
+		threshold = defaultAutoCompactThreshold
+	}
+
 	for turn := 1; turn <= cfg.MaxTurns; turn++ {
 		if err := ctx.Err(); err != nil {
 			res.Terminal = types.Terminal{
@@ -47,9 +58,13 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 			return res, nil
 		}
 
+		if cfg.Hooks.OnTurnStart != nil {
+			cfg.Hooks.OnTurnStart(turn)
+		}
+
 		// Phase 1: auto-compact (best-effort).
 		messages := cfg.Session.GetMessages()
-		if cfg.Compactor != nil && cfg.Compactor.ShouldCompact(messages, cfg.ContextWindow, 0.8) {
+		if cfg.Compactor != nil && cfg.Compactor.ShouldCompact(messages, cfg.ContextWindow, threshold) {
 			compacted, err := cfg.Compactor.Compact(ctx, messages)
 			if err == nil {
 				cfg.Session.SetMessages(compacted)
@@ -97,12 +112,18 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 		llmRes := llmcall.CallLLM(ctx, cfg.Provider, req, logger, cfg.Retryer,
 			timeouts, cfg.AgentID, cfg.Out, cfg.Out)
 		if llmRes == nil {
+			if cfg.Hooks.OnLLMError != nil {
+				cfg.Hooks.OnLLMError(turn, errors.New("llmcall.CallLLM returned nil result"))
+			}
 			res.Terminal = types.Terminal{
 				Reason: types.TerminalModelError, Turn: turn,
 			}
 			return res, nil
 		}
 		if llmRes.StreamErr != nil {
+			if cfg.Hooks.OnLLMError != nil {
+				cfg.Hooks.OnLLMError(turn, llmRes.StreamErr)
+			}
 			res.Terminal = types.Terminal{
 				Reason: types.TerminalModelError, Message: llmRes.StreamErr.Error(), Turn: turn,
 			}
@@ -170,16 +191,41 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 			res.Usage.CacheWrite += llmRes.LastUsage.CacheWrite
 		}
 
+		// Hook: post-LLM, pre-tool-dispatch. Tier modules (e.g. emma)
+		// use this to emit MessageDelta + MessageStop events.
+		if cfg.Hooks.OnLLMResponse != nil {
+			cfg.Hooks.OnLLMResponse(turn, LLMResponseSnapshot{
+				AssistantMsg: assistantMsg,
+				StopReason:   llmRes.StopReason,
+				LastUsage:    llmRes.LastUsage,
+				Reasoning:    llmRes.Reasoning,
+			})
+		}
+
 		// Phase 4: tool dispatch.
 		var toolResults []types.ToolResult
 		if len(llmRes.ToolCalls) > 0 {
 			toolResults = dispatchTools(ctx, cfg, llmRes.ToolCalls, logger)
 			res.LastToolResults = toolResults
 			appendToolResultsToSession(cfg.Session, llmRes.ToolCalls, toolResults)
+
+			// Hook: post-tools, pre-OnTurnComplete. Only fires when at
+			// least one tool was called. emma uses this to emit
+			// NextRoundThinking (gated on stopReason inside the hook).
+			if cfg.Hooks.OnToolsDispatched != nil {
+				cfg.Hooks.OnToolsDispatched(turn, llmRes.ToolCalls, toolResults)
+			}
 		}
 
 		// Phase 5: hook decides.
-		decision := cfg.OnTurnComplete(turn, assistantMsg, toolResults)
+		decision := cfg.OnTurnComplete(TurnSnapshot{
+			Turn:         turn,
+			AssistantMsg: assistantMsg,
+			ToolResults:  toolResults,
+			StopReason:   llmRes.StopReason,
+			LastUsage:    llmRes.LastUsage,
+			HadToolCalls: len(llmRes.ToolCalls) > 0,
+		})
 		if decision.Terminate != nil {
 			res.Terminal = *decision.Terminate
 			return res, nil

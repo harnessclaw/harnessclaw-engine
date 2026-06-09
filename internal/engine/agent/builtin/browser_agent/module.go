@@ -156,9 +156,9 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		ApprovalFn:         nil,
 		TaskContract:       tool.TaskContract{TaskID: taskID, TaskStartedAt: cfg.TaskStartedAt, OutputSchema: def.OutputSchema},
 		ArtifactProducer:   tool.ArtifactProducer{AgentID: sess.ID, AgentRunID: sess.ID, TaskID: taskID, SessionID: sess.ID},
-		OnTurnComplete: func(turn int, msg types.Message, results []types.ToolResult) loop.Decision {
-			browsertools.UpdateTaskBindingFromResults(msg, results, browserBinding)
-			return finalEnforcer(turn, msg, results)
+		OnTurnComplete: func(snap loop.TurnSnapshot) loop.Decision {
+			browsertools.UpdateTaskBindingFromResults(snap.AssistantMsg, snap.ToolResults, browserBinding)
+			return finalEnforcer(snap)
 		},
 	})
 	if err != nil {

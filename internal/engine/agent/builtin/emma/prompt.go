@@ -63,8 +63,17 @@ func (e *Engine) getSkillListingFiltered(allowedSkills map[string]bool) string {
 }
 
 // buildSystemPrompt constructs the system prompt using the prompt builder.
-// Uses per-session whole-output caching; falls back to config.SystemPrompt
-// if the builder fails.
+// Falls back to config.SystemPrompt if the builder fails.
+//
+// After the loop-migration refactor this is called once per ProcessMessage
+// (from emma/runner.go's run() entry point), not per turn. The static
+// result is passed into loop.Config.SystemPrompt and reused across the
+// whole query — which keeps the upstream prompt cache hot.
+//
+// The per-session cache hit/invalidate logic that used to live here was
+// removed because (a) the single call site obviates re-entry caching and
+// (b) the cache invalidation criteria (budget drift, date rollover) were
+// known to fight Anthropic's prompt cache when triggered mid-query.
 func (e *Engine) buildSystemPrompt(ctx context.Context, sess *session.Session, messages []types.Message) string {
 	_ = ctx
 
@@ -75,34 +84,6 @@ func (e *Engine) buildSystemPrompt(ctx context.Context, sess *session.Session, m
 	totalTokens := 0
 	for _, msg := range messages {
 		totalTokens += msg.Tokens
-	}
-
-	budget := prompt.ComputeSystemPromptBudget(200000, totalTokens, 16384, prompt.DefaultSafetyMargin)
-
-	cached := sess.PromptCache()
-	if cached != nil {
-		today := time.Now().Format("2006-01-02")
-		budgetDrift := float64(cached.Budget-budget) / float64(cached.Budget)
-		hasTask := false
-		memoryLen := 0
-
-		if budgetDrift < 0.1 && cached.HasTask == hasTask && cached.MemoryLen == memoryLen && cached.Date == today {
-			e.logger.Debug("prompt cache hit",
-				zap.String("session_id", sess.ID),
-				zap.String("version", cached.Output.(*prompt.PromptOutput).Version),
-				zap.Int("budget_cached", cached.Budget),
-				zap.Int("budget_current", budget),
-			)
-			return cached.Prompt
-		}
-
-		e.logger.Debug("prompt cache invalidated",
-			zap.String("session_id", sess.ID),
-			zap.Float64("budget_drift", budgetDrift),
-			zap.Bool("task_changed", cached.HasTask != hasTask),
-			zap.Bool("memory_changed", cached.MemoryLen != memoryLen),
-			zap.Bool("date_changed", cached.Date != today),
-		)
 	}
 
 	promptCtx := &prompt.PromptContext{
@@ -160,15 +141,6 @@ func (e *Engine) buildSystemPrompt(ctx context.Context, sess *session.Session, m
 		zap.Int("char_count", len(result)),
 		zap.Int("estimated_tokens", prompt.EstimateTokens(result)),
 	)
-
-	sess.SetPromptCache(&session.PromptCacheEntry{
-		Prompt:    result,
-		Output:    output,
-		Budget:    budget,
-		HasTask:   false,
-		MemoryLen: 0,
-		Date:      time.Now().Format("2006-01-02"),
-	})
 
 	return result
 }
