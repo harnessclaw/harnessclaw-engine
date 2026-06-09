@@ -14,10 +14,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/engine/agent/runAgent/agentrun"
-	"harnessclaw-go/internal/commands"
 	"harnessclaw-go/internal/channel/emit"
+	"harnessclaw-go/internal/commands"
 	browseragentmod "harnessclaw-go/internal/engine/agent/builtin/browser_agent"
 	"harnessclaw-go/internal/engine/agent/builtin/explore"
 	"harnessclaw-go/internal/engine/agent/builtin/freelancer"
@@ -25,21 +23,24 @@ import (
 	"harnessclaw-go/internal/engine/agent/builtin/plan_agent"
 	"harnessclaw-go/internal/engine/agent/builtin/plan_design"
 	"harnessclaw-go/internal/engine/agent/builtin/plan_executor_agent"
+	"harnessclaw-go/internal/engine/agent/runAgent/agentrun"
 	agentscheduler "harnessclaw-go/internal/engine/agent/scheduler"
+	enginesched "harnessclaw-go/internal/engine/agent/scheduler"
+	schedulerpkg "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/compact"
+	"harnessclaw-go/internal/engine/permission"
+	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/legacy/mention"
 	"harnessclaw-go/internal/legacy/prompt"
 	"harnessclaw-go/internal/legacy/prompt/sections"
-	enginesched "harnessclaw-go/internal/engine/agent/scheduler"
-	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/legacy/sessionstats"
 	"harnessclaw-go/internal/legacy/spawn"
-	"harnessclaw-go/internal/engine/permission"
+	"harnessclaw-go/internal/legacy/workspace"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/skills"
 	"harnessclaw-go/internal/tools"
-	"harnessclaw-go/internal/legacy/workspace"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -121,7 +122,12 @@ type Engine struct {
 	statsRegistry *sessionstats.Registry
 
 	// schedulerCoord is the L2 scheduler.Coordinator instance.
+	// 过渡期：将与 sched 并存；callsite migration 完成后由 PR-4 删除。
 	schedulerCoord *enginesched.Coordinator
+
+	// sched 是新的 scheduler.Scheduler dispatch 入口。callsite 逐步切到这里。
+	// Engine.Scheduler() 公开访问；tools / mention router / future coordinator 走这一个。
+	sched schedulerpkg.Scheduler
 
 	// skillListing is the lazy-computed once-per-engine catalog string
 	// passed into the SkillsSection prompt block.
@@ -287,71 +293,71 @@ func New(
 	// off the engine.
 	e.spawner = spawn.NewSpawner(logger)
 	planAgentMod := plan_agent.New(plan_agent.Deps{
-		Provider:      prov,
-		Registry:      reg,
-		SessionMgr:    mgr,
-		Compactor:     comp,
-		Retryer:       e.retryer,
-		PromptBuilder: promptBuilder,
-		Logger:        logger,
-		MaxTokens:     cfg.MaxTokens,
-		ContextWindow: cfg.ContextWindow,
-		ToolTimeout:   cfg.ToolTimeout,
+		Provider:            prov,
+		Registry:            reg,
+		SessionMgr:          mgr,
+		Compactor:           comp,
+		Retryer:             e.retryer,
+		PromptBuilder:       promptBuilder,
+		Logger:              logger,
+		MaxTokens:           cfg.MaxTokens,
+		ContextWindow:       cfg.ContextWindow,
+		ToolTimeout:         cfg.ToolTimeout,
 		LLMAPITimeout:       cfg.LLMAPITimeout,
 		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
-		RootDir:       workspace.DefaultRootDir(),
+		RootDir:             workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(planAgentMod)
 
 	// Stage 5 thin modules — same Deps shape as plan_agent.
 	plExecutorMod := plan_executor_agent.New(plan_executor_agent.Deps{
-		Provider:      prov,
-		Registry:      reg,
-		SessionMgr:    mgr,
-		Compactor:     comp,
-		Retryer:       e.retryer,
-		PromptBuilder: promptBuilder,
-		Logger:        logger,
-		MaxTokens:     cfg.MaxTokens,
-		ContextWindow: cfg.ContextWindow,
-		ToolTimeout:   cfg.ToolTimeout,
+		Provider:            prov,
+		Registry:            reg,
+		SessionMgr:          mgr,
+		Compactor:           comp,
+		Retryer:             e.retryer,
+		PromptBuilder:       promptBuilder,
+		Logger:              logger,
+		MaxTokens:           cfg.MaxTokens,
+		ContextWindow:       cfg.ContextWindow,
+		ToolTimeout:         cfg.ToolTimeout,
 		LLMAPITimeout:       cfg.LLMAPITimeout,
 		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
-		RootDir:       workspace.DefaultRootDir(),
+		RootDir:             workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(plExecutorMod)
 
 	exploreMod := explore.New(explore.Deps{
-		Provider:      prov,
-		Registry:      reg,
-		SessionMgr:    mgr,
-		Compactor:     comp,
-		Retryer:       e.retryer,
-		PromptBuilder: promptBuilder,
-		Logger:        logger,
-		MaxTokens:     cfg.MaxTokens,
-		ContextWindow: cfg.ContextWindow,
-		ToolTimeout:   cfg.ToolTimeout,
+		Provider:            prov,
+		Registry:            reg,
+		SessionMgr:          mgr,
+		Compactor:           comp,
+		Retryer:             e.retryer,
+		PromptBuilder:       promptBuilder,
+		Logger:              logger,
+		MaxTokens:           cfg.MaxTokens,
+		ContextWindow:       cfg.ContextWindow,
+		ToolTimeout:         cfg.ToolTimeout,
 		LLMAPITimeout:       cfg.LLMAPITimeout,
 		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
-		RootDir:       workspace.DefaultRootDir(),
+		RootDir:             workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(exploreMod)
 
 	planDesignMod := plan_design.New(plan_design.Deps{
-		Provider:      prov,
-		Registry:      reg,
-		SessionMgr:    mgr,
-		Compactor:     comp,
-		Retryer:       e.retryer,
-		PromptBuilder: promptBuilder,
-		Logger:        logger,
-		MaxTokens:     cfg.MaxTokens,
-		ContextWindow: cfg.ContextWindow,
-		ToolTimeout:   cfg.ToolTimeout,
+		Provider:            prov,
+		Registry:            reg,
+		SessionMgr:          mgr,
+		Compactor:           comp,
+		Retryer:             e.retryer,
+		PromptBuilder:       promptBuilder,
+		Logger:              logger,
+		MaxTokens:           cfg.MaxTokens,
+		ContextWindow:       cfg.ContextWindow,
+		ToolTimeout:         cfg.ToolTimeout,
 		LLMAPITimeout:       cfg.LLMAPITimeout,
 		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
-		RootDir:       workspace.DefaultRootDir(),
+		RootDir:             workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(planDesignMod)
 
@@ -361,22 +367,22 @@ func New(
 	// module degrades gracefully — no candidate preloading, no gap
 	// check — preserving the legacy "feature disabled" semantics.
 	freelancerMod := freelancer.New(freelancer.Deps{
-		Provider:          prov,
-		Registry:          reg,
-		SessionMgr:        mgr,
-		Compactor:         comp,
-		Retryer:           e.retryer,
-		PromptBuilder:     promptBuilder,
-		Logger:            logger,
-		SkillReader:       e.skillReader,
-		DefRegistry:       e.defRegistry,
-		SearchGapDetector: freelancer.NewSearchGapDetector(logger),
-		MaxTokens:         8192,
-		ContextWindow:     cfg.ContextWindow,
-		ToolTimeout:       cfg.ToolTimeout,
+		Provider:            prov,
+		Registry:            reg,
+		SessionMgr:          mgr,
+		Compactor:           comp,
+		Retryer:             e.retryer,
+		PromptBuilder:       promptBuilder,
+		Logger:              logger,
+		SkillReader:         e.skillReader,
+		DefRegistry:         e.defRegistry,
+		SearchGapDetector:   freelancer.NewSearchGapDetector(logger),
+		MaxTokens:           8192,
+		ContextWindow:       cfg.ContextWindow,
+		ToolTimeout:         cfg.ToolTimeout,
 		LLMAPITimeout:       cfg.LLMAPITimeout,
 		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
-		RootDir:           workspace.DefaultRootDir(),
+		RootDir:             workspace.DefaultRootDir(),
 	})
 	e.spawner.Register(freelancerMod)
 
@@ -400,19 +406,19 @@ func New(
 	// arbitrary agent definitions (e.g. researcher-test) keep working
 	// after the spawn → spawner migration.
 	genericMod := generic.New(generic.Deps{
-		Provider:      prov,
-		Registry:      reg,
-		SessionMgr:    mgr,
-		Compactor:     comp,
-		Retryer:       e.retryer,
-		PromptBuilder: promptBuilder,
-		Logger:        logger,
-		MaxTokens:     cfg.MaxTokens,
-		ContextWindow: cfg.ContextWindow,
-		ToolTimeout:   cfg.ToolTimeout,
+		Provider:            prov,
+		Registry:            reg,
+		SessionMgr:          mgr,
+		Compactor:           comp,
+		Retryer:             e.retryer,
+		PromptBuilder:       promptBuilder,
+		Logger:              logger,
+		MaxTokens:           cfg.MaxTokens,
+		ContextWindow:       cfg.ContextWindow,
+		ToolTimeout:         cfg.ToolTimeout,
 		LLMAPITimeout:       cfg.LLMAPITimeout,
 		LLMFirstByteTimeout: cfg.LLMFirstByteTimeout,
-		RootDir:       workspace.DefaultRootDir(),
+		RootDir:             workspace.DefaultRootDir(),
 	})
 	e.spawner.SetFallback(genericMod)
 
@@ -443,6 +449,20 @@ func New(
 	})
 	e.spawner.Register(schedulerMod)
 
+	// 装配新 scheduler（与 schedulerCoord 并存的过渡阶段）。
+	// 调用方逐个从 agentRun 切到 e.sched；切完后 PR-4 删 schedulerCoord + agentRun。
+	e.sched = wireScheduler(wiredDeps{
+		Provider:      e.provider,
+		ToolRegistry:  reg,
+		SessionMgr:    mgr,
+		Compactor:     comp,
+		Retryer:       e.retryer,
+		PromptBuilder: promptBuilder,
+		Logger:        logger,
+		Cfg:           cfg,
+		WorkspaceRoot: workspace.DefaultRootDir(),
+	})
+
 	// @-mention router — only wired when a definition registry is
 	// provided. Holds the spawner so emma's ProcessMessage can offload
 	// agent dispatch without recomputing routing or owning a parser.
@@ -464,11 +484,23 @@ func New(
 	return e
 }
 
+// Scheduler 暴露 emma 装配的新 scheduler dispatch 入口。
+// 过渡阶段的访问器：tools / mention router / future coordinator 走这一个。
+func (e *Engine) Scheduler() schedulerpkg.Scheduler { return e.sched }
+
 // Config returns the active engine configuration by value.
 func (e *Engine) Config() Config { return e.config }
 
 // PromptProfile returns the profile currently driving the main-agent loop.
 func (e *Engine) PromptProfile() *prompt.AgentProfile { return e.promptProfile }
+
+// Spawner exposes the underlying spawn.Spawner so callers can wire it
+// into tools and infrastructure that need to dispatch sub-agents.
+//
+// emma.Engine no longer implements agent.AgentSpawner directly; tools
+// and the engine's Coordinator/PlanExecutor/QueryEngineFactory take
+// *spawn.Spawner via this accessor.
+func (e *Engine) Spawner() *spawn.Spawner { return e.spawner }
 
 // SetAgentRegistry configures the agent registry for async agent support.
 func (e *Engine) SetAgentRegistry(reg *agent.AgentRegistry) { e.agentRegistry = reg }
