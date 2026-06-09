@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+## [0.0.21-beta.0] - 2026-06-09
+
+### Added
+- Image generation requests can now run through the engine `image_generate` tool using configured image-generation providers.
+- `agent.image_generation` is now separated from chat fallback routing so image-only models do not enter the text conversation provider chain.
+- Provider snapshots now expose backend-resolved image generation target URLs for the desktop client.
+- Added a local image generation proxy and mock server for manual image workflow testing.
+
 ### Fixed
 - Browser Agent now defaults to enabled in fresh engine configs, matching the packaged desktop sidecar flow.
 
