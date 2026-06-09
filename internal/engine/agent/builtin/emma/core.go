@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -23,9 +22,6 @@ import (
 	"harnessclaw-go/internal/engine/agent/builtin/plan_agent"
 	"harnessclaw-go/internal/engine/agent/builtin/plan_design"
 	"harnessclaw-go/internal/engine/agent/builtin/plan_executor_agent"
-	"harnessclaw-go/internal/engine/agent/runAgent/agentrun"
-	agentscheduler "harnessclaw-go/internal/engine/agent/scheduler"
-	enginesched "harnessclaw-go/internal/engine/agent/scheduler"
 	schedulerpkg "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/permission"
@@ -121,12 +117,9 @@ type Engine struct {
 	// sub-agent / tool activity to the correct Tracker.
 	statsRegistry *sessionstats.Registry
 
-	// schedulerCoord is the L2 scheduler.Coordinator instance.
-	// 过渡期：将与 sched 并存；callsite migration 完成后由 PR-4 删除。
-	schedulerCoord *enginesched.Coordinator
-
-	// sched 是新的 scheduler.Scheduler dispatch 入口。callsite 逐步切到这里。
-	// Engine.Scheduler() 公开访问；tools / mention router / future coordinator 走这一个。
+	// sched 是新的 scheduler.Scheduler dispatch 入口。
+	// 所有 callsite (tools / mention router / future coordinator) 走这一个。
+	// emma.Scheduler() 公开访问。
 	sched schedulerpkg.Scheduler
 
 	// skillListing is the lazy-computed once-per-engine catalog string
@@ -422,35 +415,8 @@ func New(
 	})
 	e.spawner.SetFallback(genericMod)
 
-	e.schedulerCoord = enginesched.NewCoordinator(enginesched.CoordinatorConfig{
-		Spawner:  e.spawner,
-		Logger:   slog.Default(),
-		Provider: e.provider,
-		RootDir:  workspace.DefaultRootDir(),
-	})
-
-	// agentrun.Runner is the single, mode-aware dispatcher. We wire it
-	// once with both the in-process AgentSpawner and the scheduler
-	// backend so ModeInproc, ModeScheduled, and async paths all share
-	// the same Runner instance.
-	agentRun := agentrun.New(e.spawner).WithScheduler(e.schedulerCoord)
-
-	// L2 scheduler module — both react and plan modes delegate to
-	// agentrun.ModeScheduled, which routes through the scheduler
-	// Coordinator (kernel + dispatch/{react,plan}). The module itself
-	// is a thin shim that builds the per-spawn session, calls
-	// runner.Run, and composes Output from the meta.json it wrote.
-	schedulerMod := agentscheduler.New(agentscheduler.Deps{
-		Logger:        logger,
-		SessionMgr:    mgr,
-		RootDir:       workspace.DefaultRootDir(),
-		WorkspaceRoot: workspace.DefaultRootDir(),
-		Runner:        agentRun,
-	})
-	e.spawner.Register(schedulerMod)
-
-	// 装配新 scheduler（与 schedulerCoord 并存的过渡阶段）。
-	// 调用方逐个从 agentRun 切到 e.sched；切完后 PR-4 删 schedulerCoord + agentRun。
+	// 新 scheduler dispatch 入口。callsite 已全部迁移；
+	// 旧的 schedulerCoord / agentRun / agentscheduler.Module 已删（这次清理）。
 	e.sched = wireScheduler(wiredDeps{
 		Provider:      e.provider,
 		ToolRegistry:  reg,
@@ -510,9 +476,11 @@ func (e *Engine) SetMessageBroker(broker *agent.MessageBroker) { e.messageBroker
 // Start launches background goroutines that require a long-lived context.
 // Must be called once after New, before the first query. ctx should be
 // cancelled when the server shuts down.
-func (e *Engine) Start(ctx context.Context) {
-	e.schedulerCoord.Start(ctx)
-	e.logger.Info("emma engine scheduler coordinator started")
+//
+// 新 scheduler 是 stateless dispatch 入口（构造完即可用），无后台 goroutine
+// 需启动。保留 Start 作为 lifecycle hook，未来 coordinator 模块可挂在这里。
+func (e *Engine) Start(_ context.Context) {
+	e.logger.Info("emma engine started")
 }
 
 // ProcessMessage implements engine.Engine. It appends the user message to
