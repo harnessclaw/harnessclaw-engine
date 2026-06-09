@@ -58,7 +58,6 @@ import (
 	sqlitesess "harnessclaw-go/internal/persistence/sqlite"
 	"harnessclaw-go/internal/tasks"
 	"harnessclaw-go/internal/tools"
-	"harnessclaw-go/internal/engine/agent/runAgent/agentrun"
 	"harnessclaw-go/internal/tools/agenttool"
 	"harnessclaw-go/internal/tools/builtin/askuserquestion"
 	"harnessclaw-go/internal/tools/builtin/bash"
@@ -443,12 +442,9 @@ func main() {
 	// the L2 scheduler, which declares "task" in its AgentDefinition.AllowedTools
 	// and bypasses the AgentType blacklist (see internal/engine/subagent.go
 	// filter logic).
-	// agentrun.Runner is the single, mode-aware dispatcher every tool
-	// uses to spawn agents. Built once over eng.Spawner() — which
-	// satisfies both AgentSpawner and AsyncSpawner — so the agentrun
-	// auto-detects the async path for tools that need run_in_background.
-	agentRun := agentrun.New(eng.Spawner())
-
+	// 所有 tool 通过 emma 的 eng.Scheduler() 拿 scheduler.Scheduler 接口分发；
+	// agentrun.Runner 已删（过渡期遗留的 schedulerCoord 仍在 emma 内部并存，
+	// 见 PR-4 删除清单）。
 	if err := registry.Register(agenttool.New(eng.Scheduler(), agentDefReg, logger)); err != nil {
 		logger.Fatal("failed to register task tool", zap.Error(err))
 	}
@@ -457,7 +453,7 @@ func main() {
 	// Register scheduler tool — the L1→L2 dispatch entry point. emma sees
 	// this tool as her single delegation channel; the scheduler itself spawns
 	// L3 sub-agents internally via the task tool above.
-	if err := registry.Register(scheduler.New(agentRun, logger)); err != nil {
+	if err := registry.Register(scheduler.New(eng.Scheduler(), agentDefReg, logger)); err != nil {
 		logger.Fatal("failed to register scheduler tool", zap.Error(err))
 	}
 	logger.Info("scheduler tool registered")

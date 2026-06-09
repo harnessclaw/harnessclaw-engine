@@ -28,13 +28,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
+	schedpkg "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/engine/agent/runAgent/agentrun"
-	"harnessclaw-go/internal/legacy/sessionstats"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
@@ -50,18 +50,21 @@ const SubagentType = "scheduler"
 // Tool is emma's L2 dispatch tool.
 type Tool struct {
 	tool.BaseTool
-	rt     *agentrun.Runner
+	sched  schedpkg.Scheduler
+	defReg *agent.AgentDefinitionRegistry
 	logger *zap.Logger
 }
 
-// New constructs a scheduler tool backed by the given agentrun.Runner
-// (the single, mode-aware dispatcher). logger may be nil.
-func New(rt *agentrun.Runner, logger *zap.Logger) *Tool {
+// New constructs a scheduler tool backed by the given scheduler.Scheduler.
+// defReg is used to resolve the "scheduler" AgentDefinition; nil falls back
+// to a synthetic minimal Definition.
+func New(sched schedpkg.Scheduler, defReg *agent.AgentDefinitionRegistry, logger *zap.Logger) *Tool {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	return &Tool{
-		rt:     rt,
+		sched:  sched,
+		defReg: defReg,
 		logger: logger.Named("scheduler"),
 	}
 }
@@ -130,210 +133,121 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		return errTypedResult(err.Error(), types.ToolErrorInvalidInput), nil
 	}
 
-	// Forward parent-session context so events stitch back to emma's session
-	// and lifecycle events reach the WebSocket client.
-	parentSessionID := ""
-	var parentOut chan<- types.EngineEvent
+	// Plan mode 在 scheduler 重构过渡期不可用 ——
+	// L2 kernel 已删除；plan 编排能力在 future coordinator 模块重建之前不提供。
+	if mode := tool.GetCoordinatorMode(ctx); mode == "plan" {
+		return errTypedResult(
+			"plan coordinator mode unavailable during scheduler refactor transition",
+			types.ToolErrorInternal,
+		), nil
+	}
+
+	// 父 session / event 通道
+	var parentSess types.SessionID
 	if tuc, ok := tool.GetToolUseContext(ctx); ok {
-		parentSessionID = tuc.Core.SessionID
+		parentSess = types.SessionID(tuc.Core.SessionID)
 	}
+	var events chan<- types.EngineEvent
 	if out, ok := tool.GetEventOut(ctx); ok {
-		parentOut = out
+		events = out
 	}
 
-	// Read operator-supplied coordinator mode from ctx. Empty means the
-	// registry resolves to ReAct (current behaviour). Plan-mode opt-in
-	// flows through here once the WebSocket / API layer attaches the
-	// mode via tool.WithCoordinatorMode.
-	coordMode := tool.GetCoordinatorMode(ctx)
-
-	// Root session: prefer ctx's RootSessionID when present (future-proofs
-	// nested scheduler spawns), fall back to parentSessionID (emma IS root
-	// at this layer in all current deployments).
-	rootSID, _ := sessionstats.RootSessionIDFromCtx(ctx)
-	if rootSID == "" {
-		rootSID = parentSessionID
+	// 查 "scheduler" agent definition；找不到用最小 fallback。
+	var def agent.AgentDefinition
+	if t.defReg != nil {
+		if d := t.defReg.Get(SubagentType); d != nil {
+			def = *d
+		} else {
+			def = agent.AgentDefinition{Name: SubagentType, AgentType: tool.AgentTypeSync}
+		}
+	} else {
+		def = agent.AgentDefinition{Name: SubagentType, AgentType: tool.AgentTypeSync}
 	}
-
-	// No wall-clock Timeout here: plan-mode L2 may run for tens of minutes
-	// (multi-step research+write plans, slow upstream gateways, retry
-	// backoffs). A coarse parent-ctx deadline propagates down the spawn
-	// tree and kills healthy work mid-flight (an L3 aborted on inherited
-	// deadline even though only its single LLM call was slow). Failure
-	// modes are already covered by finer-grained layers:
-	//   - LLMAPITimeout / LLMFirstByteTimeout cap a single Chat() round
-	//   - retry.Retryer handles transient errors with backoff + 529 fallback
-	//   - MaxSubAgentTurns bounds per-loop turns
-	//   - step_decision prompt asks the user when a step truly fails
-	//   - orphan watchdog (5 / 10 min) plus per-tick heartbeat catches
-	//     genuinely stuck cards
-	// User cancellation flows through the parent ctx via Cancel(), so
-	// "stop" still works without a deadline.
-	// Name is intentionally NOT set — SubagentType already routes the spawn
-	// and is used for display when Name is empty. Hardcoding Name to the
-	// subagent type duplicated the same string twice and tempted callers
-	// to drift them apart.
-	cfg := &agent.SpawnConfig{
-		Prompt:          in.Task,
-		AgentType:       tool.AgentTypeSync,
-		SubagentType:    SubagentType,
-		Description:     defaultDescription(in.Description),
-		ParentSessionID: parentSessionID,
-		RootSessionID:   rootSID,
-		ParentOut:       parentOut,
-		CoordinatorMode: coordMode,
-	}
-
-	// DEBUG: dispatch.in — what emma's LLM just handed to the scheduler
-	// tool. Pair with `dispatch.out` below to see the round-trip; pair with
-	// `spawn.start` / `spawn.end` (subagent.go) to see L2's interior. The
-	// task_preview captures the full prompt body the L2 will receive.
-	t.logger.Debug("dispatch.in",
-		zap.String("tool", ToolName),
-		zap.String("parent_session_id", parentSessionID),
-		zap.Int("task_len", len(in.Task)),
-		zap.String("task_preview", truncate(in.Task, 400)),
-		zap.String("description", in.Description),
-	)
 
 	t.logger.Info("dispatch to scheduler",
 		zap.String("task", truncate(in.Task, 120)),
 		zap.String("description", in.Description),
 	)
 
-	runRes, err := t.rt.Run(ctx, agentrun.Request{Cfg: cfg, Mode: agentrun.ModeInproc})
-	var result *agent.SpawnResult
-	if runRes != nil {
-		result = runRes.SpawnResult
-	}
+	res, err := t.sched.Dispatch(ctx, schedpkg.SpawnParams{
+		Definition:  def,
+		Prompt:      in.Task,
+		Description: defaultDescription(in.Description),
+		Parent:      &schedpkg.ParentRef{SessionID: parentSess},
+		InvokedBy:   schedpkg.Invoker{Kind: schedpkg.InvokerLLM, Source: ToolName},
+		Events:      events,
+	})
 	if err != nil {
 		t.logger.Error("scheduler spawn failed",
 			zap.Error(err),
 			zap.Duration("duration", time.Since(startTime)),
 		)
-		// Spawner failures are typically transient (model_error /
-		// budget / contract). Tag dependency_fail so the parent agent
-		// understands an inner orchestration step gave up.
 		return errTypedResult(fmt.Sprintf("scheduler execution failed: %s", err.Error()), types.ToolErrorDependencyFail), nil
 	}
 
+	sync, ok := res.Outcome.(schedpkg.SyncOutcome)
+	if !ok {
+		return errTypedResult("scheduler: expected SyncOutcome", types.ToolErrorInternal), nil
+	}
+
 	t.logger.Info("scheduler completed",
-		zap.String("agent_id", result.AgentID),
-		zap.String("status", result.Status),
-		zap.Int("num_turns", result.NumTurns),
+		zap.String("agent_id", string(res.AgentID)),
+		zap.String("task_id", string(res.TaskID)),
+		zap.Int("tool_calls", sync.ToolCalls),
 		zap.Duration("duration", time.Since(startTime)),
-		zap.Int("deliverables", len(result.Deliverables)),
+		zap.Int("deliverables", len(sync.Deliverables)),
 	)
 
 	metadata := map[string]any{
-		"render_hint": "agent",
-		"agent_id":    result.AgentID,
-		"session_id":  result.SessionID,
-		"status":      result.Status,
-		"num_turns":   result.NumTurns,
-		"duration_ms": time.Since(startTime).Milliseconds(),
+		"render_hint":   "agent",
+		"agent_id":      res.AgentID,
+		"task_id":       res.TaskID,
+		"tool_calls":    sync.ToolCalls,
+		"duration_ms":   time.Since(startTime).Milliseconds(),
+		"input_tokens":  res.Usage.InputTokens,
+		"output_tokens": res.Usage.OutputTokens,
 	}
-	if result.Usage != nil {
-		metadata["input_tokens"] = result.Usage.InputTokens
-		metadata["output_tokens"] = result.Usage.OutputTokens
+	if sync.Terminal.Reason != "" {
+		metadata["terminal_reason"] = string(sync.Terminal.Reason)
 	}
-	if len(result.Deliverables) > 0 {
-		metadata["deliverables"] = result.Deliverables
+	if len(sync.Deliverables) > 0 {
+		metadata["deliverables"] = sync.Deliverables
 		metadata["has_deliverables"] = true
 	}
-	if result.Terminal != nil {
-		metadata["terminal_reason"] = string(result.Terminal.Reason)
+	if len(sync.Artifacts) > 0 {
+		metadata["artifacts"] = sync.Artifacts
 	}
-	// L2 mode telemetry: surface running mode + escalation source +
-	// budget snapshot so the WebSocket client can render "this task
-	// ran in plan mode (auto-escalated from react)" labels and so
-	// emma can quote budget consumption when explaining a degraded
-	// response.
-	if result.CoordinatorMode != "" {
-		metadata["coordinator_mode"] = result.CoordinatorMode
-	}
-	if result.EscalatedFromMode != "" {
-		metadata["escalated_from_mode"] = result.EscalatedFromMode
-	}
-	if result.BudgetSpent.TokensUsed > 0 || result.BudgetSpent.LLMCalls > 0 || result.BudgetSpent.Exceeded {
-		metadata["budget_spent"] = map[string]any{
-			"tokens_used":  result.BudgetSpent.TokensUsed,
-			"llm_calls":    result.BudgetSpent.LLMCalls,
-			"failures":     result.BudgetSpent.Failures,
-			"elapsed_ms":   result.BudgetSpent.ElapsedMs,
-			"exceeded":     result.BudgetSpent.Exceeded,
-			"exceeded_why": result.BudgetSpent.ExceededWhy,
-		}
-	}
-	// Surface produced artifacts so the executor can lift them onto the
-	// L1 tool.end event. Without this, the WebSocket sees a final
-	// tool.end with empty artifacts and has to scrape sub-agent events
-	// to know what was produced. Doc §10.
-	if len(result.SubmittedArtifacts) > 0 {
-		metadata["artifacts"] = result.SubmittedArtifacts
-	}
+	// 注意：CoordinatorMode / EscalatedFromMode / BudgetSpent metadata
+	// 已删除——这些来自 L2 kernel 的 plan/react 协调路径，重构后不再适用。
 
-	// Surface deliverable events so the WebSocket client can render files.
-	if parentOut != nil && len(result.Deliverables) > 0 {
-		for _, d := range result.Deliverables {
-			d := d
-			parentOut <- types.EngineEvent{
-				Type:        types.EngineEventDeliverable,
-				AgentID:     result.AgentID,
-				AgentName:   SubagentType,
-				Deliverable: &d,
-			}
-		}
-	}
-
-	// On terminal failures (LLM error / prompt-too-long / blocking-limit /
-	// contract violation cap), the sub-agent often produced no Output —
-	// returning an empty Content with IsError=true gives emma's LLM no
-	// information and tempts it to fabricate. Build a structured failure
-	// report from result.Terminal.Message + ContractFailures instead.
-	isError := agent.IsTerminalError(result)
-	content := result.Output
+	isError := sync.Terminal.Reason != "" && sync.Terminal.Reason != types.TerminalCompleted
+	content := concatText(sync.Content)
 	if isError {
-		content = agent.BuildFailureContent(result, SubagentType)
-		// Same "log content not just count" policy as Task tool.
-		// terminal_message is the highest-signal field — it carries the
-		// actual reason string from the engine ("L3 declined to submit
-		// after 3 reminders" / "submit_task_result rejected 3 times" / etc).
-		var reason, msg string
-		if result.Terminal != nil {
-			reason = string(result.Terminal.Reason)
-			msg = result.Terminal.Message
-		}
+		content = fmt.Sprintf("[scheduler failed] reason=%s\n%s\n\nLast output:\n%s",
+			sync.Terminal.Reason, sync.Terminal.Message, content)
 		t.logger.Warn("scheduler: sub-agent failed",
-			zap.String("agent_id", result.AgentID),
-			zap.String("status", result.Status),
-			zap.String("terminal_reason", reason),
-			zap.String("terminal_message", truncate(msg, 200)),
-			zap.Int("contract_failures", len(result.ContractFailures)),
-			zap.Strings("failure_sample", failureSample(result.ContractFailures, 3)),
+			zap.String("agent_id", string(res.AgentID)),
+			zap.String("terminal_reason", string(sync.Terminal.Reason)),
+			zap.String("terminal_message", truncate(sync.Terminal.Message, 200)),
 		)
 	}
-
-	// DEBUG: dispatch.out — exactly what emma's LLM will see as
-	// tool_result.Content. This is the highest-signal log line for
-	// diagnosing "emma fabricated content" / "emma can't find the
-	// artifact" issues — if the artifact_id isn't in the preview, emma
-	// can't reference it no matter how good her prompting is.
-	t.logger.Debug("dispatch.out",
-		zap.String("tool", ToolName),
-		zap.Bool("is_error", isError),
-		zap.Int("content_len", len(content)),
-		zap.String("content_preview", truncate(content, 600)),
-		zap.Int("submitted_artifacts", len(result.SubmittedArtifacts)),
-		zap.Int("deliverables", len(result.Deliverables)),
-		zap.Duration("duration", time.Since(startTime)),
-	)
 
 	return &types.ToolResult{
 		Content:  content,
 		IsError:  isError,
 		Metadata: metadata,
 	}, nil
+}
+
+// concatText 拼接 SyncOutcome.Content 的 text blocks。
+func concatText(blocks []types.ContentBlock) string {
+	var sb strings.Builder
+	for _, b := range blocks {
+		if b.Type == types.ContentTypeText {
+			sb.WriteString(b.Text)
+		}
+	}
+	return sb.String()
 }
 
 // errResult is a short-form failure helper. Defaults ErrorType to

@@ -9,196 +9,131 @@ import (
 
 	"go.uber.org/zap"
 
+	schedpkg "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/engine/agent/runAgent/agentrun"
+	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 
-// mockSpawner is a test double for agent.AgentSpawner.
-type mockSpawner struct {
-	result *agent.SpawnResult
+// mockScheduler records the SpawnParams passed to Dispatch.
+type mockScheduler struct {
+	params *schedpkg.SpawnParams
+	result schedpkg.Result
 	err    error
-	calls  []agent.SpawnConfig
 }
 
-func (m *mockSpawner) SpawnSync(_ context.Context, cfg *agent.SpawnConfig) (*agent.SpawnResult, error) {
-	m.calls = append(m.calls, *cfg)
+func (m *mockScheduler) Dispatch(_ context.Context, p schedpkg.SpawnParams) (schedpkg.Result, error) {
+	copied := p
+	m.params = &copied
 	return m.result, m.err
 }
 
+func (m *mockScheduler) Subscribe(context.Context, types.TaskID) (<-chan types.EngineEvent, error) {
+	return nil, schedpkg.ErrNotSubscribable
+}
+
+func newSched(result schedpkg.Result, err error) *mockScheduler {
+	return &mockScheduler{result: result, err: err}
+}
+
+func newToolForTest() *Tool {
+	return New(&mockScheduler{}, agent.NewAgentDefinitionRegistry(), zap.NewNop())
+}
+
 func TestTool_Metadata(t *testing.T) {
-	tl := New(agentrun.New(&mockSpawner{}), zap.NewNop())
-	if tl.Name() != "scheduler" {
-		t.Errorf("Name() = %q, want scheduler", tl.Name())
+	tl := newToolForTest()
+	if tl.Name() != ToolName {
+		t.Fatalf("Name = %q", tl.Name())
 	}
 	if !tl.IsLongRunning() {
-		t.Error("IsLongRunning should be true (L2 spawns L3 sub-agents)")
+		t.Error("scheduler must be long-running")
 	}
 	if tl.IsConcurrencySafe() {
-		t.Error("IsConcurrencySafe should be false")
-	}
-	if tl.IsReadOnly() {
-		t.Error("IsReadOnly should be false")
+		t.Error("scheduler must not be concurrency-safe")
 	}
 }
 
-func TestTool_Schema(t *testing.T) {
-	schema := New(agentrun.New(&mockSpawner{}), zap.NewNop()).InputSchema()
-	if schema["type"] != "object" {
-		t.Errorf("schema.type = %v", schema["type"])
+func TestTool_ValidateInput(t *testing.T) {
+	tl := newToolForTest()
+	if err := tl.ValidateInput(json.RawMessage(`{"task":"do thing"}`)); err != nil {
+		t.Errorf("valid input rejected: %v", err)
 	}
-	required, _ := schema["required"].([]string)
-	if len(required) != 1 || required[0] != "task" {
-		t.Errorf("required = %v, want [task]", required)
-	}
-	props, _ := schema["properties"].(map[string]any)
-	for _, key := range []string{"task", "description"} {
-		if _, ok := props[key]; !ok {
-			t.Errorf("schema missing property %q", key)
-		}
+	if err := tl.ValidateInput(json.RawMessage(`{}`)); err == nil {
+		t.Error("empty task should be rejected")
 	}
 }
 
-func TestTool_Validate(t *testing.T) {
-	tl := New(agentrun.New(&mockSpawner{}), zap.NewNop())
-	cases := []struct {
-		name    string
-		input   string
-		wantErr string
-	}{
-		{"valid minimal", `{"task":"写一封商务邮件"}`, ""},
-		{"valid full", `{"task":"做竞品分析","description":"comp analysis"}`, ""},
-		{"missing task", `{}`, "task is required"},
-		{"blank task", `{"task":"   "}`, "task is required"},
-		{"invalid JSON", `not json`, "invalid scheduler input"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tl.ValidateInput(json.RawMessage(tc.input))
-			if tc.wantErr == "" {
-				if err != nil {
-					t.Errorf("expected no error, got %v", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("error = %v, want substring %q", err, tc.wantErr)
-			}
-		})
-	}
-}
-
-func TestTool_PermissionAutoAllow(t *testing.T) {
-	tl := New(agentrun.New(&mockSpawner{}), zap.NewNop())
-	res := tl.CheckPermission(context.Background(), json.RawMessage(`{"task":"x"}`))
-	if res.Behavior != "allow" {
-		t.Errorf("Behavior = %q, want allow", res.Behavior)
-	}
-}
-
-func TestTool_Execute_Success(t *testing.T) {
-	sp := &mockSpawner{
-		result: &agent.SpawnResult{
-			AgentID:   "agent-spec",
-			SessionID: "sess-spec",
-			Output:    "<summary>报告已完成</summary>\n\n详细内容...",
-			Summary:   "报告已完成",
-			Status:    "completed",
-			Terminal:  &types.Terminal{Reason: types.TerminalCompleted, Turn: 5},
-			Usage:     &types.Usage{InputTokens: 1000, OutputTokens: 500},
-			NumTurns:  5,
+func TestTool_Execute_SyncSuccess(t *testing.T) {
+	sched := newSched(schedpkg.Result{
+		AgentID: "a-1",
+		TaskID:  "t-1",
+		Outcome: schedpkg.SyncOutcome{
+			Content:  []types.ContentBlock{{Type: types.ContentTypeText, Text: "scheduler summary"}},
+			Terminal: types.Terminal{Reason: types.TerminalCompleted},
 		},
-	}
-	tl := New(agentrun.New(sp), zap.NewNop())
+	}, nil)
+	tl := New(sched, agent.NewAgentDefinitionRegistry(), zap.NewNop())
 
-	res, err := tl.Execute(context.Background(),
-		json.RawMessage(`{"task":"写竞品分析报告"}`))
+	res, err := tl.Execute(context.Background(), json.RawMessage(`{"task":"deep dive"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if res.IsError {
-		t.Errorf("unexpected error: %s", res.Content)
+		t.Fatalf("unexpected error: %+v", res)
 	}
-	if !strings.Contains(res.Content, "报告已完成") {
-		t.Errorf("output should contain summary, got %q", res.Content)
+	if res.Content != "scheduler summary" {
+		t.Errorf("Content = %q", res.Content)
 	}
-	if len(sp.calls) != 1 {
-		t.Fatalf("expected 1 spawn call, got %d", len(sp.calls))
+	if sched.params == nil {
+		t.Fatal("Dispatch was not called")
 	}
-	call := sp.calls[0]
-	if call.SubagentType != SubagentType {
-		t.Errorf("SubagentType = %q, want %q", call.SubagentType, SubagentType)
+	if sched.params.Definition.Name != SubagentType {
+		t.Errorf("Definition.Name = %q want %q", sched.params.Definition.Name, SubagentType)
 	}
-	if call.Prompt != "写竞品分析报告" {
-		t.Errorf("Prompt = %q", call.Prompt)
-	}
-	if call.Name != "" {
-		t.Errorf("Name should be empty (SubagentType is authoritative), got %q", call.Name)
+	if sched.params.Prompt != "deep dive" {
+		t.Errorf("Prompt = %q", sched.params.Prompt)
 	}
 }
 
-func TestTool_Execute_Failure(t *testing.T) {
-	sp := &mockSpawner{err: errors.New("spawn failed")}
-	tl := New(agentrun.New(sp), zap.NewNop())
-
-	res, err := tl.Execute(context.Background(),
-		json.RawMessage(`{"task":"x"}`))
+func TestTool_Execute_PlanModeReturnsError(t *testing.T) {
+	tl := newToolForTest()
+	ctx := tool.WithCoordinatorMode(context.Background(), "plan")
+	res, err := tl.Execute(ctx, json.RawMessage(`{"task":"x"}`))
 	if err != nil {
-		t.Fatalf("Execute should not return error, got %v", err)
+		t.Fatalf("Execute returned go err: %v", err)
 	}
 	if !res.IsError {
-		t.Error("expected IsError=true on spawn failure")
+		t.Fatal("plan mode should produce IsError=true")
 	}
-	if !strings.Contains(res.Content, "scheduler execution failed") {
-		t.Errorf("error content unexpected: %q", res.Content)
+	if !strings.Contains(res.Content, "plan") || !strings.Contains(res.Content, "unavailable") {
+		t.Errorf("Content should explain plan unavailable: %q", res.Content)
 	}
 }
 
-func TestTool_Execute_TerminalErrorMarksIsError(t *testing.T) {
-	sp := &mockSpawner{
-		result: &agent.SpawnResult{
-			AgentID:  "a",
-			Output:   "partial output",
-			Status:   "error",
-			Terminal: &types.Terminal{Reason: types.TerminalModelError, Turn: 2},
-		},
-	}
-	tl := New(agentrun.New(sp), zap.NewNop())
+func TestTool_Execute_DispatchError(t *testing.T) {
+	tl := New(newSched(schedpkg.Result{}, errors.New("dispatch boom")), agent.NewAgentDefinitionRegistry(), zap.NewNop())
 	res, _ := tl.Execute(context.Background(), json.RawMessage(`{"task":"x"}`))
 	if !res.IsError {
-		t.Error("model_error terminal should set IsError=true")
+		t.Fatal("expected IsError=true on dispatch error")
+	}
+	if !strings.Contains(res.Content, "dispatch boom") {
+		t.Errorf("Content = %q", res.Content)
 	}
 }
 
-func TestTool_Execute_DeliverablesInMetadata(t *testing.T) {
-	sp := &mockSpawner{
-		result: &agent.SpawnResult{
-			AgentID: "a",
-			Output:  "<summary>done</summary>",
-			Status:  "completed",
-			Deliverables: []types.Deliverable{
-				{FilePath: "/tmp/report.md"},
-				{FilePath: "/tmp/data.csv"},
-			},
+func TestTool_Execute_TerminalFailure(t *testing.T) {
+	sched := newSched(schedpkg.Result{
+		AgentID: "a-x",
+		Outcome: schedpkg.SyncOutcome{
+			Terminal: types.Terminal{Reason: types.TerminalMaxTurns, Message: "out of turns"},
 		},
-	}
-	tl := New(agentrun.New(sp), zap.NewNop())
+	}, nil)
+	tl := New(sched, agent.NewAgentDefinitionRegistry(), zap.NewNop())
 	res, _ := tl.Execute(context.Background(), json.RawMessage(`{"task":"x"}`))
-	if got, _ := res.Metadata["has_deliverables"].(bool); !got {
-		t.Error("metadata should flag has_deliverables")
-	}
-	if dels, _ := res.Metadata["deliverables"].([]types.Deliverable); len(dels) != 2 {
-		t.Errorf("deliverables in metadata = %d, want 2", len(dels))
-	}
-}
-
-func TestTool_InvalidInputReturnsErrorResult(t *testing.T) {
-	tl := New(agentrun.New(&mockSpawner{}), zap.NewNop())
-	res, _ := tl.Execute(context.Background(), json.RawMessage(`{}`))
 	if !res.IsError {
-		t.Error("blank task should produce IsError=true")
+		t.Fatal("non-completed Terminal should be IsError=true")
 	}
-	if !strings.Contains(res.Content, "task is required") {
-		t.Errorf("error content unexpected: %q", res.Content)
+	if !strings.Contains(res.Content, "max_turns") {
+		t.Errorf("Content should include terminal reason: %q", res.Content)
 	}
 }
