@@ -160,7 +160,7 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 	events := make(chan pkgtypes.EngineEvent, 64)
 	go func() {
 		defer close(events)
-		_, rerr := loop.Run(ctx, &loop.Config{
+		res, rerr := loop.Run(ctx, &loop.Config{
 			Session:             sess,
 			SystemPrompt:        sysPrompt,
 			Tools:               pool,
@@ -188,7 +188,16 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 					Message: rerr.Error(),
 				},
 			}
+			return
 		}
+		// 把 loop.Result 的 Terminal / Usage 编码成一帧 EngineEventDone，
+		// SyncStrategy.accumulate 会收到并填进 SyncOutcome。
+		// loop.Run 自身不发 Done event —— Terminal 信息只在 *Result 上，
+		// 不补这帧的话 caller 收不到终止原因。
+		termEvt := pkgtypes.EngineEvent{Type: pkgtypes.EngineEventDone, Terminal: &res.Terminal}
+		usage := res.Usage
+		termEvt.Usage = &usage
+		events <- termEvt
 	}()
 	return events, nil
 }
