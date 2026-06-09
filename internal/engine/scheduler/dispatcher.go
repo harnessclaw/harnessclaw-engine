@@ -14,17 +14,18 @@ type Dispatcher struct {
 }
 
 // NewDispatcher 构造 Dispatcher。
-// 调用方必须随后设置 middlewares（通常通过包外的 wire 函数）。
-func NewDispatcher(deps Deps, strategies ...Strategy) *Dispatcher {
+// mws 是按"执行顺序"排好的 middleware 链；调用方（通常是 wireScheduler）
+// 用 middlewares.DefaultChain(deps) 拿到标准链：
+//
+//	Identity → AgentContext → TaskRegister → Analytics
+//
+// Strategy 按"注册顺序 = 优先级"传入；最后注册的通常是兜底（CanHandle 恒真）。
+func NewDispatcher(deps Deps, mws []Middleware, strategies ...Strategy) *Dispatcher {
 	return &Dispatcher{
 		strategies:  strategies,
-		middlewares: []Middleware{},
+		middlewares: mws,
 		deps:        deps,
 	}
-}
-
-func (d *Dispatcher) setMiddlewares(mws []Middleware) {
-	d.middlewares = mws
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, p SpawnParams) (Result, error) {
@@ -51,14 +52,12 @@ func (d *Dispatcher) Dispatch(ctx context.Context, p SpawnParams) (Result, error
 	}
 
 	result, runErr := strat.Spawn(ctx, p, state)
-	// 总是 stamp 身份字段，即使 Spawn 失败 —— Analytics/TaskRegister After 拿一致数据
 	result.Strategy = strat.Name()
 	result.AgentID = state.AgentID
 	result.TaskID = state.TaskID
 
 	d.unwindAfter(ctx, p, state, result, runErr, ran-1)
 
-	// sync 路径 cleanups 在这里跑；async 路径 strategy 已抬进 goroutine defer
 	for i := len(state.Cleanups) - 1; i >= 0; i-- {
 		state.Cleanups[i](ctx)
 	}
@@ -103,5 +102,4 @@ func (d *Dispatcher) unwindAfter(ctx context.Context, p SpawnParams, st *SpawnSt
 	}
 }
 
-// 编译期接口实现检查
 var _ Scheduler = (*Dispatcher)(nil)

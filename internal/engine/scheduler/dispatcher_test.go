@@ -47,9 +47,7 @@ func (r recordMW) After(_ context.Context, _ SpawnParams, _ *SpawnState, _ Resul
 }
 
 func newDispatcher(mws []Middleware, strats ...Strategy) *Dispatcher {
-	d := &Dispatcher{strategies: strats}
-	d.setMiddlewares(mws)
-	return d
+	return NewDispatcher(Deps{}, mws, strats...)
 }
 
 func makeMinimalDef() definition.AgentDefinition {
