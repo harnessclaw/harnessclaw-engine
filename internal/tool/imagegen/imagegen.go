@@ -35,7 +35,8 @@ const (
 	defaultSize      = "1024x1024"
 	defaultCount     = 1
 	maxCount         = 4
-	requestTimeout   = 90 * time.Second
+	requestTimeout   = 5 * time.Minute
+	tlsHandshakeWait = time.Minute
 )
 
 var allowedSizes = map[string]bool{
@@ -83,13 +84,22 @@ func New(source ConfigSource, registry *modelregistry.Registry, rootDir string, 
 		source:   source,
 		registry: registry,
 		rootDir:  rootDir,
-		client:   &http.Client{Timeout: requestTimeout},
+		client:   newHTTPClient(),
 		logger:   logger.Named("imagegen"),
 	}
 	for _, opt := range opts {
 		opt(t)
 	}
 	return t
+}
+
+func newHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSHandshakeTimeout = tlsHandshakeWait
+	return &http.Client{
+		Timeout:   requestTimeout,
+		Transport: transport,
+	}
 }
 
 func (*Tool) Name() string { return ToolName }
@@ -99,6 +109,7 @@ func (*Tool) Description() string {
 func (*Tool) IsReadOnly() bool              { return false }
 func (*Tool) SafetyLevel() tool.SafetyLevel { return tool.SafetyCaution }
 func (*Tool) IsConcurrencySafe() bool       { return true }
+func (*Tool) IsLongRunning() bool           { return true }
 func (t *Tool) IsEnabled() bool             { return t.source != nil && t.registry != nil }
 
 func (*Tool) InputSchema() map[string]any {
