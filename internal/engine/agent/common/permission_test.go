@@ -3,7 +3,7 @@ package common_test
 import (
 	"testing"
 
-	"harnessclaw-go/internal/legacy/engine_agent_common"
+	"harnessclaw-go/internal/engine/agent/common"
 )
 
 func TestBuildInheritedChecker_NonEmptyApproved(t *testing.T) {

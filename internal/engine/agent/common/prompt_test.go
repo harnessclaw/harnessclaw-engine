@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"harnessclaw-go/internal/legacy/engine_agent_common"
+	"harnessclaw-go/internal/engine/agent/common"
 )
 
 func TestBuildSubAgentPrompt_FallbackWithNoBuilder(t *testing.T) {

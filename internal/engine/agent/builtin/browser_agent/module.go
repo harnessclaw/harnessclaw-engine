@@ -11,7 +11,7 @@ import (
 
 	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/legacy/engine_agent_common"
+	"harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/prompt"

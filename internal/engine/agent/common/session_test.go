@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/legacy/engine_agent_common"
+	"harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/memory"
 )

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"harnessclaw-go/internal/legacy/engine_agent_common"
+	"harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/metric/sessionstats"
 )
 

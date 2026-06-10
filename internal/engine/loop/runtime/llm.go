@@ -22,7 +22,7 @@ import (
 	"harnessclaw-go/internal/engine/scheduler/runtime"
 	"harnessclaw-go/internal/engine/session"
 	legacyagent "harnessclaw-go/internal/legacy/agent"
-	common "harnessclaw-go/internal/legacy/engine_agent_common"
+	common "harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/skills"

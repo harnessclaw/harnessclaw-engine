@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"harnessclaw-go/internal/engine/loop"
-	"harnessclaw-go/internal/legacy/engine_agent_common"
+	"harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/tools/builtin/submittool"
 	"harnessclaw-go/pkg/types"
 )
