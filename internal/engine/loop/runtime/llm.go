@@ -10,20 +10,23 @@ package loopruntime
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/loop"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/scheduler/middlewares"
 	"harnessclaw-go/internal/engine/scheduler/runtime"
 	"harnessclaw-go/internal/engine/session"
 	legacyagent "harnessclaw-go/internal/legacy/agent"
 	common "harnessclaw-go/internal/legacy/engine_agent_common"
-	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
+	"harnessclaw-go/internal/skills"
+	"harnessclaw-go/internal/skills/tracker"
 	"harnessclaw-go/internal/tools"
 	pkgtypes "harnessclaw-go/pkg/types"
 )
@@ -37,6 +40,7 @@ type LLM struct {
 	Compactor     compact.Compactor
 	Retryer       *retry.Retryer
 	PromptBuilder *prompt.Builder
+	SkillReader   *skill.Reader // nil → freelancer 的 skill 自管理子系统未启用
 	Logger        *zap.Logger
 	Cfg           Config
 }
@@ -59,6 +63,7 @@ type LLMArgs struct {
 	Compactor     compact.Compactor
 	Retryer       *retry.Retryer
 	PromptBuilder *prompt.Builder
+	SkillReader   *skill.Reader
 	Logger        *zap.Logger
 	Cfg           Config
 }
@@ -72,6 +77,7 @@ func NewLLM(a LLMArgs) *LLM {
 		Compactor:     a.Compactor,
 		Retryer:       a.Retryer,
 		PromptBuilder: a.PromptBuilder,
+		SkillReader:   a.SkillReader,
 		Logger:        a.Logger,
 		Cfg:           a.Cfg,
 	}
@@ -130,6 +136,26 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 		ContextWindow:     r.Cfg.ContextWindow,
 		Registry:          r.Registry,
 	})
+
+	// ★ 4.5 Skill hydration —— freelancer 专属
+	// 装 SkillTracker：state machine 簿记 active/unloaded skill + 强制 budget。
+	// candidate_skills（从 dispatch 工具的 Inputs 里来）会被 Preload 进 tracker
+	// 并把 <loaded-skills> XML 块前置拼到 sysPrompt 上。tracker 注入 ctx 后
+	// load_skill / unload_skill / list_loaded_skills 这 3 个工具就能从 ctx
+	// 取到状态机进行操作。
+	// 非 freelancer（emma / browser / explore 等）不进这条路径，tracker == nil，
+	// 工具调用方报「skill tracker not available」是预期行为。
+	if p.Definition.Name == "freelancer" && r.SkillReader != nil {
+		candidates := parseCandidateSkills(p.Inputs)
+		tr, skillBlock, hErr := hydrateSkills(r.SkillReader, candidates)
+		if hErr != nil {
+			return nil, fmt.Errorf("freelancer skill hydration: %w", hErr)
+		}
+		ctx = tool.WithSkillTrackerValue(ctx, tr)
+		if skillBlock != "" {
+			sysPrompt = skillBlock + "\n\n" + sysPrompt
+		}
+	}
 
 	// 5. Seed 第一条 user 消息（runner.RunLeaf:198-203）
 	sess.AddMessage(pkgtypes.Message{
@@ -279,6 +305,64 @@ func resolveProfile(name string) *prompt.AgentProfile {
 		return p
 	}
 	return prompt.WorkerProfile
+}
+
+// freelancer skill budget —— 经验值 3，与历史 hydrateFreelancer 一致。
+// L2 candidate + L3 runtime load_skill 共享这个上限。
+const freelancerSkillBudget = 3
+
+// hydrateSkills 构造 freelancer 启动时的 SkillTracker + skill 提示块。
+// candidates 为空 → 返回空 tracker（freelancer 仍可在 loop 内 search_skill /
+// load_skill 按需装载）。
+// candidates 数量超出预算或 reader 缺失会立刻报错，让 Runtime.Run 在 LLM
+// 启动前快速失败。
+func hydrateSkills(reader *skill.Reader, candidates []string) (*tracker.SkillTracker, string, error) {
+	tr := tracker.NewSkillTracker(freelancerSkillBudget)
+	if len(candidates) == 0 {
+		return tr, "", nil
+	}
+	if len(candidates) > freelancerSkillBudget {
+		return nil, "", fmt.Errorf("candidate_skills 上限 %d，传了 %d", freelancerSkillBudget, len(candidates))
+	}
+	if reader == nil {
+		return nil, "", fmt.Errorf("skill reader 未装配，无法解析 candidate_skills")
+	}
+	fulls := make([]*skill.SkillFull, 0, len(candidates))
+	for _, name := range candidates {
+		full, err := reader.Load(name)
+		if err != nil {
+			return nil, "", fmt.Errorf("candidate skill %q: %w", name, err)
+		}
+		fulls = append(fulls, full)
+	}
+	if err := tr.Preload(fulls); err != nil {
+		return nil, "", err
+	}
+	return tr, prompt.BuildLoadedSkillsBlock(fulls), nil
+}
+
+// parseCandidateSkills 从 RunParams.Inputs["candidate_skills"] 抽数组。
+// 非数组 / 非字符串元素 / nil 一律返回 nil（防御性 —— 上游 JSON unmarshal
+// 没有严格校验）。
+func parseCandidateSkills(inputs map[string]any) []string {
+	if inputs == nil {
+		return nil
+	}
+	raw, ok := inputs["candidate_skills"]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, item := range arr {
+		if s, ok := item.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // 编译期接口实现检查

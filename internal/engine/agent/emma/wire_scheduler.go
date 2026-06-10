@@ -5,6 +5,7 @@ import (
 
 	"harnessclaw-go/internal/engine/compact"
 	loopruntime "harnessclaw-go/internal/engine/loop/runtime"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/scheduler/diskout"
 	"harnessclaw-go/internal/engine/scheduler/emit"
@@ -13,9 +14,9 @@ import (
 	syncstrat "harnessclaw-go/internal/engine/scheduler/strategies/sync_"
 	"harnessclaw-go/internal/engine/scheduler/tasks"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
+	"harnessclaw-go/internal/skills"
 	"harnessclaw-go/internal/tools"
 )
 
@@ -28,6 +29,7 @@ type wiredDeps struct {
 	Compactor     compact.Compactor
 	Retryer       *retry.Retryer
 	PromptBuilder *prompt.Builder
+	SkillReader   *skill.Reader
 	Logger        *zap.Logger
 	Cfg           Config
 	WorkspaceRoot string
@@ -53,6 +55,7 @@ func wireScheduler(wd wiredDeps) scheduler.Scheduler {
 		Compactor:     wd.Compactor,
 		Retryer:       wd.Retryer,
 		PromptBuilder: wd.PromptBuilder,
+		SkillReader:   wd.SkillReader,
 		Logger:        wd.Logger,
 		Cfg: loopruntime.Config{
 			MaxTokens:           wd.Cfg.MaxTokens,

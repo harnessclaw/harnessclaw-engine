@@ -284,6 +284,7 @@ func New(
 		Compactor:     comp,
 		Retryer:       e.retryer,
 		PromptBuilder: promptBuilder,
+		SkillReader:   e.skillReader, // 透传 emma cfg 的 SkillReader 给 freelancer skill hydration
 		Logger:        logger,
 		Cfg:           cfg,
 		WorkspaceRoot: workspace.DefaultRootDir(),
