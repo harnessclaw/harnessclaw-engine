@@ -306,7 +306,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			})
 			return
 		}
-		mid := nonEmpty(ev.MessageID, "msg_"+emitv2.NewCardID(emitv2.CardMessage))
+		mid := nonEmpty(ev.MessageID, emitv2.NewCardID(emitv2.CardMessage))
 		setMsg(mid)
 		parent := s.turnCardID
 		if ev.AgentID != "" && ev.AgentID != "main" {
@@ -469,7 +469,7 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 			return // 当前还有未关闭的 message card — 不重复开
 		}
 		// 提前开新 message card，挂 hint summary
-		mid := "msg_" + emitv2.NewCardID(emitv2.CardMessage)
+		mid := emitv2.NewCardID(emitv2.CardMessage)
 		s.messageCardID = mid
 		em.Card(emitv2.CardMessage, mid).Add(emitv2.MessagePayload{Role: "assistant"},
 			emitv2.WithParent(s.turnCardID),

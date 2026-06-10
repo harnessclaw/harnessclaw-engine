@@ -400,6 +400,7 @@ func CallLLM(
 			select {
 			case planningOut <- types.EngineEvent{
 				Type:      types.EngineEventToolQueued,
+				AgentID:   agentID,
 				ToolUseID: tc.ID,
 				ToolName:  tc.Name,
 			}:
@@ -649,6 +650,7 @@ func CallLLMOnce(
 						select {
 						case planningOut <- types.EngineEvent{
 							Type:      types.EngineEventToolPlanning,
+							AgentID:   agentID,
 							ToolUseID: id,
 							ToolName:  evt.ToolCall.Name,
 						}:
@@ -662,6 +664,7 @@ func CallLLMOnce(
 						select {
 						case planningOut <- types.EngineEvent{
 							Type:      types.EngineEventToolPlanningProgress,
+							AgentID:   agentID,
 							ToolUseID: id,
 							ToolName:  evt.ToolCall.Name,
 							Bytes:     accumulated,
