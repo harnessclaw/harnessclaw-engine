@@ -92,7 +92,7 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 		// to a preceding message with 'tool_calls'") opaque — operators
 		// could see the error but not the message sequence that caused
 		// it.
-		dumpLLMRequest(logger, cfg.AgentID, turn, messages, len(req.Tools), len(cfg.SystemPrompt), cfg.MaxTokens)
+		dumpLLMRequest(logger, cfg.AgentID, turn, messages, len(req.Tools), len(cfg.SystemPrompt), cfg.MaxTokens, cfg.SystemPrompt)
 		// Pre-flight shape check: scan for the four request-body
 		// pathologies that reliably trigger upstream HTTP 400 — empty
 		// text blocks, assistant messages with no content blocks,
@@ -358,7 +358,10 @@ func preflightValidateMessages(logger *zap.Logger, agentID string, turn int, mes
 // session messages headed to the LLM. Same shape as emma/runner.go's
 // dump so existing log-mining scripts work across L1 and sub-agent
 // turns. Cheap when zap level is above debug (Sugar/Field cost only).
-func dumpLLMRequest(logger *zap.Logger, agentID string, turn int, messages []types.Message, toolSchemas, sysPromptLen, maxTokens int) {
+//
+// 注：调用方在 turn=1 时通过 cfg.SystemPrompt 多传一个参数，dump 会把正文也打出来。
+// 后续 turn 不重复打（system prompt 整轮不变）。
+func dumpLLMRequest(logger *zap.Logger, agentID string, turn int, messages []types.Message, toolSchemas, sysPromptLen, maxTokens int, systemPrompt string) {
 	if logger == nil {
 		return
 	}
@@ -370,6 +373,14 @@ func dumpLLMRequest(logger *zap.Logger, agentID string, turn int, messages []typ
 		zap.Int("system_prompt_len", sysPromptLen),
 		zap.Int("max_tokens", maxTokens),
 	)
+	// 首轮把 system prompt 全文打出来 —— 后续轮整轮不变，避免重复刷屏。
+	// 仅在 zap debug level 生效，生产环境 INFO/WARN 不会触发任何字段编码开销。
+	if turn == 1 && systemPrompt != "" {
+		logger.Debug("llm request system prompt",
+			zap.String("agent_id", agentID),
+			zap.String("system_prompt", systemPrompt),
+		)
+	}
 	for i, m := range messages {
 		preview := ""
 		for _, cb := range m.Content {
