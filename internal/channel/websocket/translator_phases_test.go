@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	emitv2 "harnessclaw-go/internal/channel/emit/v2"
-	"harnessclaw-go/internal/legacy/toolphrase"
+	"harnessclaw-go/internal/channel/websocket/internal/toolphrase"
 	"harnessclaw-go/pkg/types"
 )
 
