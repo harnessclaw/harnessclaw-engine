@@ -149,7 +149,8 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		InvokedBy:   scheduler.Invoker{Kind: scheduler.InvokerLLM, Source: ToolName},
 		Inputs:      inputs,
 		Events:      events,
-		Overrides:   scheduler.Overrides{Model: input.Model, MaxTurns: 0},
+		// MaxTurns=0 → 让 Runtime.LLM 走 Definition.MaxTurns → 兜底 30
+		Overrides: scheduler.Overrides{Model: input.Model, MaxTurns: 0},
 	}
 
 	t.logger.Info("spawning sub-agent",

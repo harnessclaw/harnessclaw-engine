@@ -140,13 +140,17 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 		}},
 	})
 
-	// 6. MaxTurns 优先级：Overrides > Definition.MaxTurns > 10
+	// 6. MaxTurns 优先级：Overrides > Definition.MaxTurns > 30
+	// 默认 30 是 L3 sub-agent（freelancer/explore/plan 等）的常见预算。
+	// 10 是经验上太低的值 —— 写一篇 1000 字散文需要 search → load skill → think
+	// → write → verify 的 5-8 个 step，10 turns 必触 max_turns。
+	// 调用方需要严格限流时通过 Overrides 显式覆写（如 browseragent 的 maxSteps）。
 	maxTurns := p.Overrides.MaxTurns
 	if maxTurns <= 0 {
 		maxTurns = p.Definition.MaxTurns
 	}
 	if maxTurns <= 0 {
-		maxTurns = 10
+		maxTurns = 30
 	}
 
 	// 7. 权限 checker（runner.RunLeaf:214-216）
