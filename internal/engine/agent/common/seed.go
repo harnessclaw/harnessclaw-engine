@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/legacy/workspace"
+	"harnessclaw-go/internal/workspace"
 )
 
 // EnsureTaskDir mkdir-Ps the per-task workspace directory the SeedPrompt

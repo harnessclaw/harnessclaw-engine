@@ -24,7 +24,7 @@ import (
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/sections"
 	"harnessclaw-go/internal/metric/sessionstats"
-	"harnessclaw-go/internal/legacy/workspace"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/skills"

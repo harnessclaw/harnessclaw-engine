@@ -83,7 +83,7 @@ import (
 	"harnessclaw-go/internal/tools/builtin/unloadskill"
 	"harnessclaw-go/internal/tools/builtin/webfetch"
 	"harnessclaw-go/internal/tools/builtin/websearch"
-	"harnessclaw-go/internal/legacy/workspace"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
 

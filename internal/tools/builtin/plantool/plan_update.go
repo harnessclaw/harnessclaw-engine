@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"harnessclaw-go/internal/tools"
-	"harnessclaw-go/internal/legacy/workspace"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
 

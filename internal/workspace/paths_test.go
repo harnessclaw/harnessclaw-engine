@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"harnessclaw-go/internal/legacy/workspace"
+	"harnessclaw-go/internal/workspace"
 )
 
 func TestSessionMetaPath(t *testing.T) {

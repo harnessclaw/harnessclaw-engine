@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"harnessclaw-go/internal/legacy/workspace"
+	"harnessclaw-go/internal/workspace"
 )
 
 // setupPlan creates a session and uses PlanWriterRegistry.Apply to write tasks

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"harnessclaw-go/internal/tools"
-	"harnessclaw-go/internal/legacy/workspace"
+	"harnessclaw-go/internal/workspace"
 )
 
 func TestMetaWrite_HappyPath(t *testing.T) {

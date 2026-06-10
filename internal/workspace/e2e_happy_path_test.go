@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"harnessclaw-go/internal/legacy/workspace"
+	"harnessclaw-go/internal/workspace"
 )
 
 // TestE2E_WorkspaceHappyPath exercises the local-files-as-truth flow

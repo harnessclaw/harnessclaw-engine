@@ -3,7 +3,7 @@ package common
 import (
 	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/tools"
-	"harnessclaw-go/internal/legacy/workspace"
+	"harnessclaw-go/internal/workspace"
 )
 
 // BuildAgentScope assembles the per-spawn tool.AgentScope from the

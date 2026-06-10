@@ -12,7 +12,7 @@ import (
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/tools/builtin/skilltool"
-	"harnessclaw-go/internal/legacy/workspace"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
 
