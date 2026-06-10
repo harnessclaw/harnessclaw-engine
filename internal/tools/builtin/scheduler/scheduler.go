@@ -35,7 +35,7 @@ import (
 
 	schedpkg "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/legacy/sessionstats"
+	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )

@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/legacy/sessionstats"
+	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/engine/permission"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"

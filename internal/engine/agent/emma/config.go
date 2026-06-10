@@ -6,7 +6,7 @@ import (
 	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine/prompt"
-	"harnessclaw-go/internal/legacy/sessionstats"
+	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/skills"
 )

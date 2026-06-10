@@ -23,7 +23,7 @@ import (
 	"harnessclaw-go/internal/engine/agent/emma/mention"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/sections"
-	"harnessclaw-go/internal/legacy/sessionstats"
+	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/legacy/workspace"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"

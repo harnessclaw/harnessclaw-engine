@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/legacy/sessionstats"
+	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/skills"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
