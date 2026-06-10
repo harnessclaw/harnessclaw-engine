@@ -10,7 +10,7 @@ import (
 	"harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/legacy/mention"
+	"harnessclaw-go/internal/engine/agent/builtin/emma/mention"
 	"harnessclaw-go/internal/memory"
 	"harnessclaw-go/pkg/types"
 )
