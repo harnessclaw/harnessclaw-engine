@@ -1,7 +1,7 @@
 package builtin
 
 import (
-	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/engine/agent/definition"
 )
 
 // Generic is the fallback AgentDefinition used when a SpawnConfig's
@@ -15,7 +15,7 @@ import (
 //
 // The "generic" Name doubles as the AgentScope label so logs and
 // EngineEvents read the same as before the migration.
-var Generic = agent.AgentDefinition{
+var Generic = definition.AgentDefinition{
 	Name:        "generic",
 	DisplayName: "Generic Worker",
 	Description: "Fallback worker for custom or unregistered subagent types.",

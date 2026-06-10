@@ -1,4 +1,4 @@
-package agent
+package agentmgmt
 
 import (
 	"context"
@@ -11,6 +11,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"harnessclaw-go/internal/engine/agent/definition"
 )
 
 // SQLiteAgentStore is a persistent AgentStore backed by SQLite.
@@ -85,7 +87,7 @@ func (s *SQLiteAgentStore) Close() error {
 	return s.db.Close()
 }
 
-func (s *SQLiteAgentStore) Create(_ context.Context, def *AgentDefinition) (*AgentDefinition, error) {
+func (s *SQLiteAgentStore) Create(_ context.Context, def *definition.AgentDefinition) (*definition.AgentDefinition, error) {
 	// Builtins live in code (RegisterBuiltins), never in the store.
 	// Persisting them creates a bind that locks in stale tool palettes
 	// across builds — a tool added in a new RegisterBuiltins() entry
@@ -144,7 +146,7 @@ func (s *SQLiteAgentStore) Create(_ context.Context, def *AgentDefinition) (*Age
 	return &cp, nil
 }
 
-func (s *SQLiteAgentStore) Get(_ context.Context, name string) (*AgentDefinition, error) {
+func (s *SQLiteAgentStore) Get(_ context.Context, name string) (*definition.AgentDefinition, error) {
 	row := s.db.QueryRow(
 		`SELECT display_name, description, system_prompt, agent_type, profile, model,
 		 max_turns, tools, allowed_tools, disallowed_tools, skills, auto_team,
@@ -155,7 +157,7 @@ func (s *SQLiteAgentStore) Get(_ context.Context, name string) (*AgentDefinition
 	return scanAgentDef(name, row)
 }
 
-func (s *SQLiteAgentStore) List(_ context.Context, filter *AgentFilter) ([]*AgentDefinition, error) {
+func (s *SQLiteAgentStore) List(_ context.Context, filter *AgentFilter) ([]*definition.AgentDefinition, error) {
 	query := `SELECT name, display_name, description, system_prompt, agent_type, profile, model,
 		 max_turns, tools, allowed_tools, disallowed_tools, skills, auto_team,
 		 sub_agents, personality, triggers, source, is_builtin, is_team_member
@@ -202,9 +204,9 @@ func (s *SQLiteAgentStore) List(_ context.Context, filter *AgentFilter) ([]*Agen
 	}
 	defer rows.Close()
 
-	var result []*AgentDefinition
+	var result []*definition.AgentDefinition
 	for rows.Next() {
-		var d AgentDefinition
+		var d definition.AgentDefinition
 		var toolsStr, allowedStr, disallowedStr, skillsStr, subAgentsStr string
 		var autoTeamInt, isBuiltinInt, isTeamMemberInt int
 		if err := rows.Scan(&d.Name, &d.DisplayName, &d.Description, &d.SystemPrompt,
@@ -226,7 +228,7 @@ func (s *SQLiteAgentStore) List(_ context.Context, filter *AgentFilter) ([]*Agen
 	return result, nil
 }
 
-func (s *SQLiteAgentStore) Update(_ context.Context, name string, updates *AgentUpdate) (*AgentDefinition, error) {
+func (s *SQLiteAgentStore) Update(_ context.Context, name string, updates *AgentUpdate) (*definition.AgentDefinition, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -374,9 +376,9 @@ func (s *SQLiteAgentStore) Delete(_ context.Context, name string) error {
 	return nil
 }
 
-// scanAgentDef reads a single agent definition row into an AgentDefinition.
-func scanAgentDef(name string, row *sql.Row) (*AgentDefinition, error) {
-	var d AgentDefinition
+// scanAgentDef reads a single agent definition row into an definition.AgentDefinition.
+func scanAgentDef(name string, row *sql.Row) (*definition.AgentDefinition, error) {
+	var d definition.AgentDefinition
 	d.Name = name
 	var toolsStr, allowedStr, disallowedStr, skillsStr, subAgentsStr string
 	var autoTeamInt, isBuiltinInt, isTeamMemberInt int

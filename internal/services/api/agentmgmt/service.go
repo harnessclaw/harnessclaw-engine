@@ -1,22 +1,24 @@
-package agent
+package agentmgmt
 
 import (
 	"context"
 	"fmt"
 
 	"go.uber.org/zap"
+
+	"harnessclaw-go/internal/engine/agent/definition"
 )
 
 // AgentService provides CRUD operations on agent definitions with
 // automatic synchronization to the in-memory registry.
 type AgentService struct {
 	store    AgentStore
-	registry *AgentDefinitionRegistry
+	registry *definition.Registry
 	logger   *zap.Logger
 }
 
 // NewAgentService creates a new agent service.
-func NewAgentService(store AgentStore, registry *AgentDefinitionRegistry, logger *zap.Logger) *AgentService {
+func NewAgentService(store AgentStore, registry *definition.Registry, logger *zap.Logger) *AgentService {
 	return &AgentService{
 		store:    store,
 		registry: registry,
@@ -25,7 +27,7 @@ func NewAgentService(store AgentStore, registry *AgentDefinitionRegistry, logger
 }
 
 // Create creates a new agent definition.
-func (s *AgentService) Create(ctx context.Context, def *AgentDefinition) (*AgentDefinition, error) {
+func (s *AgentService) Create(ctx context.Context, def *definition.AgentDefinition) (*definition.AgentDefinition, error) {
 	// Check name conflict with registry
 	if existing := s.registry.Get(def.Name); existing != nil {
 		return nil, fmt.Errorf("agent definition %q already exists", def.Name)
@@ -44,17 +46,17 @@ func (s *AgentService) Create(ctx context.Context, def *AgentDefinition) (*Agent
 }
 
 // Get retrieves an agent definition by name.
-func (s *AgentService) Get(ctx context.Context, name string) (*AgentDefinition, error) {
+func (s *AgentService) Get(ctx context.Context, name string) (*definition.AgentDefinition, error) {
 	return s.store.Get(ctx, name)
 }
 
 // List returns agent definitions matching the filter.
-func (s *AgentService) List(ctx context.Context, filter *AgentFilter) ([]*AgentDefinition, error) {
+func (s *AgentService) List(ctx context.Context, filter *AgentFilter) ([]*definition.AgentDefinition, error) {
 	return s.store.List(ctx, filter)
 }
 
 // Update updates an agent definition.
-func (s *AgentService) Update(ctx context.Context, name string, updates *AgentUpdate) (*AgentDefinition, error) {
+func (s *AgentService) Update(ctx context.Context, name string, updates *AgentUpdate) (*definition.AgentDefinition, error) {
 	result, err := s.store.Update(ctx, name, updates)
 	if err != nil {
 		return nil, fmt.Errorf("update agent definition: %w", err)
@@ -84,7 +86,7 @@ func (s *AgentService) Delete(ctx context.Context, name string) error {
 // to avoid overwriting API-made modifications or re-creating deleted agents.
 // Returns the number of successfully imported definitions.
 func (s *AgentService) ImportFromYAML(ctx context.Context, dir string) (int, []error) {
-	tempReg := NewAgentDefinitionRegistry()
+	tempReg := definition.NewRegistry()
 	if err := tempReg.LoadFromDirectory(dir); err != nil {
 		return 0, []error{fmt.Errorf("load directory %s: %w", dir, err)}
 	}
@@ -118,7 +120,7 @@ func (s *AgentService) ImportFromYAML(ctx context.Context, dir string) (int, []e
 // on the next server restart without recompilation.
 // The agent's Source is set to the YAML file path (not "builtin").
 func (s *AgentService) SyncFromDirectory(ctx context.Context, dir string) (int, error) {
-	tempReg := NewAgentDefinitionRegistry()
+	tempReg := definition.NewRegistry()
 	if err := tempReg.LoadFromDirectory(dir); err != nil {
 		return 0, fmt.Errorf("load directory %s: %w", dir, err)
 	}
@@ -220,7 +222,7 @@ func (s *AgentService) LoadAllToRegistry(ctx context.Context) error {
 
 // reservedTierName lists agent names that map to in-code tier modules
 // (freelancer / plan_agent / plan_executor_agent / plan) where the
-// AgentDefinition's tool palette + AgentType are load-bearing for the
+// definition.AgentDefinition's tool palette + AgentType are load-bearing for the
 // module's behavior. Store records carrying these names — even
 // validation-passing ones — are silently dropped in LoadAllToRegistry
 // when an in-memory builtin already holds the slot, because overwriting

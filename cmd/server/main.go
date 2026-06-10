@@ -28,9 +28,9 @@ import (
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/services/api"
 	"harnessclaw-go/internal/services/api/agentcapabilities"
+	"harnessclaw-go/internal/services/api/agentmgmt"
 	"harnessclaw-go/internal/services/api/modelsregistry"
 	"harnessclaw-go/internal/services/api/providersmgmt"
 	"harnessclaw-go/internal/services/api/sessionmetrics"
@@ -41,6 +41,7 @@ import (
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine/compact"
 	browseragentdef "harnessclaw-go/internal/engine/agent/builtin/browser_agent"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/agent/emma"
 	"harnessclaw-go/internal/engine/agent/emma/resume"
 	"harnessclaw-go/internal/humanloop"
@@ -377,7 +378,7 @@ func main() {
 	// injected into the engine at construction. Population (SQLite sync,
 	// YAML sync, LoadAllToRegistry) happens further below; the engine
 	// holds a pointer, so writes through agentDefReg are visible to it.
-	agentDefReg := agent.NewAgentDefinitionRegistry()
+	agentDefReg := definition.NewRegistry()
 
 	// L2 (worker / sub-agent) settings live on emma.Config directly.
 	// emma settings (profile, restricted tool palette, small loop) are
@@ -486,14 +487,14 @@ func main() {
 	// registry (agentDefReg) was constructed earlier and injected into
 	// engCfg; the lines below populate it via SQLite + YAML sync.
 	agentDefDBPath := defaultDBPath("agent_definitions.db")
-	agentDefStore, err := agent.NewSQLiteAgentStore(agentDefDBPath)
+	agentDefStore, err := agentmgmt.NewSQLiteAgentStore(agentDefDBPath)
 	if err != nil {
 		logger.Fatal("failed to initialize agent definition store", zap.Error(err))
 	}
 	defer agentDefStore.Close()
 	logger.Info("agent definition store initialized", zap.String("path", agentDefDBPath))
 
-	agentSvc := agent.NewAgentService(agentDefStore, agentDefReg, logger)
+	agentSvc := agentmgmt.NewAgentService(agentDefStore, agentDefReg, logger)
 
 	// Pre-tier-system binaries persisted builtins into SQLite; those
 	// stale rows now overwrite the in-code RegisterBuiltins() entries

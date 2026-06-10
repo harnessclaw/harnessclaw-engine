@@ -1,7 +1,7 @@
 package browser_agent
 
 import (
-	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/skills"
 )
@@ -26,6 +26,6 @@ func buildSystemPrompt() string {
 	skillBlock := prompt.BuildLoadedSkillsBlock([]*skill.SkillFull{fakeSkill})
 	return joinNonEmpty([]string{
 		skillBlock,
-		agent.RenderSubAgentContract(def),
+		definition.RenderSubAgentContract(def),
 	}, "\n\n")
 }

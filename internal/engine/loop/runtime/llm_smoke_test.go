@@ -10,7 +10,7 @@ import (
 
 	"harnessclaw-go/internal/engine/scheduler/runtime"
 	"harnessclaw-go/internal/engine/session"
-	legacyagent "harnessclaw-go/internal/legacy/agent"
+	legacyagent "harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/memory"
 	"harnessclaw-go/internal/provider/mock"

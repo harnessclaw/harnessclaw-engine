@@ -1,9 +1,11 @@
-package agent
+package agentmgmt
 
 import (
 	"context"
 	"testing"
 	"time"
+
+	"harnessclaw-go/internal/engine/agent/definition"
 )
 
 // TestSQLiteAgentStore_RejectsBuiltinCreate is the wire-level guard:
@@ -20,15 +22,15 @@ func TestSQLiteAgentStore_RejectsBuiltinCreate(t *testing.T) {
 
 	tests := []struct {
 		name string
-		def  *AgentDefinition
+		def  *definition.AgentDefinition
 	}{
 		{
 			"is_builtin flag set",
-			&AgentDefinition{Name: "x1", AgentType: "sync", Profile: "worker", IsBuiltin: true},
+			&definition.AgentDefinition{Name: "x1", AgentType: "sync", Profile: "worker", IsBuiltin: true},
 		},
 		{
 			"source = builtin",
-			&AgentDefinition{Name: "x2", AgentType: "sync", Profile: "worker", Source: "builtin"},
+			&definition.AgentDefinition{Name: "x2", AgentType: "sync", Profile: "worker", Source: "builtin"},
 		},
 	}
 	for _, tc := range tests {
@@ -88,7 +90,7 @@ func TestSQLiteAgentStore_PurgeBuiltins(t *testing.T) {
 		t.Fatalf("seed source-only: %v", err)
 	}
 	// Legitimate user-created record must survive the purge.
-	if _, err := store.Create(context.Background(), &AgentDefinition{
+	if _, err := store.Create(context.Background(), &definition.AgentDefinition{
 		Name: "user_yaml", AgentType: "sync", Profile: "worker", Source: "yaml",
 	}); err != nil {
 		t.Fatalf("create user: %v", err)

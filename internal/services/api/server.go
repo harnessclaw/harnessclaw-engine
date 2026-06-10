@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/services/api/agentmgmt"
 )
 
 // ServerConfig holds console API server settings.
@@ -48,7 +48,7 @@ type Server struct {
 // for the resolved active-model SupportsFlags + derived capability buckets.
 // Mounted ahead of /api/v1/agent so the more specific path wins in
 // http.ServeMux (longest pattern match).
-func NewServer(cfg ServerConfig, agentSvc *agent.AgentService, metricsHandler http.Handler, modelsHandler http.Handler, providersHandler http.Handler, toolsHandler http.Handler, artifactsHandler http.Handler, capabilitiesHandler http.Handler, logger *zap.Logger) *Server {
+func NewServer(cfg ServerConfig, agentSvc *agentmgmt.AgentService, metricsHandler http.Handler, modelsHandler http.Handler, providersHandler http.Handler, toolsHandler http.Handler, artifactsHandler http.Handler, capabilitiesHandler http.Handler, logger *zap.Logger) *Server {
 	mux := http.NewServeMux()
 
 	// Register agent management routes

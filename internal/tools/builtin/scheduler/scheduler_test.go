@@ -10,7 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	schedpkg "harnessclaw-go/internal/engine/scheduler"
-	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
@@ -37,7 +37,7 @@ func newSched(result schedpkg.Result, err error) *mockScheduler {
 }
 
 func newToolForTest() *Tool {
-	return New(&mockScheduler{}, agent.NewAgentDefinitionRegistry(), zap.NewNop())
+	return New(&mockScheduler{}, definition.NewRegistry(), zap.NewNop())
 }
 
 func TestTool_Metadata(t *testing.T) {
@@ -72,7 +72,7 @@ func TestTool_Execute_SyncSuccess(t *testing.T) {
 			Terminal: types.Terminal{Reason: types.TerminalCompleted},
 		},
 	}, nil)
-	tl := New(sched, agent.NewAgentDefinitionRegistry(), zap.NewNop())
+	tl := New(sched, definition.NewRegistry(), zap.NewNop())
 
 	res, err := tl.Execute(context.Background(), json.RawMessage(`{"task":"deep dive"}`))
 	if err != nil {
@@ -111,7 +111,7 @@ func TestTool_Execute_PlanModeReturnsError(t *testing.T) {
 }
 
 func TestTool_Execute_DispatchError(t *testing.T) {
-	tl := New(newSched(schedpkg.Result{}, errors.New("dispatch boom")), agent.NewAgentDefinitionRegistry(), zap.NewNop())
+	tl := New(newSched(schedpkg.Result{}, errors.New("dispatch boom")), definition.NewRegistry(), zap.NewNop())
 	res, _ := tl.Execute(context.Background(), json.RawMessage(`{"task":"x"}`))
 	if !res.IsError {
 		t.Fatal("expected IsError=true on dispatch error")
@@ -128,7 +128,7 @@ func TestTool_Execute_TerminalFailure(t *testing.T) {
 			Terminal: types.Terminal{Reason: types.TerminalMaxTurns, Message: "out of turns"},
 		},
 	}, nil)
-	tl := New(sched, agent.NewAgentDefinitionRegistry(), zap.NewNop())
+	tl := New(sched, definition.NewRegistry(), zap.NewNop())
 	res, _ := tl.Execute(context.Background(), json.RawMessage(`{"task":"x"}`))
 	if !res.IsError {
 		t.Fatal("non-completed Terminal should be IsError=true")

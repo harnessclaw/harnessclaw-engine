@@ -17,7 +17,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/engine/scheduler"
-	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
@@ -34,7 +34,7 @@ const ToolName = "freelance"
 type AgentTool struct {
 	tool.BaseTool
 	sched  scheduler.Scheduler
-	defReg *agent.AgentDefinitionRegistry
+	defReg *definition.Registry
 	logger *zap.Logger
 }
 
@@ -42,7 +42,7 @@ type AgentTool struct {
 // AgentDefinition registry. defReg is used to resolve the AgentDefinition
 // from the input.SubagentType string; nil falls back to a synthetic minimal
 // Definition with just Name set.
-func New(sched scheduler.Scheduler, defReg *agent.AgentDefinitionRegistry, logger *zap.Logger) *AgentTool {
+func New(sched scheduler.Scheduler, defReg *definition.Registry, logger *zap.Logger) *AgentTool {
 	return &AgentTool{sched: sched, defReg: defReg, logger: logger}
 }
 
@@ -251,13 +251,13 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 
 // resolveDefinition 从 registry 查找 SubagentType 对应的 AgentDefinition；
 // 找不到时返回最小骨架 Definition（让 Runtime.LLM 用 AgentType 默认工具池）。
-func (t *AgentTool) resolveDefinition(in *agentInput) agent.AgentDefinition {
+func (t *AgentTool) resolveDefinition(in *agentInput) definition.AgentDefinition {
 	if t.defReg != nil {
 		if def := t.defReg.Get(in.SubagentType); def != nil {
 			return *def
 		}
 	}
-	return agent.AgentDefinition{
+	return definition.AgentDefinition{
 		Name:      in.SubagentType,
 		AgentType: resolveAgentType(in.SubagentType),
 	}

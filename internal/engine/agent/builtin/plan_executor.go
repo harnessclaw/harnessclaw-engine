@@ -1,6 +1,6 @@
 package builtin
 
-import "harnessclaw-go/internal/legacy/agent"
+import "harnessclaw-go/internal/engine/agent/definition"
 
 // PlanExecutor is the plan-mode executor sub-agent that drives the
 // plan.json produced by PlanAgent — it dispatches freelancers via the
@@ -8,7 +8,7 @@ import "harnessclaw-go/internal/legacy/agent"
 // it must KEEP the dispatch tools (so the shim sets
 // StripDispatchTools=false explicitly). Terminates on
 // submit_task_result; default 20 turns.
-var PlanExecutor = agent.AgentDefinition{
+var PlanExecutor = definition.AgentDefinition{
 	Name:        "plan_executor_agent",
 	DisplayName: "Plan Executor",
 	Description: "Plan-mode executor that dispatches freelancers per plan.json step.",

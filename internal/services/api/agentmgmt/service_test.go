@@ -1,4 +1,4 @@
-package agent
+package agentmgmt
 
 import (
 	"context"
@@ -6,20 +6,22 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
+
+	"harnessclaw-go/internal/engine/agent/definition"
 )
 
 // fakeStore is an in-memory AgentStore for service tests. Not concurrency-
 // safe beyond the basics — that's fine for sequential test code.
 type fakeStore struct {
 	mu   sync.Mutex
-	defs map[string]*AgentDefinition
+	defs map[string]*definition.AgentDefinition
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{defs: make(map[string]*AgentDefinition)}
+	return &fakeStore{defs: make(map[string]*definition.AgentDefinition)}
 }
 
-func (s *fakeStore) Create(_ context.Context, def *AgentDefinition) (*AgentDefinition, error) {
+func (s *fakeStore) Create(_ context.Context, def *definition.AgentDefinition) (*definition.AgentDefinition, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.defs[def.Name]; exists {
@@ -30,7 +32,7 @@ func (s *fakeStore) Create(_ context.Context, def *AgentDefinition) (*AgentDefin
 	return &cp, nil
 }
 
-func (s *fakeStore) Get(_ context.Context, name string) (*AgentDefinition, error) {
+func (s *fakeStore) Get(_ context.Context, name string) (*definition.AgentDefinition, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d, ok := s.defs[name]
@@ -41,10 +43,10 @@ func (s *fakeStore) Get(_ context.Context, name string) (*AgentDefinition, error
 	return &cp, nil
 }
 
-func (s *fakeStore) List(_ context.Context, _ *AgentFilter) ([]*AgentDefinition, error) {
+func (s *fakeStore) List(_ context.Context, _ *AgentFilter) ([]*definition.AgentDefinition, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*AgentDefinition, 0, len(s.defs))
+	out := make([]*definition.AgentDefinition, 0, len(s.defs))
 	for _, d := range s.defs {
 		cp := *d
 		out = append(out, &cp)
@@ -52,7 +54,7 @@ func (s *fakeStore) List(_ context.Context, _ *AgentFilter) ([]*AgentDefinition,
 	return out, nil
 }
 
-func (s *fakeStore) Update(_ context.Context, name string, u *AgentUpdate) (*AgentDefinition, error) {
+func (s *fakeStore) Update(_ context.Context, name string, u *AgentUpdate) (*definition.AgentDefinition, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d, ok := s.defs[name]
@@ -89,10 +91,10 @@ const (
 // branch — user-imported YAML still loads as-is.
 func TestLoadAllToRegistry_NewNonBuiltinLoads(t *testing.T) {
 	store := newFakeStore()
-	reg := NewAgentDefinitionRegistry()
+	reg := definition.NewRegistry()
 	svc := NewAgentService(store, reg, zap.NewNop())
 
-	custom := &AgentDefinition{
+	custom := &definition.AgentDefinition{
 		Name:        "custom-imported",
 		Description: "from yaml",
 		AgentType:   "sync",
@@ -118,10 +120,10 @@ func TestLoadAllToRegistry_NewNonBuiltinLoads(t *testing.T) {
 // (该测试原本守的是 "scheduler"，L2 删除后改用 freelancer 守同一不变量。)
 func TestLoadAllToRegistry_PreservesReservedBuiltins(t *testing.T) {
 	store := newFakeStore()
-	reg := NewAgentDefinitionRegistry()
+	reg := definition.NewRegistry()
 	reg.RegisterBuiltins()
 
-	stale := &AgentDefinition{
+	stale := &definition.AgentDefinition{
 		Name:         "freelancer",
 		DisplayName:  "stale-display",
 		Description:  "stale",

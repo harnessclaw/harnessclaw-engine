@@ -3,7 +3,7 @@ package common
 import (
 	"context"
 
-	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/tools"
@@ -35,7 +35,7 @@ type PromptArgs struct {
 
 	// AgentDef is the sub-agent's definition. Reserved for Stages 6/7
 	// to drive identity stamping and OutputSchema injection.
-	AgentDef *agent.AgentDefinition
+	AgentDef *definition.AgentDefinition
 
 	// LeaderDisplayName is the user-facing name of the dispatching
 	// agent (e.g. "emma"). Used by tier modules when computing

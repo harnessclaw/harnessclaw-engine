@@ -17,7 +17,7 @@ import (
 	syncstrat "harnessclaw-go/internal/engine/scheduler/strategies/sync_"
 	"harnessclaw-go/internal/engine/scheduler/tasks"
 	"harnessclaw-go/internal/engine/session"
-	legacyagent "harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/memory"
 	"harnessclaw-go/internal/provider/mock"
@@ -76,7 +76,7 @@ func TestDispatcher_E2E_SyncRoundtrip(t *testing.T) {
 		syncstrat.New(deps),
 	)
 
-	def := legacyagent.AgentDefinition{
+	def := definition.AgentDefinition{
 		Name:      "smoke",
 		AgentType: tool.AgentTypeSync,
 		Profile:   "worker",
@@ -159,7 +159,7 @@ func TestDispatcher_E2E_AnalyticsBus(t *testing.T) {
 		asyncstrat.New(deps), syncstrat.New(deps))
 
 	_, err := sched.Dispatch(context.Background(), scheduler.SpawnParams{
-		Definition: legacyagent.AgentDefinition{Name: "x", AgentType: tool.AgentTypeSync, Profile: "worker"},
+		Definition: definition.AgentDefinition{Name: "x", AgentType: tool.AgentTypeSync, Profile: "worker"},
 		Prompt:     "ping",
 	})
 	if err != nil {

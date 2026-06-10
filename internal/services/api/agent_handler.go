@@ -8,18 +8,18 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 	"harnessclaw-go/internal/engine/agent/definition"
-	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/services/api/agentmgmt"
 	"harnessclaw-go/internal/tools"
 )
 
 // AgentHandler handles agent definition CRUD endpoints.
 type AgentHandler struct {
-	service *agent.AgentService
+	service *agentmgmt.AgentService
 	logger  *zap.Logger
 }
 
 // NewAgentHandler creates a new agent handler.
-func NewAgentHandler(service *agent.AgentService, logger *zap.Logger) *AgentHandler {
+func NewAgentHandler(service *agentmgmt.AgentService, logger *zap.Logger) *AgentHandler {
 	return &AgentHandler{service: service, logger: logger}
 }
 
@@ -92,7 +92,7 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 // List handles GET /console/v1/agents
 func (h *AgentHandler) List(w http.ResponseWriter, r *http.Request) {
-	filter := &agent.AgentFilter{}
+	filter := &agentmgmt.AgentFilter{}
 	if v := r.URL.Query().Get("agent_type"); v != "" {
 		filter.AgentType = &v
 	}
@@ -132,7 +132,7 @@ func (h *AgentHandler) Get(w http.ResponseWriter, r *http.Request) {
 // Update handles PUT /console/v1/agents/{name}
 func (h *AgentHandler) Update(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	var updates agent.AgentUpdate
+	var updates agentmgmt.AgentUpdate
 	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_INPUT", "invalid JSON: "+err.Error())
 		return

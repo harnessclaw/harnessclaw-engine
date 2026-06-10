@@ -10,7 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/engine/scheduler"
-	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
@@ -33,7 +33,7 @@ func (m *mockScheduler) Subscribe(context.Context, types.TaskID) (<-chan types.E
 }
 
 func newTool() *AgentTool {
-	return New(&mockScheduler{}, agent.NewAgentDefinitionRegistry(), zap.NewNop())
+	return New(&mockScheduler{}, definition.NewRegistry(), zap.NewNop())
 }
 
 func TestAgentTool_Name(t *testing.T) {
@@ -89,7 +89,7 @@ func TestAgentTool_Execute_SyncSuccess(t *testing.T) {
 			},
 		},
 	}
-	tool := New(sched, agent.NewAgentDefinitionRegistry(), zap.NewNop())
+	tool := New(sched, definition.NewRegistry(), zap.NewNop())
 
 	res, err := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"do thing","subagent_type":"freelancer","name":"alice"}`))
 	if err != nil {
@@ -124,7 +124,7 @@ func TestAgentTool_Execute_AsyncReturnsLaunched(t *testing.T) {
 			Outcome: scheduler.AsyncOutcome{OutputFile: "/tmp/t-2.jsonl", Tailable: true},
 		},
 	}
-	tool := New(sched, agent.NewAgentDefinitionRegistry(), zap.NewNop())
+	tool := New(sched, definition.NewRegistry(), zap.NewNop())
 
 	res, err := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"long task","subagent_type":"freelancer","run_in_background":true}`))
 	if err != nil {
@@ -149,7 +149,7 @@ func TestAgentTool_Execute_AsyncReturnsLaunched(t *testing.T) {
 
 func TestAgentTool_Execute_DispatchError(t *testing.T) {
 	sched := &mockScheduler{err: errors.New("dispatch boom")}
-	tool := New(sched, agent.NewAgentDefinitionRegistry(), zap.NewNop())
+	tool := New(sched, definition.NewRegistry(), zap.NewNop())
 
 	res, err := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"x","subagent_type":"freelancer"}`))
 	if err != nil {
@@ -172,7 +172,7 @@ func TestAgentTool_Execute_SyncFailureFromTerminal(t *testing.T) {
 			},
 		},
 	}
-	tool := New(sched, agent.NewAgentDefinitionRegistry(), zap.NewNop())
+	tool := New(sched, definition.NewRegistry(), zap.NewNop())
 	res, _ := tool.Execute(context.Background(), json.RawMessage(`{"prompt":"x","subagent_type":"freelancer"}`))
 	if !res.IsError {
 		t.Fatal("expected IsError=true on non-completed Terminal")

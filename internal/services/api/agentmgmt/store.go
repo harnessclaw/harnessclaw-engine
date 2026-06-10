@@ -1,14 +1,21 @@
-// Package agent — see spawner.go for package doc.
-package agent
+// Package agentmgmt is the AgentDefinition CRUD service layer: in-memory
+// AgentStore interface + SQLite-backed implementation + AgentService that
+// keeps the in-memory definition.Registry in sync with the SQLite store.
+// Consumed by services/api HTTP handlers and wired in cmd/server.
+package agentmgmt
 
-import "context"
+import (
+	"context"
+
+	"harnessclaw-go/internal/engine/agent/definition"
+)
 
 // AgentStore defines the persistence interface for agent definitions.
 type AgentStore interface {
-	Create(ctx context.Context, def *AgentDefinition) (*AgentDefinition, error)
-	Get(ctx context.Context, name string) (*AgentDefinition, error)
-	List(ctx context.Context, filter *AgentFilter) ([]*AgentDefinition, error)
-	Update(ctx context.Context, name string, updates *AgentUpdate) (*AgentDefinition, error)
+	Create(ctx context.Context, def *definition.AgentDefinition) (*definition.AgentDefinition, error)
+	Get(ctx context.Context, name string) (*definition.AgentDefinition, error)
+	List(ctx context.Context, filter *AgentFilter) ([]*definition.AgentDefinition, error)
+	Update(ctx context.Context, name string, updates *AgentUpdate) (*definition.AgentDefinition, error)
 	Delete(ctx context.Context, name string) error
 }
 
@@ -33,7 +40,7 @@ type AgentUpdate struct {
 	DisallowedTools []string      `json:"disallowed_tools,omitempty"`
 	Skills          []string      `json:"skills,omitempty"`
 	AutoTeam        *bool         `json:"auto_team,omitempty"`
-	SubAgents       []SubAgentDef `json:"sub_agents,omitempty"`
+	SubAgents       []definition.SubAgentDef `json:"sub_agents,omitempty"`
 	Personality     *string       `json:"personality,omitempty"`
 	Triggers        *string       `json:"triggers,omitempty"`
 	IsTeamMember    *bool         `json:"is_team_member,omitempty"`

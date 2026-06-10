@@ -34,7 +34,7 @@ import (
 	"go.uber.org/zap"
 
 	schedpkg "harnessclaw-go/internal/engine/scheduler"
-	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
@@ -55,14 +55,14 @@ const SubagentType = "freelancer"
 type Tool struct {
 	tool.BaseTool
 	sched  schedpkg.Scheduler
-	defReg *agent.AgentDefinitionRegistry
+	defReg *definition.Registry
 	logger *zap.Logger
 }
 
 // New constructs a scheduler tool backed by the given scheduler.Scheduler.
 // defReg is used to resolve the "scheduler" AgentDefinition; nil falls back
 // to a synthetic minimal Definition.
-func New(sched schedpkg.Scheduler, defReg *agent.AgentDefinitionRegistry, logger *zap.Logger) *Tool {
+func New(sched schedpkg.Scheduler, defReg *definition.Registry, logger *zap.Logger) *Tool {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -168,15 +168,15 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	// emma 视角不变（仍然调 "scheduler" 工具），但本工具内部不再起 LLM coordinator
 	// agent，而是把任务直接交给 freelancer worker。少一跳 LLM 调用，链路更短、
 	// 响应更快、归属更清晰（emma → freelancer 两层而不是 emma → L2 → freelancer 三层）。
-	var def agent.AgentDefinition
+	var def definition.AgentDefinition
 	if t.defReg != nil {
 		if d := t.defReg.Get(SubagentType); d != nil {
 			def = *d
 		} else {
-			def = agent.AgentDefinition{Name: SubagentType, AgentType: tool.AgentTypeSync}
+			def = definition.AgentDefinition{Name: SubagentType, AgentType: tool.AgentTypeSync}
 		}
 	} else {
-		def = agent.AgentDefinition{Name: SubagentType, AgentType: tool.AgentTypeSync}
+		def = definition.AgentDefinition{Name: SubagentType, AgentType: tool.AgentTypeSync}
 	}
 
 	t.logger.Info("dispatch directly to L3",
