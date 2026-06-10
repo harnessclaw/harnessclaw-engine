@@ -20,7 +20,7 @@ import (
 	"harnessclaw-go/internal/engine/permission"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/engine/agent/builtin/emma/mention"
+	"harnessclaw-go/internal/engine/agent/emma/mention"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/sections"
 	"harnessclaw-go/internal/legacy/sessionstats"

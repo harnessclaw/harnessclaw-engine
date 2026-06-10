@@ -12,7 +12,7 @@ import (
 
 	"go.uber.org/zap"
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/engine/agent/builtin/emma"
+	"harnessclaw-go/internal/engine/agent/emma"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/session"
 	
