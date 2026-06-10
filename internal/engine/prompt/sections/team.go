@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"harnessclaw-go/internal/legacy/prompt"
-	"harnessclaw-go/internal/legacy/prompt/texts"
+	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/prompt/texts"
 )
 
 // TeamSection renders emma's dynamic team table from PromptContext.TeamMembers.

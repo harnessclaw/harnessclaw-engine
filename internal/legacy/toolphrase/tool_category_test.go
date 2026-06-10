@@ -21,7 +21,7 @@ func TestCategorize(t *testing.T) {
 		{"web_fetch", CategoryNetwork},
 		{"tavily_search", CategoryNetwork},
 		{"freelance", CategoryDispatch},
-		{"scheduler", CategoryDispatch},
+		{"dispatch", CategoryDispatch},
 		{"SkillTool", CategoryDispatch},
 		{"NonExistentTool", CategoryGeneric},
 		{"", CategoryGeneric},

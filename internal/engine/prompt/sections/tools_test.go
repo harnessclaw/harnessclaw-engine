@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"harnessclaw-go/internal/legacy/prompt"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )

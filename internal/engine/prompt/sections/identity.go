@@ -1,8 +1,8 @@
 package sections
 
 import (
-	"harnessclaw-go/internal/legacy/prompt"
-	"harnessclaw-go/internal/legacy/prompt/texts"
+	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/prompt/texts"
 )
 
 // IdentitySection defines emma's static persona — who she is, personality,

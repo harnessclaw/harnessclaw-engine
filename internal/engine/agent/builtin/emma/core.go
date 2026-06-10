@@ -21,8 +21,8 @@ import (
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/legacy/mention"
-	"harnessclaw-go/internal/legacy/prompt"
-	"harnessclaw-go/internal/legacy/prompt/sections"
+	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/prompt/sections"
 	"harnessclaw-go/internal/legacy/sessionstats"
 	"harnessclaw-go/internal/legacy/workspace"
 	"harnessclaw-go/internal/provider"
@@ -182,7 +182,7 @@ func WithEmmaConfig(cfg EmmaConfig) Option {
 	}
 	if len(cfg.AllowedTools) == 0 {
 		cfg.AllowedTools = []string{
-			"scheduler",
+			"dispatch",
 			"web_search",
 			"tavily_search",
 			"ask_user_question",

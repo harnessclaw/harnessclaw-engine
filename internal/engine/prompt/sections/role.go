@@ -1,7 +1,7 @@
 package sections
 
 import (
-	"harnessclaw-go/internal/legacy/prompt"
+	"harnessclaw-go/internal/engine/prompt"
 )
 
 // RoleSection renders the agent's identity (persona).

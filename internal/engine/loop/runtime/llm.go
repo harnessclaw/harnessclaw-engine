@@ -21,7 +21,7 @@ import (
 	"harnessclaw-go/internal/engine/session"
 	legacyagent "harnessclaw-go/internal/legacy/agent"
 	common "harnessclaw-go/internal/legacy/engine_agent_common"
-	"harnessclaw-go/internal/legacy/prompt"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/tools"

@@ -2,7 +2,7 @@ package browser_agent
 
 import (
 	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/legacy/prompt"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/skills"
 )
 

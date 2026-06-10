@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"harnessclaw-go/internal/legacy/prompt"
+	"harnessclaw-go/internal/engine/prompt"
 )
 
 // MemorySection renders user memory entries.

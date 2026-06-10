@@ -1,8 +1,8 @@
 package sections
 
 import (
-	"harnessclaw-go/internal/legacy/prompt"
-	"harnessclaw-go/internal/legacy/prompt/texts/principles"
+	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/prompt/texts/principles"
 )
 
 // PrinciplesSection renders the L1 main-agent (emma) principles. Sub-agent

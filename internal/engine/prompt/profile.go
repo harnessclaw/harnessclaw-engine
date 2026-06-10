@@ -1,8 +1,8 @@
 package prompt
 
 import (
-	"harnessclaw-go/internal/legacy/prompt/texts"
-	"harnessclaw-go/internal/legacy/prompt/texts/principles"
+	"harnessclaw-go/internal/engine/prompt/texts"
+	"harnessclaw-go/internal/engine/prompt/texts/principles"
 )
 
 // AgentProfile declares which Sections an agent type uses,

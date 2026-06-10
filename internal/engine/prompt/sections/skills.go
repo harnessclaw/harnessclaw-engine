@@ -1,7 +1,7 @@
 package sections
 
 import (
-	"harnessclaw-go/internal/legacy/prompt"
+	"harnessclaw-go/internal/engine/prompt"
 )
 
 // SkillsSection renders the available skills listing into the system prompt.

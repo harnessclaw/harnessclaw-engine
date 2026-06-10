@@ -3,7 +3,7 @@ package sections
 import (
 	"fmt"
 
-	"harnessclaw-go/internal/legacy/prompt"
+	"harnessclaw-go/internal/engine/prompt"
 )
 
 // CurrentDateSection renders the current date as an epilogue at the end

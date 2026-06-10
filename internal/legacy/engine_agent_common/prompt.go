@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/legacy/prompt"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"

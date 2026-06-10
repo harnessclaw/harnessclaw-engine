@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/commands"
-	"harnessclaw-go/internal/legacy/prompt"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/tools/builtin/skilltool"
 	"harnessclaw-go/internal/legacy/workspace"

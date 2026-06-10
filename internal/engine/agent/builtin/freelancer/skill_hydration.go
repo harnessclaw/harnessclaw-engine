@@ -3,7 +3,7 @@ package freelancer
 import (
 	"fmt"
 
-	"harnessclaw-go/internal/legacy/prompt"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/skills"
 	"harnessclaw-go/internal/legacy/skill_tracker"
 )

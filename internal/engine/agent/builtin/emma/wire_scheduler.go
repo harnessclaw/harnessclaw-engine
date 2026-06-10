@@ -13,7 +13,7 @@ import (
 	syncstrat "harnessclaw-go/internal/engine/scheduler/strategies/sync_"
 	"harnessclaw-go/internal/engine/scheduler/tasks"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/legacy/prompt"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/tools"

@@ -18,7 +18,7 @@ import (
 	"harnessclaw-go/internal/engine/scheduler/tasks"
 	"harnessclaw-go/internal/engine/session"
 	legacyagent "harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/legacy/prompt"
+	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/memory"
 	"harnessclaw-go/internal/provider/mock"
 	"harnessclaw-go/internal/provider/retry"
