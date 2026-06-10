@@ -9,9 +9,9 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine/agent/common"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/prompt"
@@ -54,7 +54,7 @@ func New(deps Deps) *Module {
 
 func (m *Module) SubagentType() string { return AgentName }
 
-func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnResult, error) {
+func (m *Module) Run(ctx context.Context, cfg *common.SpawnConfig) (*common.SpawnResult, error) {
 	startTime := time.Now()
 	def := BrowserAgentDefinition()
 
@@ -91,7 +91,7 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	sysPrompt := joinNonEmpty([]string{
 		def.SystemPrompt,
 		browserSkillBlock,
-		agent.RenderSubAgentContract(def),
+		definition.RenderSubAgentContract(def),
 		common.BuildSubAgentPrompt(common.PromptArgs{
 			Ctx:               ctx,
 			Session:           sess,
@@ -190,7 +190,7 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 	return common.BuildSpawnResult(sess.ID, sess.ID, output, terminal, usage, loopRes.NumTurns), nil
 }
 
-func browserAgentApprovedTools(parentApproved []string, def *agent.AgentDefinition) []string {
+func browserAgentApprovedTools(parentApproved []string, def *definition.AgentDefinition) []string {
 	if !containsTool(parentApproved, ToolName) {
 		return parentApproved
 	}
@@ -223,7 +223,7 @@ func containsTool(tools []string, want string) bool {
 	return false
 }
 
-func (m *Module) clientAwaitSession(cfg *agent.SpawnConfig) *session.Session {
+func (m *Module) clientAwaitSession(cfg *common.SpawnConfig) *session.Session {
 	if m.deps.SessionMgr == nil || cfg == nil {
 		return nil
 	}

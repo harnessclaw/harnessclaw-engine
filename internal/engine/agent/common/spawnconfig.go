@@ -1,27 +1,17 @@
-// Package agent defines the interfaces and types for multi-agent orchestration.
-// It sits between the tool layer (which needs to spawn sub-agents) and the
-// engine layer (which implements the actual query loop), breaking the circular
-// dependency via the AgentSpawner interface.
-package agent
+package common
 
 import (
-	"context"
 	"time"
 
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 
-// AgentSpawner creates and runs sub-agent query loops.
-// The engine implements this interface; the Agent tool consumes it.
-type AgentSpawner interface {
-	// SpawnSync runs a sub-agent synchronously, blocking until it completes.
-	// The sub-agent executes a full query loop with a filtered tool pool and
-	// returns the collected result.
-	SpawnSync(ctx context.Context, cfg *SpawnConfig) (*SpawnResult, error)
-}
-
-// SpawnConfig describes how to create and run a sub-agent.
+// SpawnConfig describes how to create and run a sub-agent. It is a
+// transitional carrier between the old agent.AgentSpawner API and the new
+// scheduler.Runtime path. New code should prefer scheduler.SpawnParams
+// directly; SpawnConfig still flows through Runtime.LLM and the
+// browser_agent module while those callers are migrated.
 type SpawnConfig struct {
 	// Prompt is the task instruction injected as the first user message.
 	Prompt string
@@ -104,23 +94,6 @@ type SpawnConfig struct {
 	// WriteScope restricts File* tool writes. Absolute path prefixes; empty
 	// means no restriction (legacy compat). Typically {own task dir}.
 	WriteScope []string
-
-	// ParentMessages holds the parent's conversation history for fork mode.
-	// Only used when Fork is true. Callers must provide a deep copy.
-	//
-	// Multimodal note: agent.Message is text-only (Content string).
-	// Images / PDFs from the user's original message do NOT propagate
-	// into sub-agents through this path — subagent.go wraps each
-	// entry in a single ContentTypeText block. The router-level
-	// multimodal Gate runs against the parent's active model, so the
-	// modality check is correct as long as this invariant holds.
-	//
-	// If you ever extend Message to carry typed content blocks (e.g.
-	// to let sub-agents see images), re-run multimodal.Gate against
-	// the sub-agent's resolved model inside SpawnSync — otherwise a
-	// sub-agent pinned to a text-only model will silently receive
-	// image data and fail at the provider.
-	ParentMessages []Message
 
 	// SystemPromptOverride replaces the sub-agent's generated system prompt.
 	// Used in fork mode to preserve the parent's prompt cache prefix.
@@ -207,13 +180,4 @@ type SpawnConfig struct {
 	// String type (not engine.CoordinatorMode) keeps the agent package
 	// dependency-light: agent shouldn't import engine.
 	CoordinatorMode string
-}
-
-// Message is a minimal message type for fork-mode context passing.
-// It mirrors the essential fields of types.Message without importing
-// the full types package, keeping the agent package dependency-light.
-// The engine layer converts between this and types.Message.
-type Message struct {
-	Role    string
-	Content string
 }

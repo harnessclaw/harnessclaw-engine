@@ -1,4 +1,4 @@
-package agent
+package common
 
 import "harnessclaw-go/pkg/types"
 

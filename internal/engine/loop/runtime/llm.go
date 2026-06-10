@@ -21,8 +21,7 @@ import (
 	"harnessclaw-go/internal/engine/scheduler/middlewares"
 	"harnessclaw-go/internal/engine/scheduler/runtime"
 	"harnessclaw-go/internal/engine/session"
-	legacyagent "harnessclaw-go/internal/legacy/agent"
-	common "harnessclaw-go/internal/engine/agent/common"
+	"harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/skills"
@@ -97,7 +96,7 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 	// 从 RunParams + ctx 合成 legacy SpawnConfig，供老 helper 复用。
 	// SpawnConfig 是过渡期 carrier —— 后续 PR-4 删 SpawnConfig 后这里改成
 	// 直接 inline 各 helper 的逻辑。
-	cfg := &legacyagent.SpawnConfig{
+	cfg := &common.SpawnConfig{
 		Prompt:          p.Prompt,
 		AgentType:       p.Definition.AgentType,
 		SubagentType:    p.Definition.Name, // observability label（spec 调和决策）

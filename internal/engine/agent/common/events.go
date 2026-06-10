@@ -1,7 +1,6 @@
 package common
 
 import (
-	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -101,14 +100,14 @@ func EmitSubagentEnd(out chan<- types.EngineEvent, e EndEvent) {
 }
 
 // BuildSpawnResult converts loop output + caller metadata into an
-// agent.SpawnResult. Tier modules call this immediately before
+// SpawnResult. Tier modules call this immediately before
 // returning from their Run. Pointer copies of Terminal/Usage are made
 // internally so callers can pass values without worrying about
 // aliasing.
-func BuildSpawnResult(sessionID, agentID, output string, terminal types.Terminal, usage types.Usage, numTurns int) *agent.SpawnResult {
+func BuildSpawnResult(sessionID, agentID, output string, terminal types.Terminal, usage types.Usage, numTurns int) *SpawnResult {
 	term := terminal
 	use := usage
-	return &agent.SpawnResult{
+	return &SpawnResult{
 		Output:    output,
 		Terminal:  &term,
 		Usage:     &use,
