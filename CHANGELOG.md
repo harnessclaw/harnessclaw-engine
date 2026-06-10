@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+## [0.0.21-beta.3] - 2026-06-10
+
+### Added
+- `image_generate` now supports true image-to-image requests by forwarding current-turn image attachments or explicit `source_images` into the configured image provider.
+- OpenAI-compatible image edits now use the multipart `/v1/images/edits` path with `image[]` inputs, while Doubao Seedream reference-image requests stay on JSON `/images/generations`.
+
+### Fixed
+- Empty optional image parameters such as `mask` and `source_images` are now ignored instead of blocking attached-image edits.
+- Visible tool logs for image generation now hide inline image data and remove empty or non-sent parameters, making retry/debug output match the effective request.
+
 ## [0.0.21-beta.2] - 2026-06-10
 
 ### Fixed
