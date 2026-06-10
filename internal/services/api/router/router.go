@@ -8,7 +8,7 @@ import (
 
 	"harnessclaw-go/internal/channel"
 	"harnessclaw-go/internal/engine"
-	"harnessclaw-go/internal/legacy/multimodal"
+	"harnessclaw-go/internal/multimodal"
 	"harnessclaw-go/internal/provider/registry"
 	"harnessclaw-go/internal/services/api/router/middleware"
 	"harnessclaw-go/internal/tools"

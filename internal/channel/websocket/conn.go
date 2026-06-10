@@ -12,7 +12,7 @@ import (
 	"nhooyr.io/websocket"
 
 	emitv2 "harnessclaw-go/internal/channel/emit/v2"
-	"harnessclaw-go/internal/legacy/multimodal"
+	"harnessclaw-go/internal/multimodal"
 	"harnessclaw-go/internal/humanloop/wait"
 	"harnessclaw-go/pkg/types"
 )
