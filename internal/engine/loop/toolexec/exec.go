@@ -182,6 +182,7 @@ func (te *ToolExecutor) executeSingle(
 	// constraints), we still execute — silence is better than a hard fail.
 	cleanInput, intent := StripIntent(tc.Input)
 	tc.Input = cleanInput
+	visibleInput := visibleToolInput(tc.Name, tc.Input)
 	if intent != "" {
 		out <- types.EngineEvent{
 			Type:      types.EngineEventAgentIntent,
@@ -200,7 +201,7 @@ func (te *ToolExecutor) executeSingle(
 		AgentID:   te.agentID,
 		ToolUseID: tc.ID,
 		ToolName:  tc.Name,
-		ToolInput: tc.Input,
+		ToolInput: visibleInput,
 	}
 
 	// Track wall-clock duration so the tool_end log carries it. This is
@@ -295,7 +296,7 @@ func (te *ToolExecutor) executeSingle(
 			}
 			fields = append(fields,
 				zap.String("error_content", snippet),
-				zap.String("tool_input", truncateForLog(tc.Input, 300)),
+				zap.String("tool_input", truncateForLog(visibleInput, 300)),
 			)
 		}
 		te.logger.Info("tool executed", fields...)
@@ -366,77 +367,77 @@ func (te *ToolExecutor) executeSingle(
 	}
 
 	if !permSkipped {
-	permResult := te.permChecker.Check(ctx, tc.Name, rawInput, t.IsReadOnly())
-	switch permResult.Decision {
-	case permission.Deny:
-		return types.ToolResult{
-			Content:   fmt.Sprintf("permission denied for %s: %s", tc.Name, permResult.Message),
-			IsError:   true,
-			ErrorType: types.ToolErrorPermissionDenied,
-		}
-	case permission.Ask:
-		// Send approval request to client and wait for response.
-		if te.approvalFn == nil {
-			// No approval handler — fall back to deny.
+		permResult := te.permChecker.Check(ctx, tc.Name, rawInput, t.IsReadOnly())
+		switch permResult.Decision {
+		case permission.Deny:
 			return types.ToolResult{
-				Content:   fmt.Sprintf("tool %s requires approval: %s", tc.Name, permResult.Message),
+				Content:   fmt.Sprintf("permission denied for %s: %s", tc.Name, permResult.Message),
 				IsError:   true,
 				ErrorType: types.ToolErrorPermissionDenied,
 			}
-		}
-
-		// Extract the fine-grained permission key (e.g. "Bash:git", "Edit:/path").
-		permKey := extractPermissionKey(tc.Name, tc.Input)
-
-		// Derive a human-readable command label for the UI.
-		// "Bash:git" → "git", "Edit:/src/main.go" → "Edit /src/main.go", "grep" → "grep"
-		cmdLabel := permKeyLabel(permKey, tc.Name)
-
-		// Build a clear, actionable permission message for the user.
-		permMessage := permResult.Message
-		if permMessage == "" {
-			if t.IsReadOnly() {
-				permMessage = fmt.Sprintf("Allow %s to read data?", cmdLabel)
-			} else {
-				permMessage = fmt.Sprintf("Allow %s to make changes?", cmdLabel)
+		case permission.Ask:
+			// Send approval request to client and wait for response.
+			if te.approvalFn == nil {
+				// No approval handler — fall back to deny.
+				return types.ToolResult{
+					Content:   fmt.Sprintf("tool %s requires approval: %s", tc.Name, permResult.Message),
+					IsError:   true,
+					ErrorType: types.ToolErrorPermissionDenied,
+				}
 			}
-		}
 
-		// Session-scope label shows what exactly will be auto-approved.
-		sessionLabel := fmt.Sprintf("Always allow %s in this session", cmdLabel)
+			// Extract the fine-grained permission key (e.g. "Bash:git", "Edit:/path").
+			permKey := extractPermissionKey(tc.Name, tc.Input)
 
-		req := &types.PermissionRequest{
-			RequestID:     "perm_" + uuid.New().String()[:8],
-			ToolUseID:     tc.ID,
-			ToolName:      tc.Name,
-			ToolInput:     tc.Input,
-			Message:       permMessage,
-			IsReadOnly:    t.IsReadOnly(),
-			PermissionKey: permKey,
-			Options: []types.PermissionOption{
-				{Label: "Allow once", Scope: types.PermissionScopeOnce, Allow: true},
-				{Label: sessionLabel, Scope: types.PermissionScopeSession, Allow: true},
-				{Label: "Deny", Scope: types.PermissionScopeOnce, Allow: false},
-			},
-		}
-		resp := te.approvalFn(ctx, out, req)
-		if !resp.Approved {
-			msg := "user denied permission"
-			if resp.Message != "" {
-				msg = resp.Message
+			// Derive a human-readable command label for the UI.
+			// "Bash:git" → "git", "Edit:/src/main.go" → "Edit /src/main.go", "grep" → "grep"
+			cmdLabel := permKeyLabel(permKey, tc.Name)
+
+			// Build a clear, actionable permission message for the user.
+			permMessage := permResult.Message
+			if permMessage == "" {
+				if t.IsReadOnly() {
+					permMessage = fmt.Sprintf("Allow %s to read data?", cmdLabel)
+				} else {
+					permMessage = fmt.Sprintf("Allow %s to make changes?", cmdLabel)
+				}
 			}
-			return types.ToolResult{
-				Content:   fmt.Sprintf("Permission denied for %s: %s", tc.Name, msg),
-				IsError:   true,
-				ErrorType: types.ToolErrorPermissionDenied,
+
+			// Session-scope label shows what exactly will be auto-approved.
+			sessionLabel := fmt.Sprintf("Always allow %s in this session", cmdLabel)
+
+			req := &types.PermissionRequest{
+				RequestID:     "perm_" + uuid.New().String()[:8],
+				ToolUseID:     tc.ID,
+				ToolName:      tc.Name,
+				ToolInput:     visibleInput,
+				Message:       permMessage,
+				IsReadOnly:    t.IsReadOnly(),
+				PermissionKey: permKey,
+				Options: []types.PermissionOption{
+					{Label: "Allow once", Scope: types.PermissionScopeOnce, Allow: true},
+					{Label: sessionLabel, Scope: types.PermissionScopeSession, Allow: true},
+					{Label: "Deny", Scope: types.PermissionScopeOnce, Allow: false},
+				},
 			}
+			resp := te.approvalFn(ctx, out, req)
+			if !resp.Approved {
+				msg := "user denied permission"
+				if resp.Message != "" {
+					msg = resp.Message
+				}
+				return types.ToolResult{
+					Content:   fmt.Sprintf("Permission denied for %s: %s", tc.Name, msg),
+					IsError:   true,
+					ErrorType: types.ToolErrorPermissionDenied,
+				}
+			}
+			te.logger.Info("permission approved",
+				zap.String("tool", tc.Name),
+				zap.String("request_id", req.RequestID),
+				zap.String("scope", string(resp.Scope)),
+			)
 		}
-		te.logger.Info("permission approved",
-			zap.String("tool", tc.Name),
-			zap.String("request_id", req.RequestID),
-			zap.String("scope", string(resp.Scope)),
-		)
-	}
 	} // end if !permSkipped
 
 	// Execute with timeout. Long-running tools (e.g., Agent) manage their own
@@ -557,6 +558,101 @@ func (te *ToolExecutor) executeSingle(
 		return types.ToolResult{Content: ""}
 	}
 	return *tr
+}
+
+func visibleToolInput(toolName, input string) string {
+	if toolName != "image_generate" {
+		return input
+	}
+	var value any
+	if err := json.Unmarshal([]byte(input), &value); err != nil {
+		return input
+	}
+	redactImageDataFields(value)
+	normalizeVisibleImageGenerateInput(value)
+	cleaned, err := json.Marshal(value)
+	if err != nil {
+		return input
+	}
+	return string(cleaned)
+}
+
+func redactImageDataFields(value any) {
+	switch v := value.(type) {
+	case map[string]any:
+		for key, child := range v {
+			lowerKey := strings.ToLower(key)
+			if lowerKey == "data" || lowerKey == "b64_json" {
+				if _, ok := child.(string); ok {
+					v[key] = "[redacted image data]"
+					continue
+				}
+			}
+			redactImageDataFields(child)
+		}
+	case []any:
+		for _, child := range v {
+			redactImageDataFields(child)
+		}
+	}
+}
+
+func normalizeVisibleImageGenerateInput(value any) {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	deleteEmptyString(root, "model")
+	deleteEmptyImageArray(root, "source_images")
+	deleteEmptyImageObject(root, "mask")
+	if outputFormat, _ := root["output_format"].(string); outputFormat != "jpeg" && outputFormat != "webp" {
+		delete(root, "output_compression")
+	}
+}
+
+func deleteEmptyString(root map[string]any, key string) {
+	value, ok := root[key].(string)
+	if ok && strings.TrimSpace(value) == "" {
+		delete(root, key)
+	}
+}
+
+func deleteEmptyImageArray(root map[string]any, key string) {
+	items, ok := root[key].([]any)
+	if !ok {
+		return
+	}
+	compacted := items[:0]
+	for _, item := range items {
+		if imageObjectIsEmpty(item) {
+			continue
+		}
+		compacted = append(compacted, item)
+	}
+	if len(compacted) == 0 {
+		delete(root, key)
+		return
+	}
+	root[key] = compacted
+}
+
+func deleteEmptyImageObject(root map[string]any, key string) {
+	if imageObjectIsEmpty(root[key]) {
+		delete(root, key)
+	}
+}
+
+func imageObjectIsEmpty(value any) bool {
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	for _, key := range []string{"path", "url", "data", "b64_json"} {
+		if valueString, _ := obj[key].(string); strings.TrimSpace(valueString) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // permKeyLabel converts a permission key into a human-readable label.
