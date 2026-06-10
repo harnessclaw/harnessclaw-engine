@@ -1,13 +1,13 @@
-package agent_test
+package definition_test
 
 import (
 	"testing"
 
-	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/engine/agent/definition"
 )
 
 func TestRegisterBuiltins_PlanAgentsDefined(t *testing.T) {
-	r := agent.NewAgentDefinitionRegistry()
+	r := definition.NewRegistry()
 	r.RegisterBuiltins()
 
 	for _, name := range []string{"plan_agent", "plan_executor_agent"} {

@@ -1,4 +1,4 @@
-package agent
+package definition
 
 import (
 	"fmt"
@@ -249,15 +249,15 @@ func (d *AgentDefinition) MaybeAugmentForSubAgent() []string {
 	return out
 }
 
-// AgentDefinitionRegistry holds all loaded agent definitions.
-type AgentDefinitionRegistry struct {
+// Registry holds all loaded agent definitions.
+type Registry struct {
 	mu   sync.RWMutex
 	defs map[string]*AgentDefinition
 }
 
-// NewAgentDefinitionRegistry creates a new registry.
-func NewAgentDefinitionRegistry() *AgentDefinitionRegistry {
-	return &AgentDefinitionRegistry{
+// NewRegistry creates a new registry.
+func NewRegistry() *Registry {
+	return &Registry{
 		defs: make(map[string]*AgentDefinition),
 	}
 }
@@ -268,7 +268,7 @@ func NewAgentDefinitionRegistry() *AgentDefinitionRegistry {
 //
 // Callers that want to register a known-good definition without checking the
 // error can use MustRegister, which panics on validation failure.
-func (r *AgentDefinitionRegistry) Register(def *AgentDefinition) error {
+func (r *Registry) Register(def *AgentDefinition) error {
 	if def == nil {
 		return fmt.Errorf("agent definition: nil")
 	}
@@ -284,21 +284,21 @@ func (r *AgentDefinitionRegistry) Register(def *AgentDefinition) error {
 // MustRegister registers a definition and panics on validation failure.
 // Use this for built-in registrations where a validation error is a programmer
 // bug, not runtime input.
-func (r *AgentDefinitionRegistry) MustRegister(def *AgentDefinition) {
+func (r *Registry) MustRegister(def *AgentDefinition) {
 	if err := r.Register(def); err != nil {
 		panic(fmt.Sprintf("agent.MustRegister: %v", err))
 	}
 }
 
 // Get returns a definition by name, or nil.
-func (r *AgentDefinitionRegistry) Get(name string) *AgentDefinition {
+func (r *Registry) Get(name string) *AgentDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.defs[name]
 }
 
 // All returns all registered definitions.
-func (r *AgentDefinitionRegistry) All() []*AgentDefinition {
+func (r *Registry) All() []*AgentDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	result := make([]*AgentDefinition, 0, len(r.defs))
@@ -309,7 +309,7 @@ func (r *AgentDefinitionRegistry) All() []*AgentDefinition {
 }
 
 // Unregister removes an agent definition by name. Returns true if it existed.
-func (r *AgentDefinitionRegistry) Unregister(name string) bool {
+func (r *Registry) Unregister(name string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_, ok := r.defs[name]
@@ -318,7 +318,7 @@ func (r *AgentDefinitionRegistry) Unregister(name string) bool {
 }
 
 // TeamMembers returns all definitions marked as team members, sorted by name.
-func (r *AgentDefinitionRegistry) TeamMembers() []*AgentDefinition {
+func (r *Registry) TeamMembers() []*AgentDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var members []*AgentDefinition
@@ -332,7 +332,7 @@ func (r *AgentDefinitionRegistry) TeamMembers() []*AgentDefinition {
 }
 
 // Names returns all registered agent definition names.
-func (r *AgentDefinitionRegistry) Names() []string {
+func (r *Registry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	names := make([]string, 0, len(r.defs))
@@ -348,7 +348,7 @@ func (r *AgentDefinitionRegistry) Names() []string {
 //
 // Used by L2 planners to enumerate "who can do X" without knowing names.
 // Result order is by definition name (stable, for deterministic prompts).
-func (r *AgentDefinitionRegistry) FindBySkill(skill string) []*AgentDefinition {
+func (r *Registry) FindBySkill(skill string) []*AgentDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var matches []*AgentDefinition
@@ -382,7 +382,7 @@ type PlannerListing struct {
 // ListForPlanner returns a planner-shaped view of every TierSubAgent in the
 // registry, sorted by name. Coordinators are excluded — a planner picks
 // among leaves, not among other planners.
-func (r *AgentDefinitionRegistry) ListForPlanner() []PlannerListing {
+func (r *Registry) ListForPlanner() []PlannerListing {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var out []PlannerListing
@@ -416,7 +416,7 @@ func (r *AgentDefinitionRegistry) ListForPlanner() []PlannerListing {
 //     CostTier, it flips.
 //   - System agents (scheduler / general-purpose / Plan / Explore) are
 //     coordinators by design — they may dispatch and integrate.
-func (r *AgentDefinitionRegistry) RegisterBuiltins() {
+func (r *Registry) RegisterBuiltins() {
 	// 注：旧 "scheduler" L2 coordinator AgentDefinition 已删 ——
 	// emma 的 scheduler tool 不再起 L2 LLM agent，直接派 L3 freelancer。
 	r.MustRegister(&AgentDefinition{

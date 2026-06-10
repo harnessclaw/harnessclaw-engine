@@ -7,6 +7,7 @@ import (
 
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/tools"
 )
@@ -48,7 +49,7 @@ type createRequest struct {
 	DisallowedTools []string            `json:"disallowed_tools"`
 	Skills          []string            `json:"skills"`
 	AutoTeam        bool                `json:"auto_team"`
-	SubAgents       []agent.SubAgentDef `json:"sub_agents"`
+	SubAgents       []definition.SubAgentDef `json:"sub_agents"`
 }
 
 // Create handles POST /console/v1/agents
@@ -63,7 +64,7 @@ func (h *AgentHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	def := &agent.AgentDefinition{
+	def := &definition.AgentDefinition{
 		Name:            req.Name,
 		DisplayName:     req.DisplayName,
 		Description:     req.Description,

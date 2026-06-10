@@ -1,4 +1,4 @@
-package agent
+package definition
 
 import (
 	"os"
@@ -33,7 +33,7 @@ auto_team: false
 		t.Fatalf("write yaml file: %v", err)
 	}
 
-	reg := NewAgentDefinitionRegistry()
+	reg := NewRegistry()
 	if err := reg.LoadFromDirectory(dir); err != nil {
 		t.Fatalf("LoadFromDirectory returned error: %v", err)
 	}
@@ -82,7 +82,7 @@ auto_team: false
 }
 
 func TestLoadFromDirectory_NonExistent(t *testing.T) {
-	reg := NewAgentDefinitionRegistry()
+	reg := NewRegistry()
 	err := reg.LoadFromDirectory("/tmp/does-not-exist-harnessclaw-test-dir")
 	if err != nil {
 		t.Fatalf("expected nil error for non-existent directory, got: %v", err)
@@ -100,7 +100,7 @@ agent_type: sync
 		t.Fatalf("write yaml file: %v", err)
 	}
 
-	reg := NewAgentDefinitionRegistry()
+	reg := NewRegistry()
 	err := reg.LoadFromDirectory(dir)
 	if err == nil {
 		t.Fatal("expected error for YAML missing 'name', got nil")
@@ -130,7 +130,7 @@ sub_agents:
 		t.Fatalf("write yaml file: %v", err)
 	}
 
-	reg := NewAgentDefinitionRegistry()
+	reg := NewRegistry()
 	if err := reg.LoadFromDirectory(dir); err != nil {
 		t.Fatalf("LoadFromDirectory returned error: %v", err)
 	}

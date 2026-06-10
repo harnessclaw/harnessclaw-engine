@@ -1,4 +1,4 @@
-package agent
+package definition
 
 import (
 	"os"
@@ -16,7 +16,7 @@ func TestLoadPlanner_FromUserDir(t *testing.T) {
 		t.Skip("planner.yaml not found, skipping")
 	}
 
-	reg := NewAgentDefinitionRegistry()
+	reg := NewRegistry()
 	if err := reg.LoadFromDirectory(dir); err != nil {
 		t.Fatalf("LoadFromDirectory failed: %v", err)
 	}

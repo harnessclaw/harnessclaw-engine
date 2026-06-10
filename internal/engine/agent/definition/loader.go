@@ -1,4 +1,4 @@
-package agent
+package definition
 
 import (
 	"fmt"
@@ -19,7 +19,7 @@ import (
 // every read is performed through os.Root, which constrains all file
 // operations to the resolved directory and refuses any name that would
 // escape it.
-func (r *AgentDefinitionRegistry) LoadFromDirectory(dir string) error {
+func (r *Registry) LoadFromDirectory(dir string) error {
 	cleanDir := filepath.Clean(dir)
 	root, err := os.OpenRoot(cleanDir)
 	if err != nil {
