@@ -219,14 +219,15 @@ func (s *AgentService) LoadAllToRegistry(ctx context.Context) error {
 }
 
 // reservedTierName lists agent names that map to in-code tier modules
-// (scheduler / freelancer / plan_agent / plan_executor_agent / plan)
-// where the AgentDefinition's tool palette + AgentType are load-bearing
-// for the module's behavior. Store records carrying these names — even
+// (freelancer / plan_agent / plan_executor_agent / plan) where the
+// AgentDefinition's tool palette + AgentType are load-bearing for the
+// module's behavior. Store records carrying these names — even
 // validation-passing ones — are silently dropped in LoadAllToRegistry
 // when an in-memory builtin already holds the slot, because overwriting
 // would silently break the dispatch.
+//
+// 注：旧 "scheduler" 已删（L2 coordinator 不复存在）。
 var reservedTierName = map[string]bool{
-	"scheduler":           true,
 	"freelancer":          true,
 	"plan":                true,
 	"plan_agent":          true,

@@ -112,26 +112,22 @@ func TestLoadAllToRegistry_NewNonBuiltinLoads(t *testing.T) {
 	}
 }
 
-// Regression: a stale "scheduler" record in the store (e.g. a legacy
-// user-facing 小时 builtin migrated from a pre-tier-system version)
-// must NOT overwrite the in-code RegisterBuiltins L2 scheduler. The
-// L2 scheduler carries the freelance tool in AllowedTools — losing it
-// silently bricks the L1→L2→L3 dispatch chain.
+// Regression: a stale "freelancer" record in the store must NOT overwrite
+// the in-code RegisterBuiltins freelancer definition. Builtin freelancer
+// carries skill-driven tool palette + correct profile — losing it bricks L3.
+// (该测试原本守的是 "scheduler"，L2 删除后改用 freelancer 守同一不变量。)
 func TestLoadAllToRegistry_PreservesReservedBuiltins(t *testing.T) {
 	store := newFakeStore()
 	reg := NewAgentDefinitionRegistry()
-	reg.RegisterBuiltins() // populates "scheduler" (L2, coordinator, has freelance)
+	reg.RegisterBuiltins()
 
-	// Simulate the stale store record: a "scheduler" with the wrong
-	// tool palette and agent_type that USED to be the user-facing
-	// scheduling assistant.
 	stale := &AgentDefinition{
-		Name:         "scheduler",
-		DisplayName:  "小时",
+		Name:         "freelancer",
+		DisplayName:  "stale-display",
 		Description:  "stale",
 		AgentType:    "sync",
 		Profile:      "worker",
-		AllowedTools: []string{"read", "write", "edit", "bash", "glob"},
+		AllowedTools: []string{"read"},
 		Source:       "builtin",
 	}
 	if _, err := store.Create(context.Background(), stale); err != nil {
@@ -143,22 +139,11 @@ func TestLoadAllToRegistry_PreservesReservedBuiltins(t *testing.T) {
 		t.Fatalf("LoadAllToRegistry: %v", err)
 	}
 
-	got := reg.Get("scheduler")
+	got := reg.Get("freelancer")
 	if got == nil {
-		t.Fatal("scheduler vanished after LoadAllToRegistry")
+		t.Fatal("freelancer vanished after LoadAllToRegistry")
 	}
-	if got.DisplayName == "小时" {
-		t.Error("stale store record overwrote builtin scheduler — L2 dispatch broken")
-	}
-	// Hard check: builtin must still expose freelance.
-	hasFreelance := false
-	for _, name := range got.AllowedTools {
-		if name == "freelance" {
-			hasFreelance = true
-			break
-		}
-	}
-	if !hasFreelance {
-		t.Errorf("L2 scheduler lost freelance tool after LoadAllToRegistry; AllowedTools=%v", got.AllowedTools)
+	if got.DisplayName == "stale-display" {
+		t.Error("stale store record overwrote builtin freelancer")
 	}
 }

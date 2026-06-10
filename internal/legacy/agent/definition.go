@@ -417,47 +417,8 @@ func (r *AgentDefinitionRegistry) ListForPlanner() []PlannerListing {
 //   - System agents (scheduler / general-purpose / Plan / Explore) are
 //     coordinators by design — they may dispatch and integrate.
 func (r *AgentDefinitionRegistry) RegisterBuiltins() {
-	// --- 系统级 agent（不在用户可见的搭档表中） ---
-	r.MustRegister(&AgentDefinition{
-		Name:        "scheduler",
-		DisplayName: "scheduler",
-		Description: "L2 调度统筹者：拆解任务、派 L3 sub-agent、整合产出、检查质量",
-		AgentType:   tool.AgentTypeCoordinator,
-		Profile:     "scheduler",
-		// scheduler needs an explicit tool whitelist so it can use the
-		// task tool to dispatch L3 sub-agents. The tool filter pipeline
-		// in subagent.go treats AllowedTools as authoritative — it
-		// bypasses the AgentType blacklist (which would otherwise block
-		// task for sync sub-agents).
-		//
-		// PlanUpdate / Promote are listed explicitly because the whitelist
-		// semantics drop EVERYTHING not named here. PlanUpdate is the L2's
-		// sole entry point for mutating plan.json (create/done/wipe); Promote
-		// is the sole Deliverable source. Without these two L2 cannot drive
-		// the local-files-as-truth state machine.
-		// react mode needs the full L2 palette: dispatch (freelance),
-		// research (web_search/tavily_search), workspace inspection
-		// (read/glob/grep/bash), self-output (edit/write), plan state
-		// (plan_update/plan_read), deliverables (promote), skill
-		// discovery (search_skill/skill). bash is included for short
-		// integration / verification ops (`file foo.docx`, `cp` between
-		// task dirs and the session root, `wc -w` on essay drafts)
-		// that fall under "5-minute self-integration" instead of
-		// warranting a sub-agent dispatch. NOT included: meta_write /
-		// submit_task_result — those are L3-leaf terminals that need a
-		// task_id, which emma's scheduler tool doesn't allocate. L2
-		// terminates on natural end_turn; its last assistant message
-		// becomes the parent-visible summary (see
-		// principles/scheduler.go "Step 4 — Return").
-		AllowedTools: []string{
-			"freelance",
-			"web_search", "tavily_search",
-			"read", "edit", "write", "glob", "grep", "bash",
-			"plan_update", "plan_read",
-			"promote",
-			"search_skill", "skill",
-		},
-	})
+	// 注：旧 "scheduler" L2 coordinator AgentDefinition 已删 ——
+	// emma 的 scheduler tool 不再起 L2 LLM agent，直接派 L3 freelancer。
 	r.MustRegister(&AgentDefinition{
 		Name:        "plan",
 		DisplayName: "规划者",

@@ -11,15 +11,13 @@ import (
 // gitignored; this is the lightweight stand-in that fails fast if the
 // directive is removed from the per-role principles files.
 //
-// We assert on Worker AND scheduler because both layers can call Bash —
-// L3 directly (Read/Edit/Write users), L2 via scheduler.
+// Worker 是唯一会调 Bash 的 L3 layer（emma 不调 Bash，L2 scheduler 已删）。
 func TestPrinciples_D19_NoBashMkdirDirective(t *testing.T) {
 	cases := []struct {
 		name string
 		role Role
 	}{
 		{"worker", RoleWorker},
-		{"scheduler", RoleScheduler},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

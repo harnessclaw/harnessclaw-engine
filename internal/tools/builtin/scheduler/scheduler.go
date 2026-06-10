@@ -46,15 +46,10 @@ const ToolName = "scheduler"
 // SubagentType is the agent definition / profile name spawned by this tool.
 // It must match the registered AgentDefinition.Name and the
 // ResolveProfileBySubagentType case in prompt/profile.go.
-// SubagentType 是 dispatch 默认的 L3 agent 名。
-// 历史曾经是 "scheduler"（指向一个 L2 LLM coordinator agent），现在改为
-// 直接走 L3 freelancer —— 取消 L2 LLM 中间层，emma 直接对接 L3 worker。
-// 老的 "scheduler" agent definition 保留以避免破坏 registry/db schema，但
-// 这里不再引用。
+// SubagentType 是本工具默认派的 L3 agent 名。
+// 工具名 "scheduler" 是历史遗留，emma prompt 里仍用这个名字；
+// 工具内部已经不再起 L2 coordinator，直接派 L3 freelancer。
 const SubagentType = "freelancer"
-
-// L2BridgeSubagentType 是旧 L2 名字，仅保留作为 metadata 兼容；新代码不应使用。
-const L2BridgeSubagentType = "scheduler"
 
 // Tool is emma's L2 dispatch tool.
 type Tool struct {

@@ -22,7 +22,6 @@ type Role string
 
 const (
 	RoleEmma              Role = "emma"
-	RoleScheduler         Role = "scheduler"
 	RoleWorker            Role = "worker"
 	RoleExplore           Role = "explore"
 	RolePlan              Role = "plan"
@@ -44,8 +43,6 @@ func Principles(role Role) string {
 	switch role {
 	case RoleEmma:
 		return emmaPrinciples
-	case RoleScheduler:
-		return schedulerPrinciples
 	case RoleWorker:
 		return workerPrinciples
 	case RoleExplore:
