@@ -41,7 +41,7 @@ import (
 )
 
 // ToolName is the LLM-facing tool identifier emma sees.
-const ToolName = "scheduler"
+const ToolName = "dispatch"
 
 // SubagentType is the agent definition / profile name spawned by this tool.
 // It must match the registered AgentDefinition.Name and the

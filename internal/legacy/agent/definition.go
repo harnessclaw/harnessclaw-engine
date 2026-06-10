@@ -194,7 +194,7 @@ func (d *AgentDefinition) Validate() error {
 			return fmt.Errorf("agent %q: TierSubAgent requires OutputSchema", d.Name)
 		}
 		for _, t := range d.AllowedTools {
-			if t == "freelance" || t == "scheduler" {
+			if t == "freelance" || t == "dispatch" {
 				return fmt.Errorf("agent %q: TierSubAgent cannot dispatch (tool %q forbidden)", d.Name, t)
 			}
 		}

@@ -124,9 +124,9 @@ func TestTranslator_TaskToolCardIsLifecycleExempt(t *testing.T) {
 	// NOT paused (but the point here is absence of close, which we checked).
 }
 
-// TestTranslator_SchedulerToolCardIsLifecycleExempt is the same guard
-// for ToolName="scheduler" — the other name in isOrchestrationTool().
-func TestTranslator_SchedulerToolCardIsLifecycleExempt(t *testing.T) {
+// TestTranslator_DispatchToolCardIsLifecycleExempt is the same guard
+// for ToolName="dispatch" — the other name in isOrchestrationTool().
+func TestTranslator_DispatchToolCardIsLifecycleExempt(t *testing.T) {
 	clk := newTestClock()
 	em, rec, tk := makeTrackedEmitterWithClock(t, "sess_spec", clk)
 	tr := NewTranslator(nil)
@@ -137,7 +137,7 @@ func TestTranslator_SchedulerToolCardIsLifecycleExempt(t *testing.T) {
 	})
 	tr.Translate(em, "sess_spec", &types.EngineEvent{
 		Type:      types.EngineEventToolStart,
-		ToolName:  "scheduler",
+		ToolName:  "dispatch",
 		ToolUseID: "toolu_spec_1",
 		ToolInput: `{"task":"coordinate"}`,
 	})
@@ -159,7 +159,7 @@ func TestTranslator_SchedulerToolCardIsLifecycleExempt(t *testing.T) {
 			continue
 		}
 		if pl.Error != nil && pl.Error.Type == emitv2.ErrorTypeOrphanTimeout {
-			t.Errorf("scheduler tool card received orphan_timeout close — WithoutLifecycle() opt-out is broken")
+			t.Errorf("dispatch tool card received orphan_timeout close — WithoutLifecycle() opt-out is broken")
 		}
 	}
 }

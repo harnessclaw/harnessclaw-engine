@@ -161,7 +161,7 @@ func DefaultEmmaConfig() EmmaConfig {
 		Profile:     prompt.EmmaProfile,
 		DisplayName: "emma",
 		AllowedTools: []string{
-			"scheduler",
+			"dispatch",
 			"web_search",
 			"tavily_search",
 			"ask_user_question",

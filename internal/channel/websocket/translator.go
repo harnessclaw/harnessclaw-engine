@@ -1240,7 +1240,7 @@ func (t *Translator) openPlan(s *sessionState, em *emitv2.Emitter, ev *types.Eng
 // the translator) doesn't fit the wire-translator's scope.
 func isOrchestrationTool(name string) bool {
 	switch name {
-	case "scheduler", "freelance":
+	case "dispatch", "freelance":
 		return true
 	default:
 		return false

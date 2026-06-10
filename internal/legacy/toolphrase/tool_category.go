@@ -43,8 +43,8 @@ var toolCategoryMap = map[string]ToolCategory{
 	"web_fetch":     CategoryNetwork,
 	"tavily_search": CategoryNetwork,
 
-	"freelance":   CategoryDispatch,
-	"scheduler":   CategoryDispatch,
+	"freelance": CategoryDispatch,
+	"dispatch":  CategoryDispatch,
 	"SkillTool": CategoryDispatch,
 }
 

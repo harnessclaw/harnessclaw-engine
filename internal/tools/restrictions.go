@@ -82,16 +82,16 @@ const (
 //   - EnterPlanMode: plan mode is a main thread abstraction
 //   - ask_user_question: only emma (L1) is allowed to prompt the user
 //   - TaskStop: requires access to main thread task state
-//   - task: prevents arbitrary recursion (scheduler overrides via whitelist)
-//   - scheduler: L2 coordinator entry point; emma-only — L3 cannot recurse to L2
+//   - task: prevents arbitrary recursion
+//   - dispatch: emma 的入口 dispatch 工具 —— L3 sub-agent 不能回过头来递归调度
 var AllAgentDisallowed = map[string]bool{
 	"TaskOutput":        true,
 	"ExitPlanMode":      true,
 	"EnterPlanMode":     true,
 	"ask_user_question": true,
 	"TaskStop":          true,
-	"freelance":         true, // bypassed by AgentDefinition.AllowedTools whitelist (scheduler)
-	"scheduler":         true, // L2 entry point — only emma may invoke
+	"freelance":         true, // bypassed by AgentDefinition.AllowedTools whitelist
+	"dispatch":          true, // emma 入口；L3 cannot recurse upward
 	"orchestrate":       true, // L2 plan-mode tool; surfacing it to L3 leaves them hallucinating calls that fail "intent is required" immediately
 }
 

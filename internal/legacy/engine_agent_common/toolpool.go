@@ -7,7 +7,11 @@ import (
 // dispatchToolNames lists tools that fan out to sub-agents. They are
 // stripped from the pool for strict leaf agents (TierSubAgent) so a
 // sub-agent cannot recursively spawn deeper.
-var dispatchToolNames = []string{"freelance", "scheduler", "task"}
+//
+// "dispatch" 是 emma 用的 L1→L3 派发工具（原名 "scheduler"），
+// "freelance" 是 agenttool 的工具名（保留），
+// "task" 是历史 fallback 名（保留以防外部 schema 引用）。
+var dispatchToolNames = []string{"freelance", "dispatch", "task"}
 
 // BuildToolPool produces the tool pool for a sub-agent.
 //
