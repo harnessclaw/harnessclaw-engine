@@ -273,10 +273,37 @@ func sniffBinary(path string, size int64) (string, bool) {
 	if bytes.IndexByte(head, 0) >= 0 {
 		return "binary (NUL in header)", true
 	}
-	if n >= 4 && !utf8.Valid(head) {
+	if n >= 4 && !utf8.Valid(trimPartialUTF8Tail(head)) {
 		return "binary (invalid utf-8)", true
 	}
 	return "", false
+}
+
+// trimPartialUTF8Tail strips up to 3 trailing bytes that look like an
+// incomplete UTF-8 multi-byte sequence — happens when a CJK/emoji/accented
+// character straddles the fixed-size sniff window boundary. Without this,
+// e.g. a JSON or Markdown file ending its first 512 bytes mid-character
+// is falsely flagged as binary.
+func trimPartialUTF8Tail(b []byte) []byte {
+	end := len(b)
+	// Walk back over at most 3 continuation bytes (0b10xxxxxx).
+	for back := 0; back < 3 && end > 0; back++ {
+		if (b[end-1] & 0xC0) != 0x80 {
+			break
+		}
+		end--
+	}
+	// If the byte before the peeled region is a multi-byte start byte
+	// (high bit set) but its full sequence wasn't present in the buffer,
+	// drop it too. Otherwise the trailing chars formed a complete rune
+	// and we restore them.
+	if end > 0 && (b[end-1]&0x80) != 0 {
+		if utf8.FullRune(b[end-1:]) {
+			return b
+		}
+		end--
+	}
+	return b[:end]
 }
 
 // pathInScope returns true if path (after Clean) starts with any allowed

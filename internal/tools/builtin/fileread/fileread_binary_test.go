@@ -100,3 +100,52 @@ func TestRead_AllowsEmptyFile(t *testing.T) {
 		t.Fatalf("empty file must not be rejected as binary; got %q", content)
 	}
 }
+
+// 边界用例：sniffBinary 只看前 512 字节；如果文件首 512 字节正好把一个
+// 多字节字符切两半，utf8.Valid 会误判为 binary。这是 json / md 中含
+// CJK 时的典型触发场景。trimPartialUTF8Tail 必须把可能被截断的尾部
+// 1-3 字节剥掉再校验。
+func TestRead_AllowsUTF8MultiByteAtSniffBoundary(t *testing.T) {
+	dir := t.TempDir()
+
+	// 第 510 字节起放 "中"（E4 B8 AD）—— sniff 窗口截到 510-511，正好
+	// 卡 3 字节 UTF-8 序列的前两位。
+	const sniffWindow = 512
+	pad := strings.Repeat("a", sniffWindow-2)
+	content := pad + "中后续内容\n"
+	p := writeFile(t, dir, "boundary.md", []byte(content))
+	got, isErr, _ := runRead(t, p)
+	if isErr {
+		t.Fatalf("UTF-8 char straddling sniff boundary must not flag binary; got %q", got)
+	}
+	if !strings.Contains(got, "中后续内容") {
+		t.Errorf("expected content preserved; got %q", got)
+	}
+}
+
+// 直接对 trimPartialUTF8Tail 做单元测试，覆盖：1) 完整序列不动；
+// 2) 1/2/3 字节悬挂多字节序列被剥掉；3) 纯 ASCII 不动；4) 中间含
+// 真正的非法字节不能被掩盖。
+func TestTrimPartialUTF8Tail(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want []byte
+	}{
+		{"ascii_only", []byte("hello world"), []byte("hello world")},
+		{"complete_cjk", []byte("ab\xE4\xB8\xAD"), []byte("ab\xE4\xB8\xAD")},     // 中
+		{"truncated_2_of_3", []byte("ab\xE4\xB8"), []byte("ab")},                 // 中 缺最后字节
+		{"truncated_1_of_3", []byte("ab\xE4"), []byte("ab")},                     // 中 只剩首字节
+		{"truncated_1_of_4_emoji", []byte("ab\xF0\x9F"), []byte("ab")},           // 🙂 缺后两字节
+		{"truncated_2_of_4_emoji", []byte("ab\xF0\x9F\x99"), []byte("ab")},       // 🙂 缺最后字节
+		{"complete_emoji", []byte("ab\xF0\x9F\x99\x82"), []byte("ab\xF0\x9F\x99\x82")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := trimPartialUTF8Tail(tc.in)
+			if string(got) != string(tc.want) {
+				t.Errorf("trimPartialUTF8Tail(% x) = % x, want % x", tc.in, got, tc.want)
+			}
+		})
+	}
+}
