@@ -388,6 +388,12 @@ func (e *Engine) ProcessMessage(ctx context.Context, sessionID string, msg *type
 
 	qCtx = sessionstats.WithSessionID(qCtx, sess.ID)
 	qCtx = sessionstats.WithAgentRunID(qCtx, mainAgentRunID)
+	// emma IS the root for her own session —— sub-agent 派生时通过 ctx 拿这俩，
+	// 不注的话下游 dispatch tool 读不到 RootSessionID，会导致 freelancer 的
+	// cfg.RootSessionID 为空，WorkspacePrelude 不输出"工作上下文"段，
+	// meta_write/submit_task_result 报 "SessionRoot/TaskID missing" 一连串错。
+	qCtx = sessionstats.WithRootSessionID(qCtx, sess.ID)
+	qCtx = sessionstats.WithImmediateParentSessionID(qCtx, sess.ID)
 
 	e.mu.Lock()
 	e.cancels[sessionID] = cancel
