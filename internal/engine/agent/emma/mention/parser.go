@@ -1,35 +1,37 @@
-package agent
+package mention
 
 import (
 	"strings"
+
+	"harnessclaw-go/internal/engine/agent/definition"
 )
 
-// MentionMatch holds the result of parsing a user message for an @agent mention.
-type MentionMatch struct {
+// Match holds the result of parsing a user message for an @agent mention.
+type Match struct {
 	AgentName string // name of the matched agent definition
 	Message   string // remaining message after stripping the @mention
 	Matched   bool   // whether an @mention was found and matched
 }
 
-// MentionParser detects @agent-name mentions at the start of user messages
+// Parser detects @agent-name mentions at the start of user messages
 // and resolves them against a registry of known agent definitions.
-type MentionParser struct {
-	registry *AgentDefinitionRegistry
+type Parser struct {
+	registry *definition.Registry
 }
 
-// NewMentionParser creates a MentionParser backed by the given registry.
-func NewMentionParser(reg *AgentDefinitionRegistry) *MentionParser {
-	return &MentionParser{registry: reg}
+// NewParser creates a Parser backed by the given registry.
+func NewParser(reg *definition.Registry) *Parser {
+	return &Parser{registry: reg}
 }
 
 // Parse examines text for a leading @agent-name mention. If a known agent is
 // mentioned at the start, it returns Matched=true with the canonical agent name
 // and the remaining message (leading whitespace trimmed). Otherwise it returns
 // Matched=false.
-func (p *MentionParser) Parse(text string) MentionMatch {
+func (p *Parser) Parse(text string) Match {
 	trimmed := strings.TrimSpace(text)
 	if !strings.HasPrefix(trimmed, "@") {
-		return MentionMatch{}
+		return Match{}
 	}
 
 	// Strip the leading '@'.
@@ -59,11 +61,11 @@ func (p *MentionParser) Parse(text string) MentionMatch {
 	}
 
 	if bestName == "" {
-		return MentionMatch{}
+		return Match{}
 	}
 
 	remaining := strings.TrimSpace(afterAt[len(bestName):])
-	return MentionMatch{
+	return Match{
 		AgentName: bestName,
 		Message:   remaining,
 		Matched:   true,

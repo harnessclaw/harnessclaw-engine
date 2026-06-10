@@ -7,10 +7,10 @@ import (
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/engine/agent/definition"
+	"harnessclaw-go/internal/engine/agent/emma/mention"
 	"harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/legacy/agent"
-	"harnessclaw-go/internal/engine/agent/emma/mention"
 	"harnessclaw-go/internal/memory"
 	"harnessclaw-go/pkg/types"
 )
@@ -27,9 +27,9 @@ func (fakeScheduler) Subscribe(context.Context, types.TaskID) (<-chan types.Engi
 }
 
 func TestTryRoute_NoMention_ReturnsNil(t *testing.T) {
-	reg := agent.NewAgentDefinitionRegistry()
+	reg := definition.NewRegistry()
 	reg.RegisterBuiltins()
-	r := mention.NewRouter(fakeScheduler{}, reg, agent.NewMentionParser(reg))
+	r := mention.NewRouter(fakeScheduler{}, reg, mention.NewParser(reg))
 
 	mgr := session.NewManager(memory.New(), zap.NewNop(), time.Hour)
 	sess, _ := mgr.GetOrCreate(context.Background(), "s1", "ws", "u")

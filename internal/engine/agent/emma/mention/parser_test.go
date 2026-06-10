@@ -1,17 +1,19 @@
-package agent
+package mention
 
 import (
 	"testing"
+
+	"harnessclaw-go/internal/engine/agent/definition"
 )
 
-func newTestRegistry() *AgentDefinitionRegistry {
-	reg := NewAgentDefinitionRegistry()
+func newTestRegistry() *definition.Registry {
+	reg := definition.NewRegistry()
 	reg.RegisterBuiltins()
 	return reg
 }
 
 func TestMentionParser_BasicMatch(t *testing.T) {
-	parser := NewMentionParser(newTestRegistry())
+	parser := NewParser(newTestRegistry())
 
 	m := parser.Parse("@plan design auth strategy")
 	if !m.Matched {
@@ -26,7 +28,7 @@ func TestMentionParser_BasicMatch(t *testing.T) {
 }
 
 func TestMentionParser_CaseInsensitive(t *testing.T) {
-	parser := NewMentionParser(newTestRegistry())
+	parser := NewParser(newTestRegistry())
 
 	m := parser.Parse("@plan look for main.go")
 	if !m.Matched {
@@ -41,7 +43,7 @@ func TestMentionParser_CaseInsensitive(t *testing.T) {
 }
 
 func TestMentionParser_MultiWordAgentName(t *testing.T) {
-	parser := NewMentionParser(newTestRegistry())
+	parser := NewParser(newTestRegistry())
 
 	m := parser.Parse("@plan_agent do something complex")
 	if !m.Matched {
@@ -56,7 +58,7 @@ func TestMentionParser_MultiWordAgentName(t *testing.T) {
 }
 
 func TestMentionParser_NoMention(t *testing.T) {
-	parser := NewMentionParser(newTestRegistry())
+	parser := NewParser(newTestRegistry())
 
 	m := parser.Parse("just a regular message")
 	if m.Matched {
@@ -71,7 +73,7 @@ func TestMentionParser_NoMention(t *testing.T) {
 }
 
 func TestMentionParser_UnknownAgent(t *testing.T) {
-	parser := NewMentionParser(newTestRegistry())
+	parser := NewParser(newTestRegistry())
 
 	m := parser.Parse("@nonexistent-agent hello")
 	if m.Matched {
@@ -80,7 +82,7 @@ func TestMentionParser_UnknownAgent(t *testing.T) {
 }
 
 func TestMentionParser_MentionInMiddle(t *testing.T) {
-	parser := NewMentionParser(newTestRegistry())
+	parser := NewParser(newTestRegistry())
 
 	m := parser.Parse("hello @plan do something")
 	if m.Matched {
@@ -89,7 +91,7 @@ func TestMentionParser_MentionInMiddle(t *testing.T) {
 }
 
 func TestMentionParser_EmptyString(t *testing.T) {
-	parser := NewMentionParser(newTestRegistry())
+	parser := NewParser(newTestRegistry())
 
 	m := parser.Parse("")
 	if m.Matched {
@@ -98,7 +100,7 @@ func TestMentionParser_EmptyString(t *testing.T) {
 }
 
 func TestMentionParser_JustAtSign(t *testing.T) {
-	parser := NewMentionParser(newTestRegistry())
+	parser := NewParser(newTestRegistry())
 
 	m := parser.Parse("@")
 	if m.Matched {
@@ -107,7 +109,7 @@ func TestMentionParser_JustAtSign(t *testing.T) {
 }
 
 func TestMentionParser_AgentNameOnly(t *testing.T) {
-	parser := NewMentionParser(newTestRegistry())
+	parser := NewParser(newTestRegistry())
 
 	m := parser.Parse("@plan")
 	if !m.Matched {
@@ -122,7 +124,7 @@ func TestMentionParser_AgentNameOnly(t *testing.T) {
 }
 
 func TestMentionParser_LeadingWhitespace(t *testing.T) {
-	parser := NewMentionParser(newTestRegistry())
+	parser := NewParser(newTestRegistry())
 
 	m := parser.Parse("  @plan find files")
 	if !m.Matched {
@@ -138,7 +140,7 @@ func TestMentionParser_LeadingWhitespace(t *testing.T) {
 
 func TestMentionParser_AgentNamePrefix(t *testing.T) {
 	// Ensure that "plan_agent" is not matched by a partial prefix like "plan"
-	parser := NewMentionParser(newTestRegistry())
+	parser := NewParser(newTestRegistry())
 
 	m := parser.Parse("@plan_agent check this PR")
 	if !m.Matched {
@@ -154,7 +156,7 @@ func TestMentionParser_AgentNamePrefix(t *testing.T) {
 
 func TestMentionParser_AgentNameNotSubstring(t *testing.T) {
 	// "@planning" should NOT match "plan" since 'n' follows without whitespace
-	parser := NewMentionParser(newTestRegistry())
+	parser := NewParser(newTestRegistry())
 
 	m := parser.Parse("@planning something")
 	if m.Matched {

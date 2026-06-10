@@ -299,7 +299,7 @@ func New(
 		e.mentionRouter = mention.NewRouter(
 			e.sched,
 			e.defRegistry,
-			agent.NewMentionParser(e.defRegistry),
+			mention.NewParser(e.defRegistry),
 		)
 	}
 

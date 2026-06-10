@@ -5,9 +5,9 @@ import (
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -16,14 +16,14 @@ import (
 // scheduler.Scheduler dispatch entry (sync mode).
 type Router struct {
 	sched  scheduler.Scheduler
-	defReg *agent.AgentDefinitionRegistry
-	parser *agent.MentionParser
+	defReg *definition.Registry
+	parser *Parser
 	logger *zap.Logger
 }
 
 // NewRouter constructs a Router. parser may be created from defReg via
-// agent.NewMentionParser; passed in to allow reuse / testing.
-func NewRouter(sched scheduler.Scheduler, defReg *agent.AgentDefinitionRegistry, parser *agent.MentionParser) *Router {
+// mention.NewParser; passed in to allow reuse / testing.
+func NewRouter(sched scheduler.Scheduler, defReg *definition.Registry, parser *Parser) *Router {
 	return &Router{
 		sched:  sched,
 		defReg: defReg,
