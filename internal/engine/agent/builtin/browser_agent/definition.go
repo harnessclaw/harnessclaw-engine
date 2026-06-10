@@ -1,17 +1,18 @@
-package agent
+package browser_agent
 
-import "harnessclaw-go/internal/tools"
-
-const BrowserAgentName = "browser-agent"
+import (
+	"harnessclaw-go/internal/engine/agent/definition"
+	"harnessclaw-go/internal/tools"
+)
 
 // BrowserAgentDefinition returns the built-in leaf agent that runs browser
 // observation and extraction tasks behind the browser_agent entry tool.
-func BrowserAgentDefinition() *AgentDefinition {
-	return &AgentDefinition{
-		Name:        BrowserAgentName,
+func BrowserAgentDefinition() *definition.AgentDefinition {
+	return &definition.AgentDefinition{
+		Name:        AgentName,
 		DisplayName: "Browser Agent",
 		Description: "打开网页、观察渲染结果，并提取页面信息的浏览器子 Agent",
-		Tier:        TierSubAgent,
+		Tier:        definition.TierSubAgent,
 		Profile:     "worker",
 		AgentType:   tool.AgentTypeSync,
 		AllowedTools: []string{
@@ -77,7 +78,7 @@ func BrowserAgentDefinition() *AgentDefinition {
 			"打开目标网站并提取渲染后的榜单内容。",
 			"访问一个 SPA 页面，读取可见文本并整理摘要。",
 		},
-		CostTier:         CostMedium,
+		CostTier:         definition.CostMedium,
 		TypicalLatencyMs: 30000,
 	}
 }

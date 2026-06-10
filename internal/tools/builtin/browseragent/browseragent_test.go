@@ -10,8 +10,8 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/config"
+	"harnessclaw-go/internal/engine/agent/builtin/browser_agent"
 	"harnessclaw-go/internal/engine/scheduler"
-	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
@@ -172,10 +172,10 @@ func TestBrowserAgentTool_SpawnsBrowserSubAgent(t *testing.T) {
 	if sched.params == nil {
 		t.Fatal("Dispatch was not called")
 	}
-	if sched.params.Definition.Name != agent.BrowserAgentName {
+	if sched.params.Definition.Name != browser_agent.AgentName {
 		t.Fatalf("Definition.Name = %q", sched.params.Definition.Name)
 	}
-	if sched.params.Name != agent.BrowserAgentName {
+	if sched.params.Name != browser_agent.AgentName {
 		t.Fatalf("Name = %q", sched.params.Name)
 	}
 	if sched.params.Overrides.MaxTurns != 8 {

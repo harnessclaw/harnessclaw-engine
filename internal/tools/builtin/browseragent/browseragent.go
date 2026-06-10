@@ -11,14 +11,17 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/config"
+	"harnessclaw-go/internal/engine/agent/builtin/browser_agent"
 	"harnessclaw-go/internal/engine/scheduler"
-	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 
-const ToolName = "browser_agent"
+// ToolName 与子代理 kernel 的 ToolName 同源 —— 让 tools/builtin/browseragent
+// 与 engine/agent/builtin/browser_agent 共用同一个字符串，避免双方任一改值后
+// 另一方掉队。常量从 browser_agent 包来，单方向 import，无循环。
+const ToolName = browser_agent.ToolName
 
 type Tool struct {
 	tool.BaseTool
@@ -113,7 +116,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	}
 
 	// 用内置 BrowserAgentDefinition；新 scheduler 通过 SpawnParams.Definition 驱动 Runtime.LLM。
-	def := agent.BrowserAgentDefinition()
+	def := browser_agent.BrowserAgentDefinition()
 
 	inputs := map[string]any{
 		"goal":      strings.TrimSpace(in.Goal),
@@ -145,7 +148,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	res, err := t.sched.Dispatch(ctx, scheduler.SpawnParams{
 		Definition:  *def,
 		Prompt:      buildPrompt(in, maxSteps, t.cfg),
-		Name:        agent.BrowserAgentName,
+		Name:        browser_agent.AgentName,
 		Description: "浏览器任务",
 		Parent:      parentRef,
 		InvokedBy:   scheduler.Invoker{Kind: scheduler.InvokerLLM, Source: ToolName},
@@ -166,7 +169,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		"render_hint":   "agent",
 		"agent_id":      res.AgentID,
 		"task_id":       res.TaskID,
-		"subagent_type": agent.BrowserAgentName,
+		"subagent_type": browser_agent.AgentName,
 		"tool_calls":    sync.ToolCalls,
 	}
 	if sync.Terminal.Reason != "" {

@@ -1,4 +1,4 @@
-package agent
+package browser_agent
 
 import (
 	"strings"
@@ -11,7 +11,7 @@ import (
 func TestBrowserAgentDefinition(t *testing.T) {
 	def := BrowserAgentDefinition()
 
-	if def.Name != BrowserAgentName {
+	if def.Name != AgentName {
 		t.Fatalf("Name = %q", def.Name)
 	}
 	if def.Tier != definition.TierSubAgent {

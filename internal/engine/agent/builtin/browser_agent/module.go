@@ -21,7 +21,6 @@ import (
 	"harnessclaw-go/internal/skills"
 	"harnessclaw-go/internal/tools"
 	browsertools "harnessclaw-go/internal/tools/builtin/browser"
-	browseragenttool "harnessclaw-go/internal/tools/builtin/browseragent"
 	"harnessclaw-go/internal/tools/builtin/submittool"
 	"harnessclaw-go/pkg/types"
 )
@@ -53,11 +52,11 @@ func New(deps Deps) *Module {
 	return &Module{deps: deps}
 }
 
-func (m *Module) SubagentType() string { return agent.BrowserAgentName }
+func (m *Module) SubagentType() string { return AgentName }
 
 func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnResult, error) {
 	startTime := time.Now()
-	def := agent.BrowserAgentDefinition()
+	def := BrowserAgentDefinition()
 
 	if len(cfg.Inputs) > 0 {
 		if fails := submittool.ValidateAgainstSchema(def.InputSchema, cfg.Inputs); len(fails) > 0 {
@@ -112,7 +111,7 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		AgentDesc:       cfg.Description,
 		AgentTask:       cfg.Prompt,
 		AgentType:       string(cfg.AgentType),
-		SubagentType:    agent.BrowserAgentName,
+		SubagentType:    AgentName,
 		ParentAgentID:   cfg.ParentAgentID,
 		ParentSessionID: cfg.ParentSessionID,
 		ParentStepID:    cfg.ParentStepID,
@@ -180,7 +179,7 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 		AgentID:         sess.ID,
 		AgentName:       cfg.Name,
 		AgentStatus:     statusFromTerminal(terminal),
-		SubagentType:    agent.BrowserAgentName,
+		SubagentType:    AgentName,
 		DurationMs:      time.Since(startTime).Milliseconds(),
 		Usage:           &usage,
 		Terminal:        &terminal,
@@ -192,7 +191,7 @@ func (m *Module) Run(ctx context.Context, cfg *agent.SpawnConfig) (*agent.SpawnR
 }
 
 func browserAgentApprovedTools(parentApproved []string, def *agent.AgentDefinition) []string {
-	if !containsTool(parentApproved, browseragenttool.ToolName) {
+	if !containsTool(parentApproved, ToolName) {
 		return parentApproved
 	}
 	internalTools := def.MaybeAugmentForSubAgent()

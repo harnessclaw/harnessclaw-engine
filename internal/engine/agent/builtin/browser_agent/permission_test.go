@@ -1,18 +1,13 @@
 package browser_agent
 
-import (
-	"testing"
-
-	"harnessclaw-go/internal/legacy/agent"
-	browseragenttool "harnessclaw-go/internal/tools/builtin/browseragent"
-)
+import "testing"
 
 func TestBrowserAgentApprovedTools_ExpandsInternalToolsWhenParentApprovedBrowserAgent(t *testing.T) {
-	def := agent.BrowserAgentDefinition()
-	approved := browserAgentApprovedTools([]string{browseragenttool.ToolName}, def)
+	def := BrowserAgentDefinition()
+	approved := browserAgentApprovedTools([]string{ToolName}, def)
 
 	for _, want := range []string{
-		browseragenttool.ToolName,
+		ToolName,
 		"browser_session_create",
 		"agent_browser_command",
 		"browser_agent_final_result",
@@ -25,7 +20,7 @@ func TestBrowserAgentApprovedTools_ExpandsInternalToolsWhenParentApprovedBrowser
 }
 
 func TestBrowserAgentApprovedTools_DoesNotExpandWithoutParentBrowserAgentApproval(t *testing.T) {
-	approved := browserAgentApprovedTools([]string{"bash"}, agent.BrowserAgentDefinition())
+	approved := browserAgentApprovedTools([]string{"bash"}, BrowserAgentDefinition())
 
 	if containsTool(approved, "agent_browser_command") {
 		t.Fatalf("approved tools should not include browser internals without parent browser_agent approval: %v", approved)

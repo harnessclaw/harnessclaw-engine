@@ -40,6 +40,7 @@ import (
 	"harnessclaw-go/internal/commands"
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine/compact"
+	browseragentdef "harnessclaw-go/internal/engine/agent/builtin/browser_agent"
 	"harnessclaw-go/internal/engine/agent/emma"
 	"harnessclaw-go/internal/engine/agent/emma/resume"
 	"harnessclaw-go/internal/humanloop"
@@ -528,7 +529,7 @@ func main() {
 		logger.Warn("failed to load agent definitions to registry", zap.Error(err))
 	}
 	if cfg.Tools.BrowserAgent.Enabled {
-		if err := agentDefReg.Register(agent.BrowserAgentDefinition()); err != nil {
+		if err := agentDefReg.Register(browseragentdef.BrowserAgentDefinition()); err != nil {
 			logger.Fatal("failed to register browser-agent definition", zap.Error(err))
 		}
 	}

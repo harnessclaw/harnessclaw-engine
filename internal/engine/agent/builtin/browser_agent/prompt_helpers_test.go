@@ -14,7 +14,7 @@ import (
 // wrappers). The contract is still appended. The fake skill body includes the
 // Browser Agent final-result wrapper to mirror HarnessClaw's adapted skill.
 func buildSystemPrompt() string {
-	def := agent.BrowserAgentDefinition()
+	def := BrowserAgentDefinition()
 	fakeSkill := &skill.SkillFull{
 		SkillCard: skill.SkillCard{
 			Name:    "agent-browser/core",
