@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+## [0.0.21-beta.2] - 2026-06-10
+
+### Fixed
+- Published the image generation timeout fix from merged `main`, keeping slow image provider requests on the long-running tool path for the paired desktop beta.
+
 ## [0.0.21-beta.1] - 2026-06-09
 
 ### Fixed
