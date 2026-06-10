@@ -25,6 +25,38 @@ func WithToolUseContext(ctx context.Context, tuc *types.ToolUseContext) context.
 	return context.WithValue(ctx, toolUseContextKey, tuc)
 }
 
+// CurrentImage is an image supplied by the current user turn. The router
+// attaches these to the tool execution context so image-generation tools can
+// use uploaded reference images without asking the model to echo base64 in
+// tool arguments.
+type CurrentImage struct {
+	MediaType string
+	Data      string
+	URL       string
+	Path      string
+	Filename  string
+	Size      int64
+}
+
+type currentImagesKey struct{}
+
+var currentImagesContextKey = currentImagesKey{}
+
+// CurrentImagesFromCtx returns the current turn's image inputs, when present.
+func CurrentImagesFromCtx(ctx context.Context) ([]CurrentImage, bool) {
+	images, ok := ctx.Value(currentImagesContextKey).([]CurrentImage)
+	return images, ok
+}
+
+// WithCurrentImages attaches current-turn image inputs to ctx.
+func WithCurrentImages(ctx context.Context, images []CurrentImage) context.Context {
+	if len(images) == 0 {
+		return ctx
+	}
+	copied := append([]CurrentImage(nil), images...)
+	return context.WithValue(ctx, currentImagesContextKey, copied)
+}
+
 // eventOutKey is the unexported key type for the event output channel.
 type eventOutKey struct{}
 

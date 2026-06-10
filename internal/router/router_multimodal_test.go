@@ -10,6 +10,7 @@ import (
 
 	"harnessclaw-go/internal/channel"
 	"harnessclaw-go/internal/provider/registry"
+	"harnessclaw-go/internal/tool"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -17,13 +18,17 @@ import (
 // can assert the router converted content blocks instead of throwing
 // them away.
 type captureEngine struct {
-	mu       sync.Mutex
-	received *types.Message
+	mu            sync.Mutex
+	received      *types.Message
+	currentImages []tool.CurrentImage
 }
 
-func (e *captureEngine) ProcessMessage(_ context.Context, _ string, m *types.Message) (<-chan types.EngineEvent, error) {
+func (e *captureEngine) ProcessMessage(ctx context.Context, _ string, m *types.Message) (<-chan types.EngineEvent, error) {
 	e.mu.Lock()
 	e.received = m
+	if imgs, ok := tool.CurrentImagesFromCtx(ctx); ok {
+		e.currentImages = imgs
+	}
 	e.mu.Unlock()
 	ch := make(chan types.EngineEvent)
 	close(ch)
@@ -49,10 +54,10 @@ type recordingChannel struct {
 	frames []*types.EngineEvent
 }
 
-func (c *recordingChannel) Name() string                                                      { return "websocket" }
-func (c *recordingChannel) Start(_ context.Context, _ channel.MessageHandler) error           { return nil }
-func (c *recordingChannel) Stop(_ context.Context) error                                      { return nil }
-func (c *recordingChannel) Send(_ context.Context, _ string, _ *types.Message) error          { return nil }
+func (c *recordingChannel) Name() string                                             { return "websocket" }
+func (c *recordingChannel) Start(_ context.Context, _ channel.MessageHandler) error  { return nil }
+func (c *recordingChannel) Stop(_ context.Context) error                             { return nil }
+func (c *recordingChannel) Send(_ context.Context, _ string, _ *types.Message) error { return nil }
 func (c *recordingChannel) SendEvent(_ context.Context, _ string, ev *types.EngineEvent) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -68,7 +73,7 @@ type stubModelInfo struct {
 	supports registry.SupportsFlags
 }
 
-func (s stubModelInfo) ActiveModelKey() string                { return s.key }
+func (s stubModelInfo) ActiveModelKey() string                 { return s.key }
 func (s stubModelInfo) ActiveSupports() registry.SupportsFlags { return s.supports }
 
 // TestRouter_ConvertsImageBlocksIntoEngineMessage proves the router
@@ -108,6 +113,15 @@ func TestRouter_ConvertsImageBlocksIntoEngineMessage(t *testing.T) {
 	}
 	if received.Content[1].MediaType != "image/png" {
 		t.Errorf("media_type lost: %+v", received.Content[1])
+	}
+	eng.mu.Lock()
+	currentImages := eng.currentImages
+	eng.mu.Unlock()
+	if len(currentImages) != 1 {
+		t.Fatalf("want 1 current image in tool ctx, got %d (%+v)", len(currentImages), currentImages)
+	}
+	if currentImages[0].MediaType != "image/png" || currentImages[0].Data != "iVBORw0KGgo=" {
+		t.Fatalf("current image mismatch: %+v", currentImages[0])
 	}
 }
 

@@ -151,6 +151,9 @@ func (r *Router) coreHandler(ctx context.Context, msg *types.IncomingMessage) er
 			zap.String("plan_confirmation", msg.PlanConfirmation),
 		)
 	}
+	if currentImages := currentImagesFromBlocks(blocks); len(currentImages) > 0 {
+		ctx = tool.WithCurrentImages(ctx, currentImages)
+	}
 
 	events, err := r.engine.ProcessMessage(ctx, msg.SessionID, userMsg)
 	if err != nil {
@@ -188,6 +191,24 @@ func (r *Router) coreHandler(ctx context.Context, msg *types.IncomingMessage) er
 	}()
 
 	return nil
+}
+
+func currentImagesFromBlocks(blocks []types.ContentBlock) []tool.CurrentImage {
+	images := make([]tool.CurrentImage, 0)
+	for _, block := range blocks {
+		if block.Type != types.ContentTypeImage {
+			continue
+		}
+		images = append(images, tool.CurrentImage{
+			MediaType: block.MediaType,
+			Data:      block.Data,
+			URL:       block.URL,
+			Path:      block.Path,
+			Filename:  block.Filename,
+			Size:      block.Size,
+		})
+	}
+	return images
 }
 
 // emitInvalidInput sends a single-shot error frame to the originating
