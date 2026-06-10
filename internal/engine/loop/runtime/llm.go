@@ -161,7 +161,15 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 	// 8. AgentScope（runner.RunLeaf:256）
 	scope := common.BuildAgentScope(cfg, r.Cfg.RootDir, "leaf")
 
-	// 9. Option B 桥：开 channel，goroutine 跑 loop，loop 的 sink 就是 channel
+	// ★ 9. 把本 sub-agent 的 sessionstats 注入 ctx ——
+	// 下游工具（agenttool/browseragent 等）通过 sessionstats.*FromCtx 取
+	// SessionID / RootSessionID / ImmediateParentSessionID 作为 sub-agent 归属。
+	// runner.RunLeaf:194 原本就有这一步，port 时漏了 —— 导致 L2 调 freelance 时
+	// agenttool 读到的还是 emma 的 ctx，sub-agent session 归属全错乱（最终症状是
+	// 工作目录注入失败、freelancer 把文件写到 repo 根目录而不是 task_dir）。
+	ctx = common.WithSubAgentStats(ctx, sess.ID, sess.ID, cfg.ParentSessionID, cfg.RootSessionID)
+
+	// 10. Option B 桥：开 channel，goroutine 跑 loop，loop 的 sink 就是 channel
 	events := make(chan pkgtypes.EngineEvent, 64)
 	startedAt := time.Now()
 	go func() {
