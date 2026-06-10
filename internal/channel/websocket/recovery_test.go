@@ -15,8 +15,8 @@ import (
 	"nhooyr.io/websocket"
 
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/legacy/humanloop"
-	"harnessclaw-go/internal/legacy/wait"
+	"harnessclaw-go/internal/humanloop"
+	"harnessclaw-go/internal/humanloop/wait"
 	"harnessclaw-go/internal/persistence/sqlite"
 	"harnessclaw-go/pkg/types"
 )

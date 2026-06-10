@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"harnessclaw-go/internal/legacy/wait"
+	"harnessclaw-go/internal/humanloop/wait"
 )
 
 // memStore is a thread-safe in-memory wait.Store for tests. The SQLite

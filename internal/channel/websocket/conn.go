@@ -13,7 +13,7 @@ import (
 
 	emitv2 "harnessclaw-go/internal/channel/emit/v2"
 	"harnessclaw-go/internal/legacy/multimodal"
-	"harnessclaw-go/internal/legacy/wait"
+	"harnessclaw-go/internal/humanloop/wait"
 	"harnessclaw-go/pkg/types"
 )
 

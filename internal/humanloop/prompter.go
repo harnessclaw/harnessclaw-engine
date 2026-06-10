@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"time"
 
-	"harnessclaw-go/internal/legacy/wait"
+	"harnessclaw-go/internal/humanloop/wait"
 )
 
 // Prompter is the channel-side service. It owns the live wait registry

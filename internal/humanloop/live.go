@@ -3,7 +3,7 @@ package humanloop
 import (
 	"sync"
 
-	"harnessclaw-go/internal/legacy/wait"
+	"harnessclaw-go/internal/humanloop/wait"
 )
 
 // liveRegistry holds the in-memory map of "the engine goroutine that

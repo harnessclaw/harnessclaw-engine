@@ -42,7 +42,7 @@ import (
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/agent/emma"
 	"harnessclaw-go/internal/engine/agent/emma/resume"
-	"harnessclaw-go/internal/legacy/humanloop"
+	"harnessclaw-go/internal/humanloop"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/engine/permission"

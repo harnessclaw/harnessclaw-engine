@@ -17,7 +17,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/legacy/wait"
+	"harnessclaw-go/internal/humanloop/wait"
 	"harnessclaw-go/internal/services/api/router"
 	"harnessclaw-go/pkg/types"
 )
