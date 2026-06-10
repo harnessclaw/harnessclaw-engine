@@ -6,7 +6,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/legacy/toolexec"
+	"harnessclaw-go/internal/engine/loop/toolexec"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )

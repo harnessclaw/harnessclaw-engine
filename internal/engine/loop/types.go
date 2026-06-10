@@ -13,7 +13,7 @@ import (
 
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/legacy/toolexec"
+	"harnessclaw-go/internal/engine/loop/toolexec"
 	"harnessclaw-go/internal/engine/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
