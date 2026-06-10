@@ -46,7 +46,15 @@ const ToolName = "scheduler"
 // SubagentType is the agent definition / profile name spawned by this tool.
 // It must match the registered AgentDefinition.Name and the
 // ResolveProfileBySubagentType case in prompt/profile.go.
-const SubagentType = "scheduler"
+// SubagentType 是 dispatch 默认的 L3 agent 名。
+// 历史曾经是 "scheduler"（指向一个 L2 LLM coordinator agent），现在改为
+// 直接走 L3 freelancer —— 取消 L2 LLM 中间层，emma 直接对接 L3 worker。
+// 老的 "scheduler" agent definition 保留以避免破坏 registry/db schema，但
+// 这里不再引用。
+const SubagentType = "freelancer"
+
+// L2BridgeSubagentType 是旧 L2 名字，仅保留作为 metadata 兼容；新代码不应使用。
+const L2BridgeSubagentType = "scheduler"
 
 // Tool is emma's L2 dispatch tool.
 type Tool struct {
@@ -161,7 +169,10 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		events = out
 	}
 
-	// 查 "scheduler" agent definition；找不到用最小 fallback。
+	// 取消 L2 中间层 —— 直接派 L3 freelancer。
+	// emma 视角不变（仍然调 "scheduler" 工具），但本工具内部不再起 LLM coordinator
+	// agent，而是把任务直接交给 freelancer worker。少一跳 LLM 调用，链路更短、
+	// 响应更快、归属更清晰（emma → freelancer 两层而不是 emma → L2 → freelancer 三层）。
 	var def agent.AgentDefinition
 	if t.defReg != nil {
 		if d := t.defReg.Get(SubagentType); d != nil {
@@ -173,7 +184,8 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		def = agent.AgentDefinition{Name: SubagentType, AgentType: tool.AgentTypeSync}
 	}
 
-	t.logger.Info("dispatch to scheduler",
+	t.logger.Info("dispatch directly to L3",
+		zap.String("subagent_type", SubagentType),
 		zap.String("task", truncate(in.Task, 120)),
 		zap.String("description", in.Description),
 	)
@@ -185,10 +197,8 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		Parent:      parentRef,
 		InvokedBy:   schedpkg.Invoker{Kind: schedpkg.InvokerLLM, Source: ToolName},
 		Events:      events,
-		// L2 coordinator agent 需要更高的 MaxTurns —— 它要先调 1+ 次 freelance/分析工具，
-		// 再做 summary。默认 10 太低（实测一次复杂请求会拆 8-10 个内部步骤就被砍）。
-		// scheduler agent definition 没设 max_turns 时这里兜底 50。
-		Overrides: schedpkg.Overrides{MaxTurns: 50},
+		// L3 worker 用 Definition.MaxTurns（freelancer def 自己的预算），不显式 overrides。
+		// Definition 未设时 Runtime.LLM 兜底 30。
 	})
 	if err != nil {
 		t.logger.Error("scheduler spawn failed",
