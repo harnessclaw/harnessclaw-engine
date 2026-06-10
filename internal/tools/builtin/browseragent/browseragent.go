@@ -13,6 +13,7 @@ import (
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/legacy/sessionstats"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
@@ -122,10 +123,17 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		inputs["start_url"] = strings.TrimSpace(in.StartURL)
 	}
 
-	// 父 session / event 通道
-	var parentSess types.SessionID
+	// 父身份完整三元组：SessionID + AgentID + StepID(tool_use_id)
+	parentRef := &scheduler.ParentRef{}
 	if tuc, ok := tool.GetToolUseContext(ctx); ok {
-		parentSess = types.SessionID(tuc.Core.SessionID)
+		parentRef.SessionID = types.SessionID(tuc.Core.SessionID)
+		parentRef.StepID = tuc.Core.ToolCallID
+	}
+	if sid, ok := sessionstats.SessionIDFromCtx(ctx); ok && sid != "" {
+		parentRef.AgentID = types.AgentID(sid)
+	}
+	if rootSID, ok := sessionstats.RootSessionIDFromCtx(ctx); ok && rootSID != "" {
+		parentRef.RootSessionID = types.SessionID(rootSID)
 	}
 	var events chan<- types.EngineEvent
 	if out, ok := tool.GetEventOut(ctx); ok {
@@ -139,7 +147,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		Prompt:      buildPrompt(in, maxSteps, t.cfg),
 		Name:        agent.BrowserAgentName,
 		Description: "浏览器任务",
-		Parent:      &scheduler.ParentRef{SessionID: parentSess},
+		Parent:      parentRef,
 		InvokedBy:   scheduler.Invoker{Kind: scheduler.InvokerLLM, Source: ToolName},
 		Inputs:      inputs,
 		Events:      events,

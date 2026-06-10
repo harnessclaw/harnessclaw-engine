@@ -17,6 +17,10 @@ type AgentCtxValue struct {
 	AgentID       pkgtypes.AgentID
 	TaskID        pkgtypes.TaskID
 	ParentAgentID pkgtypes.AgentID
+	// ParentStepID 是父 agent 调用 spawn 时的 tool_use_id ——
+	// wire 翻译层用它把 sub-agent 卡挂到正确的父 tool_use 节点之下。
+	// 缺这个会导致 sub-agent 错挂到祖父的 tool_use 上，UI 层级错乱。
+	ParentStepID  string
 	SessionID     pkgtypes.SessionID
 	RootSessionID pkgtypes.SessionID
 	SubagentType  string // 来自 Definition.Name（agent definition 名）—— 用于观察性 label
@@ -43,6 +47,7 @@ func (AgentContext) Before(ctx context.Context, p scheduler.SpawnParams, st *sch
 	}
 	if p.Parent != nil {
 		v.ParentAgentID = p.Parent.AgentID
+		v.ParentStepID = p.Parent.StepID
 		v.SessionID = p.Parent.SessionID
 		v.RootSessionID = p.Parent.RootSessionID
 	}

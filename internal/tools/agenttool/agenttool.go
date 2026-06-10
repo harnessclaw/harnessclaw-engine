@@ -18,6 +18,7 @@ import (
 
 	"harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/legacy/sessionstats"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
@@ -106,10 +107,18 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		events = out
 	}
 
-	// 父 session
-	var parentSess types.SessionID
+	// 父身份完整三元组：SessionID + AgentID + StepID(tool_use_id)
+	// 缺任意一项都会让 wire 翻译层把 sub-agent 卡挂到错误的父节点之下。
+	parentRef := &scheduler.ParentRef{}
 	if tuc, ok := tool.GetToolUseContext(ctx); ok {
-		parentSess = types.SessionID(tuc.Core.SessionID)
+		parentRef.SessionID = types.SessionID(tuc.Core.SessionID)
+		parentRef.StepID = tuc.Core.ToolCallID
+	}
+	if sid, ok := sessionstats.SessionIDFromCtx(ctx); ok && sid != "" {
+		parentRef.AgentID = types.AgentID(sid)
+	}
+	if rootSID, ok := sessionstats.RootSessionIDFromCtx(ctx); ok && rootSID != "" {
+		parentRef.RootSessionID = types.SessionID(rootSID)
 	}
 
 	// Inputs：候选 skill 仅 freelancer 使用
@@ -136,7 +145,7 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		Name:        input.Name,
 		Description: input.Description,
 		Hints:       scheduler.Hints{Background: input.RunInBackground},
-		Parent:      &scheduler.ParentRef{SessionID: parentSess},
+		Parent:      parentRef,
 		InvokedBy:   scheduler.Invoker{Kind: scheduler.InvokerLLM, Source: ToolName},
 		Inputs:      inputs,
 		Events:      events,

@@ -35,6 +35,7 @@ import (
 
 	schedpkg "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/legacy/sessionstats"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
@@ -142,10 +143,18 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		), nil
 	}
 
-	// 父 session / event 通道
-	var parentSess types.SessionID
+	// 父身份完整三元组：SessionID + AgentID + StepID(tool_use_id)
+	// 缺 StepID 会让 L2 scheduler 卡错挂到 emma turn 根上而非 emma's scheduler tool_use 下。
+	parentRef := &schedpkg.ParentRef{}
 	if tuc, ok := tool.GetToolUseContext(ctx); ok {
-		parentSess = types.SessionID(tuc.Core.SessionID)
+		parentRef.SessionID = types.SessionID(tuc.Core.SessionID)
+		parentRef.StepID = tuc.Core.ToolCallID
+	}
+	if sid, ok := sessionstats.SessionIDFromCtx(ctx); ok && sid != "" {
+		parentRef.AgentID = types.AgentID(sid)
+	}
+	if rootSID, ok := sessionstats.RootSessionIDFromCtx(ctx); ok && rootSID != "" {
+		parentRef.RootSessionID = types.SessionID(rootSID)
 	}
 	var events chan<- types.EngineEvent
 	if out, ok := tool.GetEventOut(ctx); ok {
@@ -173,9 +182,13 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		Definition:  def,
 		Prompt:      in.Task,
 		Description: defaultDescription(in.Description),
-		Parent:      &schedpkg.ParentRef{SessionID: parentSess},
+		Parent:      parentRef,
 		InvokedBy:   schedpkg.Invoker{Kind: schedpkg.InvokerLLM, Source: ToolName},
 		Events:      events,
+		// L2 coordinator agent 需要更高的 MaxTurns —— 它要先调 1+ 次 freelance/分析工具，
+		// 再做 summary。默认 10 太低（实测一次复杂请求会拆 8-10 个内部步骤就被砍）。
+		// scheduler agent definition 没设 max_turns 时这里兜底 50。
+		Overrides: schedpkg.Overrides{MaxTurns: 50},
 	})
 	if err != nil {
 		t.logger.Error("scheduler spawn failed",

@@ -100,6 +100,7 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 		MaxTurns:        p.Overrides.MaxTurns,
 		ParentSessionID: string(ac.SessionID),
 		ParentAgentID:   string(ac.ParentAgentID),
+		ParentStepID:    ac.ParentStepID,
 		RootSessionID:   string(ac.RootSessionID),
 		TaskID:          string(ac.TaskID),
 		InputPaths:      p.InputPaths,
@@ -158,8 +159,25 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 
 	// 9. Option B 桥：开 channel，goroutine 跑 loop，loop 的 sink 就是 channel
 	events := make(chan pkgtypes.EngineEvent, 64)
+	startedAt := time.Now()
 	go func() {
 		defer close(events)
+
+		// ★ 关键：先发 subagent.start，wire 翻译层据此把后续 token 流归到
+		// 新 sub-agent 名下而非 emma 主 agent。漏发会让 UI 把 L2/L3 输出
+		// 错误归到父级 message card（hierarchy 错乱 + emma 回答 double）。
+		common.EmitSubagentStart(events, common.StartEvent{
+			AgentID:         string(p.AgentID),
+			AgentName:       p.Definition.Name,
+			AgentDesc:       cfg.Description,
+			AgentTask:       p.Prompt,
+			AgentType:       string(p.Definition.AgentType),
+			SubagentType:    cfg.SubagentType,
+			ParentAgentID:   cfg.ParentAgentID,
+			ParentSessionID: cfg.ParentSessionID,
+			ParentStepID:    cfg.ParentStepID,
+		})
+
 		res, rerr := loop.Run(ctx, &loop.Config{
 			Session:             sess,
 			SystemPrompt:        sysPrompt,
@@ -180,14 +198,24 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 			AgentScope:          scope,
 			OnTurnComplete:      common.StopOnEndTurn(),
 		})
+		durationMs := time.Since(startedAt).Milliseconds()
 		if rerr != nil {
-			events <- pkgtypes.EngineEvent{
-				Type: pkgtypes.EngineEventError,
-				Terminal: &pkgtypes.Terminal{
-					Reason:  pkgtypes.TerminalModelError,
-					Message: rerr.Error(),
-				},
+			term := &pkgtypes.Terminal{
+				Reason:  pkgtypes.TerminalModelError,
+				Message: rerr.Error(),
 			}
+			events <- pkgtypes.EngineEvent{Type: pkgtypes.EngineEventError, Terminal: term}
+			// 失败路径也要发 subagent.end，否则 wire 翻译层永远不关 agent 卡
+			common.EmitSubagentEnd(events, common.EndEvent{
+				AgentID:         string(p.AgentID),
+				AgentName:       p.Definition.Name,
+				AgentStatus:     "failed",
+				SubagentType:    cfg.SubagentType,
+				DurationMs:      durationMs,
+				Terminal:        term,
+				ParentAgentID:   cfg.ParentAgentID,
+				ParentSessionID: cfg.ParentSessionID,
+			})
 			return
 		}
 		// 把 loop.Result 的 Terminal / Usage 编码成一帧 EngineEventDone，
@@ -198,8 +226,35 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 		usage := res.Usage
 		termEvt.Usage = &usage
 		events <- termEvt
+
+		// 正常路径 subagent.end —— 关闭 agent 卡，归属回父 agent
+		common.EmitSubagentEnd(events, common.EndEvent{
+			AgentID:         string(p.AgentID),
+			AgentName:       p.Definition.Name,
+			AgentStatus:     statusFromTerminal(res.Terminal),
+			SubagentType:    cfg.SubagentType,
+			DurationMs:      durationMs,
+			Usage:           &usage,
+			Terminal:        &res.Terminal,
+			ParentAgentID:   cfg.ParentAgentID,
+			ParentSessionID: cfg.ParentSessionID,
+		})
 	}()
 	return events, nil
+}
+
+// statusFromTerminal 把 Terminal.Reason 映射到 subagent.end 的 agent_status 字符串。
+func statusFromTerminal(t pkgtypes.Terminal) string {
+	switch t.Reason {
+	case pkgtypes.TerminalCompleted:
+		return "completed"
+	case pkgtypes.TerminalMaxTurns:
+		return "max_turns"
+	case pkgtypes.TerminalAbortedStreaming, pkgtypes.TerminalAbortedTools:
+		return "aborted"
+	default:
+		return "failed"
+	}
 }
 
 // resolveProfile 把 Definition.Profile 字符串解析成 *prompt.AgentProfile。
