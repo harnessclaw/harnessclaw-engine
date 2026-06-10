@@ -2,16 +2,11 @@ package emma
 
 import (
 	"context"
-	"fmt"
-	"time"
-
-	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/channel/emit"
 	"harnessclaw-go/internal/engine/loop"
-	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/engine/loop/toolexec"
+	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
@@ -25,7 +20,6 @@ import (
 // Responsibilities that stay here:
 //   - Build the static system prompt (one-off per ProcessMessage)
 //   - Build the tool pool + ArtifactProducer
-//   - Register / deregister the mailbox for async sub-agent notifications
 //   - Resolve effective MaxTurns
 //   - Wire the four emma hooks + the TurnHook
 //   - Reclassify the LLM-error Terminal Reason when ctx was already
@@ -38,15 +32,6 @@ func (e *Engine) run(
 	approvalFn toolexec.PermissionApprovalFunc,
 ) types.Terminal {
 	cfg := e.config
-
-	// Register a mailbox so async sub-agents can send completion
-	// notifications back. Deregister on exit. The mailbox is read in
-	// emmaMainHook when the LLM produces no tool calls.
-	var mailbox *agent.Mailbox
-	if broker := e.messageBroker; broker != nil {
-		mailbox = broker.Register(sess.ID, "")
-		defer broker.Unregister(sess.ID)
-	}
 
 	// Tool pool: optionally filtered by MainAgentAllowedTools.
 	pool := tool.NewToolPool(e.registry, nil, nil)
@@ -100,7 +85,7 @@ func (e *Engine) run(
 		PermChecker:          e.permChecker,
 		ApprovalFn:           approvalFn,
 		Hooks:                e.emmaHooks(ctx, sess, out, ls, e.provider),
-		OnTurnComplete:       e.emmaMainHook(ctx, sess, mailbox, out),
+		OnTurnComplete:       e.emmaMainHook(),
 	})
 	if err != nil {
 		// loop.Run only returns non-nil error on Config-precondition
@@ -127,61 +112,6 @@ func (e *Engine) run(
 		}
 	}
 	return terminal
-}
-
-// shouldWaitForAsyncAgents returns true if the query loop should block on
-// the mailbox instead of terminating.
-func (e *Engine) shouldWaitForAsyncAgents(sessionID string, mailbox *agent.Mailbox) bool {
-	if mailbox == nil {
-		return false
-	}
-	if e.agentRegistry == nil {
-		return false
-	}
-	return e.agentRegistry.HasRunningForParent(sessionID)
-}
-
-// waitForMailboxMessage blocks until a message arrives on the mailbox or
-// the context is cancelled.
-func (e *Engine) waitForMailboxMessage(
-	ctx context.Context,
-	sessionID string,
-	mailbox *agent.Mailbox,
-	out chan<- types.EngineEvent,
-) *types.Message {
-	_ = out
-	if mailbox == nil {
-		return nil
-	}
-
-	e.logger.Info("waiting for async agent notifications",
-		zap.String("session_id", sessionID),
-	)
-
-	select {
-	case <-ctx.Done():
-		return nil
-	case agentMsg, ok := <-mailbox.Receive():
-		if !ok || agentMsg == nil {
-			return nil
-		}
-		e.logger.Info("received async agent notification",
-			zap.String("session_id", sessionID),
-			zap.String("from", agentMsg.From),
-			zap.String("type", string(agentMsg.Type)),
-		)
-
-		text := fmt.Sprintf("[Agent notification from %s]\n%s", agentMsg.From, agentMsg.Content)
-		msg := &types.Message{
-			Role: types.RoleUser,
-			Content: []types.ContentBlock{{
-				Type: types.ContentTypeText,
-				Text: text,
-			}},
-			CreatedAt: time.Now(),
-		}
-		return msg
-	}
 }
 
 // cumulativeUsageFor returns the running token totals for sessionID by

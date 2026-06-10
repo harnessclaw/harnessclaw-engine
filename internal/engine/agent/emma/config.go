@@ -3,8 +3,8 @@ package emma
 import (
 	"time"
 
-	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/config"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/provider/retry"
@@ -84,7 +84,7 @@ type Config struct {
 
 	// DefRegistry, when non-nil, enables @-mention parsing for routing
 	// user messages to specialized agents.
-	DefRegistry *agent.AgentDefinitionRegistry
+	DefRegistry *definition.Registry
 
 	// SkillReader, when non-nil, enables runtime skill discovery for
 	// search_skill / load_skill tools.

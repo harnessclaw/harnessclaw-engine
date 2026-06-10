@@ -80,7 +80,6 @@ import (
 	"harnessclaw-go/internal/tools/builtin/submittool"
 	"harnessclaw-go/internal/tools/tasktool"
 	"harnessclaw-go/internal/tools/builtin/tavilysearch"
-	"harnessclaw-go/internal/tools/builtin/teamtool"
 	"harnessclaw-go/internal/tools/builtin/unloadskill"
 	"harnessclaw-go/internal/tools/builtin/webfetch"
 	"harnessclaw-go/internal/tools/builtin/websearch"
@@ -466,9 +465,6 @@ func main() {
 	}
 
 	// --- Step 8.5: Initialize multi-agent infrastructure ---
-	agentReg := agent.NewAgentRegistry()
-	broker := agent.NewMessageBroker()
-	teamMgr := agent.NewTeamManager()
 
 	// Initialize task store — prefer SQLite for persistence, fall back to memory.
 	var taskStore task.Store
@@ -560,13 +556,6 @@ func main() {
 	}
 	logger.Info("agent definitions summary", zap.Int("total", len(agentDefReg.All())))
 
-	// Inject multi-agent infrastructure into the engine. (DefRegistry,
-	// SkillReader, StatsRegistry, SessionManager now arrive via
-	// QueryEngineConfig at construction; only the async-mode primitives
-	// remain on post-construction setters.)
-	eng.SetAgentRegistry(agentReg)
-	eng.SetMessageBroker(broker)
-
 	// Register task tools (scoped to a default scope for now).
 	defaultScope := "default"
 	taskTools := []tool.Tool{
@@ -581,15 +570,6 @@ func main() {
 		}
 	}
 	logger.Info("task tools registered", zap.Int("count", len(taskTools)))
-
-	// Register team tools.
-	if err := registry.Register(teamtool.NewCreate(teamMgr, broker, logger)); err != nil {
-		logger.Fatal("failed to register team create tool", zap.Error(err))
-	}
-	if err := registry.Register(teamtool.NewDelete(teamMgr, logger)); err != nil {
-		logger.Fatal("failed to register team delete tool", zap.Error(err))
-	}
-	logger.Info("team tools registered")
 
 	logger.Info("multi-agent infrastructure initialized",
 		zap.Int("agent_definitions", len(agentDefReg.All())),

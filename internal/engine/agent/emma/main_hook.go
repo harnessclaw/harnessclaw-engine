@@ -6,7 +6,6 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/legacy/agent"
 	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/provider"
@@ -149,25 +148,11 @@ func (e *Engine) emmaHooks(
 
 // emmaMainHook is the OnTurnComplete TurnHook. It owns control flow:
 //
-//   - No tool calls → check whether any async sub-agent is still running;
-//     if so, block on the mailbox for a notification and Inject it back.
-//     Otherwise return Terminate{Completed}.
+//   - No tool calls → return Terminate{Completed}.
 //   - Tool calls present → return Decision{} (continue with the next turn).
-//
-// ctx and mailbox are captured by closure.
-func (e *Engine) emmaMainHook(
-	ctx context.Context,
-	sess *session.Session,
-	mailbox *agent.Mailbox,
-	out chan<- types.EngineEvent,
-) loop.TurnHook {
+func (e *Engine) emmaMainHook() loop.TurnHook {
 	return func(snap loop.TurnSnapshot) loop.Decision {
 		if !snap.HadToolCalls {
-			if e.shouldWaitForAsyncAgents(sess.ID, mailbox) {
-				if msg := e.waitForMailboxMessage(ctx, sess.ID, mailbox, out); msg != nil {
-					return loop.Decision{Inject: []types.Message{*msg}}
-				}
-			}
 			return loop.Decision{Terminate: &types.Terminal{
 				Reason:  types.TerminalCompleted,
 				Message: "model finished",

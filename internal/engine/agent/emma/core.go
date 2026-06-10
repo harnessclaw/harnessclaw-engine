@@ -18,9 +18,9 @@ import (
 	schedulerpkg "harnessclaw-go/internal/engine/scheduler"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/permission"
-	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/legacy/agent"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/agent/emma/mention"
+	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/sections"
 	"harnessclaw-go/internal/metric/sessionstats"
@@ -86,9 +86,7 @@ type Engine struct {
 	causeCancels map[string]context.CancelCauseFunc
 
 	// Multi-agent support.
-	agentRegistry *agent.AgentRegistry
-	messageBroker *agent.MessageBroker
-	defRegistry   *agent.AgentDefinitionRegistry
+	defRegistry   *definition.Registry
 	mentionRouter *mention.Router
 
 	// skillReader provides runtime skill discovery for search_skill /
@@ -322,12 +320,6 @@ func (e *Engine) PromptProfile() *prompt.AgentProfile { return e.promptProfile }
 
 // （删）原 Engine.Spawner() 暴露 *spawn.Spawner —— 新架构里调用方走
 // Engine.Scheduler() 拿 scheduler.Scheduler 接口分发。
-
-// SetAgentRegistry configures the agent registry for async agent support.
-func (e *Engine) SetAgentRegistry(reg *agent.AgentRegistry) { e.agentRegistry = reg }
-
-// SetMessageBroker configures the message broker for inter-agent communication.
-func (e *Engine) SetMessageBroker(broker *agent.MessageBroker) { e.messageBroker = broker }
 
 // Start launches background goroutines that require a long-lived context.
 // Must be called once after New, before the first query. ctx should be
