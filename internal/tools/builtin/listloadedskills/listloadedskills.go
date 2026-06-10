@@ -6,7 +6,7 @@ import (
 
 	"go.uber.org/zap"
 	"harnessclaw-go/internal/legacy/sessionstats"
-	"harnessclaw-go/internal/legacy/skill_tracker"
+	"harnessclaw-go/internal/skills/tracker"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )

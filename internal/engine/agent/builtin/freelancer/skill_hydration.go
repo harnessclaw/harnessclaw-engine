@@ -5,7 +5,7 @@ import (
 
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/skills"
-	"harnessclaw-go/internal/legacy/skill_tracker"
+	"harnessclaw-go/internal/skills/tracker"
 )
 
 // hydrateSkills prepares a SkillTracker + augmented prompt for the
