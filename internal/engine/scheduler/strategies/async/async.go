@@ -62,7 +62,10 @@ func (s *Strategy) Spawn(ctx context.Context, p scheduler.SpawnParams, st *sched
 		for evt := range msgs {
 			_ = writer.Append(evt)
 			_ = s.taskMgr.Tick(bgCtx, st.TaskID, evt)
-			if p.Events != nil {
+			// EngineEventDone / EngineEventError 是 sub-agent 自己的终止信号，
+			// 不要 fan-out 给父 —— 否则父的 wire 翻译层会把它当成自己的
+			// turn 结束（详见 sync 策略同位置注释）。
+			if p.Events != nil && evt.Type != pkgtypes.EngineEventDone && evt.Type != pkgtypes.EngineEventError {
 				select {
 				case p.Events <- evt:
 				default: // 慢父订阅者：丢字幕，磁盘流是 source of truth

@@ -85,7 +85,12 @@ func (s *Strategy) Spawn(ctx context.Context, p scheduler.SpawnParams, st *sched
 					},
 				}, nil
 			}
-			if p.Events != nil {
+			// EngineEventDone / EngineEventError 是 sub-agent 自己的终止信号，
+			// SyncStrategy.accumulate 本地消费即可。fan-out 给父事件流会让
+			// 父（emma）的 wire 翻译层把这条 Done 当作父自己的 turn 结束，
+			// 导致 emma 在 dispatch 后续的 LLM 调用被翻译层错开成 turn N+1
+			// （UI 上 emma 的 prelude 和 final summary 落在两个 turn 里）。
+			if p.Events != nil && evt.Type != pkgtypes.EngineEventDone && evt.Type != pkgtypes.EngineEventError {
 				select {
 				case p.Events <- evt:
 				default:
