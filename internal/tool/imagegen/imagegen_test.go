@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -19,6 +20,8 @@ import (
 	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
+
+var _ tool.LongRunningTool = (*Tool)(nil)
 
 type staticConfigSource struct {
 	cfg   config.LLMConfig
@@ -45,6 +48,40 @@ func TestValidateInputRejectsInvalidRequests(t *testing.T) {
 				t.Fatalf("ValidateInput(%s) succeeded, want error", raw)
 			}
 		})
+	}
+}
+
+func TestNewUsesSlowImageGenerationTimeout(t *testing.T) {
+	t.Parallel()
+
+	tr := New(staticConfigSource{}, testRegistry("http://example.test"), t.TempDir(), zap.NewNop())
+
+	if tr.client.Timeout != 5*time.Minute {
+		t.Fatalf("default image generation timeout = %s, want 5m0s", tr.client.Timeout)
+	}
+}
+
+func TestNewUsesSlowTLSHandshakeTimeout(t *testing.T) {
+	t.Parallel()
+
+	tr := New(staticConfigSource{}, testRegistry("http://example.test"), t.TempDir(), zap.NewNop())
+
+	transport, ok := tr.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("default image generation transport = %T, want *http.Transport", tr.client.Transport)
+	}
+	if transport.TLSHandshakeTimeout != time.Minute {
+		t.Fatalf("default image generation TLS handshake timeout = %s, want 1m0s", transport.TLSHandshakeTimeout)
+	}
+}
+
+func TestImageGenerateIsLongRunning(t *testing.T) {
+	t.Parallel()
+
+	tr := New(staticConfigSource{}, testRegistry("http://example.test"), t.TempDir(), zap.NewNop())
+
+	if !tr.IsLongRunning() {
+		t.Fatalf("image_generate must bypass executor timeout and use its own request timeout")
 	}
 }
 
