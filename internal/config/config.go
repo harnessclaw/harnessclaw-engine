@@ -342,17 +342,20 @@ type AgentConfig struct {
 // Separate from cfg.LLM because the async task model and provider
 // abstraction differ from chat routing.
 type VideoGenConfig struct {
-	Providers map[string]VideoProviderConfig `mapstructure:"providers"`
+	Providers map[string]VideoProviderConfig `mapstructure:"providers" json:"providers"`
 }
 
+// json tags: these structs are serialized verbatim by the videogenmgmt
+// GET/PATCH responses — the client contract is snake_case (api_key /
+// base_url / endpoints / model), not Go field names.
 type VideoProviderConfig struct {
-	APIKey    string                         `mapstructure:"api_key"`
-	BaseURL   string                         `mapstructure:"base_url"` // "" → provider default
-	Endpoints map[string]VideoEndpointConfig `mapstructure:"endpoints"`
+	APIKey    string                         `mapstructure:"api_key" json:"api_key"`
+	BaseURL   string                         `mapstructure:"base_url" json:"base_url"` // "" → provider default
+	Endpoints map[string]VideoEndpointConfig `mapstructure:"endpoints" json:"endpoints"`
 }
 
 type VideoEndpointConfig struct {
-	Model string `mapstructure:"model"`
+	Model string `mapstructure:"model" json:"model"`
 }
 
 // ConsoleConfig holds Console management API server settings.

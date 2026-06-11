@@ -24,3 +24,17 @@ func TestUpdateAgent_VideoGenerationRoundTrip(t *testing.T) {
 		t.Fatalf("CurrentAgent().VideoGeneration = %q, want %q", got, v)
 	}
 }
+
+func TestAgentSnapshotIncludesVideoGeneration(t *testing.T) {
+	t.Parallel()
+	fb := newFakeBuilder()
+	m := mustNewManager(t, baseCfg(), baseAgent(), fb)
+
+	v := "doubao:seedance-lite-i2v"
+	if err := m.UpdateAgent(AgentPatch{VideoGeneration: &v}); err != nil {
+		t.Fatalf("UpdateAgent(VideoGeneration) err = %v", err)
+	}
+	if got := m.AgentSnapshot().VideoGeneration; got != v {
+		t.Fatalf("AgentSnapshot().VideoGeneration = %q, want %q", got, v)
+	}
+}

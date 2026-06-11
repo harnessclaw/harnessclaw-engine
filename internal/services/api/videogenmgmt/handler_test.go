@@ -45,6 +45,19 @@ func TestGetVideoGen(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "doubao") {
 		t.Fatalf("GET body missing provider: %s", rr.Body.String())
 	}
+	// Wire contract: the client reads snake_case fields. Go field names
+	// leaking into the JSON (APIKey/Endpoints/Model) means missing json
+	// tags on the config structs and breaks the settings page.
+	for _, want := range []string{`"api_key"`, `"endpoints"`, `"model"`} {
+		if !strings.Contains(rr.Body.String(), want) {
+			t.Fatalf("GET body missing %s (json tags broken?): %s", want, rr.Body.String())
+		}
+	}
+	for _, bad := range []string{`"APIKey"`, `"Endpoints"`, `"Model"`} {
+		if strings.Contains(rr.Body.String(), bad) {
+			t.Fatalf("GET body leaks Go field name %s: %s", bad, rr.Body.String())
+		}
+	}
 }
 
 func TestPatchVideoGenPersistsAndUpdatesSource(t *testing.T) {

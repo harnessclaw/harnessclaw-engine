@@ -66,6 +66,10 @@ type AgentSnapshotPayload struct {
 	// ImageGeneration is the endpoint used by image_generate when no
 	// model selector is supplied. It is not part of chat routing.
 	ImageGeneration string `json:"image_generation,omitempty"`
+	// VideoGeneration is the videogen endpoint used by video_create /
+	// video_query ("provider:endpoint" against cfg.VideoGen). Not part
+	// of chat routing.
+	VideoGeneration string `json:"video_generation,omitempty"`
 	// MaxTokens is the agent-level default response cap.
 	MaxTokens int `json:"max_tokens"`
 	// Temperature is the agent-level default sampling temperature

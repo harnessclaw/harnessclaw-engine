@@ -345,6 +345,7 @@ func (m *Manager) AgentSnapshot() AgentSnapshotPayload {
 		Primary:                m.agent.Primary,
 		FallbackChain:          append([]string(nil), m.agent.FallbackChain...),
 		ImageGeneration:        m.agent.ImageGeneration,
+		VideoGeneration:        m.agent.VideoGeneration,
 		MaxTokens:              m.agent.MaxTokens,
 		Temperature:            m.agent.Temperature,
 		ContextWindow:          m.agent.ContextWindow,
