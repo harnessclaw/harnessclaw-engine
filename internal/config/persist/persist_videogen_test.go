@@ -57,3 +57,25 @@ func TestSetVideoGenRoundTrip(t *testing.T) {
 		t.Fatalf("SetVideoGen clobbered unrelated keys:\n%s", raw)
 	}
 }
+
+func TestSetAgentRoundTripsVideoGeneration(t *testing.T) {
+	t.Parallel()
+	p := writeTmpVG(t, "agent:\n  primary: openai:gpt\n  video_generation: doubao:old\n")
+	f, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetAgent(config.AgentConfig{Primary: "openai:gpt", VideoGeneration: "doubao:seedance-lite-i2v"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Agent.VideoGeneration != "doubao:seedance-lite-i2v" {
+		t.Fatalf("video_generation did not round-trip: %q", reloaded.Agent.VideoGeneration)
+	}
+}
