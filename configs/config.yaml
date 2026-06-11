@@ -66,11 +66,11 @@ llm:
                     group: claude4.6
             type: anthropic
             base_url: http://one.iflytek.com/api/llm/console/chat
-            api_key: sk-u83qwdv79YmAyXdzWjQ7b9Um9rwgmzDE1M4q0raYBPdYZlQ0
+            api_key: "" # 通过 configs/config_self.yaml 或环境变量注入，不要提交真实凭证
         deepseek:
             type: openai
             base_url: https://api.deepseek.com
-            api_key: sk-2d69f63cd5184f058994019e81cfd3bc
+            api_key: "" # 通过 configs/config_self.yaml 或环境变量注入，不要提交真实凭证
             #    deepseek:
             #      type: openai
             #      base_url: "https://api.deepseek.com"
