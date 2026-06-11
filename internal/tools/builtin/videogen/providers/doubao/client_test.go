@@ -78,3 +78,49 @@ func TestQueryParsesResponse(t *testing.T) {
 		t.Fatalf("parsed resp wrong: %+v", resp)
 	}
 }
+
+func TestSubmitBodyWireImagePrecedence(t *testing.T) {
+	t.Parallel()
+	// both given → image_url wins
+	w := arkSubmitBody{Prompt: "p", ImageURL: "u", ImageB64: "data:b64"}.wire()
+	gotImg := ""
+	for _, c := range w.Content {
+		if c.Type == "image_url" && c.ImageURL != nil {
+			gotImg = c.ImageURL.URL
+		}
+	}
+	if gotImg != "u" {
+		t.Fatalf("both given: expected image_url to win, got %q", gotImg)
+	}
+	// only b64 → b64 used
+	w2 := arkSubmitBody{Prompt: "p", ImageB64: "data:b64"}.wire()
+	gotImg2 := ""
+	for _, c := range w2.Content {
+		if c.Type == "image_url" && c.ImageURL != nil {
+			gotImg2 = c.ImageURL.URL
+		}
+	}
+	if gotImg2 != "data:b64" {
+		t.Fatalf("b64-only: expected b64 url, got %q", gotImg2)
+	}
+	// neither → no image content item, text only
+	w3 := arkSubmitBody{Prompt: "p"}.wire()
+	for _, c := range w3.Content {
+		if c.Type == "image_url" {
+			t.Fatal("no image given: should have no image_url content item")
+		}
+	}
+}
+
+func TestQueryMalformedBodyIsError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html>not json</html>`)) // 200 + garbage
+	}))
+	defer srv.Close()
+	c := newClient(nil)
+	_, _, err := c.query(context.Background(), creds{apiKey: "x", baseURL: srv.URL}, "cgt-1")
+	if err == nil {
+		t.Fatal("malformed 2xx body must return an error (treated as transient), not a nil-error empty result")
+	}
+}

@@ -70,3 +70,30 @@ func TestPatchVideoGenPersistsAndUpdatesSource(t *testing.T) {
 		t.Fatalf("envelope code = %v", resp["code"])
 	}
 }
+
+func TestPatchPreservesEndpointsOnApiKeyOnlyPatch(t *testing.T) {
+	t.Parallel()
+	h, src, _ := newHandler(t, config.VideoGenConfig{
+		Providers: map[string]config.VideoProviderConfig{
+			"doubao": {APIKey: "old", BaseURL: "https://b", Endpoints: map[string]config.VideoEndpointConfig{"seedance-lite-i2v": {Model: "m1"}}},
+		},
+	})
+	body := `{"providers":{"doubao":{"api_key":"new"}}}` // only api_key, no endpoints
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/videogen", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PATCH code = %d body=%s", rr.Code, rr.Body.String())
+	}
+	snap := src.Snapshot()
+	p := snap.Providers["doubao"]
+	if p.APIKey != "new" {
+		t.Fatalf("api_key not updated: %q", p.APIKey)
+	}
+	if p.Endpoints["seedance-lite-i2v"].Model != "m1" {
+		t.Fatalf("endpoints should be preserved on api_key-only patch, got %+v", p.Endpoints)
+	}
+	if p.BaseURL != "https://b" {
+		t.Fatalf("base_url should be preserved, got %q", p.BaseURL)
+	}
+}

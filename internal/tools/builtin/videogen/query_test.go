@@ -3,6 +3,7 @@ package videogen
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -141,5 +142,33 @@ func TestQueryIsLongRunning(t *testing.T) {
 	q, _, _ := newQueryFixture(t, p)
 	if !q.IsLongRunning() {
 		t.Fatal("query must be long-running")
+	}
+}
+
+type dlFailProvider struct {
+	scriptedProvider
+}
+
+func (d *dlFailProvider) DownloadVideo(_ context.Context, _ string) ([]byte, string, error) {
+	return nil, "", errors.New("network down")
+}
+
+func TestQuerySucceededButDownloadFails(t *testing.T) {
+	t.Parallel()
+	p := &dlFailProvider{scriptedProvider: scriptedProvider{stubProvider: stubProvider{name: "doubao"}, statuses: []TaskStatus{StatusSucceeded}}}
+	q, root, sid := newQueryFixture(t, p)
+	var vt time.Time
+	q.now = func() time.Time { return vt }
+	q.sleep = func(d time.Duration) { vt = vt.Add(d) }
+	ctx, _ := queryCtx(t, root, sid)
+	res, _ := q.Execute(ctx, json.RawMessage(`{"task_id":"cgt-dl","timeout_s":5}`))
+	if res.Metadata["status"] != "succeeded" {
+		t.Fatalf("expected succeeded with fallback, got %+v", res.Metadata)
+	}
+	if res.Metadata["video_path"] != nil {
+		t.Fatalf("download failed: should have no video_path, got %v", res.Metadata["video_path"])
+	}
+	if res.Metadata["video_url_original"] != "https://tos/video.mp4" || res.Metadata["download_error"] == nil {
+		t.Fatalf("expected url fallback + download_error, got %+v", res.Metadata)
 	}
 }

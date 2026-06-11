@@ -191,6 +191,9 @@ func (t *VideoQueryTool) queryWithRetry(ctx context.Context, provider VideoProvi
 			return nil, err // non-retryable
 		}
 		if attempt < len(backoffs) {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			t.sleep(backoffs[attempt])
 		}
 	}
@@ -257,6 +260,9 @@ func (t *VideoQueryTool) downloadWithRetry(ctx context.Context, provider VideoPr
 		}
 		lastErr = err
 		if attempt < len(backoffs) {
+			if ctx.Err() != nil {
+				return nil, "", ctx.Err()
+			}
 			t.sleep(backoffs[attempt])
 		}
 	}

@@ -160,9 +160,12 @@ func (c *client) query(ctx context.Context, cr creds, taskID string) (*arkQueryR
 	data, _ := io.ReadAll(resp.Body)
 
 	var parsed arkQueryResponse
-	_ = json.Unmarshal(data, &parsed)
+	uerr := json.Unmarshal(data, &parsed)
 	if resp.StatusCode >= 400 {
 		return &parsed, resp.StatusCode, arkHTTPError(resp.StatusCode, parsed.Error, data)
+	}
+	if uerr != nil {
+		return nil, resp.StatusCode, fmt.Errorf("doubao: malformed query response (status %d): %w", resp.StatusCode, uerr)
 	}
 	return &parsed, resp.StatusCode, nil
 }
