@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"harnessclaw-go/internal/agent"
 	"harnessclaw-go/internal/workspace"
 )
 
@@ -18,7 +17,7 @@ import (
 // Idempotent (MkdirAll). No-op when rootDir / RootSessionID / TaskID
 // is missing — callers that don't know their per-task slot get the
 // session-level bootstrap from scheduler.Run's EnsureSession.
-func EnsureTaskDir(cfg *agent.SpawnConfig, rootDir string) error {
+func EnsureTaskDir(cfg *SpawnConfig, rootDir string) error {
 	if cfg == nil || rootDir == "" || cfg.RootSessionID == "" || cfg.TaskID == "" {
 		return nil
 	}
@@ -40,7 +39,7 @@ func EnsureTaskDir(cfg *agent.SpawnConfig, rootDir string) error {
 // machine-parseable schema. meta.json (written via meta_write) remains
 // the durable source of truth for task identity / output paths; this
 // is a navigation hint only.
-func WorkspacePrelude(cfg *agent.SpawnConfig, rootDir string) string {
+func WorkspacePrelude(cfg *SpawnConfig, rootDir string) string {
 	if cfg == nil || rootDir == "" || cfg.RootSessionID == "" {
 		return ""
 	}
@@ -67,7 +66,7 @@ func WorkspacePrelude(cfg *agent.SpawnConfig, rootDir string) string {
 
 // SeedPrompt returns the full text to use as the first user message:
 // WorkspacePrelude (if available) followed by cfg.Prompt.
-func SeedPrompt(cfg *agent.SpawnConfig, rootDir string) string {
+func SeedPrompt(cfg *SpawnConfig, rootDir string) string {
 	prelude := WorkspacePrelude(cfg, rootDir)
 	if prelude == "" {
 		return cfg.Prompt
@@ -85,8 +84,8 @@ func SeedPrompt(cfg *agent.SpawnConfig, rootDir string) string {
 // Tier modules call this right before returning their SpawnResult, so
 // the file list reaches the parent via BuildFailureContent and the
 // parent LLM has a chance to resume rather than restart. See
-// agent.SpawnResult.ResidualFiles docstring for the recovery rationale.
-func ScanResidualFiles(cfg *agent.SpawnConfig, rootDir string) []agent.ResidualFile {
+// SpawnResult.ResidualFiles docstring for the recovery rationale.
+func ScanResidualFiles(cfg *SpawnConfig, rootDir string) []ResidualFile {
 	if cfg == nil || rootDir == "" || cfg.RootSessionID == "" || cfg.TaskID == "" {
 		return nil
 	}
@@ -95,7 +94,7 @@ func ScanResidualFiles(cfg *agent.SpawnConfig, rootDir string) []agent.ResidualF
 	if err != nil {
 		return nil
 	}
-	out := make([]agent.ResidualFile, 0, len(entries))
+	out := make([]ResidualFile, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -104,7 +103,7 @@ func ScanResidualFiles(cfg *agent.SpawnConfig, rootDir string) []agent.ResidualF
 		if err != nil {
 			continue
 		}
-		out = append(out, agent.ResidualFile{
+		out = append(out, ResidualFile{
 			Path:      dir + string(os.PathSeparator) + e.Name(),
 			SizeBytes: info.Size(),
 		})

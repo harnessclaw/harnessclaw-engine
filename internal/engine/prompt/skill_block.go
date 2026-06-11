@@ -3,7 +3,7 @@ package prompt
 import (
 	"strings"
 
-	"harnessclaw-go/internal/skill"
+	"harnessclaw-go/internal/skills"
 )
 
 // BuildLoadedSkillsBlock renders the <loaded-skills> XML container that

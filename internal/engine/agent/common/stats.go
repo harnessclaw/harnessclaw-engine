@@ -3,7 +3,7 @@ package common
 import (
 	"context"
 
-	"harnessclaw-go/internal/engine/sessionstats"
+	"harnessclaw-go/internal/metric/sessionstats"
 )
 
 // WithSubAgentStats injects the four stats ctx keys a sub-agent needs

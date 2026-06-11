@@ -4,78 +4,92 @@
 
 # --- Server ---
 server:
-  host: "0.0.0.0"
-  port: 8080
-
+    host: "0.0.0.0"
+    port: 8080
 # --- Logging ---
 log:
-  level: "info"          # debug, info, warn, error
-  format: "console"      # json, console
-  output: "stdout"       # stdout, file
-  # file_path: "/var/log/harnessclaw-engine/service.log"
-
+    level: "info" # debug, info, warn, error
+    format: "console" # json, console
+    output: "stdout" # stdout, file
+    # file_path: "/var/log/harnessclaw-engine/service.log"
 # --- LLM (nested: providers (credentials) → endpoints (model bindings)) ---
 llm:
-  max_retries: 3
-  api_timeout: "900s"
-  # First-byte watchdog: max wait between Chat() returning and the first
-  # stream chunk. Disarms once any chunk arrives.
-  first_byte_timeout: "120s"
-  # Default response cap inherited by endpoints that omit max_tokens.
-  default_max_tokens: 8192
-  # proxy_url: "http://proxy:8888"
-  # custom_headers:
-  #   X-Custom: "value"
+    max_retries: 3
+    api_timeout: "900s"
+    # First-byte watchdog: max wait between Chat() returning and the first
+    # stream chunk. Disarms once any chunk arrives.
+    first_byte_timeout: "120s"
+    # Default response cap inherited by endpoints that omit max_tokens.
+    default_max_tokens: 8192
+    # proxy_url: "http://proxy:8888"
+    # custom_headers:
+    #   X-Custom: "value"
 
-  # ---------------------------------------------------------------------------
-  # 一层: providers — 厂商凭证 (一个厂商一组 key + base_url)
-  # ---------------------------------------------------------------------------
-  # 每个 provider entry = 一组 API 凭证, 可被多个 endpoint 复用。
-  # 改 api_key 一次, 所有 endpoint 自动用新凭证 (PATCH /api/v1/providers/{p}
-  # 触发热生效)。
-  #
-  # 字段:
-  #   type:      bifrost 后端协议。允许值: openai / anthropic
-  #   base_url:  凭证对应的 HTTP endpoint
-  #   api_key:   凭证
-  #   endpoints: 嵌套的 endpoint map (每个绑一个 model)
-  #
-  # OpenAI-compatible 厂商 (DeepSeek / Kimi / GLM / MiniMax / 讯飞 / 通义)
-  # 都用 type=openai, 改 base_url 区分。
-  providers:
-    anthropic:
-      type: anthropic
-      base_url: "https://api.anthropic.com"
-      api_key: "sk-ant-xxxxxxxxxxxxxxxx"
-      endpoints:
-        # 同一组凭证下挂多个 endpoint, 每个绑一个 model
-        claude-46:
-          model: claude-sonnet-4-6
-          max_tokens: 16384
-        claude-45:
-          model: claude-sonnet-4-5
-          max_tokens: 16384
-        claude-haiku:
-          model: claude-3-5-haiku
-          # max_tokens 省略时继承 default_max_tokens (8192)
-          # group 为可选自由文本，仅供客户端模型列表分组渲染用；
-          # 引擎不参与路由/failover，留空 = 未分组。
-          # group: "Claude-3"
+    # ---------------------------------------------------------------------------
+    # 一层: providers — 厂商凭证 (一个厂商一组 key + base_url)
+    # ---------------------------------------------------------------------------
+    # 每个 provider entry = 一组 API 凭证, 可被多个 endpoint 复用。
+    # 改 api_key 一次, 所有 endpoint 自动用新凭证 (PATCH /api/v1/providers/{p}
+    # 触发热生效)。
+    #
+    # 字段:
+    #   type:      bifrost 后端协议。允许值: openai / anthropic
+    #   base_url:  凭证对应的 HTTP endpoint
+    #   api_key:   凭证
+    #   endpoints: 嵌套的 endpoint map (每个绑一个 model)
+    #
+    # OpenAI-compatible 厂商 (DeepSeek / Kimi / GLM / MiniMax / 讯飞 / 通义)
+    # 都用 type=openai, 改 base_url 区分。
+    providers:
+        anthropic:
+            endpoints:
+                # 同一组凭证下挂多个 endpoint, 每个绑一个 model
+                claude-46:
+                    model: claude-sonnet-4-6
+                    max_tokens: 16384
+                claude-45:
+                    model: claude-sonnet-4-5
+                    max_tokens: 16384
+                claude-haiku:
+                    model: claude-3-5-haiku
+                    # max_tokens 省略时继承 default_max_tokens (8192)
+                    # group 为可选自由文本，仅供客户端模型列表分组渲染用；
+                    # 引擎不参与路由/failover，留空 = 未分组。
+                    # group: "Claude-3"
+                claude-sonnet-4-6:
+                    model: claude-sonnet-4-6
+                    max_tokens: 8192
+                    model_type:
+                        - vision
+                        - reasoning
+                        - tools
+                    group: claude4.6
+            type: anthropic
+            base_url: http://one.iflytek.com/api/llm/console/chat
+            api_key: sk-u83qwdv79YmAyXdzWjQ7b9Um9rwgmzDE1M4q0raYBPdYZlQ0
+        deepseek:
+            type: openai
+            base_url: https://api.deepseek.com
+            api_key: sk-2d69f63cd5184f058994019e81cfd3bc
+            #    deepseek:
+            #      type: openai
+            #      base_url: "https://api.deepseek.com"
+            #      api_key: "your-deepseek-key"
+            #      endpoints:
+            #        deepseek-flash:
+            #          model: deepseek-v4-flash
+            #          max_tokens: 100000
+            #          enable_thinking: false   # DeepSeek 思考模式关掉省 token
+            #        deepseek-reasoner:
+            #          model: deepseek-reasoner
+            #          max_tokens: 32768
+            #          enable_thinking: true
 
-#    deepseek:
-#      type: openai
-#      base_url: "https://api.deepseek.com"
-#      api_key: "your-deepseek-key"
-#      endpoints:
-#        deepseek-flash:
-#          model: deepseek-v4-flash
-#          max_tokens: 100000
-#          enable_thinking: false   # DeepSeek 思考模式关掉省 token
-#        deepseek-reasoner:
-#          model: deepseek-reasoner
-#          max_tokens: 32768
-#          enable_thinking: true
-
+            endpoints:
+                deepseek-v4-pro:
+                    model: deepseek-v4-pro
+                    max_tokens: 8192
+                    group: deepseek-v4
 #    kimi:
 #      type: openai
 #      base_url: "https://api.moonshot.cn/v1"
@@ -101,24 +115,24 @@ llm:
 #          model: gpt-5-turbo
 #          max_tokens: 4096
 
-  # ---------------------------------------------------------------------------
-  # Health: Failover 健康检查与降级行为调优 (全部可省略, 用默认值)
-  # ---------------------------------------------------------------------------
-  # health:
-  #   cooldown_base:    "30s"     # 首次 trip 的冷却
-  #   cooldown_max:     "10m"     # 冷却上限
-  #   cooldown_factor:  2          # 连续 trip 的冷却倍率
-  #   primary_budget:        "15s"  # Fast — 主 healthy 时 (有备可切, 激进快切)
-  #   last_healthy_budget:   "30s"  # Medium — 最后一个 healthy 或 Tier 3 兜底
-  #   probe_budget:          "5s"   # Probe — 探活 (冷却已过的 trip endpoint)
-  #
-  # 设计要点:
-  #   - "主 budget 15s" 是 Failover 层面给主的调用上限——超过 15s 视为失败、
-  #     切到备。LLM 正常请求首字节 1-5s, 15s 给单次抖动留了余量; 如果主总是
-  #     慢, 把 primary_budget 调到 30s 或更大。
-  #   - 单 endpoint 部署 (agent.primary 设, fallback_chain 留空) 也走这套但
-  #     直接进 retry 路径, 失败即上抛, 等价于现有 retry。
-  #   - 健康状态全部通过真实请求驱动 (被动); 没有后台拨测, 零额外 token。
+# ---------------------------------------------------------------------------
+# Health: Failover 健康检查与降级行为调优 (全部可省略, 用默认值)
+# ---------------------------------------------------------------------------
+# health:
+#   cooldown_base:    "30s"     # 首次 trip 的冷却
+#   cooldown_max:     "10m"     # 冷却上限
+#   cooldown_factor:  2          # 连续 trip 的冷却倍率
+#   primary_budget:        "15s"  # Fast — 主 healthy 时 (有备可切, 激进快切)
+#   last_healthy_budget:   "30s"  # Medium — 最后一个 healthy 或 Tier 3 兜底
+#   probe_budget:          "5s"   # Probe — 探活 (冷却已过的 trip endpoint)
+#
+# 设计要点:
+#   - "主 budget 15s" 是 Failover 层面给主的调用上限——超过 15s 视为失败、
+#     切到备。LLM 正常请求首字节 1-5s, 15s 给单次抖动留了余量; 如果主总是
+#     慢, 把 primary_budget 调到 30s 或更大。
+#   - 单 endpoint 部署 (agent.primary 设, fallback_chain 留空) 也走这套但
+#     直接进 retry 路径, 失败即上抛, 等价于现有 retry。
+#   - 健康状态全部通过真实请求驱动 (被动); 没有后台拨测, 零额外 token。
 
 # ---------------------------------------------------------------------------
 # Agent — 整个 agent 应用的 LLM 路由 + 共享调用参数
@@ -165,124 +179,108 @@ llm:
 #                        OpenAI o-series → reasoning_effort;Anthropic → 推理 token 预算;
 #                        DeepSeek → enable_thinking
 agent:
-  primary: "anthropic:claude-46"
-  fallback_chain:
-    - "anthropic:claude-45"
-    - "anthropic:claude-haiku"
-#    - "deepseek:deepseek-flash"
-#    - "kimi:kimi-k2"
-#    - "glm:glm-4"
-#    - "openai-official:gpt-5"
-#  max_tokens: 16384
-#  temperature: 0.7
-#  context_window: 200000
-  max_turns: 50
+    primary: anthropic:claude-sonnet-4-6
+    max_turns: 50
 #  max_tool_calls: 0          # 0 = 不限
 #  thinking_intensity: "medium"
 
 # --- Query Engine ---
 engine:
-  auto_compact_threshold: 0.8
-  tool_timeout: "120s"
-
+    auto_compact_threshold: 0.8
+    tool_timeout: "120s"
 # --- Session ---
 session:
-  max_messages: 200
-  idle_timeout: "30m"
-
+    max_messages: 200
+    idle_timeout: "30m"
 # --- Channels ---
 channels:
-  websocket:
-    enabled: true
-    host: "0.0.0.0"
-    port: 8081
-    path: "/v1/ws"
-    write_buffer: 256
-    ping_interval: "30s"
-    write_timeout: "10s"
-    max_message_size: 524288   # 512KB
-    # client_tools sets the DEFAULT routing for tools that don't opt in
-    # to a specific side. Per-tool overrides (e.g. AskUserQuestion always
-    # client, regardless of this flag) take precedence — see
-    # internal/tool.ClientRoutedTool.
-    #
-    #   true  — delegate-everything mode (Claude Code CLI style: client
-    #           runs Bash/Edit/Read/etc.). Pick this when your client
-    #           knows how to execute every registered tool.
-    #   false — server-runs-everything mode (web UI style: server has API
-    #           keys for WebSearch, spawns sub-agents, etc.). The client
-    #           still receives tool.call for tools marked client-routed
-    #           (AskUserQuestion). This is the right setting for emma's
-    #           web UI.
-    client_tools: false
-    # trace_frames toggles a per-outgoing-frame INFO log line capturing
-    # type / card_kind / card_id / parent / seq / status / error. Off in
-    # production (this flag generates one line per wire frame — 80-200
-    # per plan run); flip on while debugging "step never closes" /
-    # "card lineage wrong" UI issues, then grep "ws send" service.log.
-    trace_frames: false
-  http:
-    enabled: true
-    host: "0.0.0.0"
-    port: 8080
-    path: "/api/v1"
-  feishu:
-    enabled: false
-    host: "0.0.0.0"
-    port: 8082
-    # app_id: ""
-    # app_secret: ""
-
+    websocket:
+        enabled: true
+        host: "0.0.0.0"
+        port: 8081
+        path: "/v1/ws"
+        write_buffer: 256
+        ping_interval: "30s"
+        write_timeout: "10s"
+        max_message_size: 524288 # 512KB
+        # client_tools sets the DEFAULT routing for tools that don't opt in
+        # to a specific side. Per-tool overrides (e.g. AskUserQuestion always
+        # client, regardless of this flag) take precedence — see
+        # internal/tool.ClientRoutedTool.
+        #
+        #   true  — delegate-everything mode (Claude Code CLI style: client
+        #           runs Bash/Edit/Read/etc.). Pick this when your client
+        #           knows how to execute every registered tool.
+        #   false — server-runs-everything mode (web UI style: server has API
+        #           keys for WebSearch, spawns sub-agents, etc.). The client
+        #           still receives tool.call for tools marked client-routed
+        #           (AskUserQuestion). This is the right setting for emma's
+        #           web UI.
+        client_tools: false
+        # trace_frames toggles a per-outgoing-frame INFO log line capturing
+        # type / card_kind / card_id / parent / seq / status / error. Off in
+        # production (this flag generates one line per wire frame — 80-200
+        # per plan run); flip on while debugging "step never closes" /
+        # "card lineage wrong" UI issues, then grep "ws send" service.log.
+        trace_frames: false
+    http:
+        enabled: true
+        host: "0.0.0.0"
+        port: 8080
+        path: "/api/v1"
+    feishu:
+        enabled: false
+        host: "0.0.0.0"
+        port: 8082
+        # app_id: ""
+        # app_secret: ""
 # --- Tools ---
 tools:
-  bash:
-    enabled: true
-    timeout: "60s"
-    sandbox: false
-  file_read:
-    enabled: true
-  file_edit:
-    enabled: true
-  file_write:
-    enabled: true
-  grep:
-    enabled: true
-  glob:
-    enabled: true
-  web_fetch:
-    enabled: true
-  web_search:
+    bash:
+        enabled: true
+        timeout: "60s"
+        sandbox: false
+    file_read:
+        enabled: true
+    file_edit:
+        enabled: true
+    file_write:
+        enabled: true
+    grep:
+        enabled: true
+    glob:
+        enabled: true
+    web_fetch:
+        enabled: true
+    web_search:
     # enabled: true
     # api_key: ""    # iFly v2/search APIPassword — get from https://console.xfyun.cn/services/aggSearch
     # limit: 5
-
-  tavily_search:
-    enabled: false
-    api_key: ""          # set via CLAUDE_TOOLS_TAVILY_SEARCH_API_KEY or config_self.yaml
-    # max_results: 5
-  browser_agent:
-    enabled: true
-    default_visibility: "hidden"
-    max_steps: 30
-    blocked_domains: []
-    human_takeover_timeout: "120s"
-    session_persistence: true
-    cli_timeout: "25s"
-    skill_max_bytes: 200000
-    content_boundaries: true
-    max_output_bytes: 50000
-    allowed_domains: []
-    action_policy_path: ""
-    confirm_actions: []
-
+    tavily_search:
+        enabled: false
+        api_key: "" # set via CLAUDE_TOOLS_TAVILY_SEARCH_API_KEY or config_self.yaml
+        # max_results: 5
+    browser_agent:
+        enabled: true
+        default_visibility: "hidden"
+        max_steps: 30
+        blocked_domains: []
+        human_takeover_timeout: "120s"
+        session_persistence: true
+        cli_timeout: "25s"
+        skill_max_bytes: 200000
+        content_boundaries: true
+        max_output_bytes: 50000
+        allowed_domains: []
+        action_policy_path: ""
+        confirm_actions: []
 # --- Agents ---
 # Project-level agent definitions loaded from YAML files at startup.
 # YAML is authoritative: edits take effect on next restart (no recompile).
 # Each directory is scanned for *.yaml / *.yml agent definition files.
 agents:
-  dirs:
-    - "configs/agents"
-
+    dirs:
+        - "configs/agents"
 # --- Skills ---
 # Skills are loaded from the directories listed below, in order.
 # Earlier directories have higher priority on name conflicts.
@@ -290,17 +288,15 @@ agents:
 #   - skill-name/SKILL.md  (directory format)
 # Default: ~/.harnessclaw/workspace/skills/ (when dirs is null or empty)
 skills:
-  dirs:
+    dirs:
     # - "~/.harnessclaw/workspace/skills/"
-
 # --- Console Management API ---
 console:
-  enabled: true
-  host: "0.0.0.0"
-  port: 8090
-
+    enabled: true
+    host: "0.0.0.0"
+    port: 8090
 # --- Permission ---
 permission:
-  mode: "default"        # default, plan, bypass, acceptEdits, dontAsk
-  allowed_tools: []
-  denied_tools: []
+    mode: "default" # default, plan, bypass, acceptEdits, dontAsk
+    allowed_tools: []
+    denied_tools: []

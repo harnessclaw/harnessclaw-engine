@@ -3,11 +3,10 @@ package common
 import (
 	"testing"
 
-	"harnessclaw-go/internal/agent"
 )
 
 func TestBuildAgentScope_FullCfg(t *testing.T) {
-	cfg := &agent.SpawnConfig{
+	cfg := &SpawnConfig{
 		RootSessionID: "sess-1",
 		TaskID:        "t-3",
 		SubagentType:  "freelancer",
@@ -25,7 +24,7 @@ func TestBuildAgentScope_FullCfg(t *testing.T) {
 }
 
 func TestBuildAgentScope_FallbackAgent(t *testing.T) {
-	cfg := &agent.SpawnConfig{
+	cfg := &SpawnConfig{
 		RootSessionID: "sess-1",
 		SubagentType:  "", // empty → use fallback
 	}
@@ -52,7 +51,7 @@ func TestBuildAgentScope_EmptyRootDirOrSessionID(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &agent.SpawnConfig{RootSessionID: tc.sessID, SubagentType: "x"}
+			cfg := &SpawnConfig{RootSessionID: tc.sessID, SubagentType: "x"}
 			scope := BuildAgentScope(cfg, tc.rootDir, "x")
 			if scope.SessionRoot != "" {
 				t.Errorf("SessionRoot = %q, want empty", scope.SessionRoot)

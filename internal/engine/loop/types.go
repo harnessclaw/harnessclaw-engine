@@ -13,11 +13,11 @@ import (
 
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/engine/toolexec"
-	"harnessclaw-go/internal/permission"
+	"harnessclaw-go/internal/engine/loop/toolexec"
+	"harnessclaw-go/internal/engine/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -43,6 +43,12 @@ type Config struct {
 	MaxTokens     int
 	ContextWindow int
 	ToolTimeout   time.Duration
+
+	// AutoCompactThreshold is the ratio of ContextWindow at which the
+	// Compactor (when set) triggers. Zero means "use the loop default"
+	// (0.8). Tier modules with their own token-pressure profile (e.g. L1
+	// emma running long-lived sessions) override it via Config.
+	AutoCompactThreshold float64
 
 	// LLMAPITimeout caps the wall-clock duration of one LLM Chat call
 	// (full request → terminal stream chunk). Zero leaves the watchdog
@@ -95,12 +101,73 @@ type Config struct {
 	// telling the loop whether to stop or to inject extra messages
 	// before the next LLM call. Required.
 	OnTurnComplete TurnHook
+
+	// Hooks are optional per-turn observation callbacks. All fields are
+	// nil-able; nil means "skip this phase". Hooks are observation-only
+	// — they cannot influence control flow. Control flow stays in
+	// OnTurnComplete.
+	//
+	// Sub-agent (L3) callers leave this zero. Main-agent (L1) callers
+	// use it to drive UI events (MessageStart/MessageDelta/MessageStop/
+	// NextRoundThinking) and diagnostic logging (ctx.Cause on LLM error).
+	Hooks Hooks
+}
+
+// Hooks bundles the optional per-phase observation callbacks the loop
+// fires while driving a turn. All fields nil-default. Each hook captures
+// its own context via closure; the loop does not pass ctx as a parameter.
+type Hooks struct {
+	// OnTurnStart fires at the start of each turn, after the ctx
+	// liveness check but before auto-compact. Use for "I'm about to
+	// start work" markers (e.g. emma's EngineEventMessageStart).
+	OnTurnStart func(turn int)
+
+	// OnLLMResponse fires after a successful LLM stream completes and
+	// the assistant message has been appended to the session, but
+	// BEFORE tool dispatch begins. Use for "the model spoke, here's
+	// what it said" events (e.g. emma's MessageDelta + MessageStop).
+	OnLLMResponse func(turn int, snap LLMResponseSnapshot)
+
+	// OnLLMError fires when the LLM call fails (nil result or
+	// StreamErr). The loop returns immediately after this hook returns
+	// — the hook cannot recover the turn, only observe. Use for
+	// terminal error events + ctx.Cause diagnostic logging.
+	OnLLMError func(turn int, err error)
+
+	// OnToolsDispatched fires after tool dispatch completes, but only
+	// when at least one tool was called this turn. Fires before
+	// OnTurnComplete. Use for inter-round signalling (e.g. emma's
+	// NextRoundThinking event).
+	OnToolsDispatched func(turn int, calls []types.ToolCall, results []types.ToolResult)
+}
+
+// LLMResponseSnapshot is what the loop hands to Hooks.OnLLMResponse. It
+// exposes the fields a tier module typically needs to render
+// post-response UI events without re-deriving them from session state.
+type LLMResponseSnapshot struct {
+	AssistantMsg types.Message
+	StopReason   string
+	LastUsage    *types.Usage // this turn's raw usage (NOT cumulative)
+	Reasoning    string
+}
+
+// TurnSnapshot is the read-only view of a finished turn that the loop
+// passes to TurnHook. Combines the inputs of the old multi-parameter
+// signature plus stopReason/lastUsage/hasToolCalls so hooks can express
+// continuation logic without re-deriving them.
+type TurnSnapshot struct {
+	Turn         int
+	AssistantMsg types.Message
+	ToolResults  []types.ToolResult
+	StopReason   string
+	LastUsage    *types.Usage // this turn's raw usage (NOT cumulative)
+	HadToolCalls bool
 }
 
 // TurnHook is the per-turn callback the loop invokes after each LLM
 // round + tool execution. Implementations may hold state (retry
 // counters, contract trackers, etc.) via closure or method receiver.
-type TurnHook func(turn int, assistantMsg types.Message, toolResults []types.ToolResult) Decision
+type TurnHook func(snap TurnSnapshot) Decision
 
 // Decision is the value returned by TurnHook. Exactly one of Terminate
 // being non-nil OR Inject being non-empty is the typical case; both nil

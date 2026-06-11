@@ -58,3 +58,8 @@ docs/design/*
 
 # Debug
 __debug_bin*
+
+# agent 生成的临时输出文件
+tasks/essay_ai_workplace/
+格子间里的*.txt
+格子间里的*.docx

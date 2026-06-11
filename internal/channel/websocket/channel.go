@@ -26,14 +26,14 @@ import (
 
 	"harnessclaw-go/internal/channel"
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/toolphrase"
-	emitv2 "harnessclaw-go/internal/emit/v2"
-	"harnessclaw-go/internal/engine/humanloop"
-	"harnessclaw-go/internal/engine/wait"
+	"harnessclaw-go/internal/channel/websocket/internal/toolphrase"
+	emitv2 "harnessclaw-go/internal/channel/emit/v2"
+	"harnessclaw-go/internal/humanloop"
+	"harnessclaw-go/internal/humanloop/wait"
 	"harnessclaw-go/pkg/types"
 )
 
-// Channel is the v2.2 WebSocket channel. Implements channel.Channel.
+// Channel is the v2.2 WebSocket Duplex adapter. Implements channel.Duplex.
 type Channel struct {
 	cfg    config.WSChannelConfig
 	logger *zap.Logger
@@ -55,8 +55,16 @@ type Channel struct {
 	prompter *humanloop.Prompter
 	resumer  wait.Resumer
 
-	handler channel.MessageHandler // engine inbound dispatch (set by Start)
-	healthy atomic.Bool
+	// messages is the inbound channel exposed by Duplex.Messages.
+	// Every user.message / tool.result / permission.response /
+	// plan.response / step_decision frame read on a conn is enqueued
+	// here; the consumer (typically the router goroutine in main.go)
+	// drains it via for-range. Capacity 128 absorbs short bursts so a
+	// slow consumer doesn't backpressure the conn read loop.
+	messages chan *types.IncomingMessage
+
+	healthy   atomic.Bool
+	closeOnce sync.Once
 
 	connCtx  context.Context
 	connCanc context.CancelFunc
@@ -85,6 +93,7 @@ func New(cfg config.WSChannelConfig, _ func(context.Context, string) error, logg
 		translator: NewTranslator(picker),
 		sequencer:  emitv2.NewSequencer(),
 		tracker:    emitv2.NewTracker(emitv2.TrackerConfig{CheckEvery: time.Second}),
+		messages:   make(chan *types.IncomingMessage, 128),
 	}
 }
 
@@ -117,10 +126,10 @@ func (c *Channel) Health() error {
 	return fmt.Errorf("websocket channel not healthy")
 }
 
-// Start implements channel.Channel. Boots the HTTP listener, binds the
-// upgrade handler, and blocks until ctx is cancelled.
-func (c *Channel) Start(ctx context.Context, handler channel.MessageHandler) error {
-	c.handler = handler
+// Start implements channel.Channel — non-blocking. Boots the HTTP
+// listener and returns. Server exit errors are surfaced via the logger;
+// the caller drives shutdown via ctx.Done() or Close().
+func (c *Channel) Start(ctx context.Context) error {
 	c.connCtx, c.connCanc = context.WithCancel(ctx)
 	c.tracker.Start()
 
@@ -135,59 +144,88 @@ func (c *Channel) Start(ctx context.Context, handler channel.MessageHandler) err
 		zap.String("addr", addr),
 	)
 
-	errCh := make(chan error, 1)
 	go func() {
 		if err := c.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- err
+			c.logger.Error("websocket server exited", zap.Error(err))
 		}
 	}()
 
-	select {
-	case <-ctx.Done():
-		return c.Stop(context.Background())
-	case err := <-errCh:
-		return fmt.Errorf("websocket server error: %w", err)
-	}
-}
-
-// Stop implements channel.Channel.
-func (c *Channel) Stop(ctx context.Context) error {
-	c.healthy.Store(false)
-	if c.connCanc != nil {
-		c.connCanc()
-	}
-	c.tracker.Stop()
-	c.registry.closeAll()
-	if c.server != nil {
-		return c.server.Shutdown(ctx)
-	}
 	return nil
 }
 
-// Send implements channel.Channel — non-streaming pre-assembled message.
-// Emits a one-shot turn → message → close on the session's Emitter.
-func (c *Channel) Send(_ context.Context, sessionID string, msg *types.Message) error {
+// Messages implements channel.Inbound. Returns the inbound channel,
+// which is closed by Close().
+func (c *Channel) Messages() <-chan *types.IncomingMessage { return c.messages }
+
+// Close implements channel.Channel — graceful shutdown. Stops the HTTP
+// server, drains live connections, and closes the messages channel so
+// for-range consumers exit. Idempotent: safe to call more than once.
+func (c *Channel) Close() error {
+	var err error
+	c.closeOnce.Do(func() {
+		c.healthy.Store(false)
+		if c.connCanc != nil {
+			c.connCanc()
+		}
+		c.tracker.Stop()
+		c.registry.closeAll()
+		close(c.messages)
+		if c.server != nil {
+			err = c.server.Shutdown(context.Background())
+		}
+	})
+	return err
+}
+
+// Reply implements channel.Replier. Drains Outbound.Stream until the
+// caller closes it, then processes Final. Stream and Final can each be
+// supplied independently or together.
+func (c *Channel) Reply(ctx context.Context, sessionID string, msg channel.Outbound) error {
 	em := c.emitterFor(sessionID)
 	if em == nil {
+		// No Emitter for this session (the connection already
+		// dropped) — drain Stream to unblock the producer.
+		if msg.Stream != nil {
+			for range msg.Stream {
+			}
+		}
 		return nil
 	}
-	turnID := emitv2.NewCardID(emitv2.CardTurn)
-	msgID := emitv2.NewCardID(emitv2.CardMessage)
-	em.Card(emitv2.CardTurn, turnID).Add(emitv2.TurnPayload{TurnNo: 1})
-	em.Card(emitv2.CardMessage, msgID).Add(emitv2.MessagePayload{Role: string(msg.Role)},
-		emitv2.WithParent(turnID))
-	for _, cb := range msg.Content {
-		if cb.Text != "" {
-			em.Card(emitv2.CardMessage, msgID).Append(emitv2.ChannelText, cb.Text)
+
+	if msg.Stream != nil {
+		for evt := range msg.Stream {
+			evt := evt
+			c.translator.Translate(em, sessionID, &evt)
 		}
 	}
-	em.Card(emitv2.CardMessage, msgID).Close(emitv2.StatusOK)
-	em.Card(emitv2.CardTurn, turnID).Close(emitv2.StatusOK)
+
+	if msg.Final != nil {
+		turnID := emitv2.NewCardID(emitv2.CardTurn)
+		msgID := emitv2.NewCardID(emitv2.CardMessage)
+		em.Card(emitv2.CardTurn, turnID).Add(emitv2.TurnPayload{TurnNo: 1})
+		em.Card(emitv2.CardMessage, msgID).Add(
+			emitv2.MessagePayload{Role: string(msg.Final.Role)},
+			emitv2.WithParent(turnID),
+		)
+		for _, cb := range msg.Final.Content {
+			if cb.Text != "" {
+				em.Card(emitv2.CardMessage, msgID).Append(emitv2.ChannelText, cb.Text)
+			}
+		}
+		em.Card(emitv2.CardMessage, msgID).Close(emitv2.StatusOK)
+		em.Card(emitv2.CardTurn, turnID).Close(emitv2.StatusOK)
+	}
+
 	return nil
 }
 
-// SendEvent implements channel.Channel — primary streaming path.
-// Translates v1 EngineEvent → v2.2 Builder calls.
+// SendEvent is a test / internal helper that pushes a single
+// EngineEvent to a session's Emitter. Production code should use
+// Reply(ctx, sessionID, Outbound{Stream: ...}) instead.
+//
+// Deprecated: not part of the channel.Duplex contract; retained only so
+// channel_test.go / recovery_test.go can inject single events directly
+// for behavioral assertions.
 func (c *Channel) SendEvent(_ context.Context, sessionID string, event *types.EngineEvent) error {
 	em := c.emitterFor(sessionID)
 	if em == nil {
@@ -195,6 +233,27 @@ func (c *Channel) SendEvent(_ context.Context, sessionID string, event *types.En
 	}
 	c.translator.Translate(em, sessionID, event)
 	return nil
+}
+
+// Stop is an alias for Close kept around so existing test code that
+// uses the old name keeps compiling.
+//
+// Deprecated: use Close() instead.
+func (c *Channel) Stop(_ context.Context) error { return c.Close() }
+
+// publish is called by conn to enqueue an inbound frame into the
+// messages channel. Returns an error if the channel is full or the
+// context is cancelled; the caller decides whether to surface the
+// error back to the client.
+func (c *Channel) publish(ctx context.Context, in *types.IncomingMessage) error {
+	select {
+	case c.messages <- in:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.connCtx.Done():
+		return c.connCtx.Err()
+	}
 }
 
 // emitterFor returns the Emitter bound to the first connection of

@@ -4,8 +4,8 @@ import (
 	"math/rand"
 	"testing"
 
-	emitv2 "harnessclaw-go/internal/emit/v2"
-	"harnessclaw-go/internal/toolphrase"
+	emitv2 "harnessclaw-go/internal/channel/emit/v2"
+	"harnessclaw-go/internal/channel/websocket/internal/toolphrase"
 	"harnessclaw-go/pkg/types"
 )
 

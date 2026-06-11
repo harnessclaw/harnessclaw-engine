@@ -15,9 +15,9 @@ import (
 	"nhooyr.io/websocket"
 
 	"harnessclaw-go/internal/config"
-	"harnessclaw-go/internal/engine/humanloop"
-	"harnessclaw-go/internal/engine/wait"
-	"harnessclaw-go/internal/storage/sqlite"
+	"harnessclaw-go/internal/humanloop"
+	"harnessclaw-go/internal/humanloop/wait"
+	"harnessclaw-go/internal/persistence/sqlite"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -76,12 +76,20 @@ func startRecoveryChannel(t *testing.T, dbPath string, handler func(ctx context.
 	ch.translator.SetIssuer(p)
 
 	// Boot the in-process bits Start() would set up.
-	ch.handler = handler
 	ctx, cancel := context.WithCancel(context.Background())
 	ch.connCtx = ctx
 	ch.connCanc = cancel
 	ch.tracker.Start()
 	ch.healthy.Store(true)
+
+	// Stand-in for the old push-style handler: spawn a goroutine that
+	// drains messages and invokes handler, mimicking the router's
+	// role, so existing tests don't need to change.
+	go func() {
+		for msg := range ch.messages {
+			_ = handler(ctx, msg)
+		}
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(cfg.Path, ch.upgrade)

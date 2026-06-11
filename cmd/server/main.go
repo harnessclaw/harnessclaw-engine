@@ -28,63 +28,63 @@ import (
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/api"
-	"harnessclaw-go/internal/api/agentcapabilities"
-	"harnessclaw-go/internal/api/modelsregistry"
-	"harnessclaw-go/internal/api/providersmgmt"
-	"harnessclaw-go/internal/api/sessionmetrics"
-	"harnessclaw-go/internal/api/toolsmgmt"
+	"harnessclaw-go/internal/services/api"
+	"harnessclaw-go/internal/services/api/agentcapabilities"
+	"harnessclaw-go/internal/services/api/agentmgmt"
+	"harnessclaw-go/internal/services/api/modelsregistry"
+	"harnessclaw-go/internal/services/api/providersmgmt"
+	"harnessclaw-go/internal/services/api/sessionmetrics"
+	"harnessclaw-go/internal/services/api/toolsmgmt"
 	"harnessclaw-go/internal/channel"
 	wsch "harnessclaw-go/internal/channel/websocket"
-	"harnessclaw-go/internal/command"
+	"harnessclaw-go/internal/commands"
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine/compact"
-	"harnessclaw-go/internal/engine/emma"
-	"harnessclaw-go/internal/engine/emma/resume"
-	"harnessclaw-go/internal/engine/humanloop"
+	browseragentdef "harnessclaw-go/internal/engine/agent/builtin/browser_agent"
+	"harnessclaw-go/internal/engine/agent/definition"
+	"harnessclaw-go/internal/engine/agent/emma"
+	"harnessclaw-go/internal/engine/agent/emma/resume"
+	"harnessclaw-go/internal/humanloop"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/engine/sessionstats"
-	"harnessclaw-go/internal/permission"
+	"harnessclaw-go/internal/metric/sessionstats"
+	"harnessclaw-go/internal/engine/permission"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/bifrost"
 	"harnessclaw-go/internal/provider/failover"
 	"harnessclaw-go/internal/provider/manager"
 	modelregistry "harnessclaw-go/internal/provider/registry"
 	providerstats "harnessclaw-go/internal/provider/stats"
-	"harnessclaw-go/internal/router"
-	"harnessclaw-go/internal/router/middleware"
-	"harnessclaw-go/internal/skill"
-	sqlitesess "harnessclaw-go/internal/storage/sqlite"
-	"harnessclaw-go/internal/task"
-	"harnessclaw-go/internal/tool"
-	"harnessclaw-go/internal/tool/agenttool"
-	"harnessclaw-go/internal/tool/askuserquestion"
-	"harnessclaw-go/internal/tool/bash"
-	browsertools "harnessclaw-go/internal/tool/browser"
-	"harnessclaw-go/internal/tool/browseragent"
-	"harnessclaw-go/internal/tool/fileedit"
-	"harnessclaw-go/internal/tool/fileread"
-	"harnessclaw-go/internal/tool/filewrite"
-	"harnessclaw-go/internal/tool/glob"
-	"harnessclaw-go/internal/tool/grep"
-	"harnessclaw-go/internal/tool/imagegen"
-	"harnessclaw-go/internal/tool/listloadedskills"
-	"harnessclaw-go/internal/tool/loadskill"
-	"harnessclaw-go/internal/tool/metatool"
-	orchestratetool "harnessclaw-go/internal/tool/orchestrate"
-	"harnessclaw-go/internal/tool/plantool"
-	"harnessclaw-go/internal/tool/promotetool"
-	"harnessclaw-go/internal/tool/scheduler"
-	"harnessclaw-go/internal/tool/searchskill"
-	"harnessclaw-go/internal/tool/skilltool"
-	"harnessclaw-go/internal/tool/submittool"
-	"harnessclaw-go/internal/tool/tasktool"
-	"harnessclaw-go/internal/tool/tavilysearch"
-	"harnessclaw-go/internal/tool/teamtool"
-	"harnessclaw-go/internal/tool/unloadskill"
-	"harnessclaw-go/internal/tool/webfetch"
-	"harnessclaw-go/internal/tool/websearch"
+	"harnessclaw-go/internal/services/api/router"
+	"harnessclaw-go/internal/services/api/router/middleware"
+	"harnessclaw-go/internal/skills"
+	sqlitesess "harnessclaw-go/internal/persistence/sqlite"
+	"harnessclaw-go/internal/tasks"
+	"harnessclaw-go/internal/tools"
+	"harnessclaw-go/internal/tools/agenttool"
+	"harnessclaw-go/internal/tools/builtin/askuserquestion"
+	"harnessclaw-go/internal/tools/builtin/bash"
+	browsertools "harnessclaw-go/internal/tools/builtin/browser"
+	"harnessclaw-go/internal/tools/builtin/browseragent"
+	"harnessclaw-go/internal/tools/builtin/fileedit"
+	"harnessclaw-go/internal/tools/builtin/fileread"
+	"harnessclaw-go/internal/tools/builtin/filewrite"
+	"harnessclaw-go/internal/tools/builtin/glob"
+	"harnessclaw-go/internal/tools/builtin/grep"
+	"harnessclaw-go/internal/tools/builtin/imagegen"
+	"harnessclaw-go/internal/tools/builtin/listloadedskills"
+	"harnessclaw-go/internal/tools/builtin/loadskill"
+	"harnessclaw-go/internal/tools/builtin/metatool"
+	"harnessclaw-go/internal/tools/builtin/plantool"
+	"harnessclaw-go/internal/tools/builtin/promotetool"
+	"harnessclaw-go/internal/tools/builtin/scheduler"
+	"harnessclaw-go/internal/tools/builtin/searchskill"
+	"harnessclaw-go/internal/tools/builtin/skilltool"
+	"harnessclaw-go/internal/tools/builtin/submittool"
+	"harnessclaw-go/internal/tools/tasktool"
+	"harnessclaw-go/internal/tools/builtin/tavilysearch"
+	"harnessclaw-go/internal/tools/builtin/unloadskill"
+	"harnessclaw-go/internal/tools/builtin/webfetch"
+	"harnessclaw-go/internal/tools/builtin/websearch"
 	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
@@ -386,7 +386,7 @@ func main() {
 	// injected into the engine at construction. Population (SQLite sync,
 	// YAML sync, LoadAllToRegistry) happens further below; the engine
 	// holds a pointer, so writes through agentDefReg are visible to it.
-	agentDefReg := agent.NewAgentDefinitionRegistry()
+	agentDefReg := definition.NewRegistry()
 
 	// L2 (worker / sub-agent) settings live on emma.Config directly.
 	// emma settings (profile, restricted tool palette, small loop) are
@@ -451,7 +451,10 @@ func main() {
 	// the L2 scheduler, which declares "task" in its AgentDefinition.AllowedTools
 	// and bypasses the AgentType blacklist (see internal/engine/subagent.go
 	// filter logic).
-	if err := registry.Register(agenttool.New(eng.Spawner(), logger)); err != nil {
+	// 所有 tool 通过 emma 的 eng.Scheduler() 拿 scheduler.Scheduler 接口分发；
+	// agentrun.Runner 已删（过渡期遗留的 schedulerCoord 仍在 emma 内部并存，
+	// 见 PR-4 删除清单）。
+	if err := registry.Register(agenttool.New(eng.Scheduler(), agentDefReg, logger)); err != nil {
 		logger.Fatal("failed to register task tool", zap.Error(err))
 	}
 	logger.Info("task tool registered")
@@ -459,21 +462,18 @@ func main() {
 	// Register scheduler tool — the L1→L2 dispatch entry point. emma sees
 	// this tool as her single delegation channel; the scheduler itself spawns
 	// L3 sub-agents internally via the task tool above.
-	if err := registry.Register(scheduler.New(eng.Spawner(), logger)); err != nil {
+	if err := registry.Register(scheduler.New(eng.Scheduler(), agentDefReg, logger)); err != nil {
 		logger.Fatal("failed to register scheduler tool", zap.Error(err))
 	}
 	logger.Info("scheduler tool registered")
 	if cfg.Tools.BrowserAgent.Enabled {
-		if err := registry.Register(browseragent.New(eng.Spawner(), cfg.Tools.BrowserAgent, logger)); err != nil {
+		if err := registry.Register(browseragent.New(eng.Scheduler(), cfg.Tools.BrowserAgent, logger)); err != nil {
 			logger.Fatal("failed to register browser agent tool", zap.Error(err))
 		}
 		logger.Info("browser agent tool registered")
 	}
 
 	// --- Step 8.5: Initialize multi-agent infrastructure ---
-	agentReg := agent.NewAgentRegistry()
-	broker := agent.NewMessageBroker()
-	teamMgr := agent.NewTeamManager()
 
 	// Initialize task store — prefer SQLite for persistence, fall back to memory.
 	var taskStore task.Store
@@ -495,14 +495,14 @@ func main() {
 	// registry (agentDefReg) was constructed earlier and injected into
 	// engCfg; the lines below populate it via SQLite + YAML sync.
 	agentDefDBPath := defaultDBPath("agent_definitions.db")
-	agentDefStore, err := agent.NewSQLiteAgentStore(agentDefDBPath)
+	agentDefStore, err := agentmgmt.NewSQLiteAgentStore(agentDefDBPath)
 	if err != nil {
 		logger.Fatal("failed to initialize agent definition store", zap.Error(err))
 	}
 	defer agentDefStore.Close()
 	logger.Info("agent definition store initialized", zap.String("path", agentDefDBPath))
 
-	agentSvc := agent.NewAgentService(agentDefStore, agentDefReg, logger)
+	agentSvc := agentmgmt.NewAgentService(agentDefStore, agentDefReg, logger)
 
 	// Pre-tier-system binaries persisted builtins into SQLite; those
 	// stale rows now overwrite the in-code RegisterBuiltins() entries
@@ -534,7 +534,7 @@ func main() {
 		logger.Warn("failed to load agent definitions to registry", zap.Error(err))
 	}
 	if cfg.Tools.BrowserAgent.Enabled {
-		if err := agentDefReg.Register(agent.BrowserAgentDefinition()); err != nil {
+		if err := agentDefReg.Register(browseragentdef.BrowserAgentDefinition()); err != nil {
 			logger.Fatal("failed to register browser-agent definition", zap.Error(err))
 		}
 	}
@@ -565,23 +565,6 @@ func main() {
 	}
 	logger.Info("agent definitions summary", zap.Int("total", len(agentDefReg.All())))
 
-	// Register Orchestrate tool (Phase-2 multi-step coordinator).
-	// The roster combines built-in profile names with all loaded agent
-	// definitions; it is queried per Execute() call so newly-registered
-	// definitions are picked up automatically.
-	orchestrateRoster := &agentDefRoster{reg: agentDefReg}
-	if err := registry.Register(orchestratetool.New(eng.Spawner(), orchestrateRoster, logger)); err != nil {
-		logger.Fatal("failed to register orchestrate tool", zap.Error(err))
-	}
-	logger.Info("orchestrate tool registered")
-
-	// Inject multi-agent infrastructure into the engine. (DefRegistry,
-	// SkillReader, StatsRegistry, SessionManager now arrive via
-	// QueryEngineConfig at construction; only the async-mode primitives
-	// remain on post-construction setters.)
-	eng.SetAgentRegistry(agentReg)
-	eng.SetMessageBroker(broker)
-
 	// Register task tools (scoped to a default scope for now).
 	defaultScope := "default"
 	taskTools := []tool.Tool{
@@ -597,22 +580,13 @@ func main() {
 	}
 	logger.Info("task tools registered", zap.Int("count", len(taskTools)))
 
-	// Register team tools.
-	if err := registry.Register(teamtool.NewCreate(teamMgr, broker, logger)); err != nil {
-		logger.Fatal("failed to register team create tool", zap.Error(err))
-	}
-	if err := registry.Register(teamtool.NewDelete(teamMgr, logger)); err != nil {
-		logger.Fatal("failed to register team delete tool", zap.Error(err))
-	}
-	logger.Info("team tools registered")
-
 	logger.Info("multi-agent infrastructure initialized",
 		zap.Int("agent_definitions", len(agentDefReg.All())),
 	)
 
 	// --- Step 9: Build router with middleware chain ---
 	middlewares := buildMiddlewareChain(cfg, logger)
-	channels := make(map[string]channel.Channel)
+	channels := make(map[string]channel.Duplex)
 
 	// The router talks to L1 — that is the only user-facing engine.
 	// L2 sub-agents are reached only indirectly via Agent/Orchestrate tools.
@@ -675,10 +649,24 @@ func main() {
 	eng.Start(channelCtx)
 	channelErrCh := make(chan error, len(channels))
 	for name, ch := range channels {
-		go func(n string, c channel.Channel) {
-			if err := c.Start(channelCtx, rtr.Handle); err != nil {
-				logger.Error("channel exited with error", zap.String("channel", n), zap.Error(err))
-				channelErrCh <- fmt.Errorf("channel %s: %w", n, err)
+		// Start the channel (non-blocking) and dispatch incoming
+		// messages to the router. router.Handle already emits error
+		// events (emitInvalidInput / emitUnsupportedModality) back to
+		// the channel, so this site only logs as a fallback.
+		if err := ch.Start(channelCtx); err != nil {
+			logger.Error("channel failed to start", zap.String("channel", name), zap.Error(err))
+			channelErrCh <- fmt.Errorf("channel %s: %w", name, err)
+			continue
+		}
+		go func(n string, c channel.Duplex) {
+			for msg := range c.Messages() {
+				if err := rtr.Handle(channelCtx, msg); err != nil {
+					logger.Error("router handle failed",
+						zap.String("channel", n),
+						zap.String("session_id", msg.SessionID),
+						zap.Error(err),
+					)
+				}
 			}
 		}(name, ch)
 	}
@@ -774,13 +762,14 @@ func main() {
 	var wg sync.WaitGroup
 	for _, ch := range channels {
 		wg.Add(1)
-		go func(c channel.Channel) {
+		go func(c channel.Duplex) {
 			defer wg.Done()
-			if err := c.Stop(shutdownCtx); err != nil {
-				logger.Error("channel stop error", zap.String("channel", c.Name()), zap.Error(err))
+			if err := c.Close(); err != nil {
+				logger.Error("channel close error", zap.String("channel", c.Name()), zap.Error(err))
 			}
 		}(ch)
 	}
+	_ = shutdownCtx // keep the deadline ctx around; Close() doesn't take one, http.Shutdown is driven internally
 	wg.Wait()
 	logger.Info("channels stopped")
 
@@ -1211,48 +1200,6 @@ func defaultDBPath(name string) string {
 		return filepath.Join(".harnessclaw", "db", name)
 	}
 	return filepath.Join(home, ".harnessclaw", "db", name)
-}
-
-// agentDefRoster adapts the agent definition registry to the Orchestrate
-// tool's AgentRoster interface. It also includes built-in profile names so
-// the Planner can route to non-team profiles like Plan / worker.
-type agentDefRoster struct {
-	reg *agent.AgentDefinitionRegistry
-}
-
-// builtInRosterAgents are the always-available profile names the Planner
-// may target, in addition to agent definitions registered at runtime.
-var builtInRosterAgents = []string{
-	"plan",
-	"worker",
-}
-
-func (r *agentDefRoster) AvailableSubagentTypes() []string {
-	seen := make(map[string]bool)
-	out := make([]string, 0, 16)
-	add := func(name string) {
-		if name == "" || seen[name] {
-			return
-		}
-		seen[name] = true
-		out = append(out, name)
-	}
-	for _, n := range builtInRosterAgents {
-		add(n)
-	}
-	if r.reg != nil {
-		for _, name := range r.reg.Names() {
-			add(name)
-		}
-	}
-	return out
-}
-
-func (r *agentDefRoster) ListForPlanner() []agent.PlannerListing {
-	if r.reg == nil {
-		return nil
-	}
-	return r.reg.ListForPlanner()
 }
 
 // routerModelInfoBridge adapts provider.Manager + model registry to the

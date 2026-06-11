@@ -15,23 +15,6 @@ func TestSession_AllowedToolLifecycle(t *testing.T) {
 	}
 }
 
-func TestSession_PromptCacheRoundtrip(t *testing.T) {
-	s := &Session{}
-	if s.PromptCache() != nil {
-		t.Error("fresh session PromptCache is non-nil")
-	}
-	entry := &PromptCacheEntry{Prompt: "hello"}
-	s.SetPromptCache(entry)
-	got := s.PromptCache()
-	if got == nil || got.Prompt != "hello" {
-		t.Errorf("PromptCache roundtrip failed; got %#v", got)
-	}
-	s.SetPromptCache(nil)
-	if s.PromptCache() != nil {
-		t.Error("SetPromptCache(nil) did not clear the cache")
-	}
-}
-
 func TestSession_AllowedTools_List(t *testing.T) {
 	s := &Session{}
 	if got := s.AllowedTools(); got != nil {

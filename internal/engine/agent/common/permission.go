@@ -2,7 +2,7 @@ package common
 
 import (
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/permission"
+	"harnessclaw-go/internal/engine/permission"
 )
 
 // BuildInheritedChecker returns a permission.Checker that inherits the

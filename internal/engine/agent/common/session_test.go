@@ -9,7 +9,7 @@ import (
 
 	"harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/storage/memory"
+	"harnessclaw-go/internal/memory"
 )
 
 func TestBuildSubSession_IDConvention(t *testing.T) {

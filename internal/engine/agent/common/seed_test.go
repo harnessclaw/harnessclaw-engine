@@ -5,11 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"harnessclaw-go/internal/agent"
 )
 
 func TestSeedPrompt_NoRootDir_ReturnsPromptVerbatim(t *testing.T) {
-	cfg := &agent.SpawnConfig{Prompt: "do work"}
+	cfg := &SpawnConfig{Prompt: "do work"}
 	got := SeedPrompt(cfg, "")
 	if got != "do work" {
 		t.Errorf("got %q, want verbatim prompt", got)
@@ -17,7 +16,7 @@ func TestSeedPrompt_NoRootDir_ReturnsPromptVerbatim(t *testing.T) {
 }
 
 func TestSeedPrompt_NoSession_ReturnsPromptVerbatim(t *testing.T) {
-	cfg := &agent.SpawnConfig{Prompt: "do work"}
+	cfg := &SpawnConfig{Prompt: "do work"}
 	got := SeedPrompt(cfg, "/tmp/ws")
 	if got != "do work" {
 		t.Errorf("got %q, want verbatim prompt (no session id)", got)
@@ -25,7 +24,7 @@ func TestSeedPrompt_NoSession_ReturnsPromptVerbatim(t *testing.T) {
 }
 
 func TestSeedPrompt_WithTaskID_InjectsTaskDir(t *testing.T) {
-	cfg := &agent.SpawnConfig{
+	cfg := &SpawnConfig{
 		Prompt:        "write a report",
 		RootSessionID: "sess_xyz",
 		TaskID:        "t-7",
@@ -44,7 +43,7 @@ func TestSeedPrompt_WithTaskID_InjectsTaskDir(t *testing.T) {
 }
 
 func TestSeedPrompt_NoTaskID_FallsBackToSessionRoot(t *testing.T) {
-	cfg := &agent.SpawnConfig{
+	cfg := &SpawnConfig{
 		Prompt:        "explore",
 		RootSessionID: "sess_xyz",
 	}
@@ -65,7 +64,7 @@ func TestSeedPrompt_NoTaskID_FallsBackToSessionRoot(t *testing.T) {
 // LLM ever sees the SeedPrompt that advertises it.
 func TestEnsureTaskDir_CreatesPerTaskDir(t *testing.T) {
 	rootDir := t.TempDir()
-	cfg := &agent.SpawnConfig{
+	cfg := &SpawnConfig{
 		RootSessionID: "sess_xyz",
 		TaskID:        "t-42",
 	}
@@ -84,7 +83,7 @@ func TestEnsureTaskDir_CreatesPerTaskDir(t *testing.T) {
 
 func TestScanResidualFiles_ListsFilesNonRecursive(t *testing.T) {
 	rootDir := t.TempDir()
-	cfg := &agent.SpawnConfig{RootSessionID: "s1", TaskID: "t1"}
+	cfg := &SpawnConfig{RootSessionID: "s1", TaskID: "t1"}
 	if err := EnsureTaskDir(cfg, rootDir); err != nil {
 		t.Fatalf("EnsureTaskDir: %v", err)
 	}
@@ -130,18 +129,18 @@ func TestScanResidualFiles_NilOnEmptyOrMissing(t *testing.T) {
 	if got := ScanResidualFiles(nil, rootDir); got != nil {
 		t.Errorf("nil cfg should yield nil, got %+v", got)
 	}
-	if got := ScanResidualFiles(&agent.SpawnConfig{}, rootDir); got != nil {
+	if got := ScanResidualFiles(&SpawnConfig{}, rootDir); got != nil {
 		t.Errorf("empty cfg should yield nil, got %+v", got)
 	}
 	// Existing dir but empty → nil (not empty slice — keeps the failure
 	// summary from rendering an empty section).
-	cfg := &agent.SpawnConfig{RootSessionID: "s2", TaskID: "t2"}
+	cfg := &SpawnConfig{RootSessionID: "s2", TaskID: "t2"}
 	_ = EnsureTaskDir(cfg, rootDir)
 	if got := ScanResidualFiles(cfg, rootDir); got != nil {
 		t.Errorf("empty dir should yield nil, got %+v", got)
 	}
 	// Dir that was never created → nil (best-effort, no error).
-	if got := ScanResidualFiles(&agent.SpawnConfig{RootSessionID: "nope", TaskID: "nope"}, rootDir); got != nil {
+	if got := ScanResidualFiles(&SpawnConfig{RootSessionID: "nope", TaskID: "nope"}, rootDir); got != nil {
 		t.Errorf("missing dir should yield nil, got %+v", got)
 	}
 }
@@ -150,11 +149,11 @@ func TestEnsureTaskDir_NoOpOnMissingFields(t *testing.T) {
 	rootDir := t.TempDir()
 	tests := []struct {
 		name string
-		cfg  *agent.SpawnConfig
+		cfg  *SpawnConfig
 	}{
 		{"nil cfg", nil},
-		{"empty rootSession", &agent.SpawnConfig{TaskID: "t-1"}},
-		{"empty taskID", &agent.SpawnConfig{RootSessionID: "s"}},
+		{"empty rootSession", &SpawnConfig{TaskID: "t-1"}},
+		{"empty taskID", &SpawnConfig{RootSessionID: "s"}},
 	}
 	for _, c := range tests {
 		t.Run(c.name, func(t *testing.T) {

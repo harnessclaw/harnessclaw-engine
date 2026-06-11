@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"harnessclaw-go/internal/engine/agent/common"
-	"harnessclaw-go/internal/engine/sessionstats"
+	"harnessclaw-go/internal/metric/sessionstats"
 )
 
 func TestWithSubAgentStats_AllKeysPresent(t *testing.T) {

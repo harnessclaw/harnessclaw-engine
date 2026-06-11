@@ -97,32 +97,8 @@ var (
 		},
 	}
 
-	// SchedulerProfile is the L2 coordinator. emma calls the scheduler
-	// tool which spawns this profile via SpawnSync. The scheduler agent
-	// runs its own LLM loop, using the freelance tool to dispatch L3
-	// agents (freelancer, whose capability comes from runtime-loaded
-	// user skills). It needs the team table + skills section to pick
-	// candidate_skills for each dispatch.
-	SchedulerProfile = &AgentProfile{
-		Name:        "scheduler",
-		Description: "L2 coordinator — plan / dispatch / integrate / check",
-		Sections: []string{
-			"currentdate",
-			"role",
-			"team", // scheduler needs to see the L3 roster to dispatch correctly
-			"skills", // user-installed skills: scheduler picks candidate_skills for freelancer
-			"principles",
-			"tools",
-			"env",
-		},
-		ExcludeSections: []string{
-			"memory", // user prefs are emma's concern, not scheduler's
-		},
-		SectionOverrides: map[string]string{
-			"role":       texts.SchedulerRole,
-			"principles": principles.Principles(principles.RoleScheduler),
-		},
-	}
+	// 注：旧 SchedulerProfile (L2 coordinator) 已删 ——
+	// emma 的 scheduler tool 不再起 L2 LLM agent，直接派 L3 freelancer。
 
 	// PlannerProfile is the internal Phase-2 task decomposer used by the
 	// orchestrate tool. It is NOT part of emma's roster — emma never calls
@@ -237,7 +213,6 @@ var (
 func GetBuiltInProfiles() map[string]*AgentProfile {
 	return map[string]*AgentProfile{
 		"emma":                EmmaProfile,
-		"scheduler":           SchedulerProfile,
 		"explore":             ExploreProfile,
 		"plan":                PlanProfile,
 		"planner":             PlannerProfile,
@@ -343,7 +318,6 @@ func ResolveProfileByName(name string) *AgentProfile {
 //
 // Mapping:
 //
-//	"scheduler" (L2)              → SchedulerProfile
 //	"explore" / "researcher"      → ExploreProfile (L3)
 //	"plan"                        → PlanProfile (L3)
 //	"planner" (legacy)            → PlannerProfile
@@ -353,8 +327,6 @@ func ResolveProfileByName(name string) *AgentProfile {
 //	everything else               → WorkerProfile (L3 default)
 func ResolveProfileBySubagentType(subagentType string) *AgentProfile {
 	switch subagentType {
-	case "scheduler":
-		return SchedulerProfile
 	case "explore", "researcher":
 		return ExploreProfile
 	case "plan":

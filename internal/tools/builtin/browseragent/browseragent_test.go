@@ -1,0 +1,219 @@
+package browseragent
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"go.uber.org/zap"
+
+	"harnessclaw-go/internal/config"
+	"harnessclaw-go/internal/engine/agent/builtin/browser_agent"
+	"harnessclaw-go/internal/engine/scheduler"
+	"harnessclaw-go/internal/tools"
+	"harnessclaw-go/pkg/types"
+)
+
+// fakeScheduler 记录最近一次 Dispatch 的 SpawnParams，用于断言 browser_agent
+// 把哪些字段传给了新 scheduler。
+type fakeScheduler struct {
+	params *scheduler.SpawnParams
+}
+
+func (s *fakeScheduler) Dispatch(_ context.Context, p scheduler.SpawnParams) (scheduler.Result, error) {
+	copied := p
+	s.params = &copied
+	return scheduler.Result{
+		AgentID: "agent_1",
+		TaskID:  "task_1",
+		Status:  scheduler.StatusCompleted,
+		Outcome: scheduler.SyncOutcome{
+			Content:  []types.ContentBlock{{Type: types.ContentTypeText, Text: "browser result"}},
+			Terminal: types.Terminal{Reason: types.TerminalCompleted},
+		},
+	}, nil
+}
+
+func (s *fakeScheduler) Subscribe(context.Context, types.TaskID) (<-chan types.EngineEvent, error) {
+	return nil, scheduler.ErrNotSubscribable
+}
+
+func TestBrowserAgentTool_LongRunningAndSafety(t *testing.T) {
+	tl := New(&fakeScheduler{}, config.BrowserAgentConfig{Enabled: true, MaxSteps: 30}, zap.NewNop())
+
+	if tl.Name() != "browser_agent" {
+		t.Fatalf("Name() = %q", tl.Name())
+	}
+	if !tl.IsLongRunning() {
+		t.Fatal("browser_agent must be long-running")
+	}
+	if tl.IsConcurrencySafe() {
+		t.Fatal("browser_agent must run serially because visible browser windows and Electron focus are shared process state")
+	}
+	if got := tool.EffectiveSafetyLevel(tl); got != tool.SafetyDangerous {
+		t.Fatalf("safety = %s, want %s", got, tool.SafetyDangerous)
+	}
+	if err := tl.ValidateInput(json.RawMessage(`{"goal":"read the rendered page","start_url":"https://example.com","max_steps":8}`)); err != nil {
+		t.Fatalf("ValidateInput valid: %v", err)
+	}
+	if err := tl.ValidateInput(json.RawMessage(`{"goal":"   "}`)); err == nil {
+		t.Fatal("blank goal should be rejected")
+	}
+}
+
+func TestBrowserAgentTool_DescriptionAdvertisesRealBrowserSubAgent(t *testing.T) {
+	tl := New(&fakeScheduler{}, config.BrowserAgentConfig{Enabled: true, MaxSteps: 30}, zap.NewNop())
+
+	desc := tl.Description()
+	for _, want := range []string{
+		"当用户询问是否能使用浏览器",
+		"browser_agent",
+		"browser-agent 子 Agent",
+		"真实浏览器",
+		"一个目标站点或一个浏览器会话",
+		"拆成多个 browser_agent 调用",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q:\n%s", want, desc)
+		}
+	}
+}
+
+func TestBrowserAgentTool_GoalSchemaRequiresSingleBrowserTarget(t *testing.T) {
+	tl := New(&fakeScheduler{}, config.BrowserAgentConfig{Enabled: true, MaxSteps: 30}, zap.NewNop())
+	props := tl.InputSchema()["properties"].(map[string]any)
+	goal := props["goal"].(map[string]any)
+	desc := goal["description"].(string)
+	for _, want := range []string{
+		"单个目标站点",
+		"多个独立站点",
+		"多个 browser_agent 调用",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("goal schema description missing %q: %s", want, desc)
+		}
+	}
+}
+
+func TestBrowserAgentTool_PromptRequestsDefaultHiddenSession(t *testing.T) {
+	prompt := buildPrompt(input{
+		Goal:     "read the rendered page",
+		StartURL: "https://example.com",
+	}, 8, config.BrowserAgentConfig{})
+
+	for _, want := range []string{
+		`visibility="hidden"`,
+		"浏览器窗口可见性：hidden",
+		"浏览器窗口",
+		"agent_browser_command",
+		`browser_agent_final_result`,
+		`result`,
+		`content`,
+		`source`,
+		"全局持久 profile",
+		"关闭窗口后继续复用",
+		"不要传 task_id 或 partition",
+		"只处理一个目标站点或一个浏览器会话",
+		"多个互相独立的站点",
+		"应由主 Agent 拆成多个 browser_agent 调用",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{
+		"browser_navigate",
+		"browser_snapshot",
+		"browser_click",
+		"browser_fill",
+		"submit_task_result",
+		"meta_path",
+		"meta.json",
+		"让浏览器窗口显示在台前",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("prompt should not mention %q:\n%s", forbidden, prompt)
+		}
+	}
+}
+
+func TestBrowserAgentTool_RejectsBlockedStartURL(t *testing.T) {
+	tl := New(&fakeScheduler{}, config.BrowserAgentConfig{
+		Enabled:        true,
+		MaxSteps:       30,
+		BlockedDomains: []string{"blocked.example"},
+	}, zap.NewNop())
+
+	err := tl.ValidateInput(json.RawMessage(`{"goal":"read","start_url":"https://blocked.example/page"}`))
+	if err == nil {
+		t.Fatal("blocked start_url should be rejected")
+	}
+	if !strings.Contains(err.Error(), "blocked") {
+		t.Fatalf("error = %v, want blocked domain", err)
+	}
+}
+
+func TestBrowserAgentTool_SpawnsBrowserSubAgent(t *testing.T) {
+	sched := &fakeScheduler{}
+	tl := New(sched, config.BrowserAgentConfig{Enabled: true, MaxSteps: 30}, zap.NewNop())
+
+	res, err := tl.Execute(context.Background(), json.RawMessage(`{"goal":"collect prices","start_url":"https://example.com","max_steps":8}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("Execute returned error result: %+v", res)
+	}
+	if res.Content != "browser result" {
+		t.Fatalf("content = %q", res.Content)
+	}
+	if sched.params == nil {
+		t.Fatal("Dispatch was not called")
+	}
+	if sched.params.Definition.Name != browser_agent.AgentName {
+		t.Fatalf("Definition.Name = %q", sched.params.Definition.Name)
+	}
+	if sched.params.Name != browser_agent.AgentName {
+		t.Fatalf("Name = %q", sched.params.Name)
+	}
+	if sched.params.Overrides.MaxTurns != 8 {
+		t.Fatalf("Overrides.MaxTurns = %d, want 8", sched.params.Overrides.MaxTurns)
+	}
+	if sched.params.Overrides.Timeout != 5*time.Minute {
+		t.Fatalf("Overrides.Timeout = %s, want 5m", sched.params.Overrides.Timeout)
+	}
+	if !strings.Contains(sched.params.Prompt, "collect prices") || !strings.Contains(sched.params.Prompt, "https://example.com") {
+		t.Fatalf("prompt missing goal/start_url: %q", sched.params.Prompt)
+	}
+}
+
+func TestBrowserAgentTool_BindsSpawnToCurrentToolCall(t *testing.T) {
+	sched := &fakeScheduler{}
+	tl := New(sched, config.BrowserAgentConfig{Enabled: true, MaxSteps: 30}, zap.NewNop())
+	ctx := tool.WithToolUseContext(context.Background(), &types.ToolUseContext{
+		Core: types.CoreContext{
+			SessionID:  "sess_parent",
+			ToolCallID: "toolu_browser_1",
+			ToolName:   "browser_agent",
+		},
+	})
+
+	res, err := tl.Execute(ctx, json.RawMessage(`{"goal":"collect prices"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("Execute returned error result: %+v", res)
+	}
+	if sched.params == nil {
+		t.Fatal("Dispatch was not called")
+	}
+	if sched.params.Parent == nil || sched.params.Parent.SessionID != "sess_parent" {
+		t.Fatalf("Parent.SessionID = %v, want sess_parent", sched.params.Parent)
+	}
+	// 新模型里 ParentAgentID / ParentStepID 不再由 browseragent 设置——
+	// 由 scheduler middleware (AgentContext) 从 ctx 透传给下游。
+	// 这两个断言移除（行为下沉到 middleware）。
+}

@@ -256,7 +256,7 @@ cd harnessclaw
 HARNESSCLAW_ENGINE_SOURCE_DIR=/absolute/path/to/harnessclaw-engine yarn prepare:bin
 ```
 
-`yarn prepare:bin` 会调用 `HARNESSCLAW_ENGINE_SOURCE_DIR/scripts/prepare-runtime.cjs --include-engine --output-dir resources/bin`，不会在前端重新实现 `agent-browser` 下载规则。本地源码打包必须显式提供 `HARNESSCLAW_ENGINE_SOURCE_DIR` 或 `--engine-source-dir`，不再猜测 `../harnessclaw-engine`。
+`yarn prepare:bin` 会调用 `HARNESSCLAW_ENGINE_SOURCE_DIR/build/prepare-runtime.cjs --include-engine --output-dir resources/bin`，不会在前端重新实现 `agent-browser` 下载规则。本地源码打包必须显式提供 `HARNESSCLAW_ENGINE_SOURCE_DIR` 或 `--engine-source-dir`，不再猜测 `../harnessclaw-engine`。
 
 然后构建 Electron：
 

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"harnessclaw-go/internal/engine/agent/common"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 

@@ -1,8 +1,7 @@
 package common
 
 import (
-	"harnessclaw-go/internal/agent"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/internal/workspace"
 )
 
@@ -20,7 +19,7 @@ import (
 // fallbackAgent is used when cfg.SubagentType is empty (legacy callers
 // that didn't set it). Modules pass their own tier name as the fallback
 // so meta_write's Agent field still attributes the work meaningfully.
-func BuildAgentScope(cfg *agent.SpawnConfig, rootDir, fallbackAgent string) tool.AgentScope {
+func BuildAgentScope(cfg *SpawnConfig, rootDir, fallbackAgent string) tool.AgentScope {
 	agentName := cfg.SubagentType
 	if agentName == "" {
 		agentName = fallbackAgent

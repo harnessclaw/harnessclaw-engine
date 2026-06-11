@@ -56,11 +56,7 @@ type Session struct {
 	// in this session". Guarded by runtimeMu.
 	allowedTools map[string]bool
 
-	// promptCache stores the most recent system-prompt cache entry for
-	// this session. Guarded by runtimeMu.
-	promptCache *PromptCacheEntry
-
-	// runtimeMu guards allowedTools + promptCache.
+	// runtimeMu guards allowedTools.
 	runtimeMu sync.Mutex
 }
 
@@ -190,19 +186,3 @@ func (s *Session) AllowedTools() []string {
 	return result
 }
 
-// PromptCache returns the cached system prompt entry, or nil if
-// none has been stored. Callers must validate the entry's
-// invalidation conditions before using.
-func (s *Session) PromptCache() *PromptCacheEntry {
-	s.runtimeMu.Lock()
-	defer s.runtimeMu.Unlock()
-	return s.promptCache
-}
-
-// SetPromptCache stores a fresh PromptCacheEntry, replacing any
-// previous entry. Passing nil clears the cache.
-func (s *Session) SetPromptCache(e *PromptCacheEntry) {
-	s.runtimeMu.Lock()
-	defer s.runtimeMu.Unlock()
-	s.promptCache = e
-}

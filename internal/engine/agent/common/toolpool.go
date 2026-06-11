@@ -1,19 +1,17 @@
 package common
 
 import (
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tools"
 )
 
 // dispatchToolNames lists tools that fan out to sub-agents. They are
 // stripped from the pool for strict leaf agents (TierSubAgent) so a
 // sub-agent cannot recursively spawn deeper.
 //
-// `orchestrate` is the L2 plan-mode coordinator; it requires a live
-// plan_id + intent from the L2 plan flow. L3 leaves never have either,
-// and once the tool surfaces in their schema they hallucinate calls
-// that fail `invalid input for orchestrate: intent is required`
-// repeatedly until the loop hits max_turns.
-var dispatchToolNames = []string{"freelance", "scheduler", "task", "orchestrate"}
+// "dispatch" 是 emma 用的 L1→L3 派发工具（原名 "scheduler"），
+// "freelance" 是 agenttool 的工具名（保留），
+// "task" 是历史 fallback 名（保留以防外部 schema 引用）。
+var dispatchToolNames = []string{"freelance", "dispatch", "task"}
 
 // BuildToolPool produces the tool pool for a sub-agent.
 //

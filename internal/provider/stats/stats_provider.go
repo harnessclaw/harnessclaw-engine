@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"harnessclaw-go/internal/engine/sessionstats"
+	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/pkg/types"
 )

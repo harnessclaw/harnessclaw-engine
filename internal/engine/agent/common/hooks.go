@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/zap"
 	"harnessclaw-go/internal/engine/loop"
-	"harnessclaw-go/internal/tool/submittool"
+	"harnessclaw-go/internal/tools/builtin/submittool"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -17,12 +17,12 @@ import (
 // Used by tier modules that do not require a structured submit step:
 // the LLM "finishes" by simply not calling any tool on its final turn.
 func StopOnEndTurn() loop.TurnHook {
-	return func(turn int, msg types.Message, _ []types.ToolResult) loop.Decision {
-		if hasToolCalls(msg) {
+	return func(snap loop.TurnSnapshot) loop.Decision {
+		if snap.HadToolCalls {
 			return loop.Decision{}
 		}
 		return loop.Decision{Terminate: &types.Terminal{
-			Reason: types.TerminalCompleted, Turn: turn,
+			Reason: types.TerminalCompleted, Turn: snap.Turn,
 		}}
 	}
 }
@@ -32,17 +32,17 @@ func StopOnEndTurn() loop.TurnHook {
 // is also treated as completion so a stuck LLM doesn't spin to MaxTurns.
 // No schema enforcement; use ContractEnforcer for that.
 func StopOnSubmitResult() loop.TurnHook {
-	return func(turn int, msg types.Message, _ []types.ToolResult) loop.Decision {
-		for _, b := range msg.Content {
+	return func(snap loop.TurnSnapshot) loop.Decision {
+		for _, b := range snap.AssistantMsg.Content {
 			if b.Type == types.ContentTypeToolUse && b.ToolName == submittool.ToolName {
 				return loop.Decision{Terminate: &types.Terminal{
-					Reason: types.TerminalCompleted, Turn: turn,
+					Reason: types.TerminalCompleted, Turn: snap.Turn,
 				}}
 			}
 		}
-		if !hasToolCalls(msg) {
+		if !snap.HadToolCalls {
 			return loop.Decision{Terminate: &types.Terminal{
-				Reason: types.TerminalCompleted, Turn: turn,
+				Reason: types.TerminalCompleted, Turn: snap.Turn,
 			}}
 		}
 		return loop.Decision{}
@@ -117,14 +117,14 @@ func submitResultEnforcerForTool(finalToolName string, expected []types.Expected
 		}
 	}
 
-	return func(turn int, msg types.Message, toolResults []types.ToolResult) loop.Decision {
-		submitCall, submitResult := findSubmitCall(msg, toolResults, finalToolName)
+	return func(snap loop.TurnSnapshot) loop.Decision {
+		submitCall, submitResult := findSubmitCall(snap.AssistantMsg, snap.ToolResults, finalToolName)
 		if submitCall == nil {
 			// No submit yet. If the LLM also issued no tool calls at all,
 			// it has likely stopped — nudge it back toward submitting.
-			if !hasToolCalls(msg) {
+			if !snap.HadToolCalls {
 				logInfo("contract_enforcer: no-tool-call nudge — asking LLM to submit",
-					zap.Int("turn", turn),
+					zap.Int("turn", snap.Turn),
 					zap.Int("max_turns", maxTurns),
 				)
 				return loop.Decision{Inject: []types.Message{{
@@ -138,14 +138,14 @@ func submitResultEnforcerForTool(finalToolName string, expected []types.Expected
 			// Budget-exhaustion nudge: if the loop is within 2 turns of
 			// MaxTurns and we have not nudged yet, force the LLM to stop
 			// new work and submit. Sent at most once per hook instance.
-			if !hardNudgeSent && maxTurns > 0 && turn >= maxTurns-2 {
+			if !hardNudgeSent && maxTurns > 0 && snap.Turn >= maxTurns-2 {
 				hardNudgeSent = true
-				remaining := maxTurns - turn
+				remaining := maxTurns - snap.Turn
 				if remaining < 1 {
 					remaining = 1
 				}
 				logInfo("contract_enforcer: budget_exhaustion hard nudge injected",
-					zap.Int("turn", turn),
+					zap.Int("turn", snap.Turn),
 					zap.Int("max_turns", maxTurns),
 					zap.Int("remaining_turns", remaining),
 				)
@@ -171,7 +171,7 @@ func submitResultEnforcerForTool(finalToolName string, expected []types.Expected
 		if accepted, ok := submitAccepted(submitResult); ok {
 			if accepted {
 				return loop.Decision{Terminate: &types.Terminal{
-					Reason: types.TerminalCompleted, Turn: turn,
+					Reason: types.TerminalCompleted, Turn: snap.Turn,
 				}}
 			}
 			failures++
@@ -179,7 +179,7 @@ func submitResultEnforcerForTool(finalToolName string, expected []types.Expected
 				return loop.Decision{Terminate: &types.Terminal{
 					Reason:  types.TerminalCompleted,
 					Message: "contract validation exhausted retries: " + submitRejectionReason(submitResult),
-					Turn:    turn,
+					Turn:    snap.Turn,
 				}}
 			}
 			return loop.Decision{Inject: []types.Message{{
@@ -198,7 +198,7 @@ func submitResultEnforcerForTool(finalToolName string, expected []types.Expected
 			failures++
 			if failures > maxRetries {
 				logInfo("contract_enforcer: validation retries exhausted — terminating",
-					zap.Int("turn", turn),
+					zap.Int("turn", snap.Turn),
 					zap.Int("failures", failures),
 					zap.Int("max_retries", maxRetries),
 					zap.String("error", err.Error()),
@@ -206,11 +206,11 @@ func submitResultEnforcerForTool(finalToolName string, expected []types.Expected
 				return loop.Decision{Terminate: &types.Terminal{
 					Reason:  types.TerminalCompleted,
 					Message: "contract validation exhausted retries: " + err.Error(),
-					Turn:    turn,
+					Turn:    snap.Turn,
 				}}
 			}
 			logInfo("contract_enforcer: validation failed — injecting correction tool_result",
-				zap.Int("turn", turn),
+				zap.Int("turn", snap.Turn),
 				zap.Int("failures", failures),
 				zap.Int("max_retries", maxRetries),
 				zap.String("error", err.Error()),
@@ -236,7 +236,7 @@ func submitResultEnforcerForTool(finalToolName string, expected []types.Expected
 				return loop.Decision{Terminate: &types.Terminal{
 					Reason:  types.TerminalCompleted,
 					Message: "contract validation exhausted retries: " + err.Error(),
-					Turn:    turn,
+					Turn:    snap.Turn,
 				}}
 			}
 			correction := fmt.Sprintf(
@@ -257,10 +257,10 @@ func submitResultEnforcerForTool(finalToolName string, expected []types.Expected
 
 		// Schema OK → terminate.
 		logInfo("contract_enforcer: valid submit_task_result — terminating loop",
-			zap.Int("turn", turn),
+			zap.Int("turn", snap.Turn),
 		)
 		return loop.Decision{Terminate: &types.Terminal{
-			Reason: types.TerminalCompleted, Turn: turn,
+			Reason: types.TerminalCompleted, Turn: snap.Turn,
 		}}
 	}
 }

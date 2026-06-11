@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"harnessclaw-go/internal/skill"
+	"harnessclaw-go/internal/skills"
 )
 
 func TestBuildLoadedSkillsBlock_Empty(t *testing.T) {

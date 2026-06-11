@@ -2,7 +2,7 @@ package prompt
 
 import (
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tools"
 )
 
 // PromptContext carries all information a Section might need to
