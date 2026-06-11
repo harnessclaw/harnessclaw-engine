@@ -181,8 +181,21 @@ llm:
 agent:
     primary: anthropic:claude-sonnet-4-6
     max_turns: 50
+    video_generation: ""        # 选定的视频生成 endpoint，格式 "provider:endpoint"（空 = 关闭视频工具）
 #  max_tool_calls: 0          # 0 = 不限
 #  thinking_intensity: "medium"
+
+# --- Video Generation ---
+# 视频生成 provider 配置。api_key 留空（请放到 config_self.yaml 或环境变量），
+# 在 Settings → 视频生成模型 里填写。base_url 留空则用 provider 内置默认值。
+videogen:
+    providers:
+        doubao:
+            api_key: ""                                          # 火山方舟 Bearer token
+            base_url: https://ark.cn-beijing.volces.com/api/v3
+            endpoints:
+                seedance-lite-i2v:
+                    model: doubao-seedance-1-0-lite-i2v-250428
 
 # --- Query Engine ---
 engine:
