@@ -1,18 +1,14 @@
 package browser_agent
 
 import (
-	"harnessclaw-go/internal/engine/agent/definition"
+	"harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/skills"
 )
 
-// buildSystemPrompt constructs a representative system prompt using a fake
-// skill provider. Used only by prompt_test.go to verify prompt assembly.
-//
-// When a SkillProvider is active the official skill block replaces the old
-// def.SystemPrompt (which references legacy browser_navigate / browser_snapshot
-// wrappers). The contract is still appended. The fake skill body includes the
-// Browser Agent final-result wrapper to mirror HarnessClaw's adapted skill.
+// buildSystemPrompt constructs a representative Browser Agent system prompt
+// through the shared sub-agent prompt assembler. Used only by prompt_test.go
+// to verify prompt assembly.
 func buildSystemPrompt() string {
 	def := BrowserAgentDefinition()
 	fakeSkill := &skill.SkillFull{
@@ -24,8 +20,10 @@ func buildSystemPrompt() string {
 		Body: adapterHeader + "\n\nOFFICIAL CORE SKILL BODY\n\nAlways call browser_agent_final_result when done.",
 	}
 	skillBlock := prompt.BuildLoadedSkillsBlock([]*skill.SkillFull{fakeSkill})
-	return joinNonEmpty([]string{
-		skillBlock,
-		definition.RenderSubAgentContract(def),
-	}, "\n\n")
+	return common.BuildSubAgentPrompt(common.PromptArgs{
+		AgentDef:          def,
+		LoadedSkillsBlock: skillBlock,
+		WorkerDisplayName: def.DisplayName,
+		SubagentType:      def.Name,
+	})
 }

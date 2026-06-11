@@ -4,7 +4,7 @@ import "testing"
 
 func TestBrowserAgentApprovedTools_ExpandsInternalToolsWhenParentApprovedBrowserAgent(t *testing.T) {
 	def := BrowserAgentDefinition()
-	approved := browserAgentApprovedTools([]string{ToolName}, def)
+	approved := ExpandApprovedTools([]string{ToolName}, def)
 
 	for _, want := range []string{
 		ToolName,
@@ -20,7 +20,7 @@ func TestBrowserAgentApprovedTools_ExpandsInternalToolsWhenParentApprovedBrowser
 }
 
 func TestBrowserAgentApprovedTools_DoesNotExpandWithoutParentBrowserAgentApproval(t *testing.T) {
-	approved := browserAgentApprovedTools([]string{"bash"}, BrowserAgentDefinition())
+	approved := ExpandApprovedTools([]string{"bash"}, BrowserAgentDefinition())
 
 	if containsTool(approved, "agent_browser_command") {
 		t.Fatalf("approved tools should not include browser internals without parent browser_agent approval: %v", approved)

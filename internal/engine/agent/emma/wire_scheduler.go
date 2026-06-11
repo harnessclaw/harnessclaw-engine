@@ -45,8 +45,8 @@ type wiredDeps struct {
 // TaskRegister → Analytics（顺序固定）。
 //
 // Strategy 注册顺序 = 优先级：
-//   1) async  —— 命中 Hints.Background
-//   2) sync   —— 兜底
+//  1. async  —— 命中 Hints.Background
+//  2. sync   —— 兜底
 func wireScheduler(wd wiredDeps) scheduler.Scheduler {
 	rt := loopruntime.NewLLM(loopruntime.LLMArgs{
 		Provider:      wd.Provider,
@@ -64,6 +64,7 @@ func wireScheduler(wd wiredDeps) scheduler.Scheduler {
 			LLMAPITimeout:       wd.Cfg.LLMAPITimeout,
 			LLMFirstByteTimeout: wd.Cfg.LLMFirstByteTimeout,
 			RootDir:             wd.WorkspaceRoot,
+			BrowserAgent:        wd.Cfg.BrowserAgent,
 		},
 	})
 

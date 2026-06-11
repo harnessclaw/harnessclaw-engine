@@ -8,10 +8,12 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/engine/scheduler/runtime"
-	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/config"
+	browseragentdef "harnessclaw-go/internal/engine/agent/builtin/browser_agent"
 	legacyagent "harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/scheduler/runtime"
+	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/memory"
 	"harnessclaw-go/internal/provider/mock"
 	"harnessclaw-go/internal/provider/retry"
@@ -110,6 +112,116 @@ done:
 			len(collected),
 			firstN(collected, 3),
 		)
+	}
+}
+
+func TestLLM_ComposesAgentDefinitionPromptIntoChatRequest(t *testing.T) {
+	prov := mock.New(mock.Response{Text: "ok", StopReason: "end_turn"})
+	sessMgr := session.NewManager(memory.New(), zap.NewNop(), time.Hour)
+	_, _ = sessMgr.GetOrCreate(context.Background(), "root", "ws-test", "u")
+
+	rt := NewLLM(LLMArgs{
+		Provider:      prov,
+		Registry:      tool.NewRegistry(),
+		SessionMgr:    sessMgr,
+		Retryer:       retry.New(nil, zap.NewNop()),
+		PromptBuilder: prompt.NewBuilder(prompt.NewRegistry(), zap.NewNop()),
+		Logger:        zap.NewNop(),
+		Cfg: Config{
+			MaxTokens:     1024,
+			ContextWindow: 8192,
+			ToolTimeout:   30 * time.Second,
+			RootDir:       t.TempDir(),
+		},
+	})
+
+	events, err := rt.Run(context.Background(), runtime.RunParams{
+		AgentID: "a-prompt-1",
+		Definition: legacyagent.AgentDefinition{
+			Name:         "definition-prompt-agent",
+			DisplayName:  "Definition Prompt Agent",
+			AgentType:    tool.AgentTypeSync,
+			Profile:      "worker",
+			SystemPrompt: "DEFINITION SYSTEM PROMPT",
+			Tier:         legacyagent.TierSubAgent,
+			OutputSchema: map[string]any{"type": "object"},
+			Skills:       []string{"definition-skill"},
+		},
+		Prompt:    "please reply",
+		Overrides: runtime.Overrides{MaxTurns: 3},
+	})
+	if err != nil {
+		t.Fatalf("Run returned err: %v", err)
+	}
+	for range events {
+	}
+
+	calls := prov.Calls()
+	if len(calls) == 0 {
+		t.Fatal("provider was not called")
+	}
+	system := calls[0].System
+	for _, want := range []string{
+		"DEFINITION SYSTEM PROMPT",
+		"<sub-agent-contract>",
+		"definition-skill",
+		"output_schema",
+		"Definition Prompt Agent",
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("system prompt missing %q:\n%s", want, system)
+		}
+	}
+}
+
+func TestLLM_LoadsBrowserAgentOfficialSkillThroughUnifiedPrompt(t *testing.T) {
+	prov := mock.New(mock.Response{Text: "ok", StopReason: "end_turn"})
+	sessMgr := session.NewManager(memory.New(), zap.NewNop(), time.Hour)
+	_, _ = sessMgr.GetOrCreate(context.Background(), "root", "ws-test", "u")
+
+	rt := NewLLM(LLMArgs{
+		Provider:      prov,
+		Registry:      tool.NewRegistry(),
+		SessionMgr:    sessMgr,
+		Retryer:       retry.New(nil, zap.NewNop()),
+		PromptBuilder: prompt.NewBuilder(prompt.NewRegistry(), zap.NewNop()),
+		Logger:        zap.NewNop(),
+		Cfg: Config{
+			MaxTokens:     1024,
+			ContextWindow: 8192,
+			ToolTimeout:   30 * time.Second,
+			RootDir:       t.TempDir(),
+			BrowserAgent:  config.BrowserAgentConfig{Enabled: true},
+		},
+	})
+
+	events, err := rt.Run(context.Background(), runtime.RunParams{
+		AgentID:    "browser-agent-1",
+		Definition: *browseragentdef.BrowserAgentDefinition(),
+		Prompt:     "open a page",
+		Overrides:  runtime.Overrides{MaxTurns: 1},
+	})
+	if err != nil {
+		t.Fatalf("Run returned err: %v", err)
+	}
+	for range events {
+	}
+
+	calls := prov.Calls()
+	if len(calls) == 0 {
+		t.Fatal("provider was not called")
+	}
+	system := calls[0].System
+	for _, want := range []string{
+		"HarnessClaw adapter:",
+		"# Browser Automation with agent-browser",
+		"browser_agent_final_result",
+		"browser_skill_reference",
+		"Browser Agent",
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("browser agent system prompt missing %q:\n%s", want, system)
+		}
 	}
 }
 

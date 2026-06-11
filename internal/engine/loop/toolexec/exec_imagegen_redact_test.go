@@ -9,8 +9,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/permission"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/engine/permission"
+	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 

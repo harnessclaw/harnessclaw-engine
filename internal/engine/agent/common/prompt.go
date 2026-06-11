@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"strings"
 
 	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/prompt"
@@ -118,46 +119,53 @@ type PromptArgs struct {
 // identity. Tier modules call this to avoid duplicating the
 // spawn.buildSubAgentSystemPrompt assembly logic.
 //
-// When Builder or Profile is nil (or Build returns an error), the
-// helper falls back to a minimal identity prompt derived from the
-// WorkerDisplayName / SubagentType fields.
+// When Builder or Profile is nil (or Build returns an error), the helper
+// still returns the definition-level blocks plus a minimal identity prompt
+// derived from the WorkerDisplayName / SubagentType fields.
 //
 // LoadedSkillsBlock, when set, is prepended to the rendered output —
 // this matches the freelancer convention of placing the
 // <loaded-skills> XML container before the rest of the system prompt.
 func BuildSubAgentPrompt(args PromptArgs) string {
+	rendered := ""
 	if args.Builder == nil || args.Profile == nil {
-		return fallbackIdentityPrompt(args)
+		rendered = fallbackIdentityPrompt(args)
+	} else {
+		pCtx := &prompt.PromptContext{
+			Turn:                 args.Turn,
+			Tools:                args.Registry,
+			AvailableTools:       args.AvailableTools,
+			ContextWindowSize:    args.ContextWindow,
+			TotalTokensUsed:      args.TotalTokensUsed,
+			EnvInfo:              args.EnvSnapshot,
+			SkillListing:         args.SkillListing,
+			TeamMembers:          args.TeamMembers,
+			SystemPromptOverride: args.WorkerIdentity,
+			Memory:               map[string]string{},
+		}
+		if args.Session != nil {
+			pCtx.SessionID = args.Session.ID
+			pCtx.Session = args.Session
+		}
+
+		out, err := args.Builder.Build(pCtx, args.Profile)
+		if err != nil {
+			rendered = fallbackIdentityPrompt(args)
+		} else {
+			rendered = out.ToSystemPrompt()
+		}
+	}
+	if strings.TrimSpace(rendered) == "" {
+		rendered = fallbackIdentityPrompt(args)
 	}
 
-	pCtx := &prompt.PromptContext{
-		Turn:                 args.Turn,
-		Tools:                args.Registry,
-		AvailableTools:       args.AvailableTools,
-		ContextWindowSize:    args.ContextWindow,
-		TotalTokensUsed:      args.TotalTokensUsed,
-		EnvInfo:              args.EnvSnapshot,
-		SkillListing:         args.SkillListing,
-		TeamMembers:          args.TeamMembers,
-		SystemPromptOverride: args.WorkerIdentity,
-		Memory:               map[string]string{},
+	blocks := []string{
+		definitionSystemPrompt(args.AgentDef),
+		args.LoadedSkillsBlock,
+		definition.RenderSubAgentContract(args.AgentDef),
+		rendered,
 	}
-	if args.Session != nil {
-		pCtx.SessionID = args.Session.ID
-		pCtx.Session = args.Session
-	}
-
-	out, err := args.Builder.Build(pCtx, args.Profile)
-	if err != nil {
-		return fallbackIdentityPrompt(args)
-	}
-	rendered := out.ToSystemPrompt()
-
-	// Prepend LoadedSkillsBlock (freelancer specifically).
-	if args.LoadedSkillsBlock != "" {
-		rendered = args.LoadedSkillsBlock + "\n\n" + rendered
-	}
-	return rendered
+	return joinPromptBlocks(blocks)
 }
 
 // fallbackIdentityPrompt returns the minimal identity sentence used
@@ -171,4 +179,25 @@ func fallbackIdentityPrompt(args PromptArgs) string {
 		return "你是 " + args.SubagentType + " 子 agent。"
 	}
 	return "You are a sub-agent."
+}
+
+func definitionSystemPrompt(def *definition.AgentDefinition) string {
+	if def == nil {
+		return ""
+	}
+	return strings.TrimSpace(def.SystemPrompt)
+}
+
+func joinPromptBlocks(blocks []string) string {
+	kept := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		block = strings.TrimSpace(block)
+		if block != "" {
+			kept = append(kept, block)
+		}
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	return strings.Join(kept, "\n\n")
 }

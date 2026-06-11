@@ -15,13 +15,16 @@ import (
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/config"
+	browseragentdef "harnessclaw-go/internal/engine/agent/builtin/browser_agent"
+	"harnessclaw-go/internal/engine/agent/common"
+	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/scheduler/middlewares"
 	"harnessclaw-go/internal/engine/scheduler/runtime"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/skills"
@@ -52,6 +55,7 @@ type Config struct {
 	LLMAPITimeout       time.Duration
 	LLMFirstByteTimeout time.Duration
 	RootDir             string
+	BrowserAgent        config.BrowserAgentConfig
 }
 
 // LLMArgs 是 NewLLM 的构造参数。
@@ -92,6 +96,7 @@ func NewLLM(a LLMArgs) *LLM {
 // 携带 Terminal.Reason。
 func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.EngineEvent, error) {
 	ac, _ := middlewares.AgentCtxFrom(ctx)
+	isBrowserAgent := p.Definition.Name == browseragentdef.AgentName
 
 	// 从 RunParams + ctx 合成 legacy SpawnConfig，供老 helper 复用。
 	// SpawnConfig 是过渡期 carrier —— 后续 PR-4 删 SpawnConfig 后这里改成
@@ -121,20 +126,8 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 	_ = common.EnsureTaskDir(cfg, r.Cfg.RootDir)
 
 	// 3. 工具池（runner.RunLeaf:151-155）
-	pool := common.BuildToolPool(r.Registry, p.Definition.AllowedTools, p.Definition.AgentType, false)
-
-	// 4. Profile + system prompt（runner.RunLeaf:158-180）
-	profile := resolveProfile(p.Definition.Profile)
-	sysPrompt := common.BuildSubAgentPrompt(common.PromptArgs{
-		Ctx:               ctx,
-		Session:           sess,
-		Profile:           profile,
-		Builder:           r.PromptBuilder,
-		WorkerDisplayName: cfg.Name,
-		SubagentType:      cfg.SubagentType,
-		ContextWindow:     r.Cfg.ContextWindow,
-		Registry:          r.Registry,
-	})
+	stripDispatch := p.Definition.EffectiveTier() == definition.TierSubAgent
+	pool := common.BuildToolPool(r.Registry, p.Definition.MaybeAugmentForSubAgent(), p.Definition.AgentType, stripDispatch)
 
 	// ★ 4.5 Skill hydration —— freelancer 专属
 	// 装 SkillTracker：state machine 簿记 active/unloaded skill + 强制 budget。
@@ -144,6 +137,7 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 	// 取到状态机进行操作。
 	// 非 freelancer（emma / browser / explore 等）不进这条路径，tracker == nil，
 	// 工具调用方报「skill tracker not available」是预期行为。
+	loadedSkillsBlock := ""
 	if p.Definition.Name == "freelancer" && r.SkillReader != nil {
 		candidates := parseCandidateSkills(p.Inputs)
 		tr, skillBlock, hErr := hydrateSkills(r.SkillReader, candidates)
@@ -151,10 +145,35 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 			return nil, fmt.Errorf("freelancer skill hydration: %w", hErr)
 		}
 		ctx = tool.WithSkillTrackerValue(ctx, tr)
-		if skillBlock != "" {
-			sysPrompt = skillBlock + "\n\n" + sysPrompt
-		}
+		loadedSkillsBlock = skillBlock
 	}
+	if isBrowserAgent && r.Cfg.BrowserAgent.Enabled {
+		full, err := browseragentdef.NewAgentBrowserSkillProvider(r.Cfg.BrowserAgent, r.Logger).Load(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("browser agent official skill load failed: %w", err)
+		}
+		loadedSkillsBlock = prompt.BuildLoadedSkillsBlock([]*skill.SkillFull{full})
+	}
+
+	// 4. Profile + system prompt（runner.RunLeaf:158-180）
+	profile := resolveProfile(p.Definition.Profile)
+	workerDisplayName := p.Definition.DisplayName
+	if workerDisplayName == "" {
+		workerDisplayName = cfg.Name
+	}
+	sysPrompt := common.BuildSubAgentPrompt(common.PromptArgs{
+		Ctx:               ctx,
+		Session:           sess,
+		Profile:           profile,
+		AgentDef:          &p.Definition,
+		LoadedSkillsBlock: loadedSkillsBlock,
+		Builder:           r.PromptBuilder,
+		WorkerDisplayName: workerDisplayName,
+		SubagentType:      cfg.SubagentType,
+		ContextWindow:     r.Cfg.ContextWindow,
+		Registry:          r.Registry,
+		AvailableTools:    pool.All(),
+	})
 
 	// 5. Seed 第一条 user 消息（runner.RunLeaf:198-203）
 	sess.AddMessage(pkgtypes.Message{
@@ -179,9 +198,11 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 	}
 
 	// 7. 权限 checker（runner.RunLeaf:214-216）
-	permChecker := common.BuildInheritedChecker(
-		common.SessionApprovedTools(r.SessionMgr, cfg.ParentSessionID),
-	)
+	approvedTools := common.SessionApprovedTools(r.SessionMgr, cfg.ParentSessionID)
+	if isBrowserAgent {
+		approvedTools = browseragentdef.ExpandApprovedTools(approvedTools, &p.Definition)
+	}
+	permChecker := common.BuildInheritedChecker(approvedTools)
 
 	// 8. AgentScope（runner.RunLeaf:256）
 	scope := common.BuildAgentScope(cfg, r.Cfg.RootDir, "leaf")

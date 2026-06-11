@@ -10,7 +10,7 @@ import (
 
 	"harnessclaw-go/internal/channel"
 	"harnessclaw-go/internal/provider/registry"
-	"harnessclaw-go/internal/tool"
+	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 )
 
