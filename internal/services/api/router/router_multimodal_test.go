@@ -117,11 +117,11 @@ func TestRouter_ConvertsImageBlocksIntoEngineMessage(t *testing.T) {
 	}
 }
 
-// TestRouter_RejectsImageWhenModelLacksVision is the core gate test:
-// engine MUST NOT be called when the active model can't process the
-// modality. Channel MUST receive a typed error frame so the UI can
-// render a clear "switch model" prompt.
-func TestRouter_RejectsImageWhenModelLacksVision(t *testing.T) {
+// TestRouter_ImagePassesWhenModelLacksVision: images are no longer
+// gated — tools (image_generate, video_create i2v, browser agent) can
+// consume them, so the message flows through to the engine and the
+// downstream model/provider decides what to do with it.
+func TestRouter_ImagePassesWhenModelLacksVision(t *testing.T) {
 	eng := &captureEngine{}
 	ch := &recordingChannel{}
 	info := stubModelInfo{
@@ -135,6 +135,38 @@ func TestRouter_RejectsImageWhenModelLacksVision(t *testing.T) {
 		SessionID:   "s1",
 		Content: []types.IncomingContentBlock{
 			{Type: "image", MIMEType: "image/png", Data: "iVBORw0KGgo="},
+		},
+	})
+	if err != nil {
+		t.Fatalf("image must pass through the gate: %v", err)
+	}
+	eng.mu.Lock()
+	received := eng.received
+	eng.mu.Unlock()
+	if received == nil {
+		t.Fatal("engine must be called — image is not gated anymore")
+	}
+}
+
+// TestRouter_RejectsPdfWhenModelLacksPDFInput is the core gate test
+// (moved from image to pdf — images are tool-consumable and pass
+// through): engine MUST NOT be called when the active model can't
+// process the modality. Channel MUST receive a typed error frame so
+// the UI can render a clear "switch model" prompt.
+func TestRouter_RejectsPdfWhenModelLacksPDFInput(t *testing.T) {
+	eng := &captureEngine{}
+	ch := &recordingChannel{}
+	info := stubModelInfo{
+		key:      "anthropic:claude-haiku-4-5",
+		supports: registry.SupportsFlags{}, // no PDFInput
+	}
+	r := New(eng, map[string]channel.Duplex{"websocket": ch}, nil, info, zap.NewNop())
+
+	err := r.Handle(context.Background(), &types.IncomingMessage{
+		ChannelName: "websocket",
+		SessionID:   "s1",
+		Content: []types.IncomingContentBlock{
+			{Type: "pdf", MIMEType: "application/pdf", Data: "JVBERi0="},
 		},
 	})
 	if err == nil {
@@ -165,7 +197,7 @@ func TestRouter_RejectsImageWhenModelLacksVision(t *testing.T) {
 		t.Errorf("error must mention model: %v", frames[0].Error)
 	}
 	// Verify the rich payload survives intact.
-	if rm, ok := frames[0].ErrorDetails["rejected_modalities"].([]string); !ok || len(rm) != 1 || rm[0] != "image" {
+	if rm, ok := frames[0].ErrorDetails["rejected_modalities"].([]string); !ok || len(rm) != 1 || rm[0] != "pdf" {
 		t.Errorf("rejected_modalities malformed: %v", frames[0].ErrorDetails["rejected_modalities"])
 	}
 	if frames[0].ErrorDetails["user_message"] == nil {

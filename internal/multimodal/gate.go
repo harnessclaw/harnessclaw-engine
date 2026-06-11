@@ -46,10 +46,14 @@ func Gate(activeModel string, supports registry.SupportsFlags, blocks []types.Co
 // file blocks also return "" — they currently flow through the legacy
 // text-JSON attachment path and are not gated until we add per-file
 // capability flags.
+//
+// Image blocks are deliberately NOT gated: many tools consume images
+// (image_generate, video_create image-to-video, browser agent), so a
+// non-vision chat model is no longer a reason to reject the message at
+// the door. The image passes through and the downstream model/provider
+// decides what it can do with it.
 func modalityOf(b types.ContentBlock) string {
 	switch b.Type {
-	case types.ContentTypeImage:
-		return "image"
 	case types.ContentTypeFile:
 		if b.MediaType == "application/pdf" {
 			return "pdf"
