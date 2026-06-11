@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/tools"
@@ -111,6 +110,10 @@ func (t *FileWriteTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
+	if res := tool.EnforceWriteScope(ctx, wi.FilePath); res != nil {
+		return res, nil
+	}
+
 	content := wi.Content
 	if content == "" {
 		return &types.ToolResult{Content: "content is required", IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
@@ -165,19 +168,6 @@ func (t *FileWriteTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 	}, nil
 }
 
-// pathInScope returns true if path (after Clean) starts with any allowed
-// prefix (also Cleaned). Symlinks are NOT resolved — the threat model is
-// LLM path mistakes, not adversarial filesystem layout.
-func pathInScope(path string, allowed []string) bool {
-	p := filepath.Clean(path)
-	for _, a := range allowed {
-		ac := filepath.Clean(a)
-		if p == ac || strings.HasPrefix(p, ac+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
-}
 
 var fileWriteDescription = fmt.Sprintf(`把内容写入本地文件系统。
 

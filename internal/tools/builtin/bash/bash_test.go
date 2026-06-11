@@ -80,8 +80,8 @@ func TestInputSchema(t *testing.T) {
 func TestDescription(t *testing.T) {
 	bt := newTestTool()
 	desc := bt.Description()
-	if !strings.Contains(desc, "bash command") {
-		t.Error("description should mention bash command")
+	if !strings.Contains(desc, "bash 命令") {
+		t.Error("description should mention bash 命令")
 	}
 }
 

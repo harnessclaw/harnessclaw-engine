@@ -82,6 +82,10 @@ func (t *FileReadTool) Execute(ctx context.Context, input json.RawMessage) (*typ
 		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
+	if res := tool.EnforceReadScope(ctx, ri.FilePath); res != nil {
+		return res, nil
+	}
+
 	// Check file exists.
 	info, err := os.Stat(ri.FilePath)
 	if err != nil {
@@ -304,20 +308,6 @@ func trimPartialUTF8Tail(b []byte) []byte {
 		end--
 	}
 	return b[:end]
-}
-
-// pathInScope returns true if path (after Clean) starts with any allowed
-// prefix (also Cleaned). Symlinks are NOT resolved — the threat model is
-// LLM path mistakes, not adversarial filesystem layout.
-func pathInScope(path string, allowed []string) bool {
-	p := filepath.Clean(path)
-	for _, a := range allowed {
-		ac := filepath.Clean(a)
-		if p == ac || strings.HasPrefix(p, ac+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
 }
 
 const fileReadDescription = `读取本地文件系统中的文件。可以直接访问任意文件。

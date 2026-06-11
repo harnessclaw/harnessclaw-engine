@@ -87,6 +87,10 @@ func (t *FileEditTool) Execute(ctx context.Context, input json.RawMessage) (*typ
 		return &types.ToolResult{Content: "invalid input: " + err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
 
+	if res := tool.EnforceWriteScope(ctx, ei.FilePath); res != nil {
+		return res, nil
+	}
+
 	// Read file.
 	content, err := os.ReadFile(ei.FilePath)
 	if err != nil {
@@ -149,20 +153,6 @@ func (t *FileEditTool) Execute(ctx context.Context, input json.RawMessage) (*typ
 			"language":    tool.ExtToLanguage(filepath.Ext(ei.FilePath)),
 		},
 	}, nil
-}
-
-// pathInScope returns true if path (after Clean) starts with any allowed
-// prefix (also Cleaned). Symlinks are NOT resolved — the threat model is
-// LLM path mistakes, not adversarial filesystem layout.
-func pathInScope(path string, allowed []string) bool {
-	p := filepath.Clean(path)
-	for _, a := range allowed {
-		ac := filepath.Clean(a)
-		if p == ac || strings.HasPrefix(p, ac+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
 }
 
 const fileEditDescription = `在文件中做精确字符串替换。
