@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -151,6 +152,64 @@ func (f *File) SetAgent(cfg config.AgentConfig) error {
 		appendScalar(agent, "thinking_intensity", cfg.ThinkingIntensity)
 	}
 	return nil
+}
+
+// SetVideoGen rewrites the top-level videogen: block. Credentials (api_key) use
+// quoted-scalar style like provider creds. The block is small enough that
+// comment loss inside videogen.* is acceptable.
+func (f *File) SetVideoGen(cfg config.VideoGenConfig) error {
+	root := f.root.Content[0]
+	vg, _ := findValue(root, "videogen")
+	if vg == nil {
+		vg = &yaml.Node{Kind: yaml.MappingNode}
+		setKey(root, "videogen", vg)
+	}
+	if vg.Kind != yaml.MappingNode {
+		return fmt.Errorf("persist: top-level videogen is not a mapping")
+	}
+	removeKey(vg, "providers")
+	if len(cfg.Providers) == 0 {
+		return nil
+	}
+	providers := &yaml.Node{Kind: yaml.MappingNode}
+	for _, name := range sortedVideoProviderKeys(cfg.Providers) {
+		p := cfg.Providers[name]
+		pNode := &yaml.Node{Kind: yaml.MappingNode}
+		appendQuotedScalar(pNode, "api_key", p.APIKey)
+		if strings.TrimSpace(p.BaseURL) != "" {
+			appendScalar(pNode, "base_url", p.BaseURL)
+		}
+		if len(p.Endpoints) > 0 {
+			eps := &yaml.Node{Kind: yaml.MappingNode}
+			for _, epName := range sortedVideoEndpointKeys(p.Endpoints) {
+				epNode := &yaml.Node{Kind: yaml.MappingNode}
+				appendScalar(epNode, "model", p.Endpoints[epName].Model)
+				setKey(eps, epName, epNode)
+			}
+			setKey(pNode, "endpoints", eps)
+		}
+		setKey(providers, name, pNode)
+	}
+	setKey(vg, "providers", providers)
+	return nil
+}
+
+func sortedVideoProviderKeys(m map[string]config.VideoProviderConfig) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedVideoEndpointKeys(m map[string]config.VideoEndpointConfig) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // SetToolConfig writes or replaces tools.<name>.* keys from raw.
