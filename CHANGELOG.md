@@ -5,6 +5,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+## [0.0.21-beta.2] - 2026-06-10
+
+### Fixed
+- Published the image generation timeout fix from merged `main`, keeping slow image provider requests on the long-running tool path for the paired desktop beta.
+
+## [0.0.21-beta.1] - 2026-06-09
+
+### Fixed
+- Image generation requests now use a longer HTTP/TLS budget and bypass the generic tool executor timeout, so slower image providers can complete instead of failing after the default tool deadline.
+
+## [0.0.21-beta.0] - 2026-06-09
+
+### Added
+- Image generation requests can now run through the engine `image_generate` tool using configured image-generation providers.
+- `agent.image_generation` is now separated from chat fallback routing so image-only models do not enter the text conversation provider chain.
+- Provider snapshots now expose backend-resolved image generation target URLs for the desktop client.
+- Added a local image generation proxy and mock server for manual image workflow testing.
+
+### Fixed
+- Browser Agent now defaults to enabled in fresh engine configs, matching the packaged desktop sidecar flow.
+
 ## [0.0.18] - 2026-06-04
 
 ### Changed
@@ -27,6 +48,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ### Added
 - Endpoint config now carries an optional `group` display tag (yaml + POST/PATCH/GET). Used by the desktop client to bucket models by series in the Settings UI. Engine ignores the field for routing.
+- Image generation model catalog support: `image_generation` is now a known model capability token, appears in derived model capabilities, and can be persisted through provider endpoint `model_type` overrides.
+- Default registry entries for OpenAI GPT Image (`gpt-image-2`) and Doubao Seedream image-generation models, including provider endpoint metadata for image generation APIs.
 - `provider.ChatRequest.Purpose` label disambiguates main-loop vs compactor-summarize vs other call sites in bifrost dial logs (`purpose=main_loop` / `purpose=compact_summary`).
 - Bifrost adapter dumps the full `BifrostError` struct plus a shape-only summary of the outgoing request (per-message role / block types / empty markers) whenever upstream returns 4xx, so request-body bugs that trigger HTTP 400 are diagnosable from a single log line.
 - Bifrost stream consumer publishes a per-stream chunk histogram (`chunks_text_delta` / `tool_call_delta` / `reasoning_delta` / `finish` / `usage_only` / `other`) on `MessageEnd` and warns when `output_tokens > 0` but no forwarded channels saw any payload.

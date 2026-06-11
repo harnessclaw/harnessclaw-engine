@@ -44,6 +44,11 @@ type EndpointSnapshot struct {
 	// endpoint. Empty = ungrouped (renderer falls back to its
 	// getModelGroup(id) heuristic).
 	Group string `json:"group,omitempty"`
+	// ImageGenerationURL is the fully resolved target used by
+	// image_generate for endpoints that support image generation.
+	// Empty for chat-only endpoints or providers without an image
+	// generation path in the model registry.
+	ImageGenerationURL string `json:"image_generation_url,omitempty"`
 }
 
 // AgentSnapshotPayload is the API-facing view of the agent-level
@@ -58,6 +63,9 @@ type AgentSnapshotPayload struct {
 	// FallbackChain lists backup endpoints tried in order after
 	// Primary fails. Each entry is a dotted ref.
 	FallbackChain []string `json:"fallback_chain"`
+	// ImageGeneration is the endpoint used by image_generate when no
+	// model selector is supplied. It is not part of chat routing.
+	ImageGeneration string `json:"image_generation,omitempty"`
 	// MaxTokens is the agent-level default response cap.
 	MaxTokens int `json:"max_tokens"`
 	// Temperature is the agent-level default sampling temperature

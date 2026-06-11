@@ -54,9 +54,11 @@ type ProviderAuth struct {
 
 // ProviderEndpoints overrides individual endpoint paths.
 type ProviderEndpoints struct {
-	ChatCompletions string  `yaml:"chat_completions" json:"chat_completions"`
-	ModelsList      string  `yaml:"models_list"      json:"models_list"`
-	Embeddings      *string `yaml:"embeddings,omitempty" json:"embeddings,omitempty"`
+	ChatCompletions   string  `yaml:"chat_completions" json:"chat_completions"`
+	ModelsList        string  `yaml:"models_list"      json:"models_list"`
+	Embeddings        *string `yaml:"embeddings,omitempty" json:"embeddings,omitempty"`
+	ImagesGenerations *string `yaml:"images_generations,omitempty" json:"images_generations,omitempty"`
+	ImageEdits        *string `yaml:"image_edits,omitempty" json:"image_edits,omitempty"`
 }
 
 // ModelsDiscovery describes whether the registry pulls live model lists.

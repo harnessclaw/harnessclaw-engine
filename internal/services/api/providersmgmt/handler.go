@@ -368,7 +368,7 @@ func (h *Handler) patchEndpoint(w http.ResponseWriter, r *http.Request, provName
 		known, unknown := modelregistry.FilterKnownTokens(*body.ModelType)
 		if len(unknown) > 0 {
 			writeError(w, http.StatusBadRequest, "invalid_model_type",
-				fmt.Sprintf("unknown tokens: %v; allowed: vision/pdf/audio/video/reasoning/tools/search", unknown))
+				fmt.Sprintf("unknown tokens: %v; allowed: vision/pdf/audio/video/image_generation/reasoning/tools/search", unknown))
 			return
 		}
 		// known may be nil when caller sent []  — preserve that distinction
@@ -452,6 +452,7 @@ func (h *Handler) routeAgent(w http.ResponseWriter, r *http.Request) {
 type PatchAgentRequest struct {
 	Primary           *string   `json:"primary,omitempty"`
 	FallbackChain     *[]string `json:"fallback_chain,omitempty"`
+	ImageGeneration   *string   `json:"image_generation,omitempty"`
 	MaxTokens         *int      `json:"max_tokens,omitempty"`
 	Temperature       *float64  `json:"temperature,omitempty"`
 	ContextWindow     *int      `json:"context_window,omitempty"`
@@ -469,6 +470,7 @@ func (h *Handler) patchAgent(w http.ResponseWriter, r *http.Request) {
 	patch := manager.AgentPatch{
 		Primary:           body.Primary,
 		FallbackChain:     body.FallbackChain,
+		ImageGeneration:   body.ImageGeneration,
 		MaxTokens:         body.MaxTokens,
 		Temperature:       body.Temperature,
 		ContextWindow:     body.ContextWindow,
@@ -478,7 +480,7 @@ func (h *Handler) patchAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if patch.IsEmpty() {
 		writeError(w, http.StatusBadRequest, "bad_request",
-			"empty patch; supply at least one of primary/fallback_chain/max_tokens/temperature/context_window/max_turns/max_tool_calls/thinking_intensity")
+			"empty patch; supply at least one of primary/fallback_chain/image_generation/max_tokens/temperature/context_window/max_turns/max_tool_calls/thinking_intensity")
 		return
 	}
 	if err := h.mgr.UpdateAgent(patch); err != nil {
@@ -493,6 +495,7 @@ func (h *Handler) patchAgent(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("providersmgmt: agent patched",
 		zap.Bool("primary_changed", body.Primary != nil),
 		zap.Bool("fallback_chain_changed", body.FallbackChain != nil),
+		zap.Bool("image_generation_changed", body.ImageGeneration != nil),
 		zap.Bool("max_tokens_changed", body.MaxTokens != nil),
 		zap.Bool("temperature_changed", body.Temperature != nil),
 		zap.Bool("context_window_changed", body.ContextWindow != nil),

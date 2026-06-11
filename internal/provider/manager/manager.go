@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -248,16 +250,17 @@ func (m *Manager) ProvidersSnapshot() []ProviderSnapshot {
 				mt = append(mt, ep.ModelType...)
 			}
 			eps = append(eps, EndpointSnapshot{
-				Name:           epName,
-				Model:          ep.Model,
-				MaxTokens:      ep.MaxTokens,
-				Temperature:    ep.Temperature,
-				EnableThinking: ep.EnableThinking,
-				ContextWindow:  ep.ContextWindow,
-				Disabled:       ep.Disabled,
-				InChain:        containsString(chain, config.FormatChainEntry(name, epName)),
-				ModelType:      mt,
-				Group:          ep.Group,
+				Name:               epName,
+				Model:              ep.Model,
+				MaxTokens:          ep.MaxTokens,
+				Temperature:        ep.Temperature,
+				EnableThinking:     ep.EnableThinking,
+				ContextWindow:      ep.ContextWindow,
+				Disabled:           ep.Disabled,
+				InChain:            containsString(chain, config.FormatChainEntry(name, epName)),
+				ModelType:          mt,
+				Group:              ep.Group,
+				ImageGenerationURL: m.imageGenerationURLLocked(name, p, ep),
 			})
 		}
 		sort.Slice(eps, func(i, j int) bool { return eps[i].Name < eps[j].Name })
@@ -274,6 +277,63 @@ func (m *Manager) ProvidersSnapshot() []ProviderSnapshot {
 	return out
 }
 
+func (m *Manager) imageGenerationURLLocked(provName string, provCfg config.ProviderConfig, epCfg config.EndpointConfig) string {
+	if !m.endpointSupportsImageGenerationLocked(provName, provCfg, epCfg) {
+		return ""
+	}
+	provSpec := m.lookupProviderSpecLocked(provName, provCfg)
+	if provSpec == nil || provSpec.Endpoints.ImagesGenerations == nil {
+		return ""
+	}
+	endpointPath := strings.TrimSpace(*provSpec.Endpoints.ImagesGenerations)
+	if endpointPath == "" {
+		return ""
+	}
+	baseURL := strings.TrimSpace(provCfg.BaseURL)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(provSpec.BaseURL)
+	}
+	if baseURL == "" {
+		return ""
+	}
+	return joinEndpointURL(baseURL, endpointPath)
+}
+
+func (m *Manager) lookupProviderSpecLocked(provName string, provCfg config.ProviderConfig) *modelregistry.ProviderSpec {
+	if m.registry == nil {
+		return nil
+	}
+	if spec := m.registry.LookupProvider(provName); spec != nil {
+		return spec
+	}
+	return m.registry.LookupProvider(provCfg.Type)
+}
+
+func (m *Manager) endpointSupportsImageGenerationLocked(provName string, provCfg config.ProviderConfig, epCfg config.EndpointConfig) bool {
+	if len(epCfg.ModelType) > 0 {
+		return modelregistry.SupportsFromTokens(epCfg.ModelType).ImageGeneration
+	}
+	if m.registry == nil {
+		return false
+	}
+	if spec := m.registry.LookupByProviderAndModelID(provName, epCfg.Model); spec != nil {
+		return spec.Supports.ImageGeneration
+	}
+	if spec := m.registry.LookupByProviderAndModelID(provCfg.Type, epCfg.Model); spec != nil {
+		return spec.Supports.ImageGeneration
+	}
+	return false
+}
+
+func joinEndpointURL(baseURL, endpointPath string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(endpointPath, "/")
+	}
+	u.Path = path.Join(u.Path, endpointPath)
+	return u.String()
+}
+
 // AgentSnapshot returns the current agent routing config (primary +
 // fallback_chain + shared per-call defaults + behavior limits) plus
 // per-entry health for the effective chain. Returns empty primary +
@@ -284,6 +344,7 @@ func (m *Manager) AgentSnapshot() AgentSnapshotPayload {
 	payload := AgentSnapshotPayload{
 		Primary:                m.agent.Primary,
 		FallbackChain:          append([]string(nil), m.agent.FallbackChain...),
+		ImageGeneration:        m.agent.ImageGeneration,
 		MaxTokens:              m.agent.MaxTokens,
 		Temperature:            m.agent.Temperature,
 		ContextWindow:          m.agent.ContextWindow,
@@ -629,7 +690,7 @@ type EndpointPatch struct {
 	// Group sets the display-only tag. nil = leave alone; non-nil
 	// pointer to "" = explicitly clear (yaml `group:` key removed on
 	// persist); non-nil to a string = set/replace.
-	Group          *string
+	Group *string
 }
 
 // IsEmpty reports whether the patch would change anything.
@@ -837,6 +898,7 @@ func (m *Manager) DeleteEndpoint(provName, epName string) error {
 type AgentPatch struct {
 	Primary           *string
 	FallbackChain     *[]string
+	ImageGeneration   *string
 	MaxTokens         *int
 	Temperature       *float64
 	ContextWindow     *int
@@ -847,7 +909,7 @@ type AgentPatch struct {
 
 // IsEmpty reports whether the patch would change anything.
 func (p AgentPatch) IsEmpty() bool {
-	return p.Primary == nil && p.FallbackChain == nil &&
+	return p.Primary == nil && p.FallbackChain == nil && p.ImageGeneration == nil &&
 		p.MaxTokens == nil && p.Temperature == nil && p.ContextWindow == nil &&
 		p.MaxTurns == nil && p.MaxToolCalls == nil && p.ThinkingIntensity == nil
 }
@@ -880,6 +942,9 @@ func (m *Manager) UpdateAgent(patch AgentPatch) error {
 	if patch.FallbackChain != nil {
 		next.FallbackChain = append([]string(nil), (*patch.FallbackChain)...)
 	}
+	if patch.ImageGeneration != nil {
+		next.ImageGeneration = *patch.ImageGeneration
+	}
 	if patch.MaxTokens != nil {
 		next.MaxTokens = *patch.MaxTokens
 	}
@@ -910,6 +975,11 @@ func (m *Manager) UpdateAgent(patch AgentPatch) error {
 		}
 		if entry == next.Primary {
 			return fmt.Errorf("manager: fallback_chain entry %q duplicates primary", entry)
+		}
+	}
+	if next.ImageGeneration != "" {
+		if err := m.validateChainEntryLocked(next.ImageGeneration); err != nil {
+			return err
 		}
 	}
 	// Validate ONLY fields the caller actually sent — operators can
@@ -962,6 +1032,7 @@ func (m *Manager) UpdateAgent(patch AgentPatch) error {
 	m.logger.Info("manager: agent config updated",
 		zap.Bool("primary_changed", patch.Primary != nil),
 		zap.Bool("fallback_chain_changed", patch.FallbackChain != nil),
+		zap.Bool("image_generation_changed", patch.ImageGeneration != nil),
 		zap.Bool("max_tokens_changed", patch.MaxTokens != nil),
 		zap.Bool("temperature_changed", patch.Temperature != nil),
 		zap.Bool("context_window_changed", patch.ContextWindow != nil),
@@ -970,6 +1041,7 @@ func (m *Manager) UpdateAgent(patch AgentPatch) error {
 		zap.Bool("thinking_intensity_changed", patch.ThinkingIntensity != nil),
 		zap.String("primary", next.Primary),
 		zap.Strings("fallback_chain", next.FallbackChain),
+		zap.String("image_generation", next.ImageGeneration),
 		zap.String("thinking_intensity", next.ThinkingIntensity),
 	)
 	return nil

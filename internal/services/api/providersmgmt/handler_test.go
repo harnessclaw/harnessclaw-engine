@@ -17,6 +17,7 @@ import (
 	"harnessclaw-go/internal/provider/bifrost"
 	"harnessclaw-go/internal/provider/failover"
 	"harnessclaw-go/internal/provider/manager"
+	modelregistry "harnessclaw-go/internal/provider/registry"
 )
 
 const sampleYAML = `# Top-level note
@@ -76,7 +77,11 @@ func setupTest(t *testing.T) (*Handler, string) {
 	policy := func(_ config.ProviderHealthConfig) (failover.RetryPolicy, failover.RetryPolicy, failover.RetryPolicy) {
 		return failover.FastPolicy, failover.MediumPolicy, failover.ProbePolicy
 	}
-	mgr, err := manager.New(cfg.LLM, cfg.Agent, nil, build, policy, zap.NewNop())
+	manifest, err := modelregistry.DefaultManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := manager.New(cfg.LLM, cfg.Agent, modelregistry.NewRegistry(manifest), build, policy, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,9 +174,9 @@ func TestPost_Provider_RejectsDuplicate(t *testing.T) {
 func TestPost_Provider_RejectsMissingFields(t *testing.T) {
 	h, _ := setupTest(t)
 	for _, b := range []string{
-		`{"type":"openai"}`,       // missing name
-		`{"name":"x"}`,            // missing type
-		`{}`,                      // both missing
+		`{"type":"openai"}`, // missing name
+		`{"name":"x"}`,      // missing type
+		`{}`,                // both missing
 	} {
 		rec := doRequest(t, h, "POST", "/api/v1/providers", b)
 		if rec.Code != http.StatusBadRequest {
@@ -267,6 +272,61 @@ func TestGet_Endpoints_IncludesModelType(t *testing.T) {
 	}
 }
 
+func TestGet_Endpoints_IncludesImageGenerationURL(t *testing.T) {
+	h, _ := setupTest(t)
+	rec := doRequest(t, h, "POST", "/api/v1/providers",
+		`{"name":"openai","type":"openai","base_url":"http://127.0.0.1:18181","api_key":"sk-test"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("openai provider status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	rec = doRequest(t, h, "POST", "/api/v1/providers/openai/endpoints",
+		`{"name":"gpt-image-2","model":"gpt-image-2"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("openai endpoint status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	rec = doRequest(t, h, "POST", "/api/v1/providers",
+		`{"name":"doubao","type":"openai","base_url":"http://127.0.0.1:18181","api_key":"sk-test"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("doubao provider status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	rec = doRequest(t, h, "POST", "/api/v1/providers/doubao/endpoints",
+		`{"name":"doubao-seedream-5-0-260128","model":"doubao-seedream-5-0-260128"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("doubao endpoint status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doRequest(t, h, "GET", "/api/v1/providers", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			Providers []struct {
+				Name      string `json:"name"`
+				Endpoints []struct {
+					Name               string `json:"name"`
+					ImageGenerationURL string `json:"image_generation_url"`
+				} `json:"endpoints"`
+			} `json:"providers"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, provider := range resp.Data.Providers {
+		for _, endpoint := range provider.Endpoints {
+			got[provider.Name+":"+endpoint.Name] = endpoint.ImageGenerationURL
+		}
+	}
+	if got["openai:gpt-image-2"] != "http://127.0.0.1:18181/v1/images/generations" {
+		t.Fatalf("openai image_generation_url = %q", got["openai:gpt-image-2"])
+	}
+	if got["doubao:doubao-seedream-5-0-260128"] != "http://127.0.0.1:18181/images/generations" {
+		t.Fatalf("doubao image_generation_url = %q", got["doubao:doubao-seedream-5-0-260128"])
+	}
+}
+
 func TestPost_Endpoint_AddsAndPersists(t *testing.T) {
 	h, cfgPath := setupTest(t)
 	rec := doRequest(t, h, "POST", "/api/v1/providers/alpha/endpoints",
@@ -338,13 +398,13 @@ func TestPatch_Endpoint_UpdatesAndPersists(t *testing.T) {
 func TestPatch_Endpoint_AcceptsKnownModelType(t *testing.T) {
 	h, cfgPath := setupTest(t)
 	rec := doRequest(t, h, "PATCH", "/api/v1/providers/alpha/endpoints/claude-46",
-		`{"model_type":["vision","tools"]}`)
+		`{"model_type":["vision","image_generation","tools"]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	cfg, _ := config.Load(cfgPath)
 	ep := cfg.LLM.Providers["alpha"].Endpoints["claude-46"]
-	if len(ep.ModelType) != 2 || ep.ModelType[0] != "vision" || ep.ModelType[1] != "tools" {
+	if len(ep.ModelType) != 3 || ep.ModelType[0] != "vision" || ep.ModelType[1] != "image_generation" || ep.ModelType[2] != "tools" {
 		t.Errorf("model_type not persisted: %v", ep.ModelType)
 	}
 }
@@ -439,9 +499,10 @@ func TestGet_Agent_ReturnsOrderAndHealth(t *testing.T) {
 	}
 	var resp struct {
 		Data struct {
-			Primary       string                    `json:"primary"`
-			FallbackChain []string                  `json:"fallback_chain"`
-			Entries       []failover.ProviderHealth `json:"entries"`
+			Primary         string                    `json:"primary"`
+			FallbackChain   []string                  `json:"fallback_chain"`
+			ImageGeneration string                    `json:"image_generation"`
+			Entries         []failover.ProviderHealth `json:"entries"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -453,6 +514,9 @@ func TestGet_Agent_ReturnsOrderAndHealth(t *testing.T) {
 	if len(resp.Data.FallbackChain) != 1 || resp.Data.FallbackChain[0] != "beta:gpt-5" {
 		t.Fatalf("fallback_chain = %v, want [beta:gpt-5]", resp.Data.FallbackChain)
 	}
+	if resp.Data.ImageGeneration != "" {
+		t.Fatalf("image_generation = %q, want empty", resp.Data.ImageGeneration)
+	}
 	if resp.Data.Entries[0].Provider != "alpha" || resp.Data.Entries[0].Endpoint != "claude-46" {
 		t.Fatalf("entry split wrong: %+v", resp.Data.Entries[0])
 	}
@@ -461,7 +525,7 @@ func TestGet_Agent_ReturnsOrderAndHealth(t *testing.T) {
 func TestPatch_Agent_UpdatesPrimaryAndPersists(t *testing.T) {
 	h, cfgPath := setupTest(t)
 	rec := doRequest(t, h, "PATCH", "/api/v1/agent",
-		`{"primary":"beta:gpt-5","fallback_chain":["alpha:claude-46"]}`)
+		`{"primary":"beta:gpt-5","fallback_chain":["alpha:claude-46"],"image_generation":"beta:gpt-5"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -471,6 +535,9 @@ func TestPatch_Agent_UpdatesPrimaryAndPersists(t *testing.T) {
 	}
 	if len(cfg.Agent.FallbackChain) != 1 || cfg.Agent.FallbackChain[0] != "alpha:claude-46" {
 		t.Fatalf("fallback_chain not persisted: %v", cfg.Agent.FallbackChain)
+	}
+	if cfg.Agent.ImageGeneration != "beta:gpt-5" {
+		t.Fatalf("image_generation not persisted: %q", cfg.Agent.ImageGeneration)
 	}
 }
 
@@ -498,12 +565,13 @@ func TestPatch_Agent_RejectsMalformed(t *testing.T) {
 	for _, body := range []string{
 		`{"primary":"missing-separator"}`,
 		`{"primary":"ghost:x"}`,
+		`{"image_generation":"ghost:x"}`,
 		`{"fallback_chain":["alpha:ghost-ep"]}`,
 		`{"primary":"alpha:claude-46","fallback_chain":["alpha:claude-46"]}`, // duplicates primary
 		`{"max_turns":0}`,                                                    // must be ≥ 1
 		`{"max_turns":-3}`,
-		`{"max_tool_calls":-1}`,                          // must be ≥ 0
-		`{"thinking_intensity":"super"}`,                 // not in low/medium/high
+		`{"max_tool_calls":-1}`,          // must be ≥ 0
+		`{"thinking_intensity":"super"}`, // not in low/medium/high
 		`{}`,
 	} {
 		rec := doRequest(t, h, "PATCH", "/api/v1/agent", body)

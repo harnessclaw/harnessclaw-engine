@@ -19,6 +19,27 @@ providers:
     endpoints:
       chat_completions: /v1/chat/completions
       models_list: /v1/models
+      images_generations: /v1/images/generations
+      image_edits: /v1/images/edits
+
+  gpt-image:
+    display_name: GPT Image
+    family: openai-image
+    base_url: https://api.openai.com
+    protocol: native
+    region: us
+    quirks:
+      thinking_param_style: none
+      tool_calls_require_reasoning_field: false
+      extra_params_passthrough_required: false
+    auth:
+      type: bearer
+      key_header: Authorization
+      key_prefix: "Bearer "
+    endpoints:
+      models_list: /v1/models
+      images_generations: /v1/images/generations
+      image_edits: /v1/images/edits
 
   anthropic:
     display_name: Anthropic
@@ -147,6 +168,24 @@ providers:
       chat_completions: /chat/completions
       models_list: /models
 
+  doubao:
+    display_name: Doubao Seedream
+    family: doubao-seedream
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    protocol: openai_compatible
+    region: cn
+    quirks:
+      thinking_param_style: none
+      tool_calls_require_reasoning_field: false
+      extra_params_passthrough_required: false
+    auth:
+      type: bearer
+      key_header: Authorization
+      key_prefix: "Bearer "
+    endpoints:
+      models_list: /models
+      images_generations: /images/generations
+
 models:
   "openai/gpt-5.5":
     provider: openai
@@ -202,6 +241,42 @@ models:
       source: "OpenAI API docs"
       last_verified: 2026-05-13T00:00:00Z
       upstream_model_card: https://developers.openai.com/api/docs/models/gpt-5.4
+
+  "gpt-image/gpt-image-2":
+    provider: gpt-image
+    model_id: gpt-image-2
+    display_name: "GPT Image 2"
+    family: gpt-image
+    generation: "2"
+    modalities: { input: [text, image], output: [image] }
+    supports:
+      vision: true
+      image_generation: true
+    limits: { context_window: 0, max_input_tokens: 0, max_output_tokens: 0, request_timeout_ms_recommended: 120000 }
+    defaults: { temperature: 1.0, top_p: 1.0, max_output_tokens_default: 0 }
+    metadata:
+      source: "OpenAI API docs"
+      last_verified: 2026-06-02T00:00:00Z
+      notes: "Image generation and editing model; use image generation/edit endpoints rather than chat fallback routing."
+      upstream_model_card: https://developers.openai.com/api/docs/models/gpt-image-2
+
+  "openai/gpt-image-2":
+    provider: openai
+    model_id: gpt-image-2
+    display_name: "GPT Image 2"
+    family: gpt-image
+    generation: "2"
+    modalities: { input: [text, image], output: [image] }
+    supports:
+      vision: true
+      image_generation: true
+    limits: { context_window: 0, max_input_tokens: 0, max_output_tokens: 0, request_timeout_ms_recommended: 120000 }
+    defaults: { temperature: 1.0, top_p: 1.0, max_output_tokens_default: 0 }
+    metadata:
+      source: "OpenAI API docs"
+      last_verified: 2026-06-02T00:00:00Z
+      notes: "Image generation and editing model under the OpenAI provider; use image generation/edit endpoints rather than chat fallback routing."
+      upstream_model_card: https://developers.openai.com/api/docs/models/gpt-image-2
 
   "anthropic/claude-opus-4-7":
     provider: anthropic
@@ -550,3 +625,77 @@ models:
       last_verified: 2026-05-14T00:00:00Z
       notes: "thinking.type 支持 enabled/disabled/auto;OpenAI 兼容协议,认证用 APIpassword Bearer。"
       upstream_model_card: https://www.xfyun.cn/doc/spark/X2-Flash.html
+
+  # ===== Doubao Seedream image generation =====
+  # Source: Volcengine Ark Seedream 4.0-5.0 docs (verified 2026-06-02).
+  "doubao/doubao-seedream-5-0-260128":
+    provider: doubao
+    model_id: doubao-seedream-5-0-260128
+    display_name: "Doubao Seedream 5.0"
+    family: seedream-5
+    generation: "5.0"
+    modalities: { input: [text, image], output: [image] }
+    supports:
+      vision: true
+      image_generation: true
+    limits: { context_window: 0, max_input_tokens: 0, max_output_tokens: 0, request_timeout_ms_recommended: 120000 }
+    defaults: { temperature: 1.0, top_p: 1.0, max_output_tokens_default: 0 }
+    metadata:
+      source: "Volcengine Ark docs"
+      last_verified: 2026-06-02T00:00:00Z
+      notes: "Supports text-to-image and image-to-image through Ark image generation endpoint."
+      upstream_model_card: https://www.volcengine.com/docs/82379/1824692
+
+  "doubao/doubao-seedream-5-0-lite-260128":
+    provider: doubao
+    model_id: doubao-seedream-5-0-lite-260128
+    display_name: "Doubao Seedream 5.0 Lite"
+    family: seedream-5
+    generation: "5.0-lite"
+    modalities: { input: [text, image], output: [image] }
+    supports:
+      vision: true
+      image_generation: true
+    limits: { context_window: 0, max_input_tokens: 0, max_output_tokens: 0, request_timeout_ms_recommended: 120000 }
+    defaults: { temperature: 1.0, top_p: 1.0, max_output_tokens_default: 0 }
+    metadata:
+      source: "Volcengine Ark docs"
+      last_verified: 2026-06-02T00:00:00Z
+      notes: "Supports text-to-image and image-to-image through Ark image generation endpoint."
+      upstream_model_card: https://www.volcengine.com/docs/82379/1824692
+
+  "doubao/doubao-seedream-4-5-251128":
+    provider: doubao
+    model_id: doubao-seedream-4-5-251128
+    display_name: "Doubao Seedream 4.5"
+    family: seedream-4
+    generation: "4.5"
+    modalities: { input: [text, image], output: [image] }
+    supports:
+      vision: true
+      image_generation: true
+    limits: { context_window: 0, max_input_tokens: 0, max_output_tokens: 0, request_timeout_ms_recommended: 120000 }
+    defaults: { temperature: 1.0, top_p: 1.0, max_output_tokens_default: 0 }
+    metadata:
+      source: "Volcengine Ark docs"
+      last_verified: 2026-06-02T00:00:00Z
+      notes: "Supports text-to-image and image-to-image through Ark image generation endpoint."
+      upstream_model_card: https://www.volcengine.com/docs/82379/1824692
+
+  "doubao/doubao-seedream-4-0-250828":
+    provider: doubao
+    model_id: doubao-seedream-4-0-250828
+    display_name: "Doubao Seedream 4.0"
+    family: seedream-4
+    generation: "4.0"
+    modalities: { input: [text, image], output: [image] }
+    supports:
+      vision: true
+      image_generation: true
+    limits: { context_window: 0, max_input_tokens: 0, max_output_tokens: 0, request_timeout_ms_recommended: 120000 }
+    defaults: { temperature: 1.0, top_p: 1.0, max_output_tokens_default: 0 }
+    metadata:
+      source: "Volcengine Ark docs"
+      last_verified: 2026-06-02T00:00:00Z
+      notes: "Supports text-to-image and image-to-image through Ark image generation endpoint."
+      upstream_model_card: https://www.volcengine.com/docs/82379/1824692

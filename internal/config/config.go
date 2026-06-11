@@ -175,6 +175,17 @@ func (c *Config) SanitizeLLM(logger *zap.Logger) {
 		}
 		c.Agent.FallbackChain = filtered
 	}
+
+	// Pass 4: agent.image_generation (must resolve if configured).
+	// It is not part of chat routing, but keeping a stale ref would make
+	// image_generate fail later with a less actionable provider error.
+	if c.Agent.ImageGeneration != "" {
+		if !c.endpointExists(c.Agent.ImageGeneration) {
+			logger.Warn("config sanitize: clearing agent.image_generation — unresolved reference",
+				zap.String("image_generation", c.Agent.ImageGeneration))
+			c.Agent.ImageGeneration = ""
+		}
+	}
 }
 
 // endpointExists reports whether a "provider:endpoint" dotted ref
@@ -229,15 +240,16 @@ const (
 // AgentConfig is the top-level routing + behavior config for the
 // whole agent application. It describes:
 //
-//   - Which model to call (Primary + FallbackChain).
+//   - Which chat model to call (Primary + FallbackChain).
+//   - Which image generation endpoint tools should use.
 //   - Per-call defaults baked into each adapter (MaxTokens,
 //     Temperature, ContextWindow).
 //   - Conversation-level limits (MaxTurns LLM rounds, MaxToolCalls
 //     tool-invocation rounds).
 //   - Reasoning effort (ThinkingIntensity).
 //
-// The endpoint identifiers (Primary / FallbackChain entries) are
-// dotted refs "provider:endpoint" pointing into llm.providers.
+// The endpoint identifiers (Primary / FallbackChain / ImageGeneration
+// entries) are dotted refs "provider:endpoint" pointing into llm.providers.
 type AgentConfig struct {
 	// Primary is the main model the agent calls. Single dotted ref
 	// "provider:endpoint". Empty = no primary (degraded mode if
@@ -247,6 +259,12 @@ type AgentConfig struct {
 	// FallbackChain is the list of backup models tried in order
 	// when Primary fails. Each entry is a dotted ref. May be empty.
 	FallbackChain []string `mapstructure:"fallback_chain"`
+
+	// ImageGeneration is the image-generation endpoint used by the
+	// image_generate tool when the tool call does not explicitly pass
+	// a model. It is intentionally separate from Primary/FallbackChain
+	// so image-only endpoints do not enter the chat failover dispatcher.
+	ImageGeneration string `mapstructure:"image_generation"`
 
 	// MaxTokens is the agent-level default response cap. Applies
 	// when an endpoint's own max_tokens is 0 OR when MaxTokens
@@ -449,7 +467,7 @@ type EndpointConfig struct {
 	// to one SupportsFlags field (see registry.SupportsFromTokens).
 	// Unset / empty → fall back to the manifest baseline.
 	//
-	// Valid tokens: vision / pdf / audio / video / reasoning / tools / search.
+	// Valid tokens: vision / pdf / audio / video / image_generation / reasoning / tools / search.
 	// Unknown tokens are dropped with a warn on startup; the PATCH
 	// endpoint rejects them with 400.
 	ModelType []string `mapstructure:"model_type" yaml:"model_type,omitempty"`
@@ -723,7 +741,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("tools::web_search::limit", 5)
 	v.SetDefault("tools::tavily_search::enabled", false)
 	v.SetDefault("tools::tavily_search::max_results", 5)
-	v.SetDefault("tools::browser_agent::enabled", false)
+	v.SetDefault("tools::browser_agent::enabled", true)
 	v.SetDefault("tools::browser_agent::default_visibility", "hidden")
 	v.SetDefault("tools::browser_agent::max_steps", 30)
 	v.SetDefault("tools::browser_agent::blocked_domains", []string{})

@@ -1,8 +1,8 @@
 package registry
 
 // DeriveCapabilities collapses the granular SupportsFlags matrix into the
-// four high-level capability buckets used by the UI to render colored
-// chips: multimodal / tools / reasoning / search.
+// high-level capability buckets used by the UI to render colored chips:
+// multimodal / image_generation / tools / reasoning / search.
 //
 // The fine-grained flags remain authoritative for per-feature gating
 // (e.g. the multimodal Gate uses SupportsFlags.Vision directly). The
@@ -17,6 +17,9 @@ func DeriveCapabilities(s SupportsFlags) []string {
 	var out []string
 	if s.Vision || s.PDFInput || s.AudioInput || s.VideoInput {
 		out = append(out, "multimodal")
+	}
+	if s.ImageGeneration {
+		out = append(out, "image_generation")
 	}
 	if s.FunctionCalling {
 		out = append(out, "tools")
@@ -55,13 +58,14 @@ func AcceptsModality(s SupportsFlags, modality string) bool {
 // dropped (with a warn) on yaml load and rejected (400) on PATCH.
 // Single source of truth; the client mirrors this list verbatim.
 var KnownModelTypeTokens = map[string]bool{
-	"vision":    true,
-	"pdf":       true,
-	"audio":     true,
-	"video":     true,
-	"reasoning": true,
-	"tools":     true,
-	"search":    true,
+	"vision":           true,
+	"pdf":              true,
+	"audio":            true,
+	"video":            true,
+	"image_generation": true,
+	"reasoning":        true,
+	"tools":            true,
+	"search":           true,
 }
 
 // SupportsFromTokens converts a model_type list to a SupportsFlags
@@ -83,6 +87,8 @@ func SupportsFromTokens(tokens []string) SupportsFlags {
 			s.AudioInput = true
 		case "video":
 			s.VideoInput = true
+		case "image_generation":
+			s.ImageGeneration = true
 		case "reasoning":
 			s.Reasoning = true
 		case "tools":
@@ -95,7 +101,7 @@ func SupportsFromTokens(tokens []string) SupportsFlags {
 }
 
 // MergeOverride composes the manifest baseline with an endpoint's
-// model_type override. The 7 token-mapped capability fields come
+// model_type override. The token-mapped capability fields come
 // from the override; all other SupportsFlags fields (Streaming,
 // SystemMessages, PromptCaching, etc.) keep the manifest's values
 // because those are operational features the user shouldn't have to
@@ -106,6 +112,7 @@ func MergeOverride(base, override SupportsFlags) SupportsFlags {
 	out.PDFInput = override.PDFInput
 	out.AudioInput = override.AudioInput
 	out.VideoInput = override.VideoInput
+	out.ImageGeneration = override.ImageGeneration
 	out.Reasoning = override.Reasoning
 	out.FunctionCalling = override.FunctionCalling
 	out.WebSearch = override.WebSearch

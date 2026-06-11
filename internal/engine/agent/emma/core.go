@@ -127,6 +127,8 @@ type Option func(*Engine)
 //     context gathering before dispatching.
 //   - ask_user_question           → clarification when the request is
 //     ambiguous.
+//   - image_generate              → direct image-generation requests. The
+//     tool itself owns provider/model validation and reports Settings fixes.
 //
 // The task tool is intentionally NOT in this list — it lives inside the
 // L2 layer (the scheduler uses task internally to dispatch L3).
@@ -163,6 +165,7 @@ func DefaultEmmaConfig() EmmaConfig {
 			"web_search",
 			"tavily_search",
 			"ask_user_question",
+			"image_generate",
 		},
 		MaxTurns: 15,
 	}
@@ -184,6 +187,7 @@ func WithEmmaConfig(cfg EmmaConfig) Option {
 			"web_search",
 			"tavily_search",
 			"ask_user_question",
+			"image_generate",
 		}
 	}
 	if cfg.MaxTurns <= 0 {
