@@ -173,7 +173,7 @@ func TestConvertMessages_SystemPrompt(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hello"}}},
 	}
-	result := convertMessages(msgs, "You are helpful.", true, nil)
+	result := convertMessages(msgs, "You are helpful.", true, true, nil)
 
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages (system + user), got %d", len(result))
@@ -193,7 +193,7 @@ func TestConvertMessages_NoSystemPrompt(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}},
 	}
-	result := convertMessages(msgs, "", true, nil)
+	result := convertMessages(msgs, "", true, true, nil)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
 	}
@@ -223,7 +223,7 @@ func TestConvertMessages_ToolResult(t *testing.T) {
 			}},
 		},
 	}
-	result := convertMessages(msgs, "", true, nil)
+	result := convertMessages(msgs, "", true, true, nil)
 
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages (assistant + tool), got %d", len(result))
@@ -249,7 +249,7 @@ func TestConvertMessages_ToolUse(t *testing.T) {
 			},
 		},
 	}
-	result := convertMessages(msgs, "", true, nil)
+	result := convertMessages(msgs, "", true, true, nil)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
@@ -278,7 +278,7 @@ func TestConvertMessages_SkipSystemRole(t *testing.T) {
 		{Role: types.RoleSystem, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "system text"}}},
 		{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "hi"}}},
 	}
-	result := convertMessages(msgs, "", true, nil)
+	result := convertMessages(msgs, "", true, true, nil)
 	// System role messages in the input are skipped (system prompt is separate param).
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message (system role skipped), got %d", len(result))
@@ -1027,7 +1027,7 @@ func TestConvertSingleMessage_AssistantReasoningRoundTrip(t *testing.T) {
 		},
 		ReasoningContent: "用户问 X,我推导 X = 42,所以...",
 	}
-	bf := convertSingleMessage(msg, true)
+	bf := convertSingleMessage(msg, true, true)
 	if bf == nil || bf.ChatAssistantMessage == nil {
 		t.Fatalf("expected ChatAssistantMessage to be set, got %+v", bf)
 	}
@@ -1234,7 +1234,7 @@ func TestConvertMessages_SkipsReasoningWhenDisabled(t *testing.T) {
 	}
 
 	// Include = true → reasoning forwarded.
-	withReasoning := convertMessages(msgs, "", true, nil)
+	withReasoning := convertMessages(msgs, "", true, true, nil)
 	if len(withReasoning) != 1 || withReasoning[0].ChatAssistantMessage == nil ||
 		withReasoning[0].ChatAssistantMessage.Reasoning == nil ||
 		*withReasoning[0].ChatAssistantMessage.Reasoning != msgs[0].ReasoningContent {
@@ -1243,7 +1243,7 @@ func TestConvertMessages_SkipsReasoningWhenDisabled(t *testing.T) {
 
 	// Include = false → reasoning suppressed (no ChatAssistantMessage at all,
 	// because there are no tool_calls either).
-	withoutReasoning := convertMessages(msgs, "", false, nil)
+	withoutReasoning := convertMessages(msgs, "", false, true, nil)
 	if len(withoutReasoning) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(withoutReasoning))
 	}
@@ -1302,7 +1302,7 @@ func TestConvertSingleMessage_ToolCallAlwaysHasReasoningField(t *testing.T) {
 		},
 		// No ReasoningContent: thinking was disabled so adapter dropped it.
 	}
-	bf := convertSingleMessage(msg, false)
+	bf := convertSingleMessage(msg, false, true)
 	if bf == nil || bf.ChatAssistantMessage == nil {
 		t.Fatalf("expected assistant message with tool_calls, got %+v", bf)
 	}
@@ -1476,7 +1476,7 @@ func TestConvertMessages_DropsOrphanToolResponses(t *testing.T) {
 		}},
 	}
 
-	result := convertMessages(msgs, "", false, nil)
+	result := convertMessages(msgs, "", false, true, nil)
 
 	// Expect: user, assistant(toolcalls B), tool(B). Orphan tool(A) gone.
 	if len(result) != 3 {
@@ -1533,7 +1533,7 @@ func TestSanitizeToolSequence_StripsMidStreamUnansweredToolCalls(t *testing.T) {
 		}},
 	}
 
-	result := convertMessages(msgs, "", false, logger)
+	result := convertMessages(msgs, "", false, true, logger)
 
 	// user + assistant(text only, A stripped) + assistant(text + B kept)
 	if len(result) != 3 {
@@ -1584,7 +1584,7 @@ func TestSanitizeToolSequence_DropsEmptiedAssistant(t *testing.T) {
 		}},
 	}
 
-	result := convertMessages(msgs, "", false, nil)
+	result := convertMessages(msgs, "", false, true, nil)
 
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages (user + tail assistant), got %d", len(result))
@@ -1626,7 +1626,7 @@ func TestSanitizeToolSequence_RepairsTruncatedToolArgs(t *testing.T) {
 		}},
 	}
 
-	result := convertMessages(msgs, "", false, logger)
+	result := convertMessages(msgs, "", false, true, logger)
 
 	// Find the assistant carrying T1.
 	var assistant *schemas.ChatMessage
@@ -1681,7 +1681,7 @@ func TestSanitizeToolSequence_LeavesValidArgsAlone(t *testing.T) {
 		}},
 	}
 
-	result := convertMessages(msgs, "", false, nil)
+	result := convertMessages(msgs, "", false, true, nil)
 
 	for _, m := range result {
 		if m.Role != schemas.ChatMessageRoleAssistant || m.ChatAssistantMessage == nil {

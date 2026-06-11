@@ -629,6 +629,10 @@ func main() {
 		modelInfo = &routerModelInfoBridge{mgr: providerMgr, reg: modelReg}
 	}
 	rtr := router.New(eng, channels, middlewares, modelInfo, logger)
+	// Enable inbound image persistence: attachments land in
+	// {workspace}/session/{sid}/uploads/ so tools can read them via
+	// the block's FilePath. Empty root disables (persistence no-ops).
+	rtr.SetWorkspaceRoot(workspaceRootDir)
 
 	// Register WebSocket channel if enabled.
 	//
@@ -1118,6 +1122,19 @@ func buildBifrostAdapter(
 	effectiveTemp := resolveEffectiveTemperature(provCfg.Type, agent.Temperature, epCfg.Temperature)
 	effectiveMax := resolveEffectiveMaxTokens(agent.MaxTokens, epCfg.MaxTokens)
 
+	// Vision capability: manifest baseline by (provider, wire model id),
+	// falling back to the backend type bucket, then endpoint model_type
+	// override (same precedence the router capability bridge uses).
+	var supports modelregistry.SupportsFlags
+	if m := modelReg.LookupByProviderAndModelID(provName, epCfg.Model); m != nil {
+		supports = m.Supports
+	} else if m := modelReg.LookupByProviderAndModelID(provCfg.Type, epCfg.Model); m != nil {
+		supports = m.Supports
+	}
+	if len(epCfg.ModelType) > 0 {
+		supports = modelregistry.MergeOverride(supports, modelregistry.SupportsFromTokens(epCfg.ModelType))
+	}
+
 	adapter, err := bifrost.New(bifrost.Config{
 		Provider:           bfProvider,
 		Model:              epCfg.Model,
@@ -1129,6 +1146,7 @@ func buildBifrostAdapter(
 		CustomHeaders:      cfg.CustomHeaders,
 		EnableThinking:     epCfg.EnableThinking,
 		Quirks:             quirks,
+		SupportsVision:     supports.Vision,
 		DefaultTemperature: effectiveTemp,
 		DefaultMaxTokens:   effectiveMax,
 		Logger:             logger,
@@ -1155,6 +1173,7 @@ func buildBifrostAdapter(
 		zap.Float64("effective_temperature", effectiveTemp),
 		zap.Bool("proxy", cfg.ProxyURL != ""),
 		zap.String("thinking", thinkingState),
+		zap.Bool("vision", supports.Vision),
 	)
 	return adapter, nil
 }

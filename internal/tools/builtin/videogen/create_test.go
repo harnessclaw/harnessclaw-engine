@@ -3,9 +3,14 @@ package videogen
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	tool "harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
 	"go.uber.org/zap"
 )
@@ -92,6 +97,90 @@ func TestCreateExecuteSuccess(t *testing.T) {
 	}
 	if res.Metadata["task_id"] != "cgt-123" {
 		t.Fatalf("metadata task_id = %v", res.Metadata["task_id"])
+	}
+}
+
+// writeTestPNG writes a minimal PNG-signature file: enough bytes for
+// http.DetectContentType to classify it as image/png.
+func writeTestPNG(t *testing.T, dir string) string {
+	t.Helper()
+	data := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 64)...)
+	path := filepath.Join(dir, "frame.png")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestCreateExecuteImagePath: image_path makes the tool read the local
+// file itself and synthesize a base64 data URI for the provider.
+func TestCreateExecuteImagePath(t *testing.T) {
+	t.Parallel()
+	var gotReq SubmitRequest
+	tr := newCreateFixture(t, func(r SubmitRequest) (*SubmitResult, error) {
+		gotReq = r
+		return &SubmitResult{TaskID: "cgt-img", SubmittedAt: time.Now()}, nil
+	})
+	path := writeTestPNG(t, t.TempDir())
+	raw := json.RawMessage(fmt.Sprintf(`{"prompt":"x","image_path":%q}`, path))
+	res, err := tr.Execute(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("Execute returned go error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %s", res.Content)
+	}
+	if !strings.HasPrefix(gotReq.ImageB64, "data:image/png;base64,") {
+		t.Fatalf("provider must receive a png data URI, got prefix: %.40q", gotReq.ImageB64)
+	}
+}
+
+// TestCreateImagePathScopeRejected: an AgentScope on ctx restricts
+// image_path to SessionRoot/ReadScope — outside paths are a validation
+// error, not a file read.
+func TestCreateImagePathScopeRejected(t *testing.T) {
+	t.Parallel()
+	tr := newCreateFixture(t, func(SubmitRequest) (*SubmitResult, error) {
+		t.Fatal("provider must not be called when scope rejects")
+		return nil, nil
+	})
+	path := writeTestPNG(t, t.TempDir()) // outside the scope's SessionRoot
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: t.TempDir()})
+	raw := json.RawMessage(fmt.Sprintf(`{"prompt":"x","image_path":%q}`, path))
+	res, err := tr.Execute(ctx, raw)
+	if err != nil {
+		t.Fatalf("Execute returned go error: %v", err)
+	}
+	if !res.IsError || res.ErrorType != types.ToolErrorInvalidInput {
+		t.Fatalf("expected invalid_input error for out-of-scope path, got %+v", res)
+	}
+	if !strings.Contains(res.Content, "outside allowed scope") {
+		t.Errorf("error must mention scope: %s", res.Content)
+	}
+}
+
+// TestCreateImagePathInScopeAllowed: a path under SessionRoot passes
+// the scope check and reaches the provider as a data URI.
+func TestCreateImagePathInScopeAllowed(t *testing.T) {
+	t.Parallel()
+	var gotReq SubmitRequest
+	tr := newCreateFixture(t, func(r SubmitRequest) (*SubmitResult, error) {
+		gotReq = r
+		return &SubmitResult{TaskID: "cgt-scoped", SubmittedAt: time.Now()}, nil
+	})
+	root := t.TempDir()
+	path := writeTestPNG(t, root)
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: root})
+	raw := json.RawMessage(fmt.Sprintf(`{"prompt":"x","image_path":%q}`, path))
+	res, err := tr.Execute(ctx, raw)
+	if err != nil {
+		t.Fatalf("Execute returned go error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("in-scope path must be allowed: %s", res.Content)
+	}
+	if !strings.HasPrefix(gotReq.ImageB64, "data:image/png;base64,") {
+		t.Fatalf("provider must receive a png data URI, got prefix: %.40q", gotReq.ImageB64)
 	}
 }
 

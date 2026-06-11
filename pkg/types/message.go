@@ -46,6 +46,10 @@ type ContentBlock struct {
 	Path      string `json:"path,omitempty"`       // server-local file path (engine-internal)
 	Filename  string `json:"filename,omitempty"`
 	Size      int64  `json:"size,omitempty"`
+	// FilePath is the local path where the engine persisted this
+	// attachment (uploads dir); tools read it, adapters surface it to
+	// the model.
+	FilePath string `json:"file_path,omitempty"`
 }
 
 // Message represents a single message in a conversation.

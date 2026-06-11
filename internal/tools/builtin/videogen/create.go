@@ -2,9 +2,13 @@ package videogen
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -74,6 +78,10 @@ func (*VideoCreateTool) InputSchema() map[string]any {
 				"type":        "string",
 				"description": "Image-to-video: external URL of the first frame (JPEG/PNG). Mutually exclusive with image_b64; image_url wins if both given.",
 			},
+			"image_path": map[string]any{
+				"type":        "string",
+				"description": "Image-to-video: local file path of the first frame (e.g. the saved path from an attached image). The tool reads the file itself — prefer this over image_b64.",
+			},
 			"image_b64": map[string]any{
 				"type":        "string",
 				"description": "Image-to-video: first frame as a base64 data URI (data:image/png;base64,...).",
@@ -100,6 +108,7 @@ func (*VideoCreateTool) InputSchema() map[string]any {
 type createInput struct {
 	Prompt      string `json:"prompt"`
 	ImageURL    string `json:"image_url"`
+	ImagePath   string `json:"image_path"`
 	ImageB64    string `json:"image_b64"`
 	DurationS   int    `json:"duration_s"`
 	AspectRatio string `json:"aspect_ratio"`
@@ -162,11 +171,31 @@ func (t *VideoCreateTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 		ratio = "16:9"
 	}
 
+	// Source priority: image_url > image_path > image_b64. image_path
+	// lets the model hand over a local file (e.g. the saved path of an
+	// attached image) without round-tripping megabytes of base64
+	// through tool params — the tool reads the file itself.
+	imageB64 := in.ImageB64
+	if in.ImageURL == "" && in.ImagePath != "" {
+		if !imagePathAllowed(ctx, in.ImagePath) {
+			return errResult(fmt.Sprintf("video_create: image_path %q outside allowed scope", in.ImagePath), types.ToolErrorInvalidInput), nil
+		}
+		data, err := os.ReadFile(in.ImagePath)
+		if err != nil {
+			return errResult("video_create: read image_path: "+err.Error(), types.ToolErrorInvalidInput), nil
+		}
+		mime := http.DetectContentType(data)
+		if !strings.HasPrefix(mime, "image/") {
+			return errResult(fmt.Sprintf("video_create: image_path %q is not an image (%s)", in.ImagePath, mime), types.ToolErrorInvalidInput), nil
+		}
+		imageB64 = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+	}
+
 	out, err := provider.SubmitTask(ctx, SubmitRequest{
 		Endpoint:    ep,
 		Prompt:      in.Prompt,
 		ImageURL:    in.ImageURL,
-		ImageB64:    in.ImageB64,
+		ImageB64:    imageB64,
 		DurationS:   dur,
 		AspectRatio: ratio,
 		Seed:        in.Seed,
@@ -184,6 +213,37 @@ func (t *VideoCreateTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 			"endpoint":     endpointRef,
 		},
 	}, nil
+}
+
+// imagePathAllowed checks the LLM-supplied image_path against the
+// per-spawn AgentScope: the cleaned path must live under
+// scope.SessionRoot or one of the scope.ReadScope prefixes.
+//
+// Note: tool.EnforceReadScope is NOT reused here because it ignores
+// SessionRoot and treats an empty ReadScope as "no restriction" —
+// uploads land under the session root, which the engine doesn't list
+// in ReadScope. No scope on ctx (tests / legacy spawns) ⇒ allow.
+func imagePathAllowed(ctx context.Context, path string) bool {
+	scope, ok := tool.AgentScopeFromCtx(ctx)
+	if !ok {
+		return true
+	}
+	allowed := make([]string, 0, len(scope.ReadScope)+1)
+	if scope.SessionRoot != "" {
+		allowed = append(allowed, scope.SessionRoot)
+	}
+	allowed = append(allowed, scope.ReadScope...)
+	if len(allowed) == 0 {
+		return true
+	}
+	p := filepath.Clean(path)
+	for _, a := range allowed {
+		ac := filepath.Clean(a)
+		if p == ac || strings.HasPrefix(p, ac+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // classifyProviderError maps a provider error's sentinel class to a ToolResult

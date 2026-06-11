@@ -89,6 +89,14 @@ type Config struct {
 	// registry's ProviderSpec.Quirks. Nil leaves all defaults applied.
 	Quirks *ProviderQuirks
 
+	// SupportsVision declares whether the endpoint's model accepts
+	// image content parts. When false, image blocks are degraded to a
+	// text reference (saved-path placeholder) instead of being sent on
+	// the wire — openai-compatible backends without vision 400 on
+	// image_url parts (`unknown variant 'image_url'`). Resolved by the
+	// caller from the model registry + endpoint model_type override.
+	SupportsVision bool
+
 	// Logger for operational events. Nil uses a no-op logger.
 	Logger *zap.Logger
 }
@@ -201,6 +209,10 @@ type Adapter struct {
 	// passthrough, reasoning placeholder). Nil means apply defaults.
 	quirks *ProviderQuirks
 
+	// supportsVision mirrors Config.SupportsVision — false degrades
+	// image blocks to text references during message conversion.
+	supportsVision bool
+
 	// defaultTemperature / defaultMaxTokens are agent-level defaults
 	// applied when the incoming ChatRequest leaves the corresponding
 	// field as zero. Caller (cmd/server.buildBifrostAdapter) is
@@ -258,6 +270,7 @@ func New(cfg Config) (*Adapter, error) {
 		customHeaders:      cfg.CustomHeaders,
 		enableThinking:     cfg.EnableThinking,
 		quirks:             cfg.Quirks,
+		supportsVision:     cfg.SupportsVision,
 		defaultTemperature: cfg.DefaultTemperature,
 		defaultMaxTokens:   cfg.DefaultMaxTokens,
 	}, nil
@@ -705,7 +718,7 @@ func (a *Adapter) buildChatRequest(model string, req *provider.ChatRequest) *sch
 	bifReq := &schemas.BifrostChatRequest{
 		Provider: a.providerKey,
 		Model:    model,
-		Input:    convertMessages(req.Messages, req.System, includeReasoning, a.logger),
+		Input:    convertMessages(req.Messages, req.System, includeReasoning, a.supportsVision, a.logger),
 	}
 
 	params := a.buildParams(req)
@@ -1067,7 +1080,10 @@ func (a *Adapter) consumeStream(stream chan *schemas.BifrostStreamChunk, out cha
 // includeReasoning controls whether prior assistant ReasoningContent is
 // echoed back on the wire — disable to avoid input-token inflation when
 // the provider doesn't require it (most don't).
-func convertMessages(msgs []types.Message, systemPrompt string, includeReasoning bool, logger *zap.Logger) []schemas.ChatMessage {
+// visionOK declares whether the target endpoint accepts image content
+// parts; false degrades image blocks to text references (see
+// convertSingleMessage / imageFallbackText).
+func convertMessages(msgs []types.Message, systemPrompt string, includeReasoning bool, visionOK bool, logger *zap.Logger) []schemas.ChatMessage {
 	var result []schemas.ChatMessage
 
 	// System prompt as a system message.
@@ -1086,7 +1102,7 @@ func convertMessages(msgs []types.Message, systemPrompt string, includeReasoning
 			continue
 		}
 
-		bfMsg := convertSingleMessage(msg, includeReasoning)
+		bfMsg := convertSingleMessage(msg, includeReasoning, visionOK)
 		if bfMsg != nil {
 			result = append(result, *bfMsg)
 		}
@@ -1321,7 +1337,7 @@ func capImageCacheBreakpoints(msgs []schemas.ChatMessage) {
 	}
 }
 
-func convertSingleMessage(msg types.Message, includeReasoning bool) *schemas.ChatMessage {
+func convertSingleMessage(msg types.Message, includeReasoning bool, visionOK bool) *schemas.ChatMessage {
 	role := mapRole(msg.Role)
 
 	// Check if this is a tool result message.
@@ -1363,6 +1379,16 @@ func convertSingleMessage(msg types.Message, includeReasoning bool) *schemas.Cha
 			}
 			toolCalls = append(toolCalls, tc)
 		case types.ContentTypeImage:
+			if !visionOK {
+				// Non-vision endpoint: never emit an image part (openai-compat
+				// backends 400 on it). Surface a text reference instead so the
+				// model knows the image exists and where tools can read it.
+				blocks = append(blocks, schemas.ChatContentBlock{
+					Type: schemas.ChatContentBlockTypeText,
+					Text: schemas.Ptr(imageFallbackText(cb)),
+				})
+				continue
+			}
 			// Bifrost's anthropic provider (utils.go:1077
 			// ConvertToAnthropicImageBlock) handles both inline base64
 			// data URLs and remote URLs. OpenAI's provider accepts the
@@ -1396,6 +1422,16 @@ func convertSingleMessage(msg types.Message, includeReasoning bool) *schemas.Cha
 				// image/file blocks.
 				CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
 			})
+			// Even vision models can't hand image bytes to tools — if the
+			// engine persisted the attachment, append a small text block
+			// with the saved path so the model can pass it to tools
+			// (e.g. video_create's image_path).
+			if cb.FilePath != "" {
+				blocks = append(blocks, schemas.ChatContentBlock{
+					Type: schemas.ChatContentBlockTypeText,
+					Text: schemas.Ptr("[image saved at: " + cb.FilePath + "]"),
+				})
+			}
 		case types.ContentTypeFile:
 			file := &schemas.ChatInputFile{}
 			if cb.Data != "" {
@@ -1470,6 +1506,20 @@ func convertSingleMessage(msg types.Message, includeReasoning bool) *schemas.Cha
 	}
 
 	return bfMsg
+}
+
+// imageFallbackText renders an image block as a text reference for
+// endpoints without vision capability.
+func imageFallbackText(cb types.ContentBlock) string {
+	desc := "[User attached an image"
+	if cb.MediaType != "" {
+		desc += " (" + cb.MediaType + ")"
+	}
+	if cb.FilePath != "" {
+		desc += ", saved at: " + cb.FilePath
+	}
+	desc += ". This model cannot view images directly; pass the saved path to an image-capable tool (e.g. video_create's image_path) when processing is needed.]"
+	return desc
 }
 
 // ---------- Tool conversion ----------

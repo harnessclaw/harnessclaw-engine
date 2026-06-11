@@ -3,6 +3,11 @@ package router
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -12,6 +17,7 @@ import (
 	"harnessclaw-go/internal/provider/registry"
 	"harnessclaw-go/internal/services/api/router/middleware"
 	"harnessclaw-go/internal/tools"
+	"harnessclaw-go/internal/workspace"
 	pkgerr "harnessclaw-go/pkg/errors"
 	"harnessclaw-go/pkg/types"
 )
@@ -40,6 +46,13 @@ type Router struct {
 	modelInfo ModelInfoProvider          // optional; nil disables gating
 	handler   middleware.Handler
 	logger    *zap.Logger
+
+	// workspaceRoot is the engine workspace root dir. When set (via
+	// SetWorkspaceRoot), inbound image attachments are persisted to
+	// {workspaceRoot}/session/{sid}/uploads/ and the saved path is
+	// recorded on the block's FilePath so tools can read the bytes
+	// from disk. Empty disables persistence (tests / legacy wiring).
+	workspaceRoot string
 }
 
 // New creates a router with the given engine, channel registry,
@@ -58,6 +71,13 @@ func New(eng engine.Engine, channels map[string]channel.Duplex, middlewares []mi
 	r.handler = chain(r.coreHandler)
 
 	return r
+}
+
+// SetWorkspaceRoot enables image-attachment persistence rooted at the
+// given workspace dir. Call once at startup, before the router serves
+// traffic (not goroutine-safe against concurrent Handle calls).
+func (r *Router) SetWorkspaceRoot(root string) {
+	r.workspaceRoot = root
 }
 
 // Handle processes an incoming message through the middleware chain.
@@ -123,6 +143,13 @@ func (r *Router) coreHandler(ctx context.Context, msg *types.IncomingMessage) er
 		}
 	}
 
+	// Persist inbound image bytes to the session uploads dir and record
+	// the path on the block. Tools (video_create image_path, …) read the
+	// bytes from disk — the model can't round-trip megabytes of base64
+	// through tool params. Best-effort: any failure logs a warning and
+	// the message proceeds without FilePath.
+	r.persistImageBlocks(msg.SessionID, blocks)
+
 	userMsg := &types.Message{
 		Role:    types.RoleUser,
 		Content: blocks,
@@ -186,6 +213,74 @@ func (r *Router) coreHandler(ctx context.Context, msg *types.IncomingMessage) er
 	}()
 
 	return nil
+}
+
+// persistImageBlocks writes each inline image block's decoded bytes to
+// {workspaceRoot}/session/{sessionID}/uploads/ and sets the block's
+// FilePath to the saved location. No-op when the router has no
+// workspace root or the message has no session id. Never fails the
+// message: decode/IO errors are logged at Warn and the block simply
+// keeps an empty FilePath.
+func (r *Router) persistImageBlocks(sessionID string, blocks []types.ContentBlock) {
+	if r.workspaceRoot == "" || sessionID == "" {
+		return
+	}
+	for i := range blocks {
+		b := &blocks[i]
+		if b.Type != types.ContentTypeImage || b.Data == "" || b.FilePath != "" {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(b.Data)
+		if err != nil {
+			// Tolerate unpadded payloads from lenient clients.
+			raw, err = base64.RawStdEncoding.DecodeString(b.Data)
+		}
+		if err != nil {
+			r.logger.Warn("router: image persist: base64 decode failed",
+				zap.String("session_id", sessionID),
+				zap.Int("block", i),
+				zap.Error(err),
+			)
+			continue
+		}
+		dir := filepath.Join(workspace.SessionRoot(r.workspaceRoot, sessionID), "uploads")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			r.logger.Warn("router: image persist: mkdir failed",
+				zap.String("session_id", sessionID),
+				zap.String("dir", dir),
+				zap.Error(err),
+			)
+			continue
+		}
+		name := fmt.Sprintf("img-%d-%d%s", time.Now().UnixNano(), i, extFromMIME(b.MediaType))
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, raw, 0o644); err != nil {
+			r.logger.Warn("router: image persist: write failed",
+				zap.String("session_id", sessionID),
+				zap.String("path", path),
+				zap.Error(err),
+			)
+			continue
+		}
+		b.FilePath = path
+	}
+}
+
+// extFromMIME maps an image media type to a file extension for the
+// persisted upload. Unknown types get a neutral ".bin".
+func extFromMIME(mediaType string) string {
+	switch mediaType {
+	case "image/png":
+		return ".png"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	default:
+		return ".bin"
+	}
 }
 
 // emitInvalidInput sends a single-shot error frame to the originating

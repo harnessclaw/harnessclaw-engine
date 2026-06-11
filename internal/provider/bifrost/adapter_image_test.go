@@ -23,7 +23,7 @@ func TestConvertSingleMessage_Base64Image(t *testing.T) {
 			{Type: types.ContentTypeImage, MediaType: "image/png", Data: "iVBORw0KGgo="},
 		},
 	}
-	got := convertSingleMessage(msg, false)
+	got := convertSingleMessage(msg, false, true)
 	if got == nil || got.Content == nil || got.Content.ContentBlocks == nil {
 		t.Fatalf("expected content_blocks, got: %+v", got)
 	}
@@ -49,7 +49,7 @@ func TestConvertSingleMessage_UrlImage(t *testing.T) {
 			{Type: types.ContentTypeImage, MediaType: "image/jpeg", URL: "https://example.com/x.jpg"},
 		},
 	}
-	got := convertSingleMessage(msg, false)
+	got := convertSingleMessage(msg, false, true)
 	if got == nil || got.Content == nil || got.Content.ContentBlocks == nil {
 		t.Fatalf("expected content_blocks: %+v", got)
 	}
@@ -69,7 +69,7 @@ func TestConvertSingleMessage_PdfFile(t *testing.T) {
 			{Type: types.ContentTypeFile, MediaType: "application/pdf", Data: "JVBERi0x", Filename: "doc.pdf"},
 		},
 	}
-	got := convertSingleMessage(msg, false)
+	got := convertSingleMessage(msg, false, true)
 	if got == nil || got.Content == nil || got.Content.ContentBlocks == nil {
 		t.Fatalf("expected content_blocks: %+v", got)
 	}
@@ -100,7 +100,7 @@ func TestConvertSingleMessage_TextOnlyStillUsesContentStr(t *testing.T) {
 			{Type: types.ContentTypeText, Text: "hello"},
 		},
 	}
-	got := convertSingleMessage(msg, false)
+	got := convertSingleMessage(msg, false, true)
 	if got.Content.ContentStr == nil {
 		t.Fatal("ContentStr should be set for single-text-block path")
 	}
@@ -121,7 +121,7 @@ func TestConvertSingleMessage_ImageWithoutSourceIsDropped(t *testing.T) {
 			{Type: types.ContentTypeImage, MediaType: "image/png"}, // no data, no url
 		},
 	}
-	got := convertSingleMessage(msg, false)
+	got := convertSingleMessage(msg, false, true)
 	if got == nil {
 		t.Fatal("nil message")
 	}
@@ -144,7 +144,7 @@ func TestConvertSingleMessage_ImageHasEphemeralCacheControl(t *testing.T) {
 			{Type: types.ContentTypeImage, MediaType: "image/png", Data: "AA=="},
 		},
 	}
-	got := convertSingleMessage(msg, false)
+	got := convertSingleMessage(msg, false, true)
 	img := got.Content.ContentBlocks[0]
 	if img.CacheControl == nil {
 		t.Fatal("image block missing CacheControl")
@@ -164,7 +164,7 @@ func TestConvertSingleMessage_PdfHasEphemeralCacheControl(t *testing.T) {
 			{Type: types.ContentTypeFile, MediaType: "application/pdf", Data: "AA==", Filename: "x.pdf"},
 		},
 	}
-	got := convertSingleMessage(msg, false)
+	got := convertSingleMessage(msg, false, true)
 	pdf := got.Content.ContentBlocks[0]
 	if pdf.CacheControl == nil || pdf.CacheControl.Type != schemas.CacheControlTypeEphemeral {
 		t.Errorf("pdf missing ephemeral cache_control: %+v", pdf.CacheControl)
@@ -182,7 +182,7 @@ func TestConvertMessages_TextBlocksHaveNoCacheControl(t *testing.T) {
 			{Type: types.ContentTypeImage, MediaType: "image/png", Data: "AA=="},
 		}},
 	}
-	got := convertMessages(msgs, "", false, nil)
+	got := convertMessages(msgs, "", false, true, nil)
 	blocks := got[0].Content.ContentBlocks
 	for _, b := range blocks {
 		if b.Type == schemas.ChatContentBlockTypeText && b.CacheControl != nil {
@@ -208,7 +208,7 @@ func TestConvertMessages_CapsAt4Breakpoints(t *testing.T) {
 		mkImageMsg("a"), mkImageMsg("b"), mkImageMsg("c"),
 		mkImageMsg("d"), mkImageMsg("e"), mkImageMsg("f"),
 	}
-	got := convertMessages(msgs, "", false, nil)
+	got := convertMessages(msgs, "", false, true, nil)
 
 	var imageBlocks []schemas.ChatContentBlock
 	for _, m := range got {
@@ -238,6 +238,67 @@ func TestConvertMessages_CapsAt4Breakpoints(t *testing.T) {
 	}
 }
 
+// TestConvertMessages_ImageDegradedWithoutVision locks in the
+// vision-aware degradation: a non-vision endpoint must never see an
+// image content part (openai-compat backends 400 with `unknown
+// variant 'image_url'`) — only a text reference carrying the saved
+// path. A vision endpoint keeps the image part AND gains a trailing
+// text block with the path so the model can hand it to tools.
+func TestConvertMessages_ImageDegradedWithoutVision(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentBlock{
+			{
+				Type:      types.ContentTypeImage,
+				MediaType: "image/png",
+				Data:      "iVBORw0KGgo=",
+				FilePath:  "/ws/session/s1/uploads/img-1-0.png",
+			},
+		}},
+	}
+
+	// visionOK=false: NO image part, ONE text block referencing the path.
+	got := convertMessages(msgs, "", false, false, nil)
+	if len(got) != 1 || got[0].Content == nil {
+		t.Fatalf("unexpected conversion result: %+v", got)
+	}
+	var text string
+	switch {
+	case got[0].Content.ContentStr != nil:
+		text = *got[0].Content.ContentStr
+	case len(got[0].Content.ContentBlocks) == 1 && got[0].Content.ContentBlocks[0].Type == schemas.ChatContentBlockTypeText:
+		text = *got[0].Content.ContentBlocks[0].Text
+	default:
+		t.Fatalf("want exactly one text block, got: %+v", got[0].Content)
+	}
+	for _, m := range got {
+		if m.Content == nil {
+			continue
+		}
+		for _, b := range m.Content.ContentBlocks {
+			if b.Type == schemas.ChatContentBlockTypeImage {
+				t.Fatalf("non-vision endpoint must not receive image parts: %+v", b)
+			}
+		}
+	}
+	if !strings.Contains(text, "/ws/session/s1/uploads/img-1-0.png") {
+		t.Errorf("fallback text must carry the saved path: %q", text)
+	}
+
+	// visionOK=true: image part survives PLUS a trailing text block with the path.
+	got = convertMessages(msgs, "", false, true, nil)
+	blocks := got[0].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("want image + path-text blocks, got %d: %+v", len(blocks), blocks)
+	}
+	if blocks[0].Type != schemas.ChatContentBlockTypeImage {
+		t.Errorf("first block must stay an image part: %+v", blocks[0])
+	}
+	if blocks[1].Type != schemas.ChatContentBlockTypeText || blocks[1].Text == nil ||
+		!strings.Contains(*blocks[1].Text, "/ws/session/s1/uploads/img-1-0.png") {
+		t.Errorf("trailing text block must carry the saved path: %+v", blocks[1])
+	}
+}
+
 func TestConvertMessages_NoCapWhenUnderLimit(t *testing.T) {
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentBlock{
@@ -247,7 +308,7 @@ func TestConvertMessages_NoCapWhenUnderLimit(t *testing.T) {
 			{Type: types.ContentTypeImage, MediaType: "image/png", Data: "b"},
 		}},
 	}
-	got := convertMessages(msgs, "", false, nil)
+	got := convertMessages(msgs, "", false, true, nil)
 	for _, m := range got {
 		if m.Content == nil || m.Content.ContentBlocks == nil {
 			continue
