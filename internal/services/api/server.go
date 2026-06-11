@@ -40,6 +40,10 @@ type Server struct {
 // toolsHandler, if non-nil, is mounted at /api/v1/tools for per-tool
 // credential management with hot-reload + yaml persistence.
 //
+// videoGenHandler, if non-nil, is mounted at /api/v1/videogen for runtime
+// video-generation provider management (hot-reload + yaml persistence). It
+// shares the same live Source the video tools read from.
+//
 // artifactsHandler, if non-nil, is mounted at /api/v1/artifacts/ so the
 // Electron client can fetch raw binary artifact bytes for preview /
 // download without going through the LLM tool path.
@@ -48,7 +52,7 @@ type Server struct {
 // for the resolved active-model SupportsFlags + derived capability buckets.
 // Mounted ahead of /api/v1/agent so the more specific path wins in
 // http.ServeMux (longest pattern match).
-func NewServer(cfg ServerConfig, agentSvc *agentmgmt.AgentService, metricsHandler http.Handler, modelsHandler http.Handler, providersHandler http.Handler, toolsHandler http.Handler, artifactsHandler http.Handler, capabilitiesHandler http.Handler, logger *zap.Logger) *Server {
+func NewServer(cfg ServerConfig, agentSvc *agentmgmt.AgentService, metricsHandler http.Handler, modelsHandler http.Handler, providersHandler http.Handler, toolsHandler http.Handler, videoGenHandler http.Handler, artifactsHandler http.Handler, capabilitiesHandler http.Handler, logger *zap.Logger) *Server {
 	mux := http.NewServeMux()
 
 	// Register agent management routes
@@ -90,6 +94,13 @@ func NewServer(cfg ServerConfig, agentSvc *agentmgmt.AgentService, metricsHandle
 	if toolsHandler != nil {
 		mux.Handle("/api/v1/tools", toolsHandler)
 		mux.Handle("/api/v1/tools/", toolsHandler)
+	}
+
+	// Video generation management API: GET/PATCH videogen providers with
+	// hot-reload + yaml persistence. Mounted at /api/v1/videogen.
+	if videoGenHandler != nil {
+		mux.Handle("/api/v1/videogen", videoGenHandler)
+		mux.Handle("/api/v1/videogen/", videoGenHandler)
 	}
 
 	// Artifact content streaming: GET /api/v1/artifacts/{id}/content

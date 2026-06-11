@@ -35,6 +35,7 @@ import (
 	"harnessclaw-go/internal/services/api/providersmgmt"
 	"harnessclaw-go/internal/services/api/sessionmetrics"
 	"harnessclaw-go/internal/services/api/toolsmgmt"
+	"harnessclaw-go/internal/services/api/videogenmgmt"
 	"harnessclaw-go/internal/channel"
 	wsch "harnessclaw-go/internal/channel/websocket"
 	"harnessclaw-go/internal/commands"
@@ -85,6 +86,8 @@ import (
 	"harnessclaw-go/internal/tools/builtin/unloadskill"
 	"harnessclaw-go/internal/tools/builtin/webfetch"
 	"harnessclaw-go/internal/tools/builtin/websearch"
+	videogen "harnessclaw-go/internal/tools/builtin/videogen"
+	"harnessclaw-go/internal/tools/builtin/videogen/providers/doubao"
 	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
@@ -337,12 +340,38 @@ func main() {
 	modelReg := modelregistry.NewRegistry(regManifest)
 
 	llmProvider, providerMgr := initProvider(cfg.LLM, cfg.Agent, cfg.SourcePath, modelReg, logger)
+
+	// Video generation shares ONE live Source between the provider-agnostic
+	// tools (which READ it) and the videogenmgmt handler (which MUTATES it via
+	// UpdateProviders). Construct it unconditionally here — right after
+	// providerMgr exists — so the management API works even when the workspace
+	// root is unavailable and the tools below aren't registered. The same
+	// pointer is passed to NewCreate/NewQuery and to videogenmgmt.New later.
+	videoSource := videogen.NewSource(cfg.VideoGen, providerMgr)
+
 	if workspaceRootDir != "" && providerMgr != nil {
 		t := imagegen.New(providerMgr, modelReg, workspaceRootDir, logger)
 		if err := registry.Register(t); err != nil {
 			logger.Fatal("failed to register image generation tool", zap.Error(err))
 		}
 		logger.Info("image generation tool registered", zap.String("name", t.Name()))
+
+		// Video generation: provider-agnostic tools + doubao provider, sharing
+		// the live Source constructed above with the videogenmgmt handler.
+		videoRegistry := videogen.NewProviderRegistry()
+		if err := videoRegistry.Register(doubao.NewProvider(logger)); err != nil {
+			logger.Fatal("failed to register doubao video provider", zap.Error(err))
+		}
+		videoCreate := videogen.NewCreate(videoSource, videoRegistry, workspaceRootDir, logger)
+		videoQuery := videogen.NewQuery(videoSource, videoRegistry, workspaceRootDir, logger)
+		if err := registry.Register(videoCreate); err != nil {
+			logger.Fatal("failed to register video_create tool", zap.Error(err))
+		}
+		if err := registry.Register(videoQuery); err != nil {
+			logger.Fatal("failed to register video_query tool", zap.Error(err))
+		}
+		logger.Info("video tools registered",
+			zap.String("create", videoCreate.Name()), zap.String("query", videoQuery.Name()))
 	}
 
 	// Session-metrics registry: a single in-process registry holds the
@@ -703,6 +732,14 @@ func main() {
 		zap.String("config_source", cfg.SourcePath),
 	)
 
+	// Video generation management API: GET/PATCH videogen providers with
+	// hot-reload + yaml persistence. Always mounted — it shares the same live
+	// Source the video tools read, so mutations are visible without a restart.
+	videoGenHandler := videogenmgmt.New(videoSource, cfg.SourcePath, logger)
+	logger.Info("videogenmgmt API mounted",
+		zap.String("config_source", cfg.SourcePath),
+	)
+
 	// Agent capabilities endpoint: serves the same SupportsFlags the
 	// router gate uses by reusing the bridge instance directly, so the
 	// client never disagrees with the server about what's allowed.
@@ -720,7 +757,7 @@ func main() {
 		consoleServer = api.NewServer(api.ServerConfig{
 			Host: cfg.Console.Host,
 			Port: cfg.Console.Port,
-		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, nil, capabilitiesHandler, logger)
+		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, videoGenHandler, nil, capabilitiesHandler, logger)
 		go func() {
 			if err := consoleServer.Start(); err != nil {
 				logger.Error("console API server exited", zap.Error(err))
