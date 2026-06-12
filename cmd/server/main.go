@@ -364,11 +364,15 @@ func main() {
 		// The generic OpenAI-compatible provider covers every configured provider
 		// name, so register one per configured provider plus an "openai" default.
 		imageRegistry := imagegen.NewProviderRegistry()
-		_ = imageRegistry.Register(openaiimg.NewProvider("openai", logger))
+		// Built-in image provider names always available in the UI even when the
+		// active config hasn't declared them yet (openai + 火山引擎/Ark). Plus any
+		// extra provider keys the config does declare. The generic OpenAI-compatible
+		// provider covers all of them (base_url/path make each call target-specific).
+		imageProvNames := map[string]bool{"openai": true, "volcengine": true}
 		for name := range cfg.ImageGen.Providers {
-			if name == "openai" {
-				continue
-			}
+			imageProvNames[name] = true
+		}
+		for name := range imageProvNames {
 			if err := imageRegistry.Register(openaiimg.NewProvider(name, logger)); err != nil {
 				logger.Warn("imagegen: duplicate provider registration skipped", zap.String("name", name))
 			}
@@ -382,16 +386,15 @@ func main() {
 		// Video generation: provider-agnostic tools + doubao provider, sharing
 		// the live Source constructed above with the videogenmgmt handler.
 		videoRegistry := videogen.NewProviderRegistry()
-		// All Volcengine Ark video models share one task API, so register the
-		// Ark implementation under "doubao" plus each configured provider key
-		// (e.g. "jimeng"/即梦) so any of them resolves at call time.
-		if err := videoRegistry.Register(doubao.NewProvider("doubao", logger)); err != nil {
-			logger.Fatal("failed to register doubao video provider", zap.Error(err))
-		}
+		// All Volcengine Ark video models share one task API. Register the Ark
+		// implementation under the built-in names (doubao + 火山引擎/volcengine)
+		// always available in the UI, plus any extra configured provider key, so
+		// any of them resolves at call time.
+		videoProvNames := map[string]bool{"doubao": true, "volcengine": true}
 		for name := range cfg.VideoGen.Providers {
-			if name == "doubao" {
-				continue
-			}
+			videoProvNames[name] = true
+		}
+		for name := range videoProvNames {
 			if err := videoRegistry.Register(doubao.NewProvider(name, logger)); err != nil {
 				logger.Warn("videogen: duplicate provider registration skipped", zap.String("name", name))
 			}
