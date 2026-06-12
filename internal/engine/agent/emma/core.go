@@ -166,6 +166,8 @@ func DefaultEmmaConfig() EmmaConfig {
 			"tavily_search",
 			"ask_user_question",
 			"image_generate",
+			"video_create",
+			"video_query",
 		},
 		MaxTurns: 15,
 	}
@@ -188,6 +190,8 @@ func WithEmmaConfig(cfg EmmaConfig) Option {
 			"tavily_search",
 			"ask_user_question",
 			"image_generate",
+			"video_create",
+			"video_query",
 		}
 	}
 	if cfg.MaxTurns <= 0 {

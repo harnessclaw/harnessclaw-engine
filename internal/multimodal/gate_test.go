@@ -1,7 +1,6 @@
 package multimodal
 
 import (
-	"errors"
 	"testing"
 
 	"harnessclaw-go/internal/provider/registry"
@@ -15,23 +14,16 @@ func TestGate_TextOnlyPassesAnyModel(t *testing.T) {
 	}
 }
 
-func TestGate_ImageRejectedByNonVisionModel(t *testing.T) {
+// Images are intentionally NOT gated anymore: tools (image_generate,
+// video_create i2v, browser agent) can consume them, so a non-vision
+// chat model is no reason to reject the message — pass through and let
+// the downstream model/provider decide.
+func TestGate_ImagePassesEvenWithoutVision(t *testing.T) {
 	blocks := []types.ContentBlock{
 		{Type: types.ContentTypeImage, MediaType: "image/png", Data: "x"},
 	}
-	err := Gate("anthropic:claude-haiku-4-5", registry.SupportsFlags{}, blocks)
-	if err == nil {
-		t.Fatal("expected UnsupportedModalityError")
-	}
-	var u *UnsupportedModalityError
-	if !errors.As(err, &u) {
-		t.Fatalf("wrong error type: %T", err)
-	}
-	if u.Model != "anthropic:claude-haiku-4-5" {
-		t.Errorf("model field: %q", u.Model)
-	}
-	if len(u.RejectedModalities) != 1 || u.RejectedModalities[0] != "image" {
-		t.Errorf("rejected list: %v", u.RejectedModalities)
+	if err := Gate("anthropic:claude-haiku-4-5", registry.SupportsFlags{}, blocks); err != nil {
+		t.Fatalf("image must pass through even without Vision: %v", err)
 	}
 }
 
@@ -46,8 +38,8 @@ func TestGate_ImageAcceptedByVisionModel(t *testing.T) {
 
 func TestGate_DedupRejected(t *testing.T) {
 	blocks := []types.ContentBlock{
-		{Type: types.ContentTypeImage, MediaType: "image/png"},
-		{Type: types.ContentTypeImage, MediaType: "image/jpeg"},
+		{Type: types.ContentTypeFile, MediaType: "application/pdf"},
+		{Type: types.ContentTypeFile, MediaType: "application/pdf"},
 	}
 	err := Gate("x:y", registry.SupportsFlags{}, blocks)
 	u, _ := err.(*UnsupportedModalityError)
@@ -81,10 +73,9 @@ func TestGate_NonPdfFileSkipsGate(t *testing.T) {
 	}
 }
 
-func TestGate_MultipleRejectedSorted(t *testing.T) {
-	// Sub-agent in future could carry multiple modality types in one
-	// message. Output must be deterministic for reproducible error
-	// frames + UI rendering.
+func TestGate_MixedImageAndPdfOnlyPdfRejected(t *testing.T) {
+	// Images pass through (tool-consumable); pdf is still gated. A mixed
+	// message must reject ONLY the pdf modality.
 	blocks := []types.ContentBlock{
 		{Type: types.ContentTypeFile, MediaType: "application/pdf"},
 		{Type: types.ContentTypeImage, MediaType: "image/png"},
@@ -92,12 +83,9 @@ func TestGate_MultipleRejectedSorted(t *testing.T) {
 	err := Gate("x:y", registry.SupportsFlags{}, blocks)
 	u, _ := err.(*UnsupportedModalityError)
 	if u == nil {
-		t.Fatal("expected error")
+		t.Fatal("expected error for pdf")
 	}
-	if len(u.RejectedModalities) != 2 {
-		t.Fatalf("want 2 modalities, got %v", u.RejectedModalities)
-	}
-	if u.RejectedModalities[0] != "image" || u.RejectedModalities[1] != "pdf" {
-		t.Errorf("not sorted: %v", u.RejectedModalities)
+	if len(u.RejectedModalities) != 1 || u.RejectedModalities[0] != "pdf" {
+		t.Errorf("want only pdf rejected, got %v", u.RejectedModalities)
 	}
 }

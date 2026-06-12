@@ -8,6 +8,7 @@ import (
 	"harnessclaw-go/internal/engine/loop/toolexec"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/tools"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -64,7 +65,20 @@ func (e *Engine) run(
 
 	ls := &emmaLoopState{}
 
+	// Main-agent filesystem scope: read/edit/write inside the workspace root
+	// auto-allow; paths that leave the workspace trigger the per-path
+	// escalation prompt wired in the tool executor (scope.go). Empty
+	// WorkspaceRoot (no $HOME) leaves the scope unrestricted (legacy).
+	var agentScope tool.AgentScope
+	if wsRoot := workspace.DefaultRootDir(); wsRoot != "" {
+		agentScope = tool.AgentScope{
+			ReadScope:  []string{wsRoot},
+			WriteScope: []string{wsRoot},
+		}
+	}
+
 	res, err := loop.Run(ctx, &loop.Config{
+		AgentScope:           agentScope,
 		Session:              sess,
 		SystemPrompt:         sysPrompt,
 		Tools:                pool,

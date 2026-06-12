@@ -1,7 +1,11 @@
 package router
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -117,11 +121,11 @@ func TestRouter_ConvertsImageBlocksIntoEngineMessage(t *testing.T) {
 	}
 }
 
-// TestRouter_RejectsImageWhenModelLacksVision is the core gate test:
-// engine MUST NOT be called when the active model can't process the
-// modality. Channel MUST receive a typed error frame so the UI can
-// render a clear "switch model" prompt.
-func TestRouter_RejectsImageWhenModelLacksVision(t *testing.T) {
+// TestRouter_ImagePassesWhenModelLacksVision: images are no longer
+// gated — tools (image_generate, video_create i2v, browser agent) can
+// consume them, so the message flows through to the engine and the
+// downstream model/provider decides what to do with it.
+func TestRouter_ImagePassesWhenModelLacksVision(t *testing.T) {
 	eng := &captureEngine{}
 	ch := &recordingChannel{}
 	info := stubModelInfo{
@@ -135,6 +139,38 @@ func TestRouter_RejectsImageWhenModelLacksVision(t *testing.T) {
 		SessionID:   "s1",
 		Content: []types.IncomingContentBlock{
 			{Type: "image", MIMEType: "image/png", Data: "iVBORw0KGgo="},
+		},
+	})
+	if err != nil {
+		t.Fatalf("image must pass through the gate: %v", err)
+	}
+	eng.mu.Lock()
+	received := eng.received
+	eng.mu.Unlock()
+	if received == nil {
+		t.Fatal("engine must be called — image is not gated anymore")
+	}
+}
+
+// TestRouter_RejectsPdfWhenModelLacksPDFInput is the core gate test
+// (moved from image to pdf — images are tool-consumable and pass
+// through): engine MUST NOT be called when the active model can't
+// process the modality. Channel MUST receive a typed error frame so
+// the UI can render a clear "switch model" prompt.
+func TestRouter_RejectsPdfWhenModelLacksPDFInput(t *testing.T) {
+	eng := &captureEngine{}
+	ch := &recordingChannel{}
+	info := stubModelInfo{
+		key:      "anthropic:claude-haiku-4-5",
+		supports: registry.SupportsFlags{}, // no PDFInput
+	}
+	r := New(eng, map[string]channel.Duplex{"websocket": ch}, nil, info, zap.NewNop())
+
+	err := r.Handle(context.Background(), &types.IncomingMessage{
+		ChannelName: "websocket",
+		SessionID:   "s1",
+		Content: []types.IncomingContentBlock{
+			{Type: "pdf", MIMEType: "application/pdf", Data: "JVBERi0="},
 		},
 	})
 	if err == nil {
@@ -165,11 +201,103 @@ func TestRouter_RejectsImageWhenModelLacksVision(t *testing.T) {
 		t.Errorf("error must mention model: %v", frames[0].Error)
 	}
 	// Verify the rich payload survives intact.
-	if rm, ok := frames[0].ErrorDetails["rejected_modalities"].([]string); !ok || len(rm) != 1 || rm[0] != "image" {
+	if rm, ok := frames[0].ErrorDetails["rejected_modalities"].([]string); !ok || len(rm) != 1 || rm[0] != "pdf" {
 		t.Errorf("rejected_modalities malformed: %v", frames[0].ErrorDetails["rejected_modalities"])
 	}
 	if frames[0].ErrorDetails["user_message"] == nil {
 		t.Error("user_message missing")
+	}
+}
+
+// TestRouter_PersistsImageToUploads: with a workspace root configured,
+// inbound image bytes must be written to the session's uploads/ dir and
+// the saved path recorded on the engine-bound block's FilePath so tools
+// (video_create image_path) can read the bytes from disk.
+func TestRouter_PersistsImageToUploads(t *testing.T) {
+	eng := &captureEngine{}
+	ch := &recordingChannel{}
+	info := stubModelInfo{
+		key:      "anthropic:claude-opus-4-7",
+		supports: registry.SupportsFlags{Vision: true},
+	}
+	r := New(eng, map[string]channel.Duplex{"websocket": ch}, nil, info, zap.NewNop())
+	root := t.TempDir()
+	r.SetWorkspaceRoot(root)
+
+	payload := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A}
+	err := r.Handle(context.Background(), &types.IncomingMessage{
+		ChannelName: "websocket",
+		SessionID:   "s-persist",
+		Content: []types.IncomingContentBlock{
+			{Type: "text", Text: "animate this"},
+			{Type: "image", MIMEType: "image/png", Data: base64.StdEncoding.EncodeToString(payload)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	eng.mu.Lock()
+	received := eng.received
+	eng.mu.Unlock()
+	if received == nil {
+		t.Fatal("engine never called")
+	}
+	img := received.Content[1]
+	if img.Type != types.ContentTypeImage {
+		t.Fatalf("second block wrong type: %+v", img)
+	}
+	if img.FilePath == "" {
+		t.Fatal("FilePath not set — image was not persisted")
+	}
+	if img.Data == "" {
+		t.Error("Data must be kept alongside FilePath")
+	}
+	wantDir := filepath.Join(root, "session", "s-persist", "uploads")
+	if filepath.Dir(img.FilePath) != wantDir {
+		t.Errorf("FilePath %q not under uploads dir %q", img.FilePath, wantDir)
+	}
+	got, readErr := os.ReadFile(img.FilePath)
+	if readErr != nil {
+		t.Fatalf("persisted file unreadable: %v", readErr)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("persisted bytes mismatch: got %v want %v", got, payload)
+	}
+	if filepath.Ext(img.FilePath) != ".png" {
+		t.Errorf("expected .png extension for image/png, got %q", img.FilePath)
+	}
+}
+
+// TestRouter_NoPersistWithoutWorkspaceRoot: when SetWorkspaceRoot was
+// never called, the message flows through untouched — FilePath stays
+// empty and no error is raised.
+func TestRouter_NoPersistWithoutWorkspaceRoot(t *testing.T) {
+	eng := &captureEngine{}
+	ch := &recordingChannel{}
+	info := stubModelInfo{
+		key:      "anthropic:claude-opus-4-7",
+		supports: registry.SupportsFlags{Vision: true},
+	}
+	r := New(eng, map[string]channel.Duplex{"websocket": ch}, nil, info, zap.NewNop())
+
+	err := r.Handle(context.Background(), &types.IncomingMessage{
+		ChannelName: "websocket",
+		SessionID:   "s1",
+		Content: []types.IncomingContentBlock{
+			{Type: "image", MIMEType: "image/png", Data: "iVBORw0KGgo="},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	eng.mu.Lock()
+	received := eng.received
+	eng.mu.Unlock()
+	if received == nil {
+		t.Fatal("engine never called")
+	}
+	if received.Content[0].FilePath != "" {
+		t.Errorf("FilePath must stay empty without workspace root: %q", received.Content[0].FilePath)
 	}
 }
 

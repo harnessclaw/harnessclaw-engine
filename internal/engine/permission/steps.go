@@ -157,8 +157,32 @@ func (s *ModeDefaultStep) Check(_ context.Context, req *PermissionRequest) *Resu
 		if req.IsReadOnly {
 			return &Result{Decision: Allow, Reason: ReasonReadOnly}
 		}
-		return &Result{Decision: Ask, Reason: ReasonDefault, Message: "write operation requires confirmation"}
+		// Collapsed default: only high-risk built-in tools (bash + browser)
+		// still require confirmation here. File ops that leave the workspace
+		// are gated SEPARATELY via AgentScope escalation in the file tools, not
+		// in this checker (the checker can't see the tool's path argument).
+		// Every other write tool (image_generate, video_create, plan_update,
+		// meta_write, scheduler, skill tools, …) auto-allows.
+		if confirmableBuiltinTools[req.ToolName] {
+			return &Result{Decision: Ask, Reason: ReasonDefault, Message: "this tool runs commands or drives a browser; confirm to proceed"}
+		}
+		return &Result{Decision: Allow, Reason: ReasonMode}
 	}
+}
+
+// confirmableBuiltinTools are the built-in tools that still require explicit
+// user confirmation in default mode: bash (arbitrary shell execution) and the
+// browser tools (drive a real browser — external, irreversible side effects).
+// These are the SafetyDangerous built-ins. File read/edit/write are NOT here —
+// they auto-allow inside the workspace and prompt only when a path leaves the
+// workspace, enforced by AgentScope escalation in scope.go.
+//
+// NOTE: when adding a new high-risk built-in tool, add its ToolName here.
+var confirmableBuiltinTools = map[string]bool{
+	"bash":                   true,
+	"browser_agent":          true,
+	"agent_browser_command":  true,
+	"browser_session_create": true,
 }
 
 // matchesToolName checks if a rule's tool name matches the target tool.

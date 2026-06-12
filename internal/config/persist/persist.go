@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -109,7 +110,7 @@ func (f *File) SetAgent(cfg config.AgentConfig) error {
 	// is small enough that comment loss on agent.* keys is acceptable
 	// (user comments belong on the surrounding free-form yaml).
 	for _, k := range []string{
-		"primary", "fallback_chain", "image_generation",
+		"primary", "fallback_chain", "image_generation", "video_generation",
 		"max_tokens", "temperature", "context_window",
 		"max_turns", "max_tool_calls", "thinking_intensity",
 	} {
@@ -132,6 +133,9 @@ func (f *File) SetAgent(cfg config.AgentConfig) error {
 	if cfg.ImageGeneration != "" {
 		appendScalar(agent, "image_generation", cfg.ImageGeneration)
 	}
+	if cfg.VideoGeneration != "" {
+		appendScalar(agent, "video_generation", cfg.VideoGeneration)
+	}
 	if cfg.MaxTokens != 0 {
 		appendInt(agent, "max_tokens", cfg.MaxTokens)
 	}
@@ -151,6 +155,124 @@ func (f *File) SetAgent(cfg config.AgentConfig) error {
 		appendScalar(agent, "thinking_intensity", cfg.ThinkingIntensity)
 	}
 	return nil
+}
+
+// SetVideoGen rewrites the top-level videogen: block. Credentials (api_key) use
+// quoted-scalar style like provider creds. The block is small enough that
+// comment loss inside videogen.* is acceptable.
+func (f *File) SetVideoGen(cfg config.VideoGenConfig) error {
+	root := f.root.Content[0]
+	vg, _ := findValue(root, "videogen")
+	if vg == nil {
+		vg = &yaml.Node{Kind: yaml.MappingNode}
+		setKey(root, "videogen", vg)
+	}
+	if vg.Kind != yaml.MappingNode {
+		return fmt.Errorf("persist: top-level videogen is not a mapping")
+	}
+	removeKey(vg, "providers")
+	if len(cfg.Providers) == 0 {
+		return nil
+	}
+	providers := &yaml.Node{Kind: yaml.MappingNode}
+	for _, name := range sortedVideoProviderKeys(cfg.Providers) {
+		p := cfg.Providers[name]
+		pNode := &yaml.Node{Kind: yaml.MappingNode}
+		appendQuotedScalar(pNode, "api_key", p.APIKey)
+		if strings.TrimSpace(p.BaseURL) != "" {
+			appendScalar(pNode, "base_url", p.BaseURL)
+		}
+		if len(p.Endpoints) > 0 {
+			eps := &yaml.Node{Kind: yaml.MappingNode}
+			for _, epName := range sortedVideoEndpointKeys(p.Endpoints) {
+				epNode := &yaml.Node{Kind: yaml.MappingNode}
+				appendScalar(epNode, "model", p.Endpoints[epName].Model)
+				setKey(eps, epName, epNode)
+			}
+			setKey(pNode, "endpoints", eps)
+		}
+		setKey(providers, name, pNode)
+	}
+	setKey(vg, "providers", providers)
+	return nil
+}
+
+// SetImageGen rewrites the top-level imagegen: block. api_key uses quoted-scalar
+// style like provider creds. Mirrors SetVideoGen, plus a per-provider path field.
+func (f *File) SetImageGen(cfg config.ImageGenConfig) error {
+	root := f.root.Content[0]
+	ig, _ := findValue(root, "imagegen")
+	if ig == nil {
+		ig = &yaml.Node{Kind: yaml.MappingNode}
+		setKey(root, "imagegen", ig)
+	}
+	if ig.Kind != yaml.MappingNode {
+		return fmt.Errorf("persist: top-level imagegen is not a mapping")
+	}
+	removeKey(ig, "providers")
+	if len(cfg.Providers) == 0 {
+		return nil
+	}
+	providers := &yaml.Node{Kind: yaml.MappingNode}
+	for _, name := range sortedImageProviderKeys(cfg.Providers) {
+		p := cfg.Providers[name]
+		pNode := &yaml.Node{Kind: yaml.MappingNode}
+		appendQuotedScalar(pNode, "api_key", p.APIKey)
+		if strings.TrimSpace(p.BaseURL) != "" {
+			appendScalar(pNode, "base_url", p.BaseURL)
+		}
+		if strings.TrimSpace(p.Path) != "" {
+			appendScalar(pNode, "path", p.Path)
+		}
+		if len(p.Endpoints) > 0 {
+			eps := &yaml.Node{Kind: yaml.MappingNode}
+			for _, epName := range sortedImageEndpointKeys(p.Endpoints) {
+				epNode := &yaml.Node{Kind: yaml.MappingNode}
+				appendScalar(epNode, "model", p.Endpoints[epName].Model)
+				setKey(eps, epName, epNode)
+			}
+			setKey(pNode, "endpoints", eps)
+		}
+		setKey(providers, name, pNode)
+	}
+	setKey(ig, "providers", providers)
+	return nil
+}
+
+func sortedImageProviderKeys(m map[string]config.ImageProviderConfig) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedImageEndpointKeys(m map[string]config.ImageEndpointConfig) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedVideoProviderKeys(m map[string]config.VideoProviderConfig) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedVideoEndpointKeys(m map[string]config.VideoEndpointConfig) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // SetToolConfig writes or replaces tools.<name>.* keys from raw.

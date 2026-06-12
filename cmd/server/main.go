@@ -31,10 +31,12 @@ import (
 	"harnessclaw-go/internal/services/api"
 	"harnessclaw-go/internal/services/api/agentcapabilities"
 	"harnessclaw-go/internal/services/api/agentmgmt"
+	"harnessclaw-go/internal/services/api/imagegenmgmt"
 	"harnessclaw-go/internal/services/api/modelsregistry"
 	"harnessclaw-go/internal/services/api/providersmgmt"
 	"harnessclaw-go/internal/services/api/sessionmetrics"
 	"harnessclaw-go/internal/services/api/toolsmgmt"
+	"harnessclaw-go/internal/services/api/videogenmgmt"
 	"harnessclaw-go/internal/channel"
 	wsch "harnessclaw-go/internal/channel/websocket"
 	"harnessclaw-go/internal/commands"
@@ -71,6 +73,7 @@ import (
 	"harnessclaw-go/internal/tools/builtin/glob"
 	"harnessclaw-go/internal/tools/builtin/grep"
 	"harnessclaw-go/internal/tools/builtin/imagegen"
+	openaiimg "harnessclaw-go/internal/tools/builtin/imagegen/providers/openai"
 	"harnessclaw-go/internal/tools/builtin/listloadedskills"
 	"harnessclaw-go/internal/tools/builtin/loadskill"
 	"harnessclaw-go/internal/tools/builtin/metatool"
@@ -85,6 +88,8 @@ import (
 	"harnessclaw-go/internal/tools/builtin/unloadskill"
 	"harnessclaw-go/internal/tools/builtin/webfetch"
 	"harnessclaw-go/internal/tools/builtin/websearch"
+	videogen "harnessclaw-go/internal/tools/builtin/videogen"
+	"harnessclaw-go/internal/tools/builtin/videogen/providers/doubao"
 	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
 )
@@ -337,12 +342,73 @@ func main() {
 	modelReg := modelregistry.NewRegistry(regManifest)
 
 	llmProvider, providerMgr := initProvider(cfg.LLM, cfg.Agent, cfg.SourcePath, modelReg, logger)
+
+	// Video generation shares ONE live Source between the provider-agnostic
+	// tools (which READ it) and the videogenmgmt handler (which MUTATES it via
+	// UpdateProviders). Construct it unconditionally here — right after
+	// providerMgr exists — so the management API works even when the workspace
+	// root is unavailable and the tools below aren't registered. The same
+	// pointer is passed to NewCreate/NewQuery and to videogenmgmt.New later.
+	videoSource := videogen.NewSource(cfg.VideoGen, providerMgr)
+
+	// Image generation likewise shares ONE live Source between the
+	// provider-agnostic tool (which READS it) and the imagegenmgmt handler
+	// (which MUTATES it via UpdateProviders). Constructed unconditionally here —
+	// right after providerMgr exists — so the management API works even when the
+	// workspace root is unavailable and the tool below isn't registered. The
+	// same pointer is passed to imagegen.New and to imagegenmgmt.New later.
+	imageSource := imagegen.NewSource(cfg.ImageGen, providerMgr)
+
 	if workspaceRootDir != "" && providerMgr != nil {
-		t := imagegen.New(providerMgr, modelReg, workspaceRootDir, logger)
+		// Image generation: the shared live Source above + a provider registry.
+		// The generic OpenAI-compatible provider covers every configured provider
+		// name, so register one per configured provider plus an "openai" default.
+		imageRegistry := imagegen.NewProviderRegistry()
+		// Built-in image provider names always available in the UI even when the
+		// active config hasn't declared them yet (openai + 火山引擎/Ark). Plus any
+		// extra provider keys the config does declare. The generic OpenAI-compatible
+		// provider covers all of them (base_url/path make each call target-specific).
+		imageProvNames := map[string]bool{"openai": true, "volcengine": true}
+		for name := range cfg.ImageGen.Providers {
+			imageProvNames[name] = true
+		}
+		for name := range imageProvNames {
+			if err := imageRegistry.Register(openaiimg.NewProvider(name, logger)); err != nil {
+				logger.Warn("imagegen: duplicate provider registration skipped", zap.String("name", name))
+			}
+		}
+		t := imagegen.New(imageSource, imageRegistry, workspaceRootDir, logger)
 		if err := registry.Register(t); err != nil {
 			logger.Fatal("failed to register image generation tool", zap.Error(err))
 		}
 		logger.Info("image generation tool registered", zap.String("name", t.Name()))
+
+		// Video generation: provider-agnostic tools + doubao provider, sharing
+		// the live Source constructed above with the videogenmgmt handler.
+		videoRegistry := videogen.NewProviderRegistry()
+		// All Volcengine Ark video models share one task API. Register the Ark
+		// implementation under the built-in names (doubao + 火山引擎/volcengine)
+		// always available in the UI, plus any extra configured provider key, so
+		// any of them resolves at call time.
+		videoProvNames := map[string]bool{"doubao": true, "volcengine": true}
+		for name := range cfg.VideoGen.Providers {
+			videoProvNames[name] = true
+		}
+		for name := range videoProvNames {
+			if err := videoRegistry.Register(doubao.NewProvider(name, logger)); err != nil {
+				logger.Warn("videogen: duplicate provider registration skipped", zap.String("name", name))
+			}
+		}
+		videoCreate := videogen.NewCreate(videoSource, videoRegistry, workspaceRootDir, logger)
+		videoQuery := videogen.NewQuery(videoSource, videoRegistry, workspaceRootDir, logger)
+		if err := registry.Register(videoCreate); err != nil {
+			logger.Fatal("failed to register video_create tool", zap.Error(err))
+		}
+		if err := registry.Register(videoQuery); err != nil {
+			logger.Fatal("failed to register video_query tool", zap.Error(err))
+		}
+		logger.Info("video tools registered",
+			zap.String("create", videoCreate.Name()), zap.String("query", videoQuery.Name()))
 	}
 
 	// Session-metrics registry: a single in-process registry holds the
@@ -600,6 +666,10 @@ func main() {
 		modelInfo = &routerModelInfoBridge{mgr: providerMgr, reg: modelReg}
 	}
 	rtr := router.New(eng, channels, middlewares, modelInfo, logger)
+	// Enable inbound image persistence: attachments land in
+	// {workspace}/session/{sid}/uploads/ so tools can read them via
+	// the block's FilePath. Empty root disables (persistence no-ops).
+	rtr.SetWorkspaceRoot(workspaceRootDir)
 
 	// Register WebSocket channel if enabled.
 	//
@@ -703,6 +773,22 @@ func main() {
 		zap.String("config_source", cfg.SourcePath),
 	)
 
+	// Video generation management API: GET/PATCH videogen providers with
+	// hot-reload + yaml persistence. Always mounted — it shares the same live
+	// Source the video tools read, so mutations are visible without a restart.
+	videoGenHandler := videogenmgmt.New(videoSource, cfg.SourcePath, logger)
+	logger.Info("videogenmgmt API mounted",
+		zap.String("config_source", cfg.SourcePath),
+	)
+
+	// Image generation management API: GET/PATCH imagegen providers with
+	// hot-reload + yaml persistence. Always mounted — it shares the same live
+	// Source the image tool reads, so mutations are visible without a restart.
+	imageGenHandler := imagegenmgmt.New(imageSource, cfg.SourcePath, logger)
+	logger.Info("imagegenmgmt API mounted",
+		zap.String("config_source", cfg.SourcePath),
+	)
+
 	// Agent capabilities endpoint: serves the same SupportsFlags the
 	// router gate uses by reusing the bridge instance directly, so the
 	// client never disagrees with the server about what's allowed.
@@ -720,7 +806,7 @@ func main() {
 		consoleServer = api.NewServer(api.ServerConfig{
 			Host: cfg.Console.Host,
 			Port: cfg.Console.Port,
-		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, nil, capabilitiesHandler, logger)
+		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, videoGenHandler, imageGenHandler, nil, capabilitiesHandler, logger)
 		go func() {
 			if err := consoleServer.Start(); err != nil {
 				logger.Error("console API server exited", zap.Error(err))
@@ -1081,6 +1167,19 @@ func buildBifrostAdapter(
 	effectiveTemp := resolveEffectiveTemperature(provCfg.Type, agent.Temperature, epCfg.Temperature)
 	effectiveMax := resolveEffectiveMaxTokens(agent.MaxTokens, epCfg.MaxTokens)
 
+	// Vision capability: manifest baseline by (provider, wire model id),
+	// falling back to the backend type bucket, then endpoint model_type
+	// override (same precedence the router capability bridge uses).
+	var supports modelregistry.SupportsFlags
+	if m := modelReg.LookupByProviderAndModelID(provName, epCfg.Model); m != nil {
+		supports = m.Supports
+	} else if m := modelReg.LookupByProviderAndModelID(provCfg.Type, epCfg.Model); m != nil {
+		supports = m.Supports
+	}
+	if len(epCfg.ModelType) > 0 {
+		supports = modelregistry.MergeOverride(supports, modelregistry.SupportsFromTokens(epCfg.ModelType))
+	}
+
 	adapter, err := bifrost.New(bifrost.Config{
 		Provider:           bfProvider,
 		Model:              epCfg.Model,
@@ -1092,6 +1191,7 @@ func buildBifrostAdapter(
 		CustomHeaders:      cfg.CustomHeaders,
 		EnableThinking:     epCfg.EnableThinking,
 		Quirks:             quirks,
+		SupportsVision:     supports.Vision,
 		DefaultTemperature: effectiveTemp,
 		DefaultMaxTokens:   effectiveMax,
 		Logger:             logger,
@@ -1118,6 +1218,7 @@ func buildBifrostAdapter(
 		zap.Float64("effective_temperature", effectiveTemp),
 		zap.Bool("proxy", cfg.ProxyURL != ""),
 		zap.String("thinking", thinkingState),
+		zap.Bool("vision", supports.Vision),
 	)
 	return adapter, nil
 }

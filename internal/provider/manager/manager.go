@@ -345,6 +345,7 @@ func (m *Manager) AgentSnapshot() AgentSnapshotPayload {
 		Primary:                m.agent.Primary,
 		FallbackChain:          append([]string(nil), m.agent.FallbackChain...),
 		ImageGeneration:        m.agent.ImageGeneration,
+		VideoGeneration:        m.agent.VideoGeneration,
 		MaxTokens:              m.agent.MaxTokens,
 		Temperature:            m.agent.Temperature,
 		ContextWindow:          m.agent.ContextWindow,
@@ -899,6 +900,7 @@ type AgentPatch struct {
 	Primary           *string
 	FallbackChain     *[]string
 	ImageGeneration   *string
+	VideoGeneration   *string
 	MaxTokens         *int
 	Temperature       *float64
 	ContextWindow     *int
@@ -910,6 +912,7 @@ type AgentPatch struct {
 // IsEmpty reports whether the patch would change anything.
 func (p AgentPatch) IsEmpty() bool {
 	return p.Primary == nil && p.FallbackChain == nil && p.ImageGeneration == nil &&
+		p.VideoGeneration == nil &&
 		p.MaxTokens == nil && p.Temperature == nil && p.ContextWindow == nil &&
 		p.MaxTurns == nil && p.MaxToolCalls == nil && p.ThinkingIntensity == nil
 }
@@ -945,6 +948,9 @@ func (m *Manager) UpdateAgent(patch AgentPatch) error {
 	if patch.ImageGeneration != nil {
 		next.ImageGeneration = *patch.ImageGeneration
 	}
+	if patch.VideoGeneration != nil {
+		next.VideoGeneration = *patch.VideoGeneration
+	}
 	if patch.MaxTokens != nil {
 		next.MaxTokens = *patch.MaxTokens
 	}
@@ -977,11 +983,10 @@ func (m *Manager) UpdateAgent(patch AgentPatch) error {
 			return fmt.Errorf("manager: fallback_chain entry %q duplicates primary", entry)
 		}
 	}
-	if next.ImageGeneration != "" {
-		if err := m.validateChainEntryLocked(next.ImageGeneration); err != nil {
-			return err
-		}
-	}
+	// image_generation resolves against cfg.ImageGen (not the LLM chain),
+	// so it is not validated here — identical to video_generation handling.
+	// Validation happens at config sanitize time and in the imagegenmgmt handler.
+
 	// Validate ONLY fields the caller actually sent — operators can
 	// run with MaxTurns=0 (engine falls back to its own default) in
 	// tests / lightweight setups, so we don't enforce ≥1 here unless
@@ -1033,6 +1038,7 @@ func (m *Manager) UpdateAgent(patch AgentPatch) error {
 		zap.Bool("primary_changed", patch.Primary != nil),
 		zap.Bool("fallback_chain_changed", patch.FallbackChain != nil),
 		zap.Bool("image_generation_changed", patch.ImageGeneration != nil),
+		zap.Bool("video_generation_changed", patch.VideoGeneration != nil),
 		zap.Bool("max_tokens_changed", patch.MaxTokens != nil),
 		zap.Bool("temperature_changed", patch.Temperature != nil),
 		zap.Bool("context_window_changed", patch.ContextWindow != nil),
@@ -1042,6 +1048,7 @@ func (m *Manager) UpdateAgent(patch AgentPatch) error {
 		zap.String("primary", next.Primary),
 		zap.Strings("fallback_chain", next.FallbackChain),
 		zap.String("image_generation", next.ImageGeneration),
+		zap.String("video_generation", next.VideoGeneration),
 		zap.String("thinking_intensity", next.ThinkingIntensity),
 	)
 	return nil

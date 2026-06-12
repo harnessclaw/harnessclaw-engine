@@ -565,7 +565,10 @@ func TestPatch_Agent_RejectsMalformed(t *testing.T) {
 	for _, body := range []string{
 		`{"primary":"missing-separator"}`,
 		`{"primary":"ghost:x"}`,
-		`{"image_generation":"ghost:x"}`,
+		// NOTE: image_generation / video_generation are intentionally NOT
+		// validated here — they resolve against cfg.ImageGen / cfg.VideoGen
+		// (independent provider subsystems), validated by config sanitize +
+		// their own mgmt handlers, not the chain validator. See IMG-7.
 		`{"fallback_chain":["alpha:ghost-ep"]}`,
 		`{"primary":"alpha:claude-46","fallback_chain":["alpha:claude-46"]}`, // duplicates primary
 		`{"max_turns":0}`,                                                    // must be ≥ 1
