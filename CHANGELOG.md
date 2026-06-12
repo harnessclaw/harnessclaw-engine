@@ -5,6 +5,43 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+## [0.0.22] - 2026-06-12
+
+### Added
+- Video generation subsystem: new `VideoProvider` interface, provider registry, top-level `videogen:` config block, `agent.video_generation` routing, and `video_create` / `video_query` tools with poll + final-check state machine. Ships built-in `doubao` / `volcengine` providers (Ark HTTP client with error/status mapping, submit/query/download).
+- Image generation as an independent provider subsystem decoupled from `cfg.LLM`: new `ImageProvider` interface + registry, top-level `imagegen:` config block, `ImageGenSource` live holder, generic OpenAI-compatible sync provider, and built-in `openai` / `volcengine` provider names. Seedream 2K/3K/4K resolution table (24 sizes) with a 2048×2048 default.
+- New `videogenmgmt` (`GET`/`PATCH /api/v1/videogen`) and `imagegenmgmt` (`GET`/`PATCH /api/v1/imagegen`) HTTP handlers; YAML persisters `File.SetVideoGen` / `File.SetImageGen` round-trip the new blocks without clobbering other keys.
+- Multimodal image attachments now pass through to the model and tools instead of being gated at ingress; attachments persist, vision-incapable adapters degrade gracefully, and `video_create` accepts an `image_path` input.
+- Sub-agent permission asks now bubble to the root session UI so the operator approves once at the top level instead of seeing prompts disappear into nested freelancers.
+- New `internal/scheduler` package (v3.1) replacing the L2/L3 split: `Scheduler` / `Deps` / `SpawnParams` / `Hints` / `Invoker` / `ParentRef` / `Overrides` interfaces, `Result` with sealed `SyncOutcome` / `AsyncOutcome`, `Strategy` / `Middleware` / `SpawnState` contracts, `Runtime` decoupling boundary, in-memory `tasks.Manager`, NDJSON disk `Store`, in-memory pub/sub `Bus`, `Identity` / `AgentContext` / `TaskRegister` / `Analytics` middlewares, `SyncStrategy` (with Ctrl+B background handoff) + `AsyncStrategy` (detach + disk stream + Subscribe tail), and `Dispatcher` with full unit tests.
+- `loop.Runtime.LLM` implementation ports `runner.RunLeaf` end-to-end; first-turn LLM debug dump now includes the full system prompt body; freelancer skill hydration wired through `Runtime.LLM`; freelancer principles prompt generalized to all sub-agents.
+- Scheduler tool renamed to `dispatch`; emma main-agent palette gains `video_create` / `video_query`; emma prompt guides toward `video_create` / `video_query` usage.
+
+### Changed
+- Massive package reorganization. `internal/engine` split into kernel + agent tiers; older packages demoted to `internal/legacy/` then progressively promoted to canonical homes (`internal/workspace`, `internal/multimodal`, `internal/humanloop`, `internal/skills/tracker`, `internal/metric/sessionstats`, `internal/engine/agent/common`, `internal/engine/agent/emma`, `internal/engine/agent/definition`, `internal/engine/loop/{toolexec,llmcall}`, `internal/engine/prompt`, `channel/websocket/internal/toolphrase`). API consolidated into `internal/services/api`; tools restructured under `internal/tools/builtin/`; storage split into `memory` + `persistence`; `pkg/{command,skill,task}` pluralized to `commands` / `skills` / `tasks`; build scripts moved from `scripts/` to `build/`.
+- Default per-tool permission gating at the main agent collapsed to `bash` + `browser`; `file*` tools prompt only when the path is outside the workspace.
+- L3 sub-agent default `MaxTurns` raised from 10 → 30 to match the real freelancer budget.
+- Tool executor wraps `max_tokens`-truncated tool input with an actionable hint so the LLM can self-correct on the next turn instead of failing silently on a half-parsed argument.
+
+### Removed
+- L2 scheduler layer: `tools/scheduler`, `runAgent`, `builtin` tier modules, `agentscheduler.Module`, and `legacy/spawn` + `msgbus` are gone. Dispatch goes straight to the L3 freelancer through the new `scheduler.Scheduler`. The emma `spawner` field and `Spawner()` accessor are removed.
+- Dead code: `broker` / `mailbox` / `team` / `async` / `sendmessage` / `teamtool` / `legacy/agent/{failure,notification}.go` / empty `worker` placeholder.
+- `agent.image_generation` no longer chain-validates against `cfg.LLM` in `UpdateAgent`; it resolves against `cfg.ImageGen` (matching how `agent.video_generation` is treated), validated at config-sanitize time and inside `imagegenmgmt`.
+
+### Fixed
+- Sub-agent wiring: tool cards now route to the correct sub-agent and the `msg_msg_` double prefix is gone; `subagent.start` / `subagent.end` events emit again with `ParentRef.{AgentID,StepID}` populated at tool callsites; sub-agent `Done` / `Error` no longer fan out into the parent event stream.
+- `Runtime.LLM` injects `common.WithSubAgentStats` so downstream tools see correct sub-agent attribution.
+- `emma.ProcessMessage` injects `RootSessionID` / `ImmediateParentSessionID` so frames carry full lineage.
+- Loop now emits an `EngineEventDone` frame carrying `loop.Terminal` / `Usage`, with an E2E roundtrip test covering `Runtime.LLM` → `loop.Run` → `MockProvider`.
+- `fileread` tool tolerates UTF-8 multi-byte characters straddling the binary-sniff window boundary instead of mis-flagging them as binary.
+- `file{read,edit,write}` scope enforcement re-wired: the prior refactor deleted the hard-reject path without wiring the `ScopeEscalationFn` escalation, leaving `AgentScope` as a silent no-op. New `internal/tools/scope.go` shared helpers (`EnforceReadScope` / `EnforceWriteScope`) consult the executor-injected escalator and return `permission_denied` when refused.
+- `bash` tool `TestDescription` updated to match the Chinese description.
+- Build: `make run` restored to use the `$(CONFIG)` default after a local-config slip.
+- Video generation client: ctx-aware retry backoff (no spinning after cancel), malformed-2xx now treated as transient instead of silently mapped to permanent failure; `api_key`-only `PATCH` preserves endpoints.
+
+### Security
+- Scrubbed two real API keys (anthropic-via-iflytek gateway + deepseek) that were committed in the `scripts/` → `build/` rename. Both keys have been revoked. Template values replaced with empty strings + a comment pointing to `config_self.yaml` or env vars; history not rewritten because the keys are revoked and force-pushing `main` adds no defensive value (cached forks and the GitHub search index already saw them). Follow-up: add a gitleaks pre-commit hook and enable GitHub Push Protection.
+
 ## [0.0.21-beta.2] - 2026-06-10
 
 ### Fixed
