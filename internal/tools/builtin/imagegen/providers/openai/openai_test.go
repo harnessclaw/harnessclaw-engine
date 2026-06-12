@@ -86,3 +86,19 @@ func TestProviderName(t *testing.T) {
 		t.Fatal("name")
 	}
 }
+
+func TestCredsURL(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ base, path, want string }{
+		{"https://api.openai.com", "/v1/images/generations", "https://api.openai.com/v1/images/generations"}, // split form
+		{"https://api.openai.com", "", "https://api.openai.com/v1/images/generations"},                       // bare origin → default path
+		{"https://ark.cn-beijing.volces.com/api/v3/images/generations", "", "https://ark.cn-beijing.volces.com/api/v3/images/generations"}, // full URL, path empty
+		{"https://x.com/api/v3", "/images/generations", "https://x.com/api/v3/images/generations"},            // split with prefix
+	}
+	for _, c := range cases {
+		got := creds{baseURL: c.base, path: c.path}.url()
+		if got != c.want {
+			t.Errorf("url(base=%q path=%q) = %q, want %q", c.base, c.path, got, c.want)
+		}
+	}
+}

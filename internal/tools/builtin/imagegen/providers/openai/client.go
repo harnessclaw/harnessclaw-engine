@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 )
@@ -21,11 +22,21 @@ type creds struct {
 	authPrefix string // "" → "Bearer "
 }
 
+// url builds the request endpoint. When path is set it's joined to base_url
+// (legacy split form); when path is empty base_url is treated as the complete
+// endpoint URL (the unified "API 地址" form the client now uses). The default
+// path is only applied when base_url has no path component of its own.
 func (c creds) url() string {
 	base := strings.TrimRight(strings.TrimSpace(c.baseURL), "/")
 	p := strings.TrimSpace(c.path)
 	if p == "" {
-		p = defaultPath
+		// base_url is the full endpoint URL already (e.g.
+		// https://api.openai.com/v1/images/generations). Only fall back to
+		// the default path when base_url is a bare origin with no path.
+		if u, err := neturl.Parse(base); err == nil && strings.Trim(u.Path, "/") == "" {
+			return base + defaultPath
+		}
+		return base
 	}
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
