@@ -137,6 +137,13 @@ func (m *Module) Run(ctx context.Context, cfg *common.SpawnConfig) (*common.Spaw
 	permChecker := common.BuildInheritedChecker(
 		browserAgentApprovedTools(common.SessionApprovedTools(m.deps.SessionMgr, cfg.ParentSessionID), def),
 	)
+	// 权限 Ask 冒泡到 root session（browser agent 的 Out 即 ParentOut，
+	// 事件直达父级流；await 注册在 root session 上供 SubmitPermissionResult 解析）。
+	approvalSessID := cfg.RootSessionID
+	if approvalSessID == "" {
+		approvalSessID = cfg.ParentSessionID
+	}
+	approvalFn := common.BuildSubAgentApprovalFn(m.deps.SessionMgr, approvalSessID, m.deps.Logger)
 	loopRes, err := loop.Run(ctx, &loop.Config{
 		Session:            sess,
 		SystemPrompt:       sysPrompt,
@@ -152,7 +159,7 @@ func (m *Module) Run(ctx context.Context, cfg *common.SpawnConfig) (*common.Spaw
 		Out:                cfg.ParentOut,
 		AgentID:            sess.ID,
 		PermChecker:        permChecker,
-		ApprovalFn:         nil,
+		ApprovalFn:         approvalFn,
 		TaskContract:       tool.TaskContract{TaskID: taskID, TaskStartedAt: cfg.TaskStartedAt, OutputSchema: def.OutputSchema},
 		ArtifactProducer:   tool.ArtifactProducer{AgentID: sess.ID, AgentRunID: sess.ID, TaskID: taskID, SessionID: sess.ID},
 		OnTurnComplete: func(snap loop.TurnSnapshot) loop.Decision {

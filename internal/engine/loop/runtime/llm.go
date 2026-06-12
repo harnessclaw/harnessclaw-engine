@@ -183,6 +183,16 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 		common.SessionApprovedTools(r.SessionMgr, cfg.ParentSessionID),
 	)
 
+	// 7.5 权限 Ask 冒泡：sub-agent 自己没有 UI，未授权的写工具触发 Ask 时，
+	// 把 PermissionRequest 注册到 ROOT session 的 Awaits（websocket 的
+	// SubmitPermissionResult 解析在 root session 上），事件经 dispatch relay
+	// 透传到 root UI 弹窗。RootSessionID 为空（直接 spawn）时退回 parent。
+	approvalSessID := cfg.RootSessionID
+	if approvalSessID == "" {
+		approvalSessID = cfg.ParentSessionID
+	}
+	approvalFn := common.BuildSubAgentApprovalFn(r.SessionMgr, approvalSessID, r.Logger)
+
 	// 8. AgentScope（runner.RunLeaf:256）
 	scope := common.BuildAgentScope(cfg, r.Cfg.RootDir, "leaf")
 
@@ -232,6 +242,7 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 			Out:                 events,
 			AgentID:             string(p.AgentID),
 			PermChecker:         permChecker,
+			ApprovalFn:          approvalFn,
 			AgentScope:          scope,
 			OnTurnComplete:      common.StopOnEndTurn(),
 		})

@@ -113,6 +113,45 @@ func TestSync_PropagatesRuntimeError(t *testing.T) {
 	}
 }
 
+// 权限请求帧绝不能被 fan-out 的非阻塞 drop 丢掉 —— sub-agent 的执行器
+// 阻塞等待 root UI 应答。本测试用无缓冲父 channel + 延迟 reader 复现
+// "父 channel 暂时不可写"：阻塞式透传必须最终送达。
+func TestSync_PermissionRequestRelayNeverDropped(t *testing.T) {
+	permEvt := pkgtypes.EngineEvent{
+		Type:              pkgtypes.EngineEventPermissionRequest,
+		PermissionRequest: &pkgtypes.PermissionRequest{RequestID: "perm_relay"},
+	}
+	s := &Strategy{
+		rt:      &fakeRuntime{events: []pkgtypes.EngineEvent{permEvt, {Type: pkgtypes.EngineEventDone}}},
+		taskMgr: tasks.NewMemory(),
+		diskOut: diskout.NewFS(t.TempDir()),
+	}
+	st := &scheduler.SpawnState{AgentID: "a-1", TaskID: "t-1", Strategy: "sync", Bag: map[string]any{}}
+
+	parent := make(chan pkgtypes.EngineEvent) // 无缓冲：非阻塞 send 必丢
+	got := make(chan pkgtypes.EngineEvent, 1)
+	go func() {
+		time.Sleep(50 * time.Millisecond) // 模拟 reader 短暂繁忙
+		got <- <-parent
+	}()
+
+	if _, err := s.Spawn(context.Background(), scheduler.SpawnParams{Prompt: "x", Events: parent}, st); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case evt := <-got:
+		if evt.Type != pkgtypes.EngineEventPermissionRequest {
+			t.Errorf("relayed event type = %q, want permission_request", evt.Type)
+		}
+		if evt.PermissionRequest == nil || evt.PermissionRequest.RequestID != "perm_relay" {
+			t.Errorf("relayed PermissionRequest = %+v", evt.PermissionRequest)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission_request was dropped by the relay")
+	}
+}
+
 func TestSync_Subscribe_NotSupported(t *testing.T) {
 	s := &Strategy{}
 	_, err := s.Subscribe(context.Background(), pkgtypes.TaskID("t-x"))

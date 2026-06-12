@@ -66,9 +66,18 @@ func (s *Strategy) Spawn(ctx context.Context, p scheduler.SpawnParams, st *sched
 			// 不要 fan-out 给父 —— 否则父的 wire 翻译层会把它当成自己的
 			// turn 结束（详见 sync 策略同位置注释）。
 			if p.Events != nil && evt.Type != pkgtypes.EngineEventDone && evt.Type != pkgtypes.EngineEventError {
-				select {
-				case p.Events <- evt:
-				default: // 慢父订阅者：丢字幕，磁盘流是 source of truth
+				if evt.Type == pkgtypes.EngineEventPermissionRequest {
+					// 权限请求不能丢：sub-agent 执行器阻塞等 root UI 应答，
+					// 丢帧 = 弹窗永不出现。阻塞式 fan-out（带 ctx 逃生口）。
+					select {
+					case p.Events <- evt:
+					case <-bgCtx.Done():
+					}
+				} else {
+					select {
+					case p.Events <- evt:
+					default: // 慢父订阅者：丢字幕，磁盘流是 source of truth
+					}
 				}
 			}
 		}

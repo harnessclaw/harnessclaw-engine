@@ -91,9 +91,20 @@ func (s *Strategy) Spawn(ctx context.Context, p scheduler.SpawnParams, st *sched
 			// 导致 emma 在 dispatch 后续的 LLM 调用被翻译层错开成 turn N+1
 			// （UI 上 emma 的 prelude 和 final summary 落在两个 turn 里）。
 			if p.Events != nil && evt.Type != pkgtypes.EngineEventDone && evt.Type != pkgtypes.EngineEventError {
-				select {
-				case p.Events <- evt:
-				default:
+				if evt.Type == pkgtypes.EngineEventPermissionRequest {
+					// 权限请求绝不能丢：sub-agent 的执行器阻塞等待
+					// root UI 的应答，丢帧 = 弹窗永不出现、sub-agent
+					// 卡死到 ctx 取消。阻塞式 fan-out（带 ctx 逃生口）。
+					select {
+					case p.Events <- evt:
+					case <-ctx.Done():
+						return scheduler.Result{}, ctx.Err()
+					}
+				} else {
+					select {
+					case p.Events <- evt:
+					default:
+					}
 				}
 			}
 			s.accumulate(evt, &content, &toolCalls, &terminal, &usage, &deliverables, &denied, &artifacts)

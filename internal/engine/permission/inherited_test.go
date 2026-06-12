@@ -27,11 +27,11 @@ func TestInheritedChecker_ApprovedToolAllowed(t *testing.T) {
 	}
 }
 
-func TestInheritedChecker_UnapprovedToolDenied(t *testing.T) {
+func TestInheritedChecker_UnapprovedToolAsks(t *testing.T) {
 	ic := NewInheritedChecker([]string{"bash"})
 	r := ic.Check(context.Background(), "edit", nil, false)
-	if r.Decision != Deny {
-		t.Errorf("expected Deny for unapproved tool, got %s", r.Decision)
+	if r.Decision != Ask {
+		t.Errorf("expected Ask for unapproved tool, got %s", r.Decision)
 	}
 	if r.Reason != ReasonDefault {
 		t.Errorf("expected reason %s, got %s", ReasonDefault, r.Reason)
@@ -41,8 +41,8 @@ func TestInheritedChecker_UnapprovedToolDenied(t *testing.T) {
 func TestInheritedChecker_DynamicApproval(t *testing.T) {
 	ic := NewInheritedChecker(nil)
 	r := ic.Check(context.Background(), "bash", nil, false)
-	if r.Decision != Deny {
-		t.Errorf("expected Deny before approval, got %s", r.Decision)
+	if r.Decision != Ask {
+		t.Errorf("expected Ask before approval, got %s", r.Decision)
 	}
 	ic.Approve("bash")
 	r = ic.Check(context.Background(), "bash", nil, false)
@@ -54,8 +54,8 @@ func TestInheritedChecker_DynamicApproval(t *testing.T) {
 func TestInheritedChecker_EmptyApprovedList(t *testing.T) {
 	ic := NewInheritedChecker([]string{})
 	r := ic.Check(context.Background(), "bash", nil, false)
-	if r.Decision != Deny {
-		t.Errorf("expected Deny with empty approved list, got %s", r.Decision)
+	if r.Decision != Ask {
+		t.Errorf("expected Ask with empty approved list, got %s", r.Decision)
 	}
 }
 
