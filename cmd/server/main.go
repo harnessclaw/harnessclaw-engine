@@ -31,6 +31,7 @@ import (
 	"harnessclaw-go/internal/services/api"
 	"harnessclaw-go/internal/services/api/agentcapabilities"
 	"harnessclaw-go/internal/services/api/agentmgmt"
+	"harnessclaw-go/internal/services/api/imagegenmgmt"
 	"harnessclaw-go/internal/services/api/modelsregistry"
 	"harnessclaw-go/internal/services/api/providersmgmt"
 	"harnessclaw-go/internal/services/api/sessionmetrics"
@@ -350,20 +351,27 @@ func main() {
 	// pointer is passed to NewCreate/NewQuery and to videogenmgmt.New later.
 	videoSource := videogen.NewSource(cfg.VideoGen, providerMgr)
 
+	// Image generation likewise shares ONE live Source between the
+	// provider-agnostic tool (which READS it) and the imagegenmgmt handler
+	// (which MUTATES it via UpdateProviders). Constructed unconditionally here —
+	// right after providerMgr exists — so the management API works even when the
+	// workspace root is unavailable and the tool below isn't registered. The
+	// same pointer is passed to imagegen.New and to imagegenmgmt.New later.
+	imageSource := imagegen.NewSource(cfg.ImageGen, providerMgr)
+
 	if workspaceRootDir != "" && providerMgr != nil {
-		// Image generation: a live Source over cfg.ImageGen (read by the tool,
-		// later mutated by the imagegenmgmt handler) + a provider registry. The
-		// generic OpenAI-compatible provider covers every configured provider
-		// name, so register one per configured provider plus an "openai"
-		// default. IMG-8 will fold this into the full management wiring.
-		imageSource := imagegen.NewSource(cfg.ImageGen, providerMgr)
+		// Image generation: the shared live Source above + a provider registry.
+		// The generic OpenAI-compatible provider covers every configured provider
+		// name, so register one per configured provider plus an "openai" default.
 		imageRegistry := imagegen.NewProviderRegistry()
 		_ = imageRegistry.Register(openaiimg.NewProvider("openai", logger))
 		for name := range cfg.ImageGen.Providers {
 			if name == "openai" {
 				continue
 			}
-			_ = imageRegistry.Register(openaiimg.NewProvider(name, logger))
+			if err := imageRegistry.Register(openaiimg.NewProvider(name, logger)); err != nil {
+				logger.Warn("imagegen: duplicate provider registration skipped", zap.String("name", name))
+			}
 		}
 		t := imagegen.New(imageSource, imageRegistry, workspaceRootDir, logger)
 		if err := registry.Register(t); err != nil {
@@ -759,6 +767,14 @@ func main() {
 		zap.String("config_source", cfg.SourcePath),
 	)
 
+	// Image generation management API: GET/PATCH imagegen providers with
+	// hot-reload + yaml persistence. Always mounted — it shares the same live
+	// Source the image tool reads, so mutations are visible without a restart.
+	imageGenHandler := imagegenmgmt.New(imageSource, cfg.SourcePath, logger)
+	logger.Info("imagegenmgmt API mounted",
+		zap.String("config_source", cfg.SourcePath),
+	)
+
 	// Agent capabilities endpoint: serves the same SupportsFlags the
 	// router gate uses by reusing the bridge instance directly, so the
 	// client never disagrees with the server about what's allowed.
@@ -776,7 +792,7 @@ func main() {
 		consoleServer = api.NewServer(api.ServerConfig{
 			Host: cfg.Console.Host,
 			Port: cfg.Console.Port,
-		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, videoGenHandler, nil, capabilitiesHandler, logger)
+		}, agentSvc, metricsHandler, modelsHandler, providersHandler, toolsHandler, videoGenHandler, imageGenHandler, nil, capabilitiesHandler, logger)
 		go func() {
 			if err := consoleServer.Start(); err != nil {
 				logger.Error("console API server exited", zap.Error(err))
