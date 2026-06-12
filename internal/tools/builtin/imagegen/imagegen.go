@@ -27,7 +27,7 @@ import (
 const (
 	ToolName         = "image_generate"
 	generatedDirName = "generated"
-	defaultSize      = "1024x1024"
+	defaultSize      = "2048x2048"
 	defaultCount     = 1
 	maxCount         = 4
 	requestTimeout   = 5 * time.Minute
@@ -35,10 +35,11 @@ const (
 )
 
 var allowedSizes = map[string]bool{
-	"1024x1024": true,
-	"1024x1536": true,
-	"1536x1024": true,
-	"512x512":   true,
+	"2048x2048": true,
+	"2304x1728": true,
+	"2848x1600": true,
+	"1600x2848": true,
+	"4096x4096": true,
 }
 
 // AgentConfigSource is satisfied by provider/manager.Manager and is used by
@@ -135,7 +136,7 @@ func (*Tool) InputSchema() map[string]any {
 			"size": map[string]any{
 				"type":        "string",
 				"description": "Image size.",
-				"enum":        []string{"1024x1024", "1024x1536", "1536x1024", "512x512"},
+				"enum":        []string{"2048x2048", "2304x1728", "2848x1600", "1600x2848", "4096x4096"},
 				"default":     defaultSize,
 			},
 			"n": map[string]any{

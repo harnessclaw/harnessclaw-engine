@@ -74,7 +74,7 @@ func TestValidateInputRejectsInvalidRequests(t *testing.T) {
 		"missing prompt": `{}`,
 		"blank prompt":   `{"prompt":"   "}`,
 		"too many":       `{"prompt":"cat","n":5}`,
-		"bad size":       `{"prompt":"cat","size":"2048x2048"}`,
+		"bad size":       `{"prompt":"cat","size":"100x100"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -249,7 +249,7 @@ func TestExecuteSuccessWritesFilesAndEmitsDeliverable(t *testing.T) {
 	events := make(chan types.EngineEvent, 1)
 	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: workspace.SessionRoot(root, sid)})
 	ctx = tool.WithEventOut(ctx, events)
-	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"small cat","model":"openai:gpt-image","n":1,"size":"1024x1024","quality":"high"}`))
+	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"small cat","model":"openai:gpt-image","n":1,"size":"2048x2048","quality":"high"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestExecuteSuccessWritesFilesAndEmitsDeliverable(t *testing.T) {
 	if provider.lastReq.Prompt != "small cat" || provider.lastReq.Endpoint.Model != "gpt-image-1" {
 		t.Fatalf("unexpected provider request: %#v", provider.lastReq)
 	}
-	if provider.lastReq.Quality != "high" || provider.lastReq.Size != "1024x1024" {
+	if provider.lastReq.Quality != "high" || provider.lastReq.Size != "2048x2048" {
 		t.Fatalf("request hints not forwarded: %#v", provider.lastReq)
 	}
 
