@@ -72,6 +72,7 @@ import (
 	"harnessclaw-go/internal/tools/builtin/glob"
 	"harnessclaw-go/internal/tools/builtin/grep"
 	"harnessclaw-go/internal/tools/builtin/imagegen"
+	openaiimg "harnessclaw-go/internal/tools/builtin/imagegen/providers/openai"
 	"harnessclaw-go/internal/tools/builtin/listloadedskills"
 	"harnessclaw-go/internal/tools/builtin/loadskill"
 	"harnessclaw-go/internal/tools/builtin/metatool"
@@ -350,7 +351,21 @@ func main() {
 	videoSource := videogen.NewSource(cfg.VideoGen, providerMgr)
 
 	if workspaceRootDir != "" && providerMgr != nil {
-		t := imagegen.New(providerMgr, modelReg, workspaceRootDir, logger)
+		// Image generation: a live Source over cfg.ImageGen (read by the tool,
+		// later mutated by the imagegenmgmt handler) + a provider registry. The
+		// generic OpenAI-compatible provider covers every configured provider
+		// name, so register one per configured provider plus an "openai"
+		// default. IMG-8 will fold this into the full management wiring.
+		imageSource := imagegen.NewSource(cfg.ImageGen, providerMgr)
+		imageRegistry := imagegen.NewProviderRegistry()
+		_ = imageRegistry.Register(openaiimg.NewProvider("openai", logger))
+		for name := range cfg.ImageGen.Providers {
+			if name == "openai" {
+				continue
+			}
+			_ = imageRegistry.Register(openaiimg.NewProvider(name, logger))
+		}
+		t := imagegen.New(imageSource, imageRegistry, workspaceRootDir, logger)
 		if err := registry.Register(t); err != nil {
 			logger.Fatal("failed to register image generation tool", zap.Error(err))
 		}

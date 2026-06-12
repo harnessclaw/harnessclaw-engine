@@ -1,7 +1,6 @@
 package imagegen
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -12,18 +11,14 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"os"
-	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/config"
-	modelregistry "harnessclaw-go/internal/provider/registry"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
@@ -46,24 +41,20 @@ var allowedSizes = map[string]bool{
 	"512x512":   true,
 }
 
-// ConfigSource is satisfied by provider/manager.Manager. It is kept narrow so
-// image generation can reuse live provider credentials without entering the
-// chat failover path.
-type ConfigSource interface {
-	CurrentConfig() config.LLMConfig
-}
-
+// AgentConfigSource is satisfied by provider/manager.Manager and is used by
+// Source to read the live agent.image_generation selector.
 type AgentConfigSource interface {
 	CurrentAgent() config.AgentConfig
 }
 
 type Tool struct {
 	tool.BaseTool
-	source   ConfigSource
-	registry *modelregistry.Registry
+	source   ImageGenSource
+	registry *ProviderRegistry
 	rootDir  string
-	client   *http.Client
+	client   *http.Client // URL-fallback download only
 	logger   *zap.Logger
+	sleep    func(time.Duration)
 }
 
 type Option func(*Tool)
@@ -76,7 +67,7 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
-func New(source ConfigSource, registry *modelregistry.Registry, rootDir string, logger *zap.Logger, opts ...Option) *Tool {
+func New(source ImageGenSource, registry *ProviderRegistry, rootDir string, logger *zap.Logger, opts ...Option) *Tool {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -86,6 +77,7 @@ func New(source ConfigSource, registry *modelregistry.Registry, rootDir string, 
 		rootDir:  rootDir,
 		client:   newHTTPClient(),
 		logger:   logger.Named("imagegen"),
+		sleep:    time.Sleep,
 	}
 	for _, opt := range opts {
 		opt(t)
@@ -110,7 +102,22 @@ func (*Tool) IsReadOnly() bool              { return false }
 func (*Tool) SafetyLevel() tool.SafetyLevel { return tool.SafetyCaution }
 func (*Tool) IsConcurrencySafe() bool       { return true }
 func (*Tool) IsLongRunning() bool           { return true }
-func (t *Tool) IsEnabled() bool             { return t.source != nil && t.registry != nil }
+
+func (t *Tool) IsEnabled() bool {
+	if t.source == nil || t.registry == nil {
+		return false
+	}
+	ref := t.source.AgentImageGeneration()
+	if ref == "" {
+		return false
+	}
+	ep, ok := t.source.ResolveEndpoint(ref)
+	if !ok {
+		return false
+	}
+	_, ok = t.registry.Get(ep.Provider)
+	return ok
+}
 
 func (*Tool) InputSchema() map[string]any {
 	return map[string]any{
@@ -189,10 +196,23 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		return errResult("image_generate is not configured", types.ToolErrorInternal), nil
 	}
 
-	target, err := t.resolveTarget(in.Model)
-	if err != nil {
-		return errResult(err.Error(), types.ToolErrorInvalidInput), nil
+	ref := t.source.AgentImageGeneration()
+	if ref == "" {
+		return errResult("agent.image_generation is not configured; enable an image provider in Settings > 图片生成模型 and select it", types.ToolErrorInvalidInput), nil
 	}
+	// Optional explicit selector must match the configured ref (provider:endpoint).
+	if sel := strings.TrimSpace(in.Model); sel != "" && sel != ref {
+		return errResult(fmt.Sprintf("model %q does not match configured agent.image_generation %q", sel, ref), types.ToolErrorInvalidInput), nil
+	}
+	ep, ok := t.source.ResolveEndpoint(ref)
+	if !ok {
+		return errResult(fmt.Sprintf("configured agent.image_generation %q is not a usable image endpoint", ref), types.ToolErrorInvalidInput), nil
+	}
+	provider, ok := t.registry.Get(ep.Provider)
+	if !ok {
+		return errResult(fmt.Sprintf("image provider %q not implemented", ep.Provider), types.ToolErrorInternal), nil
+	}
+
 	sessionRoot, err := t.resolveSessionRoot(ctx)
 	if err != nil {
 		return errResult(err.Error(), types.ToolErrorInternal), nil
@@ -202,13 +222,20 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		return errResult("create generated directory: "+err.Error(), types.ToolErrorInternal), nil
 	}
 
-	resp, err := t.callProvider(ctx, target, in)
+	result, err := t.generateWithRetry(ctx, provider, GenerateRequest{
+		Endpoint: ep,
+		Prompt:   in.Prompt,
+		N:        in.N,
+		Size:     in.Size,
+		Quality:  in.Quality,
+		Style:    in.Style,
+	})
 	if err != nil {
-		return errResult("image generation request failed: "+err.Error(), types.ToolErrorDependencyFail), nil
+		return classifyImageError("image generation request failed", err), nil
 	}
 
-	images := make([]GeneratedImage, 0, len(resp.Data))
-	for idx, item := range resp.Data {
+	images := make([]GeneratedImage, 0, len(result.Images))
+	for idx, item := range result.Images {
 		body, mimeType, err := t.resolveImageBytes(ctx, item)
 		if err != nil {
 			return errResult(fmt.Sprintf("decode image %d: %v", idx, err), types.ToolErrorDependencyFail), nil
@@ -230,7 +257,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 			Path:   p,
 			MIME:   mimeType,
 			Bytes:  len(body),
-			Model:  target.ModelID,
+			Model:  ep.Model,
 			Prompt: prompt,
 			Size:   in.Size,
 		})
@@ -241,12 +268,12 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	t.emitDeliverables(ctx, images)
 
 	return &types.ToolResult{
-		Content: fmt.Sprintf("generated %d image(s) with %s; files are available in %s", len(images), target.ModelID, outDir),
+		Content: fmt.Sprintf("generated %d image(s) with %s; files are available in %s", len(images), ep.Model, outDir),
 		Metadata: map[string]any{
 			"images":   images,
-			"model":    target.ModelID,
-			"provider": target.ProviderName,
-			"endpoint": target.EndpointName,
+			"model":    ep.Model,
+			"provider": ep.Provider,
+			"endpoint": ep.Endpoint,
 			"prompt":   in.Prompt,
 		},
 	}, nil
@@ -271,206 +298,45 @@ func parseInput(raw json.RawMessage) (input, error) {
 	return in, nil
 }
 
-type targetEndpoint struct {
-	ProviderName string
-	EndpointName string
-	ModelID      string
-	BaseURL      string
-	Path         string
-	APIKey       string
-	AuthHeader   string
-	AuthPrefix   string
+// classifyImageError maps a provider error's sentinel class to a ToolResult
+// error type so the caller surfaces permission/validation/dependency failures
+// distinctly.
+func classifyImageError(prefix string, err error) *types.ToolResult {
+	switch {
+	case errors.Is(err, ErrPermissionDenied):
+		return errResult(prefix+": "+err.Error(), types.ToolErrorPermissionDenied)
+	case errors.Is(err, ErrValidation):
+		return errResult(prefix+": "+err.Error(), types.ToolErrorInvalidInput)
+	default:
+		return errResult(prefix+": "+err.Error(), types.ToolErrorDependencyFail)
+	}
 }
 
-func (t *Tool) resolveTarget(selector string) (targetEndpoint, error) {
-	cfg := t.source.CurrentConfig()
-	configured := ""
-	if agentSource, ok := t.source.(AgentConfigSource); ok {
-		configured = strings.TrimSpace(agentSource.CurrentAgent().ImageGeneration)
-		if configured == "" {
-			return targetEndpoint{}, errors.New("agent.image_generation is not configured; please enable an image-generation model in Settings > Models, then select it in Settings > Agent")
+// generateWithRetry calls the provider with exponential backoff. Permission and
+// validation errors short-circuit; everything else (transient) is retried.
+func (t *Tool) generateWithRetry(ctx context.Context, p ImageProvider, req GenerateRequest) (*GenerateResult, error) {
+	backoffs := []time.Duration{200 * time.Millisecond, 500 * time.Millisecond, time.Second}
+	var lastErr error
+	for attempt := 0; attempt <= len(backoffs); attempt++ {
+		res, err := p.Generate(ctx, req)
+		if err == nil {
+			return res, nil
 		}
-	}
-
-	candidates := t.imageEndpoints(cfg)
-	if len(candidates) == 0 {
-		if configured != "" {
-			return targetEndpoint{}, fmt.Errorf("configured agent.image_generation %q is not available; please enable its provider and model in Settings > Models", configured)
+		lastErr = err
+		if errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrValidation) {
+			return nil, err
 		}
-		return targetEndpoint{}, errors.New("no image_generation endpoint is configured")
-	}
-	if configured != "" {
-		for _, c := range candidates {
-			if !c.matches(configured) {
-				continue
+		if attempt < len(backoffs) {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
 			}
-			if selector != "" && !c.matches(selector) {
-				return targetEndpoint{}, fmt.Errorf("model %q does not match configured agent.image_generation %q", selector, configured)
-			}
-			return c, nil
-		}
-		return targetEndpoint{}, fmt.Errorf("configured agent.image_generation %q is not a configured image_generation endpoint", configured)
-	}
-	if selector == "" {
-		return targetEndpoint{}, errors.New("agent.image_generation is not configured; please select an image-generation model in Settings > Agent")
-	}
-	for _, c := range candidates {
-		if c.matches(selector) {
-			return c, nil
+			t.sleep(backoffs[attempt])
 		}
 	}
-	return targetEndpoint{}, fmt.Errorf("model %q is not a configured image_generation endpoint", selector)
+	return nil, lastErr
 }
 
-func (c targetEndpoint) matches(selector string) bool {
-	return selector == config.FormatChainEntry(c.ProviderName, c.EndpointName) ||
-		selector == c.ProviderName+"/"+c.ModelID ||
-		selector == c.ModelID ||
-		selector == c.EndpointName
-}
-
-func (t *Tool) imageEndpoints(cfg config.LLMConfig) []targetEndpoint {
-	provNames := make([]string, 0, len(cfg.Providers))
-	for name := range cfg.Providers {
-		provNames = append(provNames, name)
-	}
-	sort.Strings(provNames)
-	var out []targetEndpoint
-	for _, provName := range provNames {
-		provCfg := cfg.Providers[provName]
-		if provCfg.Disabled || provCfg.APIKey == "" {
-			continue
-		}
-		provSpec := t.lookupProviderSpec(provName, provCfg)
-		if provSpec == nil || provSpec.Endpoints.ImagesGenerations == nil || strings.TrimSpace(*provSpec.Endpoints.ImagesGenerations) == "" {
-			continue
-		}
-		baseURL := strings.TrimSpace(provCfg.BaseURL)
-		if baseURL == "" {
-			baseURL = provSpec.BaseURL
-		}
-		if baseURL == "" {
-			continue
-		}
-		epNames := make([]string, 0, len(provCfg.Endpoints))
-		for epName := range provCfg.Endpoints {
-			epNames = append(epNames, epName)
-		}
-		sort.Strings(epNames)
-		for _, epName := range epNames {
-			epCfg := provCfg.Endpoints[epName]
-			if epCfg.Disabled {
-				continue
-			}
-			if strings.TrimSpace(epCfg.Model) == "" {
-				continue
-			}
-			if !t.endpointSupportsImageGeneration(provName, provCfg, epCfg) {
-				continue
-			}
-			authHeader := provSpec.Auth.KeyHeader
-			if authHeader == "" {
-				authHeader = "Authorization"
-			}
-			authPrefix := provSpec.Auth.KeyPrefix
-			if authPrefix == "" && strings.EqualFold(provSpec.Auth.Type, "bearer") {
-				authPrefix = "Bearer "
-			}
-			out = append(out, targetEndpoint{
-				ProviderName: provName,
-				EndpointName: epName,
-				ModelID:      strings.TrimSpace(epCfg.Model),
-				BaseURL:      strings.TrimRight(baseURL, "/"),
-				Path:         strings.TrimSpace(*provSpec.Endpoints.ImagesGenerations),
-				APIKey:       provCfg.APIKey,
-				AuthHeader:   authHeader,
-				AuthPrefix:   authPrefix,
-			})
-		}
-	}
-	return out
-}
-
-func (t *Tool) lookupProviderSpec(provName string, provCfg config.ProviderConfig) *modelregistry.ProviderSpec {
-	if spec := t.registry.LookupProvider(provName); spec != nil {
-		return spec
-	}
-	return t.registry.LookupProvider(provCfg.Type)
-}
-
-func (t *Tool) endpointSupportsImageGeneration(provName string, provCfg config.ProviderConfig, epCfg config.EndpointConfig) bool {
-	if len(epCfg.ModelType) > 0 {
-		return modelregistry.SupportsFromTokens(epCfg.ModelType).ImageGeneration
-	}
-	if spec := t.registry.LookupByProviderAndModelID(provName, epCfg.Model); spec != nil {
-		return spec.Supports.ImageGeneration
-	}
-	if spec := t.registry.LookupByProviderAndModelID(provCfg.Type, epCfg.Model); spec != nil {
-		return spec.Supports.ImageGeneration
-	}
-	return false
-}
-
-type providerResponse struct {
-	Data         []providerImage `json:"data"`
-	Size         string          `json:"size"`
-	Quality      string          `json:"quality"`
-	OutputFormat string          `json:"output_format"`
-}
-
-type providerImage struct {
-	B64JSON       string `json:"b64_json"`
-	URL           string `json:"url"`
-	RevisedPrompt string `json:"revised_prompt"`
-	MIME          string `json:"mime_type"`
-}
-
-func (t *Tool) callProvider(ctx context.Context, target targetEndpoint, in input) (providerResponse, error) {
-	body := map[string]any{
-		"model":           target.ModelID,
-		"prompt":          in.Prompt,
-		"n":               in.N,
-		"size":            in.Size,
-		"response_format": "b64_json",
-	}
-	if in.Quality != "" {
-		body["quality"] = in.Quality
-	}
-	if in.Style != "" {
-		body["style"] = in.Style
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return providerResponse{}, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, joinURL(target.BaseURL, target.Path), bytes.NewReader(payload))
-	if err != nil {
-		return providerResponse{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if target.APIKey != "" && target.AuthHeader != "" {
-		req.Header.Set(target.AuthHeader, target.AuthPrefix+target.APIKey)
-	}
-	res, err := t.client.Do(req)
-	if err != nil {
-		return providerResponse{}, err
-	}
-	defer res.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(res.Body, 4*1024*1024))
-	if err != nil {
-		return providerResponse{}, err
-	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return providerResponse{}, fmt.Errorf("HTTP %d: %s", res.StatusCode, summarizeBody(respBody))
-	}
-	var parsed providerResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return providerResponse{}, err
-	}
-	return parsed, nil
-}
-
-func (t *Tool) resolveImageBytes(ctx context.Context, item providerImage) ([]byte, string, error) {
+func (t *Tool) resolveImageBytes(ctx context.Context, item GeneratedImageData) ([]byte, string, error) {
 	mimeType := strings.TrimSpace(item.MIME)
 	if item.B64JSON != "" {
 		data, err := base64.StdEncoding.DecodeString(item.B64JSON)
@@ -550,15 +416,6 @@ func (t *Tool) resolveSessionRoot(ctx context.Context) (string, error) {
 	return "", errors.New("SessionRoot missing in ctx — engine configuration error")
 }
 
-func joinURL(base, endpointPath string) string {
-	u, err := url.Parse(base)
-	if err != nil {
-		return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(endpointPath, "/")
-	}
-	u.Path = path.Join(u.Path, endpointPath)
-	return u.String()
-}
-
 func normalizeImageMIME(value string) string {
 	mt, _, err := mime.ParseMediaType(value)
 	if err == nil {
@@ -595,14 +452,6 @@ func randomSuffix() string {
 		return ""
 	}
 	return hex.EncodeToString(b[:])
-}
-
-func summarizeBody(body []byte) string {
-	s := strings.TrimSpace(string(body))
-	if len(s) > 500 {
-		return s[:500] + "..."
-	}
-	return s
 }
 
 func errResult(msg string, errType types.ToolErrorType) *types.ToolResult {

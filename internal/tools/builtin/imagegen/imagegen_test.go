@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,8 +13,6 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/config"
-	modelregistry "harnessclaw-go/internal/provider/registry"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
@@ -23,18 +20,55 @@ import (
 
 var _ tool.LongRunningTool = (*Tool)(nil)
 
-type staticConfigSource struct {
-	cfg   config.LLMConfig
-	agent config.AgentConfig
+const testPNGB64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+
+// stubImageProvider is a canned ImageProvider for tool tests. It records the
+// request it received and returns either result or err.
+type stubImageProvider struct {
+	name    string
+	result  *GenerateResult
+	err     error
+	calls   int
+	lastReq GenerateRequest
 }
 
-func (s staticConfigSource) CurrentConfig() config.LLMConfig  { return s.cfg }
-func (s staticConfigSource) CurrentAgent() config.AgentConfig { return s.agent }
+func (s *stubImageProvider) Name() string { return s.name }
+
+func (s *stubImageProvider) Generate(_ context.Context, req GenerateRequest) (*GenerateResult, error) {
+	s.calls++
+	s.lastReq = req
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.result, nil
+}
+
+// newToolWith builds a Tool from a source (over cfg.ImageGen) + a registry
+// holding the given provider. sleep is stubbed to a no-op so retry tests run
+// instantly.
+func newToolWith(t *testing.T, source ImageGenSource, provider ImageProvider, rootDir string) *Tool {
+	t.Helper()
+	reg := NewProviderRegistry()
+	if provider != nil {
+		if err := reg.Register(provider); err != nil {
+			t.Fatalf("register provider: %v", err)
+		}
+	}
+	tr := New(source, reg, rootDir, zap.NewNop())
+	tr.sleep = func(time.Duration) {}
+	return tr
+}
+
+// pngResult returns a one-image GenerateResult with the canned base64 PNG.
+func pngResult(revised string) *GenerateResult {
+	return &GenerateResult{Images: []GeneratedImageData{{B64JSON: testPNGB64, RevisedPrompt: revised}}}
+}
 
 func TestValidateInputRejectsInvalidRequests(t *testing.T) {
 	t.Parallel()
 
-	tr := New(staticConfigSource{}, testRegistry("http://example.test"), t.TempDir(), zap.NewNop())
+	source := NewSource(newTestImageCfg("sk-x", "https://api.test", "/v1/images/generations"), fakeAgentSource{ref: "openai:gpt-image"})
+	tr := newToolWith(t, source, &stubImageProvider{name: "openai"}, t.TempDir())
 
 	for name, raw := range map[string]string{
 		"missing prompt": `{}`,
@@ -54,129 +88,235 @@ func TestValidateInputRejectsInvalidRequests(t *testing.T) {
 func TestNewUsesSlowImageGenerationTimeout(t *testing.T) {
 	t.Parallel()
 
-	tr := New(staticConfigSource{}, testRegistry("http://example.test"), t.TempDir(), zap.NewNop())
-
+	tr := New(nil, nil, t.TempDir(), zap.NewNop())
 	if tr.client.Timeout != 5*time.Minute {
 		t.Fatalf("default image generation timeout = %s, want 5m0s", tr.client.Timeout)
 	}
-}
-
-func TestNewUsesSlowTLSHandshakeTimeout(t *testing.T) {
-	t.Parallel()
-
-	tr := New(staticConfigSource{}, testRegistry("http://example.test"), t.TempDir(), zap.NewNop())
-
 	transport, ok := tr.client.Transport.(*http.Transport)
 	if !ok {
-		t.Fatalf("default image generation transport = %T, want *http.Transport", tr.client.Transport)
+		t.Fatalf("default transport = %T, want *http.Transport", tr.client.Transport)
 	}
 	if transport.TLSHandshakeTimeout != time.Minute {
-		t.Fatalf("default image generation TLS handshake timeout = %s, want 1m0s", transport.TLSHandshakeTimeout)
+		t.Fatalf("default TLS handshake timeout = %s, want 1m0s", transport.TLSHandshakeTimeout)
 	}
 }
 
 func TestImageGenerateIsLongRunning(t *testing.T) {
 	t.Parallel()
 
-	tr := New(staticConfigSource{}, testRegistry("http://example.test"), t.TempDir(), zap.NewNop())
-
+	tr := New(nil, nil, t.TempDir(), zap.NewNop())
 	if !tr.IsLongRunning() {
 		t.Fatalf("image_generate must bypass executor timeout and use its own request timeout")
 	}
 }
 
-func TestExecuteRejectsNonImageGenerationModel(t *testing.T) {
+func TestIsEnabled(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
-	sid := "sess-non-image"
-	if err := workspace.EnsureSession(root, sid); err != nil {
-		t.Fatal(err)
-	}
-	tr := New(staticConfigSource{cfg: config.LLMConfig{
-		Providers: map[string]config.ProviderConfig{
-			"openai": {
-				Type:    "openai",
-				BaseURL: "http://example.test",
-				APIKey:  "sk-test",
-				Endpoints: map[string]config.EndpointConfig{
-					"gpt-5": {Model: "gpt-5"},
-				},
-			},
-		},
-	}}, testRegistry("http://example.test"), root, zap.NewNop())
+	usable := newTestImageCfg("sk-x", "https://api.test", "/v1/images/generations")
 
-	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: workspace.SessionRoot(root, sid)})
-	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"cat","model":"openai:gpt-5"}`))
-	if err != nil {
-		t.Fatal(err)
+	t.Run("nil source/registry", func(t *testing.T) {
+		t.Parallel()
+		tr := New(nil, nil, t.TempDir(), zap.NewNop())
+		if tr.IsEnabled() {
+			t.Fatal("IsEnabled() = true, want false for nil source/registry")
+		}
+	})
+
+	cases := map[string]struct {
+		source   ImageGenSource
+		provider ImageProvider
+		want     bool
+	}{
+		"empty agent ref": {
+			source:   NewSource(usable, fakeAgentSource{ref: ""}),
+			provider: &stubImageProvider{name: "openai"},
+			want:     false,
+		},
+		"ref does not resolve": {
+			source:   NewSource(newTestImageCfg("", "", ""), fakeAgentSource{ref: "openai:gpt-image"}),
+			provider: &stubImageProvider{name: "openai"},
+			want:     false,
+		},
+		"provider not registered": {
+			source:   NewSource(usable, fakeAgentSource{ref: "openai:gpt-image"}),
+			provider: &stubImageProvider{name: "someone-else"},
+			want:     false,
+		},
+		"fully usable": {
+			source:   NewSource(usable, fakeAgentSource{ref: "openai:gpt-image"}),
+			provider: &stubImageProvider{name: "openai"},
+			want:     true,
+		},
 	}
-	if res == nil || !res.IsError {
-		t.Fatalf("Execute succeeded, want image-generation capability error: %#v", res)
-	}
-	if !strings.Contains(res.Content, "image_generation") {
-		t.Fatalf("error content %q does not mention image_generation", res.Content)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tr := newToolWith(t, tc.source, tc.provider, t.TempDir())
+			if got := tr.IsEnabled(); got != tc.want {
+				t.Fatalf("IsEnabled() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
 func TestExecuteRequiresConfiguredAgentImageGeneration(t *testing.T) {
 	t.Parallel()
 
-	const pngB64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"data": []map[string]string{{"b64_json": pngB64}},
-		})
-	}))
-	defer srv.Close()
-
 	root := t.TempDir()
-	sid := "sess-requires-agent-image"
+	sid := "sess-no-agent-image"
 	if err := workspace.EnsureSession(root, sid); err != nil {
 		t.Fatal(err)
 	}
-	tr := New(staticConfigSource{cfg: imageConfig(srv.URL)}, testRegistry(srv.URL), root, zap.NewNop(), WithHTTPClient(srv.Client()))
+	// Provider/config usable, but no agent.image_generation selector.
+	source := NewSource(newTestImageCfg("sk-x", "https://api.test", "/v1/images/generations"), fakeAgentSource{ref: ""})
+	tr := newToolWith(t, source, &stubImageProvider{name: "openai", result: pngResult("")}, root)
 
 	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: workspace.SessionRoot(root, sid)})
-	for name, raw := range map[string]string{
-		"omitted model":  `{"prompt":"small cat"}`,
-		"explicit model": `{"prompt":"small cat","model":"gpt-image:gpt-image-2"}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			res, err := tr.Execute(ctx, json.RawMessage(raw))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if res == nil || !res.IsError {
-				t.Fatalf("Execute succeeded, want configuration error: %#v", res)
-			}
-			if !strings.Contains(res.Content, "agent.image_generation") {
-				t.Fatalf("error content %q does not mention agent.image_generation", res.Content)
-			}
-		})
+	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"small cat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("Execute succeeded, want configuration error: %#v", res)
+	}
+	if !strings.Contains(res.Content, "agent.image_generation") {
+		t.Fatalf("error content %q does not mention agent.image_generation", res.Content)
+	}
+}
+
+func TestExecuteRejectsUnresolvableRef(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	sid := "sess-unresolvable"
+	if err := workspace.EnsureSession(root, sid); err != nil {
+		t.Fatal(err)
+	}
+	// Agent selects an endpoint whose provider has an empty api_key → cannot resolve.
+	source := NewSource(newTestImageCfg("", "", ""), fakeAgentSource{ref: "openai:gpt-image"})
+	tr := newToolWith(t, source, &stubImageProvider{name: "openai", result: pngResult("")}, root)
+
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: workspace.SessionRoot(root, sid)})
+	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"small cat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("Execute succeeded, want unresolvable-ref error: %#v", res)
+	}
+	if !strings.Contains(res.Content, "not a usable image endpoint") {
+		t.Fatalf("error content %q does not mention usable endpoint", res.Content)
+	}
+}
+
+func TestExecuteRejectsMismatchedExplicitModel(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	sid := "sess-mismatch"
+	if err := workspace.EnsureSession(root, sid); err != nil {
+		t.Fatal(err)
+	}
+	source := NewSource(newTestImageCfg("sk-x", "https://api.test", "/v1/images/generations"), fakeAgentSource{ref: "openai:gpt-image"})
+	tr := newToolWith(t, source, &stubImageProvider{name: "openai", result: pngResult("")}, root)
+
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: workspace.SessionRoot(root, sid)})
+	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"small cat","model":"openai:other"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("Execute succeeded, want mismatch error: %#v", res)
+	}
+	if !strings.Contains(res.Content, "does not match configured agent.image_generation") {
+		t.Fatalf("error content %q does not mention mismatch", res.Content)
+	}
+}
+
+func TestExecuteSuccessWritesFilesAndEmitsDeliverable(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	sid := "sess-image"
+	if err := workspace.EnsureSession(root, sid); err != nil {
+		t.Fatal(err)
+	}
+	source := NewSource(newTestImageCfg("sk-x", "https://api.test", "/v1/images/generations"), fakeAgentSource{ref: "openai:gpt-image"})
+	provider := &stubImageProvider{name: "openai", result: pngResult("small cat")}
+	tr := newToolWith(t, source, provider, root)
+
+	events := make(chan types.EngineEvent, 1)
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: workspace.SessionRoot(root, sid)})
+	ctx = tool.WithEventOut(ctx, events)
+	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"small cat","model":"openai:gpt-image","n":1,"size":"1024x1024","quality":"high"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("Execute returned error: %#v", res)
+	}
+
+	// Request was handed to the provider with the resolved endpoint + prompt.
+	if provider.calls != 1 {
+		t.Fatalf("provider.Generate called %d times, want 1", provider.calls)
+	}
+	if provider.lastReq.Prompt != "small cat" || provider.lastReq.Endpoint.Model != "gpt-image-1" {
+		t.Fatalf("unexpected provider request: %#v", provider.lastReq)
+	}
+	if provider.lastReq.Quality != "high" || provider.lastReq.Size != "1024x1024" {
+		t.Fatalf("request hints not forwarded: %#v", provider.lastReq)
+	}
+
+	if strings.Contains(res.Content, testPNGB64) {
+		t.Fatalf("tool content leaked base64")
+	}
+
+	images, ok := res.Metadata["images"].([]GeneratedImage)
+	if !ok || len(images) != 1 {
+		t.Fatalf("metadata images = %#v", res.Metadata["images"])
+	}
+	img := images[0]
+	if img.MIME != "image/png" || img.Model != "gpt-image-1" || img.Prompt != "small cat" {
+		t.Fatalf("unexpected image metadata: %#v", img)
+	}
+	if res.Metadata["provider"] != "openai" || res.Metadata["endpoint"] != "gpt-image" {
+		t.Fatalf("unexpected metadata provider/endpoint: %#v", res.Metadata)
+	}
+	if !strings.HasPrefix(img.Path, workspace.SessionRoot(root, sid)) {
+		t.Fatalf("image path %q is not under session root", img.Path)
+	}
+	if filepath.Base(filepath.Dir(img.Path)) != generatedDirName {
+		t.Fatalf("image path %q not under generated dir", img.Path)
+	}
+	written, err := os.ReadFile(img.Path)
+	if err != nil {
+		t.Fatalf("read generated file: %v", err)
+	}
+	wantBytes, _ := base64.StdEncoding.DecodeString(testPNGB64)
+	if string(written) != string(wantBytes) {
+		t.Fatalf("written bytes mismatch")
+	}
+	select {
+	case evt := <-events:
+		if evt.Type != types.EngineEventDeliverable || evt.Deliverable == nil || evt.Deliverable.FilePath != img.Path {
+			t.Fatalf("unexpected deliverable event: %#v", evt)
+		}
+	default:
+		t.Fatalf("missing deliverable event")
 	}
 }
 
 func TestExecuteUsesArtifactProducerSessionWhenAgentScopeMissing(t *testing.T) {
 	t.Parallel()
 
-	const pngB64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"data": []map[string]string{{"b64_json": pngB64}},
-		})
-	}))
-	defer srv.Close()
-
 	root := t.TempDir()
 	sid := "sess-producer"
 	if err := workspace.EnsureSession(root, sid); err != nil {
 		t.Fatal(err)
 	}
-	tr := New(staticConfigSource{
-		cfg:   imageConfig(srv.URL),
-		agent: config.AgentConfig{ImageGeneration: "gpt-image:gpt-image-2"},
-	}, testRegistry(srv.URL), root, zap.NewNop(), WithHTTPClient(srv.Client()))
+	source := NewSource(newTestImageCfg("sk-x", "https://api.test", "/v1/images/generations"), fakeAgentSource{ref: "openai:gpt-image"})
+	tr := newToolWith(t, source, &stubImageProvider{name: "openai", result: pngResult("")}, root)
 
 	ctx := tool.WithArtifactProducer(context.Background(), tool.ArtifactProducer{SessionID: sid})
 	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"small cat"}`))
@@ -192,184 +332,17 @@ func TestExecuteUsesArtifactProducerSessionWhenAgentScopeMissing(t *testing.T) {
 	}
 }
 
-func TestExecutePostsToImageEndpointAndWritesFiles(t *testing.T) {
-	t.Parallel()
-
-	const pngB64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-	var gotPath, gotAuth string
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotAuth = r.Header.Get("Authorization")
-		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
-			t.Fatalf("decode request body: %v", err)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"data":          []map[string]string{{"b64_json": pngB64, "revised_prompt": "small cat"}},
-			"size":          "1024x1024",
-			"quality":       "high",
-			"output_format": "png",
-		})
-	}))
-	defer srv.Close()
-
-	root := t.TempDir()
-	sid := "sess-image"
-	if err := workspace.EnsureSession(root, sid); err != nil {
-		t.Fatal(err)
-	}
-	events := make(chan types.EngineEvent, 1)
-	tr := New(staticConfigSource{
-		cfg:   imageConfig(srv.URL),
-		agent: config.AgentConfig{ImageGeneration: "gpt-image:gpt-image-2"},
-	}, testRegistry(srv.URL), root, zap.NewNop(), WithHTTPClient(srv.Client()))
-
-	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: workspace.SessionRoot(root, sid)})
-	ctx = tool.WithEventOut(ctx, events)
-	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"small cat","model":"gpt-image:gpt-image-2","n":1,"size":"1024x1024","quality":"high"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res == nil || res.IsError {
-		t.Fatalf("Execute returned error: %#v", res)
-	}
-	if gotPath != "/v1/images/generations" {
-		t.Fatalf("request path = %q, want /v1/images/generations", gotPath)
-	}
-	if gotAuth != "Bearer sk-image" {
-		t.Fatalf("Authorization = %q", gotAuth)
-	}
-	if gotBody["prompt"] != "small cat" || gotBody["model"] != "gpt-image-2" || gotBody["response_format"] != "b64_json" {
-		t.Fatalf("unexpected request body: %#v", gotBody)
-	}
-	if strings.Contains(res.Content, pngB64) {
-		t.Fatalf("tool content leaked base64")
-	}
-
-	images, ok := res.Metadata["images"].([]GeneratedImage)
-	if !ok || len(images) != 1 {
-		t.Fatalf("metadata images = %#v", res.Metadata["images"])
-	}
-	img := images[0]
-	if img.MIME != "image/png" || img.Model != "gpt-image-2" || img.Prompt != "small cat" {
-		t.Fatalf("unexpected image metadata: %#v", img)
-	}
-	if !strings.HasPrefix(img.Path, workspace.SessionRoot(root, sid)) {
-		t.Fatalf("image path %q is not under session root", img.Path)
-	}
-	written, err := os.ReadFile(img.Path)
-	if err != nil {
-		t.Fatalf("read generated file: %v", err)
-	}
-	wantBytes, _ := base64.StdEncoding.DecodeString(pngB64)
-	if string(written) != string(wantBytes) {
-		t.Fatalf("written bytes mismatch")
-	}
-	if filepath.Base(filepath.Dir(img.Path)) != generatedDirName {
-		t.Fatalf("image path %q not under generated dir", img.Path)
-	}
-	select {
-	case evt := <-events:
-		if evt.Type != types.EngineEventDeliverable || evt.Deliverable == nil || evt.Deliverable.FilePath != img.Path {
-			t.Fatalf("unexpected deliverable event: %#v", evt)
-		}
-	default:
-		t.Fatalf("missing deliverable event")
-	}
-}
-
-func TestExecuteUsesConfiguredAgentImageGenerationEndpoint(t *testing.T) {
-	t.Parallel()
-
-	const pngB64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
-			t.Fatalf("decode request body: %v", err)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"data": []map[string]string{{"b64_json": pngB64}},
-		})
-	}))
-	defer srv.Close()
-
-	root := t.TempDir()
-	sid := "sess-agent-image"
-	if err := workspace.EnsureSession(root, sid); err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.LLMConfig{
-		Providers: map[string]config.ProviderConfig{
-			"aaa": {
-				Type:    "openai",
-				BaseURL: srv.URL,
-				APIKey:  "sk-first",
-				Endpoints: map[string]config.EndpointConfig{
-					"first-image": {
-						Model:     "first-image",
-						ModelType: []string{"image_generation"},
-					},
-				},
-			},
-			"openai": {
-				Type:    "openai",
-				BaseURL: srv.URL,
-				APIKey:  "sk-openai",
-				Endpoints: map[string]config.EndpointConfig{
-					"gpt-image-2": {
-						Model:     "gpt-image-2",
-						ModelType: []string{"vision", "image_generation"},
-					},
-				},
-			},
-		},
-	}
-	tr := New(staticConfigSource{
-		cfg:   cfg,
-		agent: config.AgentConfig{ImageGeneration: "openai:gpt-image-2"},
-	}, testRegistry(srv.URL), root, zap.NewNop(), WithHTTPClient(srv.Client()))
-
-	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: workspace.SessionRoot(root, sid)})
-	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"small cat"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res == nil || res.IsError {
-		t.Fatalf("Execute returned error: %#v", res)
-	}
-	if gotBody["model"] != "gpt-image-2" {
-		t.Fatalf("request model = %v, want gpt-image-2", gotBody["model"])
-	}
-}
-
-func TestExecuteRejectsDisabledAgentImageGenerationEndpoint(t *testing.T) {
+func TestExecutePermissionDeniedMapsToPermissionError(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	sid := "sess-disabled-agent-image"
+	sid := "sess-perm"
 	if err := workspace.EnsureSession(root, sid); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.LLMConfig{
-		Providers: map[string]config.ProviderConfig{
-			"openai": {
-				Type:    "openai",
-				BaseURL: "http://example.test",
-				APIKey:  "sk-openai",
-				Endpoints: map[string]config.EndpointConfig{
-					"gpt-image-2": {
-						Model:     "gpt-image-2",
-						Disabled:  true,
-						ModelType: []string{"vision", "image_generation"},
-					},
-				},
-			},
-		},
-	}
-	tr := New(staticConfigSource{
-		cfg:   cfg,
-		agent: config.AgentConfig{ImageGeneration: "openai:gpt-image-2"},
-	}, testRegistry("http://example.test"), root, zap.NewNop())
+	source := NewSource(newTestImageCfg("sk-x", "https://api.test", "/v1/images/generations"), fakeAgentSource{ref: "openai:gpt-image"})
+	provider := &stubImageProvider{name: "openai", err: ErrPermissionDeniedf("401 unauthorized")}
+	tr := newToolWith(t, source, provider, root)
 
 	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: workspace.SessionRoot(root, sid)})
 	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"small cat"}`))
@@ -377,68 +350,42 @@ func TestExecuteRejectsDisabledAgentImageGenerationEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	if res == nil || !res.IsError {
-		t.Fatalf("Execute succeeded with disabled image endpoint: %#v", res)
+		t.Fatalf("Execute succeeded, want permission error: %#v", res)
 	}
-	if !strings.Contains(res.Content, "not available") {
-		t.Fatalf("error content %q does not mention availability", res.Content)
+	if res.ErrorType != types.ToolErrorPermissionDenied {
+		t.Fatalf("error type = %v, want ToolErrorPermissionDenied", res.ErrorType)
 	}
-}
-
-func imageConfig(baseURL string) config.LLMConfig {
-	return config.LLMConfig{
-		Providers: map[string]config.ProviderConfig{
-			"gpt-image": {
-				Type:    "openai",
-				BaseURL: baseURL,
-				APIKey:  "sk-image",
-				Endpoints: map[string]config.EndpointConfig{
-					"gpt-image-2": {Model: "gpt-image-2"},
-				},
-			},
-		},
+	// Permission errors must short-circuit the retry loop.
+	if provider.calls != 1 {
+		t.Fatalf("provider.Generate called %d times, want 1 (no retry on permission denied)", provider.calls)
 	}
 }
 
-func testRegistry(baseURL string) *modelregistry.Registry {
-	return modelregistry.NewRegistry(&modelregistry.Manifest{
-		Providers: map[string]*modelregistry.ProviderSpec{
-			"gpt-image": {
-				BaseURL: baseURL,
-				Auth: modelregistry.ProviderAuth{
-					Type:      "bearer",
-					KeyHeader: "Authorization",
-					KeyPrefix: "Bearer ",
-				},
-				Endpoints: modelregistry.ProviderEndpoints{
-					ImagesGenerations: strPtr("/v1/images/generations"),
-				},
-			},
-			"openai": {
-				BaseURL: baseURL,
-				Auth: modelregistry.ProviderAuth{
-					Type:      "bearer",
-					KeyHeader: "Authorization",
-					KeyPrefix: "Bearer ",
-				},
-				Endpoints: modelregistry.ProviderEndpoints{
-					ImagesGenerations: strPtr("/v1/images/generations"),
-				},
-			},
-		},
-		Models: map[string]*modelregistry.ModelSpec{
-			"gpt-image/gpt-image-2": {
-				Provider: "gpt-image",
-				ModelID:  "gpt-image-2",
-				Supports: modelregistry.SupportsFlags{
-					ImageGeneration: true,
-				},
-			},
-			"openai/gpt-5": {
-				Provider: "openai",
-				ModelID:  "gpt-5",
-			},
-		},
-	})
-}
+func TestExecuteTransientErrorRetriesThenFails(t *testing.T) {
+	t.Parallel()
 
-func strPtr(s string) *string { return &s }
+	root := t.TempDir()
+	sid := "sess-transient"
+	if err := workspace.EnsureSession(root, sid); err != nil {
+		t.Fatal(err)
+	}
+	source := NewSource(newTestImageCfg("sk-x", "https://api.test", "/v1/images/generations"), fakeAgentSource{ref: "openai:gpt-image"})
+	provider := &stubImageProvider{name: "openai", err: ErrTransientf("503 unavailable")}
+	tr := newToolWith(t, source, provider, root)
+
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: workspace.SessionRoot(root, sid)})
+	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"small cat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("Execute succeeded, want dependency error: %#v", res)
+	}
+	if res.ErrorType != types.ToolErrorDependencyFail {
+		t.Fatalf("error type = %v, want ToolErrorDependencyFail", res.ErrorType)
+	}
+	// Initial attempt + 3 backoff retries = 4 calls.
+	if provider.calls != 4 {
+		t.Fatalf("provider.Generate called %d times, want 4 (1 + 3 retries)", provider.calls)
+	}
+}
