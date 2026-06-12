@@ -197,6 +197,66 @@ func (f *File) SetVideoGen(cfg config.VideoGenConfig) error {
 	return nil
 }
 
+// SetImageGen rewrites the top-level imagegen: block. api_key uses quoted-scalar
+// style like provider creds. Mirrors SetVideoGen, plus a per-provider path field.
+func (f *File) SetImageGen(cfg config.ImageGenConfig) error {
+	root := f.root.Content[0]
+	ig, _ := findValue(root, "imagegen")
+	if ig == nil {
+		ig = &yaml.Node{Kind: yaml.MappingNode}
+		setKey(root, "imagegen", ig)
+	}
+	if ig.Kind != yaml.MappingNode {
+		return fmt.Errorf("persist: top-level imagegen is not a mapping")
+	}
+	removeKey(ig, "providers")
+	if len(cfg.Providers) == 0 {
+		return nil
+	}
+	providers := &yaml.Node{Kind: yaml.MappingNode}
+	for _, name := range sortedImageProviderKeys(cfg.Providers) {
+		p := cfg.Providers[name]
+		pNode := &yaml.Node{Kind: yaml.MappingNode}
+		appendQuotedScalar(pNode, "api_key", p.APIKey)
+		if strings.TrimSpace(p.BaseURL) != "" {
+			appendScalar(pNode, "base_url", p.BaseURL)
+		}
+		if strings.TrimSpace(p.Path) != "" {
+			appendScalar(pNode, "path", p.Path)
+		}
+		if len(p.Endpoints) > 0 {
+			eps := &yaml.Node{Kind: yaml.MappingNode}
+			for _, epName := range sortedImageEndpointKeys(p.Endpoints) {
+				epNode := &yaml.Node{Kind: yaml.MappingNode}
+				appendScalar(epNode, "model", p.Endpoints[epName].Model)
+				setKey(eps, epName, epNode)
+			}
+			setKey(pNode, "endpoints", eps)
+		}
+		setKey(providers, name, pNode)
+	}
+	setKey(ig, "providers", providers)
+	return nil
+}
+
+func sortedImageProviderKeys(m map[string]config.ImageProviderConfig) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedImageEndpointKeys(m map[string]config.ImageEndpointConfig) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func sortedVideoProviderKeys(m map[string]config.VideoProviderConfig) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

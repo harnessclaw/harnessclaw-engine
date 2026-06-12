@@ -58,6 +58,45 @@ func TestSetVideoGenRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSetImageGenRoundTrip(t *testing.T) {
+	t.Parallel()
+	p := writeTmpVG(t, "server:\n  addr: \":8080\"\nagent:\n  primary: openai:gpt\n")
+	f, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.ImageGenConfig{
+		Providers: map[string]config.ImageProviderConfig{
+			"openai": {
+				APIKey:  "sk-secret",
+				BaseURL: "https://api.openai.com",
+				Path:    "/v1/images/generations",
+				Endpoints: map[string]config.ImageEndpointConfig{
+					"gpt-image": {Model: "gpt-image-1"},
+				},
+			},
+		},
+	}
+	if err := f.SetImageGen(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("config.Load after SetImageGen: %v", err)
+	}
+	got := reloaded.ImageGen.Providers["openai"]
+	if got.APIKey != "sk-secret" || got.Path != "/v1/images/generations" || got.Endpoints["gpt-image"].Model != "gpt-image-1" {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+	raw, _ := os.ReadFile(p)
+	if !strings.Contains(string(raw), "primary: openai:gpt") {
+		t.Fatalf("SetImageGen clobbered unrelated keys:\n%s", raw)
+	}
+}
+
 func TestSetAgentRoundTripsVideoGeneration(t *testing.T) {
 	t.Parallel()
 	p := writeTmpVG(t, "agent:\n  primary: openai:gpt\n  video_generation: doubao:old\n")
