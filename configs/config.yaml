@@ -181,9 +181,25 @@ llm:
 agent:
     primary: anthropic:claude-sonnet-4-6
     max_turns: 50
+    image_generation: ""        # 选定的图片生成 endpoint，格式 "provider:endpoint"（空 = 关闭图片工具）
     video_generation: ""        # 选定的视频生成 endpoint，格式 "provider:endpoint"（空 = 关闭视频工具）
 #  max_tool_calls: 0          # 0 = 不限
 #  thinking_intensity: "medium"
+
+# --- Image Generation ---
+# 图片生成 provider 配置（独立子系统，OpenAI 兼容同步 API）。api_key 留空（放到
+# config_self.yaml 或环境变量），在 Settings → 模型 → 图片生成模型 里填写。
+# path 留空则用 provider 默认 /v1/images/generations；非 OpenAI 厂商（如豆包 Seedream）
+# 按其文档填 base_url + path。
+imagegen:
+    providers:
+        openai:
+            api_key: ""
+            base_url: https://api.openai.com
+            path: /v1/images/generations
+            endpoints:
+                gpt-image:
+                    model: gpt-image-1
 
 # --- Video Generation ---
 # 视频生成 provider 配置。api_key 留空（请放到 config_self.yaml 或环境变量），
