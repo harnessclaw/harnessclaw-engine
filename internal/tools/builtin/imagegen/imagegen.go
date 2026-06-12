@@ -34,13 +34,26 @@ const (
 	tlsHandshakeWait = time.Minute
 )
 
-var allowedSizes = map[string]bool{
-	"2048x2048": true,
-	"2304x1728": true,
-	"2848x1600": true,
-	"1600x2848": true,
-	"4096x4096": true,
+// imageSizes are the supported output resolutions: 2K / 3K / 4K across the
+// common aspect ratios (1:1, 4:3, 3:4, 16:9, 9:16, 3:2, 2:3, 21:9). This is the
+// single source of truth — both the InputSchema enum and allowedSizes derive
+// from it.
+var imageSizes = []string{
+	// 2K
+	"2048x2048", "2304x1728", "1728x2304", "2848x1600", "1600x2848", "2496x1664", "1664x2496", "3136x1344",
+	// 3K
+	"3072x3072", "3456x2592", "2592x3456", "4096x2304", "2304x4096", "2496x3744", "3744x2496", "4704x2016",
+	// 4K
+	"4096x4096", "3520x4704", "4704x3520", "5504x3040", "3040x5504", "3328x4992", "4992x3328", "6240x2656",
 }
+
+var allowedSizes = func() map[string]bool {
+	m := make(map[string]bool, len(imageSizes))
+	for _, s := range imageSizes {
+		m[s] = true
+	}
+	return m
+}()
 
 // AgentConfigSource is satisfied by provider/manager.Manager and is used by
 // Source to read the live agent.image_generation selector.
@@ -135,8 +148,8 @@ func (*Tool) InputSchema() map[string]any {
 			},
 			"size": map[string]any{
 				"type":        "string",
-				"description": "Image size.",
-				"enum":        []string{"2048x2048", "2304x1728", "2848x1600", "1600x2848", "4096x4096"},
+				"description": "Image resolution (2K/3K/4K across common aspect ratios). Default 2048x2048 (2K 1:1).",
+				"enum":        imageSizes,
 				"default":     defaultSize,
 			},
 			"n": map[string]any{
