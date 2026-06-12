@@ -983,11 +983,10 @@ func (m *Manager) UpdateAgent(patch AgentPatch) error {
 			return fmt.Errorf("manager: fallback_chain entry %q duplicates primary", entry)
 		}
 	}
-	if next.ImageGeneration != "" {
-		if err := m.validateChainEntryLocked(next.ImageGeneration); err != nil {
-			return err
-		}
-	}
+	// image_generation resolves against cfg.ImageGen (not the LLM chain),
+	// so it is not validated here — identical to video_generation handling.
+	// Validation happens at config sanitize time and in the imagegenmgmt handler.
+
 	// Validate ONLY fields the caller actually sent — operators can
 	// run with MaxTurns=0 (engine falls back to its own default) in
 	// tests / lightweight setups, so we don't enforce ≥1 here unless
