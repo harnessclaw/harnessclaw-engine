@@ -177,10 +177,13 @@ func (c *Config) SanitizeLLM(logger *zap.Logger) {
 	}
 
 	// Pass 4: agent.image_generation (must resolve if configured).
-	// It is not part of chat routing, but keeping a stale ref would make
-	// image_generate fail later with a less actionable provider error.
+	// Resolves against cfg.ImageGen (independent provider subsystem), NOT
+	// cfg.LLM — image generation has its own provider tree so it can target
+	// dedicated image APIs without entering the chat failover dispatcher.
+	// Keeping a stale ref would make image_generate fail later with a less
+	// actionable provider error.
 	if c.Agent.ImageGeneration != "" {
-		if !c.endpointExists(c.Agent.ImageGeneration) {
+		if !c.imageEndpointExists(c.Agent.ImageGeneration) {
 			logger.Warn("config sanitize: clearing agent.image_generation — unresolved reference",
 				zap.String("image_generation", c.Agent.ImageGeneration))
 			c.Agent.ImageGeneration = ""
@@ -197,6 +200,24 @@ func (c *Config) SanitizeLLM(logger *zap.Logger) {
 			c.Agent.VideoGeneration = ""
 		}
 	}
+}
+
+// imageEndpointExists reports whether a "provider:endpoint" ref resolves to a
+// configured, usable image endpoint in cfg.ImageGen (provider present, endpoint
+// present, non-empty api_key).
+func (c *Config) imageEndpointExists(ref string) bool {
+	prov, ep, err := ParseChainEntry(ref)
+	if err != nil {
+		return false
+	}
+	p, ok := c.ImageGen.Providers[prov]
+	if !ok {
+		return false
+	}
+	if _, ok := p.Endpoints[ep]; !ok {
+		return false
+	}
+	return strings.TrimSpace(p.APIKey) != ""
 }
 
 // videoEndpointExists reports whether a "provider:endpoint" ref resolves to a
@@ -244,6 +265,7 @@ type Config struct {
 	Channel    ChannelConfig    `mapstructure:"channels"`
 	Tools      ToolsConfig      `mapstructure:"tools"`
 	VideoGen   VideoGenConfig   `mapstructure:"videogen"`
+	ImageGen   ImageGenConfig   `mapstructure:"imagegen"`
 	Permission PermissionConfig `mapstructure:"permission"`
 	Skills     SkillsConfig     `mapstructure:"skills"`
 	Agents     AgentsConfig     `mapstructure:"agents"`
@@ -355,6 +377,24 @@ type VideoProviderConfig struct {
 }
 
 type VideoEndpointConfig struct {
+	Model string `mapstructure:"model" json:"model"`
+}
+
+// ImageGenConfig holds image-generation provider credentials/endpoints.
+// Independent from cfg.LLM so image generation has its own provider tree
+// (the image tool no longer reuses chat endpoints).
+type ImageGenConfig struct {
+	Providers map[string]ImageProviderConfig `mapstructure:"providers" json:"providers"`
+}
+
+type ImageProviderConfig struct {
+	APIKey    string                         `mapstructure:"api_key" json:"api_key"`
+	BaseURL   string                         `mapstructure:"base_url" json:"base_url"`
+	Path      string                         `mapstructure:"path" json:"path"` // "" → provider default
+	Endpoints map[string]ImageEndpointConfig `mapstructure:"endpoints" json:"endpoints"`
+}
+
+type ImageEndpointConfig struct {
 	Model string `mapstructure:"model" json:"model"`
 }
 
@@ -816,6 +856,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("console::host", "0.0.0.0")
 	v.SetDefault("console::port", 8090)
 	v.SetDefault("videogen", map[string]any{})
+	v.SetDefault("imagegen", map[string]any{})
 
 	// Config file
 	if configPath != "" {
