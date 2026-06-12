@@ -13,7 +13,7 @@ import (
 
 func TestProviderName(t *testing.T) {
 	t.Parallel()
-	if NewProvider(zap.NewNop()).Name() != "doubao" {
+	if NewProvider("doubao", zap.NewNop()).Name() != "doubao" {
 		t.Fatal("name must be doubao")
 	}
 }
@@ -28,7 +28,7 @@ func TestProviderSubmitAndQuery(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"cgt-99","model":"m","status":"succeeded","updated_at":1000,"content":{"video_url":"https://tos/v.mp4"},"resolution":"720p","ratio":"16:9","duration":5}`))
 	}))
 	defer srv.Close()
-	p := NewProvider(zap.NewNop())
+	p := NewProvider("doubao", zap.NewNop())
 
 	ep := videogen.EndpointRef{Provider: "doubao", Endpoint: "e", Model: "m", APIKey: "sk", BaseURL: srv.URL}
 	sub, err := p.SubmitTask(context.Background(), videogen.SubmitRequest{Endpoint: ep, Prompt: "hi", DurationS: 5, AspectRatio: "16:9"})
@@ -56,7 +56,7 @@ func TestProviderQueryNotFound(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"code":"NotFound","message":"no task"}}`))
 	}))
 	defer srv.Close()
-	p := NewProvider(zap.NewNop())
+	p := NewProvider("doubao", zap.NewNop())
 	ep := videogen.EndpointRef{Provider: "doubao", APIKey: "sk", BaseURL: srv.URL}
 	q, err := p.QueryTask(context.Background(), videogen.QueryRequest{Endpoint: ep, TaskID: "missing"})
 	if err != nil {

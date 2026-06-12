@@ -382,8 +382,19 @@ func main() {
 		// Video generation: provider-agnostic tools + doubao provider, sharing
 		// the live Source constructed above with the videogenmgmt handler.
 		videoRegistry := videogen.NewProviderRegistry()
-		if err := videoRegistry.Register(doubao.NewProvider(logger)); err != nil {
+		// All Volcengine Ark video models share one task API, so register the
+		// Ark implementation under "doubao" plus each configured provider key
+		// (e.g. "jimeng"/即梦) so any of them resolves at call time.
+		if err := videoRegistry.Register(doubao.NewProvider("doubao", logger)); err != nil {
 			logger.Fatal("failed to register doubao video provider", zap.Error(err))
+		}
+		for name := range cfg.VideoGen.Providers {
+			if name == "doubao" {
+				continue
+			}
+			if err := videoRegistry.Register(doubao.NewProvider(name, logger)); err != nil {
+				logger.Warn("videogen: duplicate provider registration skipped", zap.String("name", name))
+			}
 		}
 		videoCreate := videogen.NewCreate(videoSource, videoRegistry, workspaceRootDir, logger)
 		videoQuery := videogen.NewQuery(videoSource, videoRegistry, workspaceRootDir, logger)

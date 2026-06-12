@@ -23,7 +23,7 @@ func TestIntegrationSmoke(t *testing.T) {
 	if model == "" {
 		model = "doubao-seedance-1-0-lite-i2v-250428"
 	}
-	p := NewProvider(zap.NewNop())
+	p := NewProvider("doubao", zap.NewNop())
 	ep := videogen.EndpointRef{Provider: "doubao", Model: model, APIKey: key}
 	sub, err := p.SubmitTask(context.Background(), videogen.SubmitRequest{
 		Endpoint: ep, Prompt: "a calico cat stretching, cozy room", DurationS: 5, AspectRatio: "16:9",

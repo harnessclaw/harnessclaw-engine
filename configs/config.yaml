@@ -200,13 +200,20 @@ imagegen:
             endpoints:
                 gpt-image:
                     model: gpt-image-1
+        jimeng:                                                  # 即梦（火山引擎 / 火山方舟 Seedream）
+            api_key: ""                                          # 火山方舟 Bearer token
+            base_url: https://ark.cn-beijing.volces.com/api/v3
+            path: /images/generations
+            endpoints:
+                seedream:
+                    model: doubao-seedream-3-0-t2i-250415
 
 # --- Video Generation ---
 # 视频生成 provider 配置。api_key 留空（请放到 config_self.yaml 或环境变量），
 # 在 Settings → 视频生成模型 里填写。base_url 留空则用 provider 内置默认值。
 videogen:
     providers:
-        doubao:
+        jimeng:                                                  # 即梦（火山引擎 / 火山方舟 Seedance）
             api_key: ""                                          # 火山方舟 Bearer token
             base_url: https://ark.cn-beijing.volces.com/api/v3
             endpoints:
