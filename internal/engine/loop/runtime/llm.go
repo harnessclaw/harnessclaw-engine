@@ -15,18 +15,20 @@ import (
 
 	"go.uber.org/zap"
 
+	browseragentdef "harnessclaw-go/internal/engine/agent/builtin/browser_agent"
+	"harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/scheduler/middlewares"
 	"harnessclaw-go/internal/engine/scheduler/runtime"
 	"harnessclaw-go/internal/engine/session"
-	"harnessclaw-go/internal/engine/agent/common"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/skills"
 	"harnessclaw-go/internal/skills/tracker"
 	"harnessclaw-go/internal/tools"
+	browsertools "harnessclaw-go/internal/tools/builtin/browser"
 	pkgtypes "harnessclaw-go/pkg/types"
 )
 
@@ -156,6 +158,12 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 		}
 	}
 
+	var browserBinding *browsertools.TaskBinding
+	if p.Definition.Name == browseragentdef.AgentName {
+		browserBinding = browsertools.NewTaskBinding(cfg.TaskID)
+		ctx = browsertools.WithTaskBinding(ctx, browserBinding)
+	}
+
 	// 5. Seed 第一条 user 消息（runner.RunLeaf:198-203）
 	sess.AddMessage(pkgtypes.Message{
 		Role: pkgtypes.RoleUser,
@@ -207,6 +215,18 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 	// 10. Option B 桥：开 channel，goroutine 跑 loop，loop 的 sink 就是 channel
 	events := make(chan pkgtypes.EngineEvent, 64)
 	startedAt := time.Now()
+	baseOnTurnComplete := common.StopOnEndTurn()
+	onTurnComplete := baseOnTurnComplete
+	var hooks loop.Hooks
+	if browserBinding != nil {
+		hooks.OnToolResult = func(_ int, call pkgtypes.ToolCall, result pkgtypes.ToolResult) {
+			browsertools.UpdateTaskBindingFromToolResult(call.Name, result, browserBinding)
+		}
+		onTurnComplete = func(snap loop.TurnSnapshot) loop.Decision {
+			browsertools.UpdateTaskBindingFromResults(snap.AssistantMsg, snap.ToolResults, browserBinding)
+			return baseOnTurnComplete(snap)
+		}
+	}
 	go func() {
 		defer close(events)
 
@@ -244,7 +264,8 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 			PermChecker:         permChecker,
 			ApprovalFn:          approvalFn,
 			AgentScope:          scope,
-			OnTurnComplete:      common.StopOnEndTurn(),
+			Hooks:               hooks,
+			OnTurnComplete:      onTurnComplete,
 		})
 		durationMs := time.Since(startedAt).Milliseconds()
 		if rerr != nil {

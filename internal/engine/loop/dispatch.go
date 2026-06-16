@@ -25,32 +25,33 @@ import (
 //
 // cfg.ApprovalFn is optional; nil falls back to deny-on-Ask (legacy
 // sub-agent behavior — they have no UI to surface prompts to).
-func dispatchTools(ctx context.Context, cfg *Config, calls []types.ToolCall, logger *zap.Logger) []types.ToolResult {
+func dispatchTools(ctx context.Context, cfg *Config, turn int, calls []types.ToolCall, logger *zap.Logger) []types.ToolResult {
 	results := make([]types.ToolResult, len(calls))
 
-	var serverCalls, clientCalls []types.ToolCall
-	var serverIdx, clientIdx []int
-	for i, call := range calls {
-		if routeToClient(cfg.Tools, call.Name) {
-			clientCalls = append(clientCalls, call)
-			clientIdx = append(clientIdx, i)
-			continue
+	for start := 0; start < len(calls); {
+		clientRouted := routeToClient(cfg.Tools, calls[start].Name)
+		end := start + 1
+		for end < len(calls) && routeToClient(cfg.Tools, calls[end].Name) == clientRouted {
+			end++
 		}
-		serverCalls = append(serverCalls, call)
-		serverIdx = append(serverIdx, i)
-	}
 
-	if len(serverCalls) > 0 {
-		serverResults := executeServerTools(ctx, cfg, serverCalls, logger)
-		for i, result := range serverResults {
-			results[serverIdx[i]] = result
+		segment := calls[start:end]
+		var segmentResults []types.ToolResult
+		if clientRouted {
+			segmentResults = executeClientTools(ctx, cfg, segment)
+		} else {
+			segmentResults = executeServerTools(ctx, cfg, segment, logger)
 		}
-	}
-	if len(clientCalls) > 0 {
-		clientResults := executeClientTools(ctx, cfg, clientCalls)
-		for i, result := range clientResults {
-			results[clientIdx[i]] = result
+
+		for i, result := range segmentResults {
+			idx := start + i
+			results[idx] = result
+			if cfg.Hooks.OnToolResult != nil {
+				cfg.Hooks.OnToolResult(turn, calls[idx], result)
+			}
 		}
+
+		start = end
 	}
 
 	return results
@@ -144,18 +145,19 @@ func toolResultFromPayload(p *types.ToolResultPayload) types.ToolResult {
 	if p == nil {
 		return types.ToolResult{Content: "missing client tool result", IsError: true}
 	}
+	metadata := p.Metadata
 	switch p.Status {
 	case "success":
-		return types.ToolResult{Content: p.Output, IsError: false}
+		return types.ToolResult{Content: p.Output, IsError: false, Metadata: metadata}
 	case "error":
-		return types.ToolResult{Content: p.Output + "\n" + p.ErrorMessage, IsError: true}
+		return types.ToolResult{Content: p.Output + "\n" + p.ErrorMessage, IsError: true, Metadata: metadata}
 	case "denied":
-		return types.ToolResult{Content: fmt.Sprintf("Permission denied: %s", p.ErrorMessage), IsError: true}
+		return types.ToolResult{Content: fmt.Sprintf("Permission denied: %s", p.ErrorMessage), IsError: true, Metadata: metadata}
 	case "timeout":
-		return types.ToolResult{Content: fmt.Sprintf("Execution timed out: %s", p.ErrorMessage), IsError: true}
+		return types.ToolResult{Content: fmt.Sprintf("Execution timed out: %s", p.ErrorMessage), IsError: true, Metadata: metadata}
 	case "cancelled":
-		return types.ToolResult{Content: fmt.Sprintf("Execution cancelled: %s", p.ErrorMessage), IsError: true}
+		return types.ToolResult{Content: fmt.Sprintf("Execution cancelled: %s", p.ErrorMessage), IsError: true, Metadata: metadata}
 	default:
-		return types.ToolResult{Content: p.Output, IsError: p.Status != "success"}
+		return types.ToolResult{Content: p.Output, IsError: p.Status != "success", Metadata: metadata}
 	}
 }

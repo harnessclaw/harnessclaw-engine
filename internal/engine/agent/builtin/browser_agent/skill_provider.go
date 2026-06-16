@@ -8,8 +8,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"harnessclaw-go/internal/engine/agent/builtin/browser_agent/resources"
 	"harnessclaw-go/internal/config"
+	"harnessclaw-go/internal/engine/agent/builtin/browser_agent/resources"
 	"harnessclaw-go/internal/skills"
 )
 
@@ -20,7 +20,7 @@ const adapterHeader = `HarnessClaw adapter:
 - Whenever the official skill says to run ` + "`agent-browser ...`" + `, call ` + "`agent_browser_command`" + ` instead.
 - Put the CLI subcommand and arguments into ` + "`args[]`" + ` exactly as argv items.
 - Do not include the binary name, ` + "`--cdp`" + `, ` + "`--session`" + `, or ` + "`--json`" + ` in ` + "`args[]`" + `; HarnessClaw adds them.
-- HarnessClaw binds the latest ` + "`cdp_endpoint`" + ` from ` + "`browser_session_create`" + ` or ` + "`browser_session_state`" + ` to this Browser Agent; do not invent or reuse endpoints from another Browser Agent.
+- Create and refresh the current Browser Agent's browser session with ` + "`browser_session_create`" + ` and ` + "`browser_session_state`" + `; CDP endpoints and CLI session names are private HarnessClaw bindings, so do not invent, read, pass, or reuse endpoints.
 - If this SKILL.md points to a reference you need, call ` + "`browser_skill_reference({\"path\":\"references/<name>.md\"})`" + ` instead of guessing from memory.
 - Finish with ` + "`browser_agent_final_result`" + `; do not call ` + "`submit_task_result`" + ` directly.
 - For login, CAPTCHA, QR scan, MFA, or site confirmation, call ` + "`browser_ask_human`" + `, then ` + "`browser_session_state`" + `, then continue.

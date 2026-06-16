@@ -252,7 +252,7 @@ func buildPrompt(in input, maxSteps int, cfg config.BrowserAgentConfig) string {
 	} else {
 		b.WriteString("；需要打开网页时使用 agent_browser_command")
 	}
-	b.WriteString("；浏览器使用客户端全局持久 profile，登录态、cookies、localStorage 和 IndexedDB 会跨聊天会话、跨浏览器 session、关闭窗口后继续复用，不要传 task_id 或 partition 创建隔离 profile；HarnessClaw 会把 browser_session_create 或 browser_session_state 返回的最新 cdp_endpoint 绑定到当前 Browser Agent，调用 agent_browser_command 时不要复用其他 Browser Agent 的 endpoint；遇到登录、验证码、扫码、MFA 或站点确认时调用 browser_ask_human，让用户操作后调用 browser_session_state 取回当前 active_tab.cdp_endpoint 再继续；不使用非浏览器降级路径，目标页面无法通过浏览器完成时返回 partial 和原因；最后调用 browser_agent_final_result，用 result 返回 content 和 source；普通 turn 完成后不要主动关闭浏览器，客户端会自动隐藏窗口；显式关闭也只关闭窗口/session 句柄，不清理登录态。")
+	b.WriteString("；浏览器使用客户端全局持久 profile，登录态、cookies、localStorage 和 IndexedDB 会跨聊天会话、跨浏览器 session、关闭窗口后继续复用，不要传 task_id 或 partition 创建隔离 profile；HarnessClaw 会用 browser_session_create 或 browser_session_state 的私有 metadata 绑定当前 Browser Agent 的 endpoint 和 CLI session，模型不要读取、传入或复用 endpoint；遇到登录、验证码、扫码、MFA 或站点确认时调用 browser_ask_human，让用户操作后调用 browser_session_state 刷新并重新绑定当前活动标签页再继续；不使用非浏览器降级路径，目标页面无法通过浏览器完成时返回 partial 和原因；最后调用 browser_agent_final_result，用 result 返回 content 和 source；普通 turn 完成后不要主动关闭浏览器，客户端会自动隐藏窗口；显式关闭也只关闭窗口/session 句柄，不清理登录态。")
 	return b.String()
 }
 

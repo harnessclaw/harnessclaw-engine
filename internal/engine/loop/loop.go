@@ -205,7 +205,7 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 		// Phase 4: tool dispatch.
 		var toolResults []types.ToolResult
 		if len(llmRes.ToolCalls) > 0 {
-			toolResults = dispatchTools(ctx, cfg, llmRes.ToolCalls, logger)
+			toolResults = dispatchTools(ctx, cfg, turn, llmRes.ToolCalls, logger)
 			res.LastToolResults = toolResults
 			appendToolResultsToSession(cfg.Session, llmRes.ToolCalls, toolResults)
 
@@ -266,11 +266,11 @@ func preflightValidateMessages(logger *zap.Logger, agentID string, turn int, mes
 		return
 	}
 	type issue struct {
-		Index   int    `json:"index"`
-		Role    string `json:"role"`
-		Block   int    `json:"block,omitempty"`
-		Kind    string `json:"kind"`
-		Detail  string `json:"detail,omitempty"`
+		Index  int    `json:"index"`
+		Role   string `json:"role"`
+		Block  int    `json:"block,omitempty"`
+		Kind   string `json:"kind"`
+		Detail string `json:"detail,omitempty"`
 	}
 	var issues []issue
 
