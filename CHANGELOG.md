@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+## [0.0.23-beta.0] - 2026-06-16
+
 ### Fixed
 - Browser Agent command binding now uses private browser-session metadata instead of model-visible CDP endpoints, preventing commands from reusing stale sessions or crossing into another browser window.
 
