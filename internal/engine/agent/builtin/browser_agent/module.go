@@ -75,7 +75,7 @@ func (m *Module) Run(ctx context.Context, cfg *common.SpawnConfig) (*common.Spaw
 	}
 	browserBinding := browsertools.NewTaskBinding(taskID)
 	ctx = browsertools.WithTaskBinding(ctx, browserBinding)
-	defer m.cleanupHelperSession(ctx, taskID)
+	defer m.cleanupHelperSession(ctx, taskID, browserBinding)
 
 	pool := common.BuildToolPool(m.deps.Registry, def.MaybeAugmentForSubAgent(), cfg.AgentType, true)
 
@@ -162,6 +162,11 @@ func (m *Module) Run(ctx context.Context, cfg *common.SpawnConfig) (*common.Spaw
 		ApprovalFn:         approvalFn,
 		TaskContract:       tool.TaskContract{TaskID: taskID, TaskStartedAt: cfg.TaskStartedAt, OutputSchema: def.OutputSchema},
 		ArtifactProducer:   tool.ArtifactProducer{AgentID: sess.ID, AgentRunID: sess.ID, TaskID: taskID, SessionID: sess.ID},
+		Hooks: loop.Hooks{
+			OnToolResult: func(_ int, call types.ToolCall, result types.ToolResult) {
+				browsertools.UpdateTaskBindingFromToolResult(call.Name, result, browserBinding)
+			},
+		},
 		OnTurnComplete: func(snap loop.TurnSnapshot) loop.Decision {
 			browsertools.UpdateTaskBindingFromResults(snap.AssistantMsg, snap.ToolResults, browserBinding)
 			return finalEnforcer(snap)
@@ -256,11 +261,11 @@ func browserTaskPrompt(taskID, body string) string {
 	}, "\n\n")
 }
 
-func (m *Module) cleanupHelperSession(ctx context.Context, taskID string) {
+func (m *Module) cleanupHelperSession(ctx context.Context, taskID string, binding *browsertools.TaskBinding) {
 	if !m.deps.BrowserAgentConfig.Enabled || strings.TrimSpace(taskID) == "" {
 		return
 	}
-	if _, err := browsertools.CleanupHelperSession(context.WithoutCancel(ctx), m.deps.BrowserAgentConfig, nil, taskID); err != nil && m.deps.Logger != nil {
+	if _, err := browsertools.CleanupBoundHelperSession(context.WithoutCancel(ctx), m.deps.BrowserAgentConfig, nil, binding); err != nil && m.deps.Logger != nil {
 		m.deps.Logger.Debug("browser agent helper cleanup failed", zap.String("task_id", taskID), zap.Error(err))
 	}
 }

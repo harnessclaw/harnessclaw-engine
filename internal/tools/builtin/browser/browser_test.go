@@ -17,8 +17,13 @@ import (
 )
 
 const (
-	testCDPEndpoint = "ws://127.0.0.1:9222/devtools/page/1"
-	testCDPSession  = "harnessclaw-browser-d60e733519db9673"
+	testBrowserSessionID      = "browser_session_123"
+	testBrowserTabID          = "tab_1"
+	testAgentBrowserSession   = "harnessclaw-browser-browser_session_123"
+	testOtherBrowserSessionID = "browser_session_other"
+	testOtherAgentBrowserSesn = "harnessclaw-browser-browser_session_other"
+	testCDPEndpoint           = "ws://127.0.0.1:9222/devtools/page/1"
+	testOtherCDPEndpoint      = "ws://127.0.0.1:9223/devtools/page/2"
 )
 
 type fakeRunner struct {
@@ -78,11 +83,19 @@ func TestSessionCreateTool_ClientRoutedAndDangerous(t *testing.T) {
 	}
 }
 
-func TestAgentBrowserCommandTool_ExecutesWithCDPAndJSON(t *testing.T) {
+func TestAgentBrowserCommandTool_UsesPrivateBrowserBinding(t *testing.T) {
 	runner := &fakeRunner{out: []byte(`{"success":true,"data":{"snapshot":"@e1 [button] \"Submit\""}}`)}
 	tl := NewAgentBrowserCommandTool(testBrowserConfig(), runner)
+	binding := NewTaskBinding("browser_123")
+	binding.UpdateBrowserSession(BrowserSessionBinding{
+		BrowserSessionID:        testBrowserSessionID,
+		ActiveTabID:             testBrowserTabID,
+		AgentBrowserSessionName: testAgentBrowserSession,
+		CDPEndpoint:             testCDPEndpoint,
+	})
+	ctx := WithTaskBinding(browserTaskContext("browser_123"), binding)
 
-	res, err := tl.Execute(browserTaskContext("browser_123"), json.RawMessage(`{"cdp_endpoint":"ws://127.0.0.1:9222/devtools/page/1","args":["snapshot","-i"]}`))
+	res, err := tl.Execute(ctx, json.RawMessage(`{"args":["snapshot","-i"]}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -91,7 +104,7 @@ func TestAgentBrowserCommandTool_ExecutesWithCDPAndJSON(t *testing.T) {
 	}
 
 	want := []string{
-		"--session", "harnessclaw-browser-browser_123",
+		"--session", testAgentBrowserSession,
 		"--cdp", testCDPEndpoint,
 		"--json",
 		"snapshot",
@@ -103,36 +116,76 @@ func TestAgentBrowserCommandTool_ExecutesWithCDPAndJSON(t *testing.T) {
 	}
 }
 
-func TestAgentBrowserCommandTool_DoesNotExposeSessionID(t *testing.T) {
+func TestAgentBrowserCommandTool_DoesNotExposeCDPOrSessionID(t *testing.T) {
 	tl := NewAgentBrowserCommandTool(testBrowserConfig(), &fakeRunner{})
 	props := tl.InputSchema()["properties"].(map[string]any)
 	if _, ok := props["session_id"]; ok {
 		t.Fatal("agent_browser_command schema must not expose session_id")
 	}
+	if _, ok := props["cdp_endpoint"]; ok {
+		t.Fatal("agent_browser_command schema must not expose cdp_endpoint")
+	}
 }
 
-func TestAgentBrowserCommandTool_UsesBoundCDPEndpointWhenModelOmitsIt(t *testing.T) {
+func TestAgentBrowserCommandTool_RequiresBoundBrowserSession(t *testing.T) {
 	runner := &fakeRunner{out: []byte(`{"success":true,"data":"ok"}`)}
 	tl := NewAgentBrowserCommandTool(testBrowserConfig(), runner)
-	binding := NewTaskBinding("browser_123")
-	binding.UpdateCDPEndpoint(testCDPEndpoint)
-	ctx := WithTaskBinding(browserTaskContext("browser_123"), binding)
 
-	res, err := tl.Execute(ctx, json.RawMessage(`{"args":["snapshot"]}`))
+	res, err := tl.Execute(browserTaskContext("browser_123"), json.RawMessage(`{"args":["snapshot"]}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if res.IsError {
-		t.Fatalf("Execute returned error result: %+v", res)
+	if !res.IsError {
+		t.Fatalf("Execute without browser session binding should fail: %+v", res)
+	}
+	if !strings.Contains(res.Content, "先创建浏览器会话") {
+		t.Fatalf("content = %q, want create-session guidance", res.Content)
+	}
+	if len(runner.args) != 0 {
+		t.Fatalf("runner should not execute without binding, got %v", runner.args)
+	}
+}
+
+func TestAgentBrowserCommandTool_UsesDistinctBindingsForParallelTasks(t *testing.T) {
+	runner1 := &fakeRunner{out: []byte(`{"success":true,"data":"ok1"}`)}
+	runner2 := &fakeRunner{out: []byte(`{"success":true,"data":"ok2"}`)}
+	tl1 := NewAgentBrowserCommandTool(testBrowserConfig(), runner1)
+	tl2 := NewAgentBrowserCommandTool(testBrowserConfig(), runner2)
+
+	binding1 := NewTaskBinding("browser_1")
+	binding1.UpdateBrowserSession(BrowserSessionBinding{
+		BrowserSessionID:        testBrowserSessionID,
+		ActiveTabID:             testBrowserTabID,
+		AgentBrowserSessionName: testAgentBrowserSession,
+		CDPEndpoint:             testCDPEndpoint,
+	})
+	binding2 := NewTaskBinding("browser_2")
+	binding2.UpdateBrowserSession(BrowserSessionBinding{
+		BrowserSessionID:        testOtherBrowserSessionID,
+		ActiveTabID:             "tab_2",
+		AgentBrowserSessionName: testOtherAgentBrowserSesn,
+		CDPEndpoint:             testOtherCDPEndpoint,
+	})
+
+	if res, err := tl1.Execute(WithTaskBinding(browserTaskContext("browser_1"), binding1), json.RawMessage(`{"args":["snapshot"]}`)); err != nil || res.IsError {
+		t.Fatalf("task 1 Execute = (%+v, %v)", res, err)
+	}
+	if res, err := tl2.Execute(WithTaskBinding(browserTaskContext("browser_2"), binding2), json.RawMessage(`{"args":["snapshot"]}`)); err != nil || res.IsError {
+		t.Fatalf("task 2 Execute = (%+v, %v)", res, err)
 	}
 
-	want := []string{
-		"--session", "harnessclaw-browser-browser_123",
+	assertArgs(t, runner1.args, []string{
+		"--session", testAgentBrowserSession,
 		"--cdp", testCDPEndpoint,
 		"--json",
 		"snapshot",
-	}
-	assertArgs(t, runner.args, want)
+	})
+	assertArgs(t, runner2.args, []string{
+		"--session", testOtherAgentBrowserSesn,
+		"--cdp", testOtherCDPEndpoint,
+		"--json",
+		"snapshot",
+	})
 }
 
 func TestAgentBrowserCommandTool_DoesNotRequireModelCDPEndpointInSchema(t *testing.T) {
@@ -144,45 +197,35 @@ func TestAgentBrowserCommandTool_DoesNotRequireModelCDPEndpointInSchema(t *testi
 	}
 }
 
-func TestAgentBrowserCommandTool_RejectsMismatchedModelSessionID(t *testing.T) {
+func TestAgentBrowserCommandTool_RejectsCallerSuppliedSessionID(t *testing.T) {
 	runner := &fakeRunner{out: []byte(`{"success":true,"data":"ok"}`)}
 	tl := NewAgentBrowserCommandTool(testBrowserConfig(), runner)
 
-	res, err := tl.Execute(browserTaskContext("browser_123"), json.RawMessage(`{
+	err := tl.ValidateInput(json.RawMessage(`{
 		"session_id":"foreign",
-		"cdp_endpoint":"ws://127.0.0.1:9222/devtools/page/1",
 		"args":["snapshot"]
 	}`))
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
+	if err == nil {
+		t.Fatal("caller-supplied session_id should be rejected")
 	}
-	if !res.IsError {
-		t.Fatalf("mismatched session_id should be rejected: %+v", res)
-	}
-	if len(runner.args) != 0 {
-		t.Fatalf("runner should not execute on mismatched session_id, got %v", runner.args)
+	if !strings.Contains(err.Error(), "session_id") {
+		t.Fatalf("error = %v, want session_id validation", err)
 	}
 }
 
-func TestAgentBrowserCommandTool_RejectsMismatchedBoundCDPEndpoint(t *testing.T) {
+func TestAgentBrowserCommandTool_RejectsCallerSuppliedCDPEndpoint(t *testing.T) {
 	runner := &fakeRunner{out: []byte(`{"success":true,"data":"ok"}`)}
 	tl := NewAgentBrowserCommandTool(testBrowserConfig(), runner)
-	binding := NewTaskBinding("browser_123")
-	binding.UpdateCDPEndpoint(testCDPEndpoint)
-	ctx := WithTaskBinding(browserTaskContext("browser_123"), binding)
 
-	res, err := tl.Execute(ctx, json.RawMessage(`{
+	err := tl.ValidateInput(json.RawMessage(`{
 		"cdp_endpoint":"ws://127.0.0.1:9222/devtools/page/foreign",
 		"args":["snapshot"]
 	}`))
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
+	if err == nil {
+		t.Fatal("caller-supplied cdp_endpoint should be rejected")
 	}
-	if !res.IsError {
-		t.Fatalf("mismatched cdp_endpoint should be rejected: %+v", res)
-	}
-	if len(runner.args) != 0 {
-		t.Fatalf("runner should not execute on mismatched cdp_endpoint, got %v", runner.args)
+	if !strings.Contains(err.Error(), "cdp_endpoint") {
+		t.Fatalf("error = %v, want cdp_endpoint validation", err)
 	}
 }
 
@@ -190,13 +233,99 @@ func TestTaskBinding_UpdatesFromBrowserSessionToolResults(t *testing.T) {
 	binding := NewTaskBinding("browser_123")
 	msg := typesMessageWithTool("browser_session_state")
 	results := []types.ToolResult{{
-		Content: `{"active_tab":{"cdp_endpoint":"ws://127.0.0.1:9222/devtools/page/1"}}`,
+		Content: `{"session_id":"` + testBrowserSessionID + `","active_tab":{"tab_id":"` + testBrowserTabID + `"}}`,
+		Metadata: map[string]any{
+			"session_id":                 testBrowserSessionID,
+			"active_tab_id":              testBrowserTabID,
+			"agent_browser_session_name": testAgentBrowserSession,
+			"cdp_endpoint":               testCDPEndpoint,
+		},
 	}}
 
 	UpdateTaskBindingFromResults(msg, results, binding)
 
+	if got := binding.BrowserSessionID(); got != testBrowserSessionID {
+		t.Fatalf("BrowserSessionID = %q, want %q", got, testBrowserSessionID)
+	}
+	if got := binding.ActiveTabID(); got != testBrowserTabID {
+		t.Fatalf("ActiveTabID = %q, want %q", got, testBrowserTabID)
+	}
+	if got := binding.SessionName(); got != testAgentBrowserSession {
+		t.Fatalf("SessionName = %q, want %q", got, testAgentBrowserSession)
+	}
 	if got := binding.CDPEndpoint(); got != testCDPEndpoint {
 		t.Fatalf("CDPEndpoint = %q, want %q", got, testCDPEndpoint)
+	}
+}
+
+func TestTaskBinding_DoesNotParseCDPFromVisibleContent(t *testing.T) {
+	binding := NewTaskBinding("browser_123")
+	msg := typesMessageWithTool("browser_session_state")
+	results := []types.ToolResult{{
+		Content: `{"session_id":"` + testBrowserSessionID + `","active_tab":{"cdp_endpoint":"` + testCDPEndpoint + `"}}`,
+	}}
+
+	UpdateTaskBindingFromResults(msg, results, binding)
+
+	if got := binding.CDPEndpoint(); got != "" {
+		t.Fatalf("CDPEndpoint = %q, want empty because endpoint must come from private metadata", got)
+	}
+}
+
+func TestTaskBinding_ClearsOnMatchingBrowserSessionClose(t *testing.T) {
+	binding := NewTaskBinding("browser_123")
+	binding.UpdateBrowserSession(BrowserSessionBinding{
+		BrowserSessionID:        testBrowserSessionID,
+		ActiveTabID:             testBrowserTabID,
+		AgentBrowserSessionName: testAgentBrowserSession,
+		CDPEndpoint:             testCDPEndpoint,
+	})
+	msg := typesMessageWithTool("browser_session_close")
+	results := []types.ToolResult{{
+		Content: `{"session_id":"` + testBrowserSessionID + `","closed":true}`,
+		Metadata: map[string]any{
+			"session_id": testBrowserSessionID,
+			"closed":     true,
+		},
+	}}
+
+	UpdateTaskBindingFromResults(msg, results, binding)
+
+	if got := binding.BrowserSessionID(); got != "" {
+		t.Fatalf("BrowserSessionID = %q, want cleared", got)
+	}
+	if got := binding.CDPEndpoint(); got != "" {
+		t.Fatalf("CDPEndpoint = %q, want cleared", got)
+	}
+	if binding.IsReady() {
+		t.Fatal("binding should not be ready after closing the current browser session")
+	}
+}
+
+func TestTaskBinding_IgnoresCloseForDifferentBrowserSession(t *testing.T) {
+	binding := NewTaskBinding("browser_123")
+	binding.UpdateBrowserSession(BrowserSessionBinding{
+		BrowserSessionID:        testBrowserSessionID,
+		ActiveTabID:             testBrowserTabID,
+		AgentBrowserSessionName: testAgentBrowserSession,
+		CDPEndpoint:             testCDPEndpoint,
+	})
+	msg := typesMessageWithTool("browser_session_close")
+	results := []types.ToolResult{{
+		Content: `{"session_id":"` + testOtherBrowserSessionID + `","closed":true}`,
+		Metadata: map[string]any{
+			"session_id": testOtherBrowserSessionID,
+			"closed":     true,
+		},
+	}}
+
+	UpdateTaskBindingFromResults(msg, results, binding)
+
+	if got := binding.BrowserSessionID(); got != testBrowserSessionID {
+		t.Fatalf("BrowserSessionID = %q, want preserved %q", got, testBrowserSessionID)
+	}
+	if got := binding.CDPEndpoint(); got != testCDPEndpoint {
+		t.Fatalf("CDPEndpoint = %q, want preserved %q", got, testCDPEndpoint)
 	}
 }
 
@@ -279,18 +408,25 @@ func TestBrowserAgentFinalResultTool_DoesNotExposeTaskID(t *testing.T) {
 	}
 }
 
-func TestCleanupHelperSession_DisablesBoundSessionStream(t *testing.T) {
+func TestCleanupBoundHelperSession_DisablesBoundSessionStream(t *testing.T) {
 	runner := &fakeRunner{out: []byte(`{"success":true,"data":"ok"}`)}
+	binding := NewTaskBinding("browser_123")
+	binding.UpdateBrowserSession(BrowserSessionBinding{
+		BrowserSessionID:        testBrowserSessionID,
+		ActiveTabID:             testBrowserTabID,
+		AgentBrowserSessionName: testAgentBrowserSession,
+		CDPEndpoint:             testCDPEndpoint,
+	})
 
-	res, err := CleanupHelperSession(context.Background(), testBrowserConfig(), runner, "browser_123")
+	res, err := CleanupBoundHelperSession(context.Background(), testBrowserConfig(), runner, binding)
 	if err != nil {
-		t.Fatalf("CleanupHelperSession: %v", err)
+		t.Fatalf("CleanupBoundHelperSession: %v", err)
 	}
 	if res.IsError {
 		t.Fatalf("cleanup should be best-effort success in this test: %+v", res)
 	}
 	want := []string{
-		"--session", "harnessclaw-browser-browser_123",
+		"--session", testAgentBrowserSession,
 		"--json",
 		"stream",
 		"disable",
@@ -298,16 +434,19 @@ func TestCleanupHelperSession_DisablesBoundSessionStream(t *testing.T) {
 	assertArgs(t, runner.args, want)
 }
 
-func TestAgentBrowserCommandTool_RejectsInvalidCDP(t *testing.T) {
+func TestCleanupBoundHelperSession_NoopsWithoutBinding(t *testing.T) {
 	runner := &fakeRunner{out: []byte(`{"success":true,"data":"ok"}`)}
-	tl := NewAgentBrowserCommandTool(testBrowserConfig(), runner)
+	binding := NewTaskBinding("browser_123")
 
-	err := tl.ValidateInput(json.RawMessage(`{"cdp_endpoint":"not-a-websocket","args":["snapshot"]}`))
-	if err == nil {
-		t.Fatal("invalid CDP endpoint should be rejected")
+	res, err := CleanupBoundHelperSession(context.Background(), testBrowserConfig(), runner, binding)
+	if err != nil {
+		t.Fatalf("CleanupBoundHelperSession: %v", err)
 	}
-	if !strings.Contains(err.Error(), "cdp_endpoint") {
-		t.Fatalf("error = %v, want cdp_endpoint validation", err)
+	if res.IsError {
+		t.Fatalf("cleanup without binding should be a no-op success: %+v", res)
+	}
+	if len(runner.args) != 0 {
+		t.Fatalf("runner should not execute without binding, got %v", runner.args)
 	}
 }
 
@@ -315,7 +454,7 @@ func TestAgentBrowserCommandTool_RejectsEmptyArgs(t *testing.T) {
 	runner := &fakeRunner{out: []byte(`{"success":true,"data":"ok"}`)}
 	tl := NewAgentBrowserCommandTool(testBrowserConfig(), runner)
 
-	err := tl.ValidateInput(json.RawMessage(`{"cdp_endpoint":"ws://127.0.0.1:9222/devtools/page/1","args":[]}`))
+	err := tl.ValidateInput(json.RawMessage(`{"args":[]}`))
 	if err == nil {
 		t.Fatal("empty args should be rejected")
 	}
@@ -329,7 +468,7 @@ func TestAgentBrowserCommandTool_RejectsHarnessOwnedFlags(t *testing.T) {
 	tl := NewAgentBrowserCommandTool(testBrowserConfig(), runner)
 
 	for _, forbidden := range []string{"--session", "--cdp", "--json"} {
-		err := tl.ValidateInput(json.RawMessage(fmt.Sprintf(`{"cdp_endpoint":"ws://127.0.0.1:9222/devtools/page/1","args":["snapshot","%s","value"]}`, forbidden)))
+		err := tl.ValidateInput(json.RawMessage(fmt.Sprintf(`{"args":["snapshot","%s","value"]}`, forbidden)))
 		if err == nil {
 			t.Fatalf("args containing %q should be rejected", forbidden)
 		}
@@ -342,8 +481,15 @@ func TestAgentBrowserCommandTool_RejectsHarnessOwnedFlags(t *testing.T) {
 func TestAgentBrowserCommandTool_CLIErrorBecomesToolError(t *testing.T) {
 	runner := &fakeRunner{out: []byte(`{"success":false,"error":"command failed"}`)}
 	tl := NewAgentBrowserCommandTool(testBrowserConfig(), runner)
+	binding := NewTaskBinding("browser_123")
+	binding.UpdateBrowserSession(BrowserSessionBinding{
+		BrowserSessionID:        testBrowserSessionID,
+		ActiveTabID:             testBrowserTabID,
+		AgentBrowserSessionName: testAgentBrowserSession,
+		CDPEndpoint:             testCDPEndpoint,
+	})
 
-	res, err := tl.Execute(context.Background(), json.RawMessage(`{"cdp_endpoint":"ws://127.0.0.1:9222/devtools/page/1","args":["snapshot"]}`))
+	res, err := tl.Execute(WithTaskBinding(browserTaskContext("browser_123"), binding), json.RawMessage(`{"args":["snapshot"]}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -358,8 +504,15 @@ func TestAgentBrowserCommandTool_CLIErrorBecomesToolError(t *testing.T) {
 func TestAgentBrowserCommandTool_RawOutputFallback(t *testing.T) {
 	runner := &fakeRunner{out: []byte(`not json output`)}
 	tl := NewAgentBrowserCommandTool(testBrowserConfig(), runner)
+	binding := NewTaskBinding("browser_123")
+	binding.UpdateBrowserSession(BrowserSessionBinding{
+		BrowserSessionID:        testBrowserSessionID,
+		ActiveTabID:             testBrowserTabID,
+		AgentBrowserSessionName: testAgentBrowserSession,
+		CDPEndpoint:             testCDPEndpoint,
+	})
 
-	res, err := tl.Execute(context.Background(), json.RawMessage(`{"cdp_endpoint":"ws://127.0.0.1:9222/devtools/page/1","args":["snapshot"]}`))
+	res, err := tl.Execute(WithTaskBinding(browserTaskContext("browser_123"), binding), json.RawMessage(`{"args":["snapshot"]}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -504,12 +657,6 @@ func assertArgs(t *testing.T, got, want []string) {
 			t.Fatalf("args[%d] = %q, want %q; got %v", i, got[i], want[i], got)
 		}
 	}
-}
-
-func testCDPArgs(command ...string) []string {
-	args := []string{"--session", testCDPSession, "--cdp", testCDPEndpoint, "--json"}
-	args = append(args, command...)
-	return args
 }
 
 func browserTaskContext(taskID string) context.Context {

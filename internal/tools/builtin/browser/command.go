@@ -23,9 +23,7 @@ type AgentBrowserCommandTool struct {
 }
 
 type commandInput struct {
-	SessionID   string   `json:"session_id,omitempty"`
-	CDPEndpoint string   `json:"cdp_endpoint,omitempty"`
-	Args        []string `json:"args"`
+	Args []string `json:"args"`
 }
 
 func NewAgentBrowserCommandTool(cfg config.BrowserAgentConfig, runner Runner) *AgentBrowserCommandTool {
@@ -34,7 +32,7 @@ func NewAgentBrowserCommandTool(cfg config.BrowserAgentConfig, runner Runner) *A
 
 func (t *AgentBrowserCommandTool) Name() string { return AgentBrowserCommandToolName }
 func (t *AgentBrowserCommandTool) Description() string {
-	return "通过 agent-browser CLI 执行浏览器命令。官方 skill 适配器，由 harness 注入 --cdp、--session、--json 标志。"
+	return "通过 agent-browser CLI 执行浏览器命令。先创建并绑定当前 Browser Agent 的浏览器会话；HarnessClaw 会私下注入 --cdp、--session、--json 标志，模型不要读取、传入或复用 endpoint。"
 }
 func (t *AgentBrowserCommandTool) IsReadOnly() bool              { return false }
 func (t *AgentBrowserCommandTool) IsEnabled() bool               { return t.cfg.Enabled }
@@ -45,7 +43,6 @@ func (t *AgentBrowserCommandTool) InputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"cdp_endpoint": cdpEndpointSchema(),
 			"args": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
@@ -58,14 +55,19 @@ func (t *AgentBrowserCommandTool) InputSchema() map[string]any {
 }
 
 func (t *AgentBrowserCommandTool) ValidateInput(raw json.RawMessage) error {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return fmt.Errorf("invalid agent_browser_command input: %w", err)
+	}
+	for _, forbidden := range []string{"cdp_endpoint", "session_id"} {
+		if _, ok := payload[forbidden]; ok {
+			return fmt.Errorf("%s is managed by HarnessClaw private browser binding and must not be supplied", forbidden)
+		}
+	}
+
 	var in commandInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return fmt.Errorf("invalid agent_browser_command input: %w", err)
-	}
-	if strings.TrimSpace(in.CDPEndpoint) != "" {
-		if err := validateCDPEndpoint(in.CDPEndpoint); err != nil {
-			return err
-		}
 	}
 	if len(in.Args) == 0 {
 		return fmt.Errorf("args is required")
@@ -90,7 +92,7 @@ func (t *AgentBrowserCommandTool) Execute(ctx context.Context, raw json.RawMessa
 	var in commandInput
 	_ = json.Unmarshal(raw, &in)
 
-	sessionName, endpoint, err := commandTargetFromContext(ctx, in.SessionID, in.CDPEndpoint)
+	sessionName, endpoint, err := commandTargetFromContext(ctx)
 	if err != nil {
 		return &types.ToolResult{Content: err.Error(), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
 	}
@@ -135,55 +137,11 @@ func withCommandGatewayCDP(cfg config.BrowserAgentConfig, sessionName, endpoint 
 	return args
 }
 
-func commandTargetFromContext(ctx context.Context, modelSessionID, endpoint string) (string, string, error) {
-	endpoint = strings.TrimSpace(endpoint)
+func commandTargetFromContext(ctx context.Context) (string, string, error) {
 	if binding, ok := taskBindingFromContext(ctx); ok {
-		sessionName := binding.SessionName()
-		if supplied := strings.TrimSpace(modelSessionID); supplied != "" && supplied != sessionName {
-			return "", "", fmt.Errorf("session_id %q does not match current Browser Agent session %q", supplied, sessionName)
-		}
-		if expected := binding.CDPEndpoint(); expected != "" {
-			if endpoint != "" && endpoint != expected {
-				return "", "", fmt.Errorf("cdp_endpoint %q does not match current Browser Agent endpoint %q", endpoint, expected)
-			}
-			return sessionName, expected, nil
-		}
-		if err := validateCDPEndpoint(endpoint); err != nil {
-			return "", "", err
-		}
-		return sessionName, endpoint, nil
-	}
-	if taskID := taskIDFromContext(ctx); taskID != "" {
-		want := BrowserTaskSessionName(taskID)
-		if supplied := strings.TrimSpace(modelSessionID); supplied != "" && supplied != want {
-			return "", "", fmt.Errorf("session_id %q does not match current Browser Agent session %q", supplied, want)
-		}
-		if err := validateCDPEndpoint(endpoint); err != nil {
-			return "", "", err
-		}
-		return want, endpoint, nil
-	}
-	if s := strings.TrimSpace(modelSessionID); s != "" {
-		if err := validateCDPEndpoint(endpoint); err != nil {
-			return "", "", err
-		}
-		return BrowserTaskSessionName(s), endpoint, nil
-	}
-	if err := validateCDPEndpoint(endpoint); err != nil {
-		return "", "", err
-	}
-	return browserAgentSessionName(endpoint), endpoint, nil
-}
-
-func sanitizeSessionName(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			b.WriteRune(r)
+		if binding.IsReady() {
+			return binding.SessionName(), binding.CDPEndpoint(), nil
 		}
 	}
-	if b.Len() == 0 {
-		return "session"
-	}
-	return b.String()
+	return "", "", fmt.Errorf("请先创建浏览器会话：调用 browser_session_create 后再使用 agent_browser_command")
 }

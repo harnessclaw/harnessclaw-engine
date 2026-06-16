@@ -12,8 +12,8 @@ import (
 	"nhooyr.io/websocket"
 
 	emitv2 "harnessclaw-go/internal/channel/emit/v2"
-	"harnessclaw-go/internal/multimodal"
 	"harnessclaw-go/internal/humanloop/wait"
+	"harnessclaw-go/internal/multimodal"
 	"harnessclaw-go/pkg/types"
 )
 
@@ -412,6 +412,7 @@ func (c *Conn) handleToolResult(ctx context.Context, raw []byte) {
 		Status    string            `json:"status"`
 		Output    string            `json:"output"`
 		Error     *emitv2.ErrorInfo `json:"error"`
+		Metadata  map[string]any    `json:"metadata"`
 	}
 	if err := json.Unmarshal(raw, &f); err != nil {
 		c.sendError("invalid_input", "tool.result parse: "+err.Error())
@@ -429,6 +430,7 @@ func (c *Conn) handleToolResult(ctx context.Context, raw []byte) {
 			ToolUseID: f.ToolUseID,
 			Status:    f.Status,
 			Output:    f.Output,
+			Metadata:  f.Metadata,
 		},
 	}
 	if f.Error != nil {
