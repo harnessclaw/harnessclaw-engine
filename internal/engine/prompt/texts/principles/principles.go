@@ -5,30 +5,23 @@
 // others. This file is the only public surface: the Role type and the
 // Principles / PrinciplesCompact dispatch functions.
 //
-// Layer mapping (3-tier architecture):
-//   - RoleEmma                          → L1 (user-facing main agent;
-//     persona + clarification)
-//   - RoleScheduler                     → L2 (single coordinator;
-//     plan / dispatch / integrate / check)
-//   - RoleWorker / Explore / Plan       → L3 (sub-agents executing tasks
-//     dispatched by the scheduler)
-//   - RolePlanner                       → legacy (orchestrate's structured
-//     planner — being superseded by
-//     the scheduler LLM loop)
+// Layer mapping:
+//   - RoleEmma                                   → L1 (user-facing main agent)
+//   - RoleWorker / Explore / Plan / Freelancer
+//     / ContentCreator                           → L3 (sub-agents executing
+//     tasks dispatched by emma)
 package principles
 
 // Role identifies which agent's principles to render.
 type Role string
 
 const (
-	RoleEmma              Role = "emma"
-	RoleWorker            Role = "worker"
-	RoleExplore           Role = "explore"
-	RolePlan              Role = "plan"
-	RolePlanner           Role = "planner"
-	RoleFreelancer        Role = "freelancer"
-	RolePlanAgent         Role = "plan_agent"
-	RolePlanExecutorAgent Role = "plan_executor_agent"
+	RoleEmma           Role = "emma"
+	RoleWorker         Role = "worker"
+	RoleExplore        Role = "explore"
+	RolePlan           Role = "plan"
+	RoleFreelancer     Role = "freelancer"
+	RoleContentCreator Role = "content_creator"
 )
 
 // Principles returns the full principles text for the given role. Unknown
@@ -49,14 +42,10 @@ func Principles(role Role) string {
 		return explorePrinciples
 	case RolePlan:
 		return planPrinciples
-	case RolePlanner:
-		return plannerPrinciples
 	case RoleFreelancer:
 		return freelancerPrinciples
-	case RolePlanAgent:
-		return planAgentPrinciples
-	case RolePlanExecutorAgent:
-		return planExecutorAgentPrinciples
+	case RoleContentCreator:
+		return contentCreatorPrinciples
 	default:
 		return workerPrinciples
 	}

@@ -1,6 +1,5 @@
 // Package builtin holds the AgentDefinition constants for engine-shipped
-// agent types (generic, freelancer, plan_agent, plan_executor_agent,
-// plan_design, explore, browser_agent).
+// agent types (generic, freelancer, plan_design, explore, browser_agent).
 //
 // Each definition is pure data: Profile, AllowedTools, MaxTurns,
 // SystemPrompt, etc. Adding or tweaking a built-in agent type is a one-

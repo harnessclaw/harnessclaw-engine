@@ -53,10 +53,10 @@ type PromptArgs struct {
 
 	// WorkerIdentity, when non-empty, is forwarded to
 	// PromptContext.SystemPromptOverride so the role section reflects
-	// the caller's identity stamping (BuildWorkerIdentity /
-	// BuildFunctionalIdentity output). Tier modules compute this
-	// before calling BuildSubAgentPrompt — the helper itself avoids
-	// importing the texts package to keep dependency direction one-way.
+	// the caller's identity stamping (BuildFunctionalIdentity output).
+	// Tier modules compute this before calling BuildSubAgentPrompt —
+	// the helper itself avoids importing the texts package to keep
+	// dependency direction one-way.
 	WorkerIdentity string
 
 	// LoadedSkillsBlock is the freelancer-specific <loaded-skills> XML

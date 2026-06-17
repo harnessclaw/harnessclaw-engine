@@ -1,32 +1,19 @@
 package prompt
 
 import (
-	"strings"
 	"testing"
 )
 
-func TestPlannerProfile_RegisteredInBuiltins(t *testing.T) {
-	profiles := GetBuiltInProfiles()
-	p, ok := profiles["planner"]
-	if !ok {
-		t.Fatal("planner profile not registered in GetBuiltInProfiles")
-	}
-	if p.Name != "planner" {
-		t.Errorf("profile.Name = %q, want planner", p.Name)
-	}
-	if p == EmmaProfile || p == WorkerProfile {
-		t.Error("planner profile must not be aliased to emma/worker")
-	}
-}
+// 注：旧 TestPlannerProfile_RegisteredInBuiltins /
+// TestPlannerProfile_HasJSONSchemaInPrompt 已删 —— PlannerProfile 本身
+// 已删（orchestrate 工具孤儿）。
 
-func TestResolveProfileBySubagentType_Planner(t *testing.T) {
+func TestResolveProfileBySubagentType(t *testing.T) {
 	tests := []struct{ in, want string }{
-		{"planner", "planner"},
 		{"researcher", "explore"},
 		{"plan", "plan"},
 		{"freelancer", "freelancer"},
-		{"plan_agent", "plan_agent"},
-		{"plan_executor_agent", "plan_executor_agent"},
+		{"content_creator", "content_creator"},
 		{"writer", "worker"},
 		{"unknown", "worker"},
 	}
@@ -34,17 +21,6 @@ func TestResolveProfileBySubagentType_Planner(t *testing.T) {
 		got := ResolveProfileBySubagentType(tt.in)
 		if got.Name != tt.want {
 			t.Errorf("ResolveProfileBySubagentType(%q).Name = %q, want %q", tt.in, got.Name, tt.want)
-		}
-	}
-}
-
-func TestPlannerProfile_HasJSONSchemaInPrompt(t *testing.T) {
-	// Sanity check: the planner role/principles must mention the plan JSON
-	// fields so the agent knows what to emit.
-	override := PlannerProfile.SectionOverrides["principles"]
-	for _, must := range []string{"step_id", "subagent_type", "depends_on", "<summary>"} {
-		if !strings.Contains(override, must) {
-			t.Errorf("planner principles missing %q", must)
 		}
 	}
 }
