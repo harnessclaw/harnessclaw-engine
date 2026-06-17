@@ -37,4 +37,4 @@ const workerPrinciples = `# 系统
 
 - 你的 task 目录已由系统准备好（plan.json + tasks/{task_id}/），不要用 bash 调 ` + "`mkdir`" + ` / ` + "`mv`" + ` / ` + "`cp`" + ` 来管理目录或搬运产物。
 - 所有读写都通过 read / edit / write 工具，写入位置限定在自己的 task 目录里（tasks/{task_id}/），不要往工作区根目录或其他 task 的目录里写。
-- 任务结束前必须调一次 meta_write 写 meta.json，再调 submit_task_result 把 task_id + meta_path 提交给 L2。`
+- 任务结束前必须调一次 meta_write 写 meta.json，再调 submit_task_result 把 task_id + meta_path 提交给 L2。` + ToolErrorDiscipline

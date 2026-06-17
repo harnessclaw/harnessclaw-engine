@@ -2,9 +2,6 @@ package emma
 
 import (
 	"context"
-	"os"
-	"runtime"
-	"time"
 
 	"go.uber.org/zap"
 
@@ -168,24 +165,9 @@ func (e *Engine) getTeamMembers() []prompt.TeamMember {
 // getEnvSnapshot captures current environment information dynamically.
 // sessionRoot, when non-empty, is used as the CWD so agents see the
 // session-specific workspace path rather than the generic root.
+//
+// 实现委托给 prompt.BuildEnvSnapshot —— 让 emma 主路径和 sub-agent dispatch
+// 路径（loop/runtime/llm.go）共享同一份逻辑，不再各写一遍。
 func (e *Engine) getEnvSnapshot(sessionRoot string) prompt.EnvSnapshot {
-	snap := prompt.EnvSnapshot{
-		OS:       runtime.GOOS,
-		Platform: runtime.GOOS + "/" + runtime.GOARCH,
-		Date:     time.Now().Format("2006-01-02"),
-	}
-
-	if sessionRoot != "" {
-		snap.CWD = sessionRoot
-	} else {
-		snap.CWD = "~/.harnessclaw/workspace"
-	}
-
-	if shell := os.Getenv("SHELL"); shell != "" {
-		snap.Shell = shell
-	} else if comspec := os.Getenv("COMSPEC"); comspec != "" {
-		snap.Shell = comspec
-	}
-
-	return snap
+	return prompt.BuildEnvSnapshot(sessionRoot)
 }

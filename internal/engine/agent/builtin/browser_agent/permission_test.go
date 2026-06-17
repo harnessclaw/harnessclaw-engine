@@ -11,7 +11,6 @@ func TestBrowserAgentApprovedTools_ExpandsInternalToolsWhenParentApprovedBrowser
 		"browser_session_create",
 		"agent_browser_command",
 		"browser_agent_final_result",
-		"escalate_to_planner",
 	} {
 		if !containsTool(approved, want) {
 			t.Fatalf("approved tools missing %q: %v", want, approved)

@@ -63,8 +63,7 @@ type SpawnConfig struct {
 	// ParentAgentID is the agent_id of the direct parent that initiated
 	// this spawn. Used by sub-agent modules to populate the wire envelope's
 	// ParentAgentID field (see subagent.start event schema). "main" when
-	// emma is the parent; otherwise the parent's agent_id (e.g., scheduler
-	// passes its own ID when dispatching plan_agent in plan-mode).
+	// emma is the parent; otherwise the parent's agent_id.
 	//
 	// Empty allowed during legacy code paths; new modules treat empty as
 	// "no explicit parent" and emit a warn log.

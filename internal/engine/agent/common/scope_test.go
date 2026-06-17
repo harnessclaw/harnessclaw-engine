@@ -28,9 +28,9 @@ func TestBuildAgentScope_FallbackAgent(t *testing.T) {
 		RootSessionID: "sess-1",
 		SubagentType:  "", // empty → use fallback
 	}
-	scope := BuildAgentScope(cfg, "/tmp/root", "plan_agent")
-	if scope.Agent != "plan_agent" {
-		t.Errorf("Agent = %q, want plan_agent fallback", scope.Agent)
+	scope := BuildAgentScope(cfg, "/tmp/root", "fallback_agent")
+	if scope.Agent != "fallback_agent" {
+		t.Errorf("Agent = %q, want fallback_agent", scope.Agent)
 	}
 }
 

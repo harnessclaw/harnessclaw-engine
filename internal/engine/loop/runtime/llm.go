@@ -20,7 +20,9 @@ import (
 	"harnessclaw-go/internal/engine/compact"
 	"harnessclaw-go/internal/engine/loop"
 	"harnessclaw-go/internal/engine/prompt"
+	"harnessclaw-go/internal/engine/prompt/texts"
 	"harnessclaw-go/internal/engine/scheduler/middlewares"
+	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/internal/engine/scheduler/runtime"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/provider"
@@ -119,14 +121,30 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 		return nil, err
 	}
 
-	// 2. 预创 task 目录（runner.RunLeaf:145）
-	_ = common.EnsureTaskDir(cfg, r.Cfg.RootDir)
+	// 2. task_dir 延迟创建 —— 不再 dispatch 时预 mkdir。
+	// 旧行为：每次 dispatch 都 mkdir-p {taskDir}；副作用是只读 sub-agent
+	// （比如只调 web_search 后纯文本回报的场景）也会留下空目录。
+	// 新行为：write / edit / meta_write 工具在写入前自己 MkdirAll，需要
+	// 落盘的 sub-agent 自然建出目录，无需写入的 sub-agent 不留垃圾目录。
 
 	// 3. 工具池（runner.RunLeaf:151-155）
 	pool := common.BuildToolPool(r.Registry, p.Definition.AllowedTools, p.Definition.AgentType, false)
 
 	// 4. Profile + system prompt（runner.RunLeaf:158-180）
+	// WorkerIdentity 走 BuildFunctionalIdentity：用 sub-agent 自己的
+	// DisplayName + Description 拼一段「你叫X，专长Y」身份，注入到
+	// RoleSection 的 SystemPromptOverride —— 否则 RoleSection 会回落到
+	// IdentitySection，把 emma 的 "你是谁" 渲染到每个子 agent 头上。
 	profile := resolveProfile(p.Definition.Profile)
+	workerIdentity := texts.BuildFunctionalIdentity(
+		p.Definition.DisplayName,
+		p.Definition.Description,
+	)
+	// EnvSnapshot 注入 sub-agent 自己的 task_dir 作 CWD —— 否则
+	// EnvSection 渲染四个空冒号给 LLM。
+	subSessionRoot := workspace.SessionRoot(r.Cfg.RootDir, sess.ID)
+	envSnap := prompt.BuildEnvSnapshot(subSessionRoot)
+
 	sysPrompt := common.BuildSubAgentPrompt(common.PromptArgs{
 		Ctx:               ctx,
 		Session:           sess,
@@ -134,8 +152,15 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 		Builder:           r.PromptBuilder,
 		WorkerDisplayName: cfg.Name,
 		SubagentType:      cfg.SubagentType,
+		WorkerIdentity:    workerIdentity,
 		ContextWindow:     r.Cfg.ContextWindow,
 		Registry:          r.Registry,
+		// AvailableTools 必须填过滤后的 pool —— 否则 ToolsSection 会
+		// fall back 到 Registry.All() 把全套工具描述渲染给 LLM，跟
+		// AllowedTools 实际能调用的子集不一致，LLM 会试调"看得见但
+		// 调不到"的工具一路撞墙到 max_turns。
+		AvailableTools: pool.All(),
+		EnvSnapshot:    envSnap,
 	})
 
 	// ★ 4.5 Skill hydration —— freelancer 专属
@@ -173,17 +198,16 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 		}},
 	})
 
-	// 6. MaxTurns 优先级：Overrides > Definition.MaxTurns > 30
-	// 默认 30 是 L3 sub-agent（freelancer/explore/plan 等）的常见预算。
-	// 10 是经验上太低的值 —— 写一篇 1000 字散文需要 search → load skill → think
-	// → write → verify 的 5-8 个 step，10 turns 必触 max_turns。
+	// 6. MaxTurns 优先级：Overrides > Definition.MaxTurns > 200
+	// 默认兜底从 30 提到 200 —— 长任务（视频生成轮询 / 跨多文件重构 /
+	// 深度调研）经常需要 50-100 turn 才能完成，30 太紧。
 	// 调用方需要严格限流时通过 Overrides 显式覆写（如 browseragent 的 maxSteps）。
 	maxTurns := p.Overrides.MaxTurns
 	if maxTurns <= 0 {
 		maxTurns = p.Definition.MaxTurns
 	}
 	if maxTurns <= 0 {
-		maxTurns = 30
+		maxTurns = 200
 	}
 
 	// 7. 权限 checker（runner.RunLeaf:214-216）
@@ -245,6 +269,14 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 			ParentStepID:    cfg.ParentStepID,
 		})
 
+		// ArtifactProducer 跟 AgentID 同步填 —— sub-agent 写出的 artifact
+		// 元数据要带 producer.AgentID（之前漏了导致 artifact 表里 producer
+		// 永远是空字符串，无法回溯归属）。TaskID 由 toolexec 在执行时从
+		// ctx 自取（如 metatool），这里不强填。
+		artifactProducer := tool.ArtifactProducer{
+			AgentID:   string(p.AgentID),
+			SessionID: sess.ID,
+		}
 		res, rerr := loop.Run(ctx, &loop.Config{
 			Session:             sess,
 			SystemPrompt:        sysPrompt,
@@ -261,6 +293,7 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 			LLMFirstByteTimeout: r.Cfg.LLMFirstByteTimeout,
 			Out:                 events,
 			AgentID:             string(p.AgentID),
+			ArtifactProducer:    artifactProducer,
 			PermChecker:         permChecker,
 			ApprovalFn:          approvalFn,
 			AgentScope:          scope,

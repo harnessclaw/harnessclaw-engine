@@ -7,6 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"harnessclaw-go/internal/engine/agent/builtin"
 	"harnessclaw-go/internal/engine/agent/definition"
 )
 
@@ -115,13 +116,15 @@ func TestLoadAllToRegistry_NewNonBuiltinLoads(t *testing.T) {
 }
 
 // Regression: a stale "freelancer" record in the store must NOT overwrite
-// the in-code RegisterBuiltins freelancer definition. Builtin freelancer
+// the in-code builtin.RegisterAll freelancer definition. Builtin freelancer
 // carries skill-driven tool palette + correct profile — losing it bricks L3.
 // (该测试原本守的是 "scheduler"，L2 删除后改用 freelancer 守同一不变量。)
 func TestLoadAllToRegistry_PreservesReservedBuiltins(t *testing.T) {
 	store := newFakeStore()
 	reg := definition.NewRegistry()
-	reg.RegisterBuiltins()
+	if err := builtin.RegisterAll(reg); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
 
 	stale := &definition.AgentDefinition{
 		Name:         "freelancer",

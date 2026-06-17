@@ -28,7 +28,6 @@ func TestBrowserAgentDefinition(t *testing.T) {
 		"agent_browser_command",
 		"browser_skill_reference",
 		"browser_agent_final_result",
-		"escalate_to_planner",
 	} {
 		if !containsString(def.AllowedTools, want) {
 			t.Fatalf("browser agent AllowedTools missing %q: %v", want, def.AllowedTools)

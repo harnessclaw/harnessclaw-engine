@@ -1,7 +1,6 @@
 package prompt
 
 import (
-	"harnessclaw-go/internal/engine/prompt/texts"
 	"harnessclaw-go/internal/engine/prompt/texts/principles"
 )
 
@@ -46,11 +45,9 @@ var (
 		Sections: []string{
 			"currentdate", // priority 90 → epilogue；放最后是为了 prompt cache 命中
 			"role",        // emma 的身份和人设（Identity）
+			"team",        // 可派遣的 agent 名册（来自 defRegistry.TeamMembers()）
 			"principles",  // 判断规则 + 交付方式（Judgment + Delivery）
 			"memory",      // 用户偏好
-			// "team" intentionally NOT included — emma at L1 treats L2
-			// (scheduler) as a black box. The team roster is consumed
-			// internally by scheduler, not by emma.
 		},
 	}
 
@@ -66,8 +63,10 @@ var (
 			"tools",
 			"env",
 		},
+		// 注：不再 override "role" —— SystemPromptOverride（动态 identity）
+		// 总会赢，static role override 永远不渲染（builder.go:100）。原 ExploreRole
+		// 的角色定位 + 搜索策略已搬进 explorePrinciples 顶部。
 		SectionOverrides: map[string]string{
-			"role":       texts.ExploreRole,
 			"principles": principles.Principles(principles.RoleExplore),
 		},
 		TierWeights: map[string]float64{
@@ -75,24 +74,29 @@ var (
 		},
 	}
 
-	// PlanProfile is for planning without execution.
-	// Overrides "role" with planner persona.
+	// PlanProfile is for Plan Mode —— 只读任务拆解，把分步实施方案写到
+	// task_dir/plan.md，不执行修改。
+	//
+	// 加入 "tools" section：plan agent 有 AllowedTools（read / glob / grep /
+	// write / edit / web_* / meta_write / submit_task_result）需要让 LLM 看到
+	// 描述。旧 plan 定位是"纯讨论无工具"所以 ExcludeSections 排了 tools，
+	// 新 plan 真的要调工具，必须渲染。
 	PlanProfile = &AgentProfile{
 		Name:        "plan",
-		Description: "Planning agent that designs but does not implement",
+		Description: "Plan Mode：只读任务拆解，产物是 task_dir/plan.md",
 		Sections: []string{
 			"currentdate",
 			"role",
 			"principles",
+			"tools",
 			"env",
 			"task",
 		},
 		ExcludeSections: []string{
-			"tools",
 			"memory",
 		},
+		// 注：不再 override "role"，原 PlanRole 已搬进 planPrinciples 顶部。
 		SectionOverrides: map[string]string{
-			"role":       texts.PlanRole,
 			"principles": principles.Principles(principles.RolePlan),
 		},
 	}
@@ -100,30 +104,8 @@ var (
 	// 注：旧 SchedulerProfile (L2 coordinator) 已删 ——
 	// emma 的 scheduler tool 不再起 L2 LLM agent，直接派 L3 freelancer。
 
-	// PlannerProfile is the internal Phase-2 task decomposer used by the
-	// orchestrate tool. It is NOT part of emma's roster — emma never calls
-	// it directly; orchestrate spawns it to convert a natural-language intent
-	// into a structured plan JSON describing dependent sub-agent steps.
-	PlannerProfile = &AgentProfile{
-		Name:        "planner",
-		Description: "Internal orchestrate planner — turns intent into plan JSON",
-		Sections: []string{
-			"currentdate",
-			"role",
-			"principles",
-		},
-		ExcludeSections: []string{
-			"tools",
-			"team",
-			"memory",
-			"env",
-			"task",
-		},
-		SectionOverrides: map[string]string{
-			"role":       texts.PlannerRole,
-			"principles": principles.Principles(principles.RolePlanner),
-		},
-	}
+	// 注：旧 PlannerProfile（orchestrate 工具的内部 JSON 拆解器 sub-agent
+	// profile）已删 —— orchestrate 工具本体不存在，profile 是孤儿。
 
 	// WorkerProfile is for emma's team members (搭档) when dispatched.
 	// "role" is overridden at runtime via PromptContext.SystemPromptOverride
@@ -165,11 +147,13 @@ var (
 		},
 	}
 
-	// PlanAgentProfile is for plan_agent sub-agents that analyze goals
-	// and decompose them into executable tasks via plan_update.
-	PlanAgentProfile = &AgentProfile{
-		Name:        "plan_agent",
-		Description: "Analyzes goal and writes task breakdown to plan.json via plan_update",
+	// ContentCreatorProfile is for the content_creator sub-agent — focused
+	// on AI image/video production. Mirrors WorkerProfile layout but swaps
+	// in content_creator principles so the LLM doesn't see freelancer's
+	// skill-loading / L2-L3 dispatch language.
+	ContentCreatorProfile = &AgentProfile{
+		Name:        "content_creator",
+		Description: "AI image + video production sub-agent",
 		Sections: []string{
 			"currentdate",
 			"role",
@@ -178,28 +162,8 @@ var (
 			"env",
 			"task",
 		},
-		ExcludeSections: []string{"memory", "team", "skills"},
 		SectionOverrides: map[string]string{
-			"principles": principles.Principles(principles.RolePlanAgent),
-		},
-	}
-
-	// PlanExecutorAgentProfile is for plan_executor_agent sub-agents that
-	// read plan.json, dispatch freelancers, and update task status in real-time.
-	PlanExecutorAgentProfile = &AgentProfile{
-		Name:        "plan_executor_agent",
-		Description: "Reads plan.json, dispatches freelancers, updates status in real-time",
-		Sections: []string{
-			"currentdate",
-			"role",
-			"principles",
-			"tools",
-			"env",
-			"task",
-		},
-		ExcludeSections: []string{"memory", "team", "skills"},
-		SectionOverrides: map[string]string{
-			"principles": principles.Principles(principles.RolePlanExecutorAgent),
+			"principles": principles.Principles(principles.RoleContentCreator),
 		},
 	}
 )
@@ -212,14 +176,12 @@ var (
 // GetBuiltInProfiles returns all built-in profiles.
 func GetBuiltInProfiles() map[string]*AgentProfile {
 	return map[string]*AgentProfile{
-		"emma":                EmmaProfile,
-		"explore":             ExploreProfile,
-		"plan":                PlanProfile,
-		"planner":             PlannerProfile,
-		"worker":              WorkerProfile,
-		"freelancer":          FreelancerProfile,
-		"plan_agent":          PlanAgentProfile,
-		"plan_executor_agent": PlanExecutorAgentProfile,
+		"emma":            EmmaProfile,
+		"explore":         ExploreProfile,
+		"plan":            PlanProfile,
+		"worker":          WorkerProfile,
+		"freelancer":      FreelancerProfile,
+		"content_creator": ContentCreatorProfile,
 	}
 }
 
@@ -236,7 +198,7 @@ const DefaultMainAgentProfileName = "emma"
 //  2. defaultProfile parameter (caller-supplied main-agent profile name)
 //  3. DefaultMainAgentProfileName (last-resort fallback)
 //
-// Sub-agent paths always resolve to "worker"/"explore"/"plan"/"planner"
+// Sub-agent paths always resolve to "worker"/"explore"/"plan"
 // regardless of the default — those names are routed via subagent_type.
 func ResolveProfile(
 	agentCtx *AgentContext,
@@ -320,10 +282,8 @@ func ResolveProfileByName(name string) *AgentProfile {
 //
 //	"explore" / "researcher"      → ExploreProfile (L3)
 //	"plan"                        → PlanProfile (L3)
-//	"planner" (legacy)            → PlannerProfile
 //	"freelancer"                  → FreelancerProfile (L3)
-//	"plan_agent"                  → PlanAgentProfile
-//	"plan_executor_agent"         → PlanExecutorAgentProfile
+//	"content_creator"             → ContentCreatorProfile (L3)
 //	everything else               → WorkerProfile (L3 default)
 func ResolveProfileBySubagentType(subagentType string) *AgentProfile {
 	switch subagentType {
@@ -331,14 +291,10 @@ func ResolveProfileBySubagentType(subagentType string) *AgentProfile {
 		return ExploreProfile
 	case "plan":
 		return PlanProfile
-	case "planner":
-		return PlannerProfile
 	case "freelancer":
 		return FreelancerProfile
-	case "plan_agent":
-		return PlanAgentProfile
-	case "plan_executor_agent":
-		return PlanExecutorAgentProfile
+	case "content_creator":
+		return ContentCreatorProfile
 	default:
 		// All sub-agents use WorkerProfile by default.
 		// EmmaProfile is reserved for emma (the main agent).

@@ -92,7 +92,6 @@ var AllAgentDisallowed = map[string]bool{
 	"TaskStop":          true,
 	"freelance":         true, // bypassed by AgentDefinition.AllowedTools whitelist
 	"dispatch":          true, // emma 入口；L3 cannot recurse upward
-	"orchestrate":       true, // L2 plan-mode tool; surfacing it to L3 leaves them hallucinating calls that fail "intent is required" immediately
 }
 
 // CustomAgentDisallowed is the blacklist for custom agents.

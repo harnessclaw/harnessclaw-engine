@@ -42,6 +42,7 @@ import (
 	"harnessclaw-go/internal/commands"
 	"harnessclaw-go/internal/config"
 	"harnessclaw-go/internal/engine/compact"
+	"harnessclaw-go/internal/engine/agent/builtin"
 	browseragentdef "harnessclaw-go/internal/engine/agent/builtin/browser_agent"
 	"harnessclaw-go/internal/engine/agent/definition"
 	"harnessclaw-go/internal/engine/agent/emma"
@@ -219,11 +220,10 @@ func main() {
 		// SubmitTaskResult is the L3 task-completion declaration
 		// (doc §3 M3+M4). Always on; only fires when the dispatcher
 		// supplied an ExpectedOutputs contract.
+		// 注：旧 escalate_to_planner 已删 —— "做不到"用
+		// meta_write({status:"failed"}) + submit_task_result 表达，
+		// 唯一终止工具就是 submit。
 		{true, func() tool.Tool { return submittool.New() }},
-		// EscalateToPlanner is the L3 needs-planning escape hatch.
-		// Pairs with SubmitTaskResult: every TierSubAgent worker must
-		// reach exactly one of the two before its loop terminates.
-		{true, func() tool.Tool { return submittool.NewEscalate() }},
 		// PlanUpdate / MetaWrite / Promote are the local-files-as-truth
 		// trio (doc §3). Only registered when the workspace root resolved
 		// so unit-tests and headless builds without a home dir stay
@@ -528,7 +528,11 @@ func main() {
 	// Register scheduler tool — the L1→L2 dispatch entry point. emma sees
 	// this tool as her single delegation channel; the scheduler itself spawns
 	// L3 sub-agents internally via the task tool above.
-	if err := registry.Register(scheduler.New(eng.Scheduler(), agentDefReg, logger)); err != nil {
+	//
+	// 同时注入 eng.ActivePlanStore() 作为 PlanReminderSink —— plan agent
+	// 跑成功时 dispatch tool 会把 plan.md 路径写入 store，emma 下一轮
+	// user message 处理时前置注入 plan 全文（解决 plan path drift）。
+	if err := registry.Register(scheduler.New(eng.Scheduler(), agentDefReg, eng.ActivePlanStore(), logger)); err != nil {
 		logger.Fatal("failed to register scheduler tool", zap.Error(err))
 	}
 	logger.Info("scheduler tool registered")
@@ -585,8 +589,10 @@ func main() {
 	}
 
 	// Register built-in agent definitions into the in-memory registry only;
-	// builtins live in code, not SQLite.
-	agentDefReg.RegisterBuiltins()
+	// builtins live in code (internal/engine/agent/builtin), not SQLite.
+	if err := builtin.RegisterAll(agentDefReg); err != nil {
+		logger.Fatal("failed to register builtin agent definitions", zap.Error(err))
+	}
 
 	// Sync project-level agent definitions from YAML directories.
 	for _, dir := range cfg.Agents.Dirs {

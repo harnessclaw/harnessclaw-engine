@@ -12,7 +12,7 @@ import (
 // round-trip per scheduler dispatch that picked a team-member name.
 func TestValidate_AcceptsTeamMemberSubAgentTypes(t *testing.T) {
 	for _, st := range []string{
-		"explore", "plan", "freelancer", "plan_agent", "plan_executor_agent",
+		"explore", "plan", "freelancer",
 		"writer", "researcher", "analyst", "developer", "lifestyle", "scheduler",
 		"",           // empty defaults to freelancer downstream
 		"team_alpha", // arbitrary names — registry decides at spawn time

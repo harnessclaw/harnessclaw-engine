@@ -269,10 +269,15 @@ func (te *ToolExecutor) executeSingle(
 		//     ArtifactWrite → L2 calls ArtifactRead" without correlation.
 		//   - artifact_id: when the tool produced one, so the §10 chain
 		//     (write → emit → store → read) is traceable from the log alone.
+		// agent_id 用 te.agentID（SetAgentID 填的当前 agent 标识）而非
+		// te.artifactProducer.AgentID —— 后者是 artifact 元数据的 producer
+		// 字段，sub-agent dispatch 路径（loop/runtime/llm.go）历史上只填了
+		// AgentID 没填 ArtifactProducer，导致 sub-agent 的 tool executed log
+		// 长期 agent_id="" 空字段，无法追踪调用归属。
 		fields := []zap.Field{
 			zap.String("tool", tc.Name),
 			zap.String("tool_use_id", tc.ID),
-			zap.String("agent_id", te.artifactProducer.AgentID),
+			zap.String("agent_id", te.agentID),
 			zap.Duration("duration", dur),
 			zap.Bool("is_error", result.IsError),
 		}

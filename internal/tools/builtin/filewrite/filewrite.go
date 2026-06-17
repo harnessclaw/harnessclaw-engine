@@ -138,10 +138,31 @@ func (t *FileWriteTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 		}, nil
 	}
 
-	// Verify target directory exists.
+	// 父目录创建策略 —— 仅对 task_dir 白名单内的路径自动 MkdirAll。
+	// 其他路径维持旧约束（不存在直接拒绝），避免 filewrite 沦为通用
+	// "递归创建任意目录"工具：LLM 写错 / 注入恶意路径时可能在文件系统
+	// 任意位置 mkdir，破坏沙箱。
+	//
+	// 白名单：ctx.AgentScope 提供 SessionRoot + TaskID，task_dir =
+	// {SessionRoot}/tasks/{TaskID}。只有写入路径落在该子树下时才自动建。
 	dir := filepath.Dir(wi.FilePath)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return &types.ToolResult{Content: fmt.Sprintf("directory %s does not exist; create it first", dir), IsError: true, ErrorType: types.ToolErrorInvalidInput}, nil
+	if shouldAutoMkdir(ctx, wi.FilePath) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return &types.ToolResult{
+				Content:   fmt.Sprintf("create parent dir %s: %v", dir, err),
+				IsError:   true,
+				ErrorType: types.ToolErrorInternal,
+			}, nil
+		}
+	} else if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return &types.ToolResult{
+			Content: fmt.Sprintf(
+				"directory %s does not exist; create it first (auto-mkdir is restricted to your task_dir under SessionRoot/tasks/<TaskID>)",
+				dir,
+			),
+			IsError:   true,
+			ErrorType: types.ToolErrorInvalidInput,
+		}, nil
 	}
 
 	// Preserve existing permissions if file exists.
@@ -169,12 +190,40 @@ func (t *FileWriteTool) Execute(ctx context.Context, input json.RawMessage) (*ty
 }
 
 
+// shouldAutoMkdir 判断 filePath 是否落在当前 spawn 的 task_dir 白名单内 ——
+// 仅在白名单内自动 MkdirAll，外部路径维持"父目录必须已存在"的旧约束，
+// 防止 LLM 写错路径时在文件系统任意位置建目录。
+//
+// 白名单 = {AgentScope.SessionRoot}/tasks/{AgentScope.TaskID}（递归子树）。
+// ctx 没注入 AgentScope（legacy / 测试路径）或缺关键字段时返回 false，
+// 让 caller 走"父目录必须存在"的严格分支。
+func shouldAutoMkdir(ctx context.Context, filePath string) bool {
+	scope, ok := tool.AgentScopeFromCtx(ctx)
+	if !ok || scope.SessionRoot == "" || scope.TaskID == "" {
+		return false
+	}
+	taskDir := filepath.Join(scope.SessionRoot, "tasks", scope.TaskID)
+	abs, err := filepath.Abs(filePath)
+	if err != nil {
+		return false
+	}
+	// 用 Clean + 前缀比较 + 边界检查防 "/foo/tasks/t1-evil" 假命中 "/foo/tasks/t1"。
+	cleanAbs := filepath.Clean(abs)
+	cleanTaskDir := filepath.Clean(taskDir)
+	if cleanAbs == cleanTaskDir {
+		return true
+	}
+	prefix := cleanTaskDir + string(filepath.Separator)
+	return len(cleanAbs) > len(prefix) && cleanAbs[:len(prefix)] == prefix
+}
+
 var fileWriteDescription = fmt.Sprintf(`把内容写入本地文件系统。
 
 使用规范：
 - 目标路径已存在文件时会被覆盖。
 - file_path 必须是绝对路径，不能相对路径。
-- 写入前必须确保目标目录存在；不存在请用 Bash 先创建。
+- **写入你自己的 task_dir 内时父目录会自动创建**（MkdirAll），不用预先 mkdir。
+- **写入 task_dir 外的路径时父目录必须已存在**——这是沙箱保护，避免误写到任意位置。如果工作上下文有"task_dir"路径，把产物都写在它的子树下。
 - content 单次最长 %d 字符。超出请分多次：先 write 骨架，再用 edit 增量补全；或用 bash heredoc 追加每段 ≤ 1500 token。一次塞太多会被 max_tokens 截断而失败。`, maxContentChars)
 
 // getDefaultWorkingDir returns the expanded default working directory path
