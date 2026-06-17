@@ -28,6 +28,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -43,33 +44,50 @@ import (
 // ToolName is the LLM-facing tool identifier emma sees.
 const ToolName = "dispatch"
 
-// SubagentType is the agent definition / profile name spawned by this tool.
-// It must match the registered AgentDefinition.Name and the
-// ResolveProfileBySubagentType case in prompt/profile.go.
-// SubagentType 是本工具默认派的 L3 agent 名。
-// 工具名 "scheduler" 是历史遗留，emma prompt 里仍用这个名字；
-// 工具内部已经不再起 L2 coordinator，直接派 L3 freelancer。
-const SubagentType = "freelancer"
+// DefaultSubagentType 是 input.SubagentType 校验失败时使用的兜底名 ——
+// 实际上 input.validate() 已经拦截了空值，这个常量留作历史 fallback
+// 标识 + 测试用。生产路径永远走 input.SubagentType。
+const DefaultSubagentType = "freelancer"
+
+// PlanReminderSink 是 dispatch tool 通知 emma "刚跑完一个 plan，路径在这"
+// 的窄接口。emma.Engine 实现了它。接口方式避免 scheduler tool 包反向 import
+// emma 包导致的 cycle —— tool 包永远不直接依赖 agent 包。
+//
+// MVP 实现里只有 plan agent 成功时调用 Set，其他 agent 完全不触碰本接口。
+// 后续扩展（清理 / failover / per-session 失活）通过新增方法实现，旧 caller
+// 不受影响。
+type PlanReminderSink interface {
+	// Set 记录一个新完成的 plan：sessionID 是 emma 主 session，planPath 是
+	// plan agent 写出来的 plan.md 绝对路径。taskID 来自 dispatch 调用的
+	// SyncOutcome，便于审计。
+	Set(sessionID, planPath, taskID string)
+}
 
 // Tool is emma's L2 dispatch tool.
 type Tool struct {
 	tool.BaseTool
-	sched  schedpkg.Scheduler
-	defReg *definition.Registry
-	logger *zap.Logger
+	sched      schedpkg.Scheduler
+	defReg     *definition.Registry
+	planSink   PlanReminderSink // nil 时直接跳过 plan reminder 写入逻辑
+	logger     *zap.Logger
 }
 
 // New constructs a scheduler tool backed by the given scheduler.Scheduler.
 // defReg is used to resolve the "scheduler" AgentDefinition; nil falls back
 // to a synthetic minimal Definition.
-func New(sched schedpkg.Scheduler, defReg *definition.Registry, logger *zap.Logger) *Tool {
+//
+// planSink 可为 nil —— 提供时在 plan agent 完成时记录 plan.md 路径，供
+// emma 后续 user message 前置注入 plan reminder 用。MVP 期 emma 之外的
+// caller 都可以传 nil。
+func New(sched schedpkg.Scheduler, defReg *definition.Registry, planSink PlanReminderSink, logger *zap.Logger) *Tool {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	return &Tool{
-		sched:  sched,
-		defReg: defReg,
-		logger: logger.Named("scheduler"),
+		sched:    sched,
+		defReg:   defReg,
+		planSink: planSink,
+		logger:   logger.Named("scheduler"),
 	}
 }
 
@@ -164,23 +182,29 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		events = out
 	}
 
-	// 取消 L2 中间层 —— 直接派 L3 freelancer。
-	// emma 视角不变（仍然调 "scheduler" 工具），但本工具内部不再起 LLM coordinator
-	// agent，而是把任务直接交给 freelancer worker。少一跳 LLM 调用，链路更短、
-	// 响应更快、归属更清晰（emma → freelancer 两层而不是 emma → L2 → freelancer 三层）。
-	var def definition.AgentDefinition
-	if t.defReg != nil {
-		if d := t.defReg.Get(SubagentType); d != nil {
-			def = *d
-		} else {
-			def = definition.AgentDefinition{Name: SubagentType, AgentType: tool.AgentTypeSync}
-		}
-	} else {
-		def = definition.AgentDefinition{Name: SubagentType, AgentType: tool.AgentTypeSync}
+	// 按 emma 显式指定的 subagent_type 派遣。
+	// 找不到时直接报错（不再回退到 freelancer）—— LLM 必须从 system prompt
+	// 的搭档名册里挑名字，挑错就让它在下一轮 tool_result 看到错误自己纠正。
+	if t.defReg == nil {
+		return errTypedResult(
+			"agent definition registry not wired; dispatch unavailable",
+			types.ToolErrorInternal,
+		), nil
 	}
+	d := t.defReg.Get(in.SubagentType)
+	if d == nil {
+		t.logger.Warn("dispatch: unknown subagent_type",
+			zap.String("subagent_type", in.SubagentType),
+		)
+		return errTypedResult(
+			fmt.Sprintf("unknown subagent_type %q; pick one from the team roster in your system prompt", in.SubagentType),
+			types.ToolErrorInvalidInput,
+		), nil
+	}
+	def := *d
 
 	t.logger.Info("dispatch directly to L3",
-		zap.String("subagent_type", SubagentType),
+		zap.String("subagent_type", in.SubagentType),
 		zap.String("task", truncate(in.Task, 120)),
 		zap.String("description", in.Description),
 	)
@@ -215,6 +239,30 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		zap.Duration("duration", time.Since(startTime)),
 		zap.Int("deliverables", len(sync.Deliverables)),
 	)
+
+	// Plan Mode reminder: 当 plan agent 成功完成且 Deliverables 里有 plan.md
+	// 文件时，把路径写入 PlanReminderSink。emma 在下一轮 user message 处理时
+	// 会把该 plan 全文前置注入到 user message 头部，让 LLM 多 turn 对话里
+	// 始终看到正确的 plan path。
+	//
+	// 触发条件三选一全满足才写入：
+	//   1. planSink 非 nil（main.go 装配时注入了）
+	//   2. subagent_type == "plan"
+	//   3. Terminal.Reason 是 TerminalCompleted（不写失败的 plan）
+	if t.planSink != nil && in.SubagentType == "plan" && sync.Terminal.Reason == types.TerminalCompleted {
+		planPath := findPlanFile(sync.Deliverables)
+		if planPath != "" {
+			rootSID, _ := sessionstats.RootSessionIDFromCtx(ctx)
+			if rootSID != "" {
+				t.planSink.Set(rootSID, planPath, string(res.TaskID))
+				t.logger.Info("plan reminder registered",
+					zap.String("root_session_id", rootSID),
+					zap.String("plan_path", planPath),
+					zap.String("task_id", string(res.TaskID)),
+				)
+			}
+		}
+	}
 
 	metadata := map[string]any{
 		"render_hint":   "agent",
@@ -255,6 +303,28 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		IsError:  isError,
 		Metadata: metadata,
 	}, nil
+}
+
+// findPlanFile 从 Deliverables 列表里找 plan agent 写出来的 plan.md。
+//
+// 优先匹配文件名严格等于 "plan.md"（plan agent principles 强制约定的
+// 落盘名）；找不到时回退匹配任何 .md 后缀的 deliverable（容忍 LLM
+// 拼路径时的微小偏差）。MVP 期最严，只取第一个命中。
+func findPlanFile(deliverables []types.Deliverable) string {
+	var fallback string
+	for _, d := range deliverables {
+		if d.FilePath == "" {
+			continue
+		}
+		base := filepath.Base(d.FilePath)
+		if base == "plan.md" {
+			return d.FilePath
+		}
+		if fallback == "" && strings.HasSuffix(strings.ToLower(base), ".md") {
+			fallback = d.FilePath
+		}
+	}
+	return fallback
 }
 
 // concatText 拼接 SyncOutcome.Content 的 text blocks。

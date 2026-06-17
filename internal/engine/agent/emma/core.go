@@ -109,6 +109,13 @@ type Engine struct {
 	// passed into the SkillsSection prompt block.
 	skillListingOnce sync.Once
 	skillListing     string
+
+	// planStore 是 Plan Mode reminder 机制的 session 状态。dispatch tool
+	// 在 plan agent 跑成功时调 planStore.Set 记录最新 plan.md 路径；
+	// ProcessMessage 处理新 user message 时调 planStore.BuildReminder
+	// 把 plan 全文前置注入到 user message 头部 —— LLM 多 turn 对话里
+	// 始终能看到正确的 plan 路径和内容（解决 plan path drift bug）。
+	planStore *ActivePlanStore
 }
 
 // Option configures Engine at construction.
@@ -118,20 +125,22 @@ type Option func(*Engine)
 // fields have sensible defaults; an empty EmmaConfig is valid and produces
 // the canonical emma setup.
 //
-// emma tool palette rationale (post 3-tier refactor):
-//   - scheduler                   → THE delegation entry point. emma never
-//     picks between single-step / multi-step
-//     or specific sub-agents — the scheduler
-//     (L2) handles all decomposition.
+// emma tool palette rationale:
+//   - dispatch                    → THE delegation entry point. emma 通过
+//     dispatch(subagent_type=...) 派给 plan / freelancer / content_creator
+//     等团队 agent；图片 / 视频生成走 content_creator 而非直接调工具。
 //   - web_search / tavily_search  → emma's own *light* fact-finding for
 //     context gathering before dispatching.
 //   - ask_user_question           → clarification when the request is
 //     ambiguous.
-//   - image_generate              → direct image-generation requests. The
-//     tool itself owns provider/model validation and reports Settings fixes.
+//
+// 不在 emma 直接调用列表里的工具（统一交给 content_creator）：
+//   - image_generate / video_create / video_query
+//
+// 不在 emma 列表里的其他工具（filesystem / bash）：交给 freelancer。
 //
 // The task tool is intentionally NOT in this list — it lives inside the
-// L2 layer (the scheduler uses task internally to dispatch L3).
+// L3 dispatch path which the dispatch tool wires up.
 type EmmaConfig struct {
 	// Profile is the prompt profile used for the emma main agent.
 	// Default: prompt.EmmaProfile.
@@ -165,11 +174,12 @@ func DefaultEmmaConfig() EmmaConfig {
 			"web_search",
 			"tavily_search",
 			"ask_user_question",
-			"image_generate",
-			"video_create",
-			"video_query",
 		},
-		MaxTurns: 15,
+		// MaxTurns = 0 → loop.Run 视为无上限，emma 主 agent 不被 turn 数掐死。
+		// emma 是用户对话入口，可能要多次澄清 + 多次 dispatch + 反馈，硬上限
+		// 容易在长会话里中途断流。退出靠 OnTurnComplete（end_turn / 用户 abort
+		// / 异常）三条路径，比固定 turn 数更稳。
+		MaxTurns: 0,
 	}
 }
 
@@ -189,14 +199,10 @@ func WithEmmaConfig(cfg EmmaConfig) Option {
 			"web_search",
 			"tavily_search",
 			"ask_user_question",
-			"image_generate",
-			"video_create",
-			"video_query",
 		}
 	}
-	if cfg.MaxTurns <= 0 {
-		cfg.MaxTurns = 15
-	}
+	// 注意：不再 fallback 到 15 —— emma 默认走 MaxTurns=0（无限），
+	// loop.Run 会把 0 视为不掐 turn。要求有限 turn 的调用方传正数。
 	return func(e *Engine) {
 		e.config.MainAgentProfile = cfg.Profile
 		e.config.MainAgentDisplayName = cfg.DisplayName
@@ -256,6 +262,7 @@ func New(
 		causeCancels:  make(map[string]context.CancelCauseFunc),
 		emitSeq:       emit.NewSequencer(),
 		retryer:       retry.New(retryConfigFromCfg(cfg), logger),
+		planStore:     NewActivePlanStore(),
 	}
 
 	// Optional config-injected dependencies. Engine treats nil as
@@ -320,6 +327,11 @@ func New(
 // 过渡阶段的访问器：tools / mention router / future coordinator 走这一个。
 func (e *Engine) Scheduler() schedulerpkg.Scheduler { return e.sched }
 
+// ActivePlanStore 暴露 plan reminder 的 session 状态，让 dispatch tool
+// 在 plan agent 完成时把 plan.md 路径写入。main.go 在装配 dispatch tool
+// 时通过本 accessor 拿 store 注入。
+func (e *Engine) ActivePlanStore() *ActivePlanStore { return e.planStore }
+
 // Config returns the active engine configuration by value.
 func (e *Engine) Config() Config { return e.config }
 
@@ -363,6 +375,18 @@ func (e *Engine) ProcessMessage(ctx context.Context, sessionID string, msg *type
 		if out := e.mentionRouter.TryRoute(ctx, sess, msg); out != nil {
 			return out, nil
 		}
+	}
+
+	// Plan Mode reminder: 如果本 session 之前跑过 plan 且有有效的
+	// plan.md，把 plan 全文前置到 user message 头部。这一步必须在
+	// sess.AddMessage 之前，让历史和 LLM 都能看到完整的 reminder + user
+	// 原话。reminder 为空时 noop。
+	if reminder := e.planStore.BuildReminder(sess.ID); reminder != "" {
+		injectPlanReminder(msg, reminder)
+		e.logger.Debug("plan reminder injected",
+			zap.String("session_id", sess.ID),
+			zap.Int("reminder_chars", len(reminder)),
+		)
 	}
 
 	sess.AddMessage(*msg)

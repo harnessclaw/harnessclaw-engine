@@ -36,12 +36,28 @@ func newSched(result schedpkg.Result, err error) *mockScheduler {
 	return &mockScheduler{result: result, err: err}
 }
 
-func newToolForTest() *Tool {
-	return New(&mockScheduler{}, definition.NewRegistry(), zap.NewNop())
+// newRegistryWithFreelancer returns a Registry containing a minimal
+// "freelancer" AgentDefinition so dispatch tool tests can resolve the
+// subagent_type they pass in. Tests that want to verify "unknown agent"
+// behaviour use definition.NewRegistry() directly.
+func newRegistryWithFreelancer(t *testing.T) *definition.Registry {
+	t.Helper()
+	reg := definition.NewRegistry()
+	if err := reg.Register(&definition.AgentDefinition{
+		Name:      "freelancer",
+		AgentType: tool.AgentTypeSync,
+	}); err != nil {
+		t.Fatalf("seed freelancer def: %v", err)
+	}
+	return reg
+}
+
+func newToolForTest(t *testing.T) *Tool {
+	return New(&mockScheduler{}, newRegistryWithFreelancer(t), nil, zap.NewNop())
 }
 
 func TestTool_Metadata(t *testing.T) {
-	tl := newToolForTest()
+	tl := newToolForTest(t)
 	if tl.Name() != ToolName {
 		t.Fatalf("Name = %q", tl.Name())
 	}
@@ -54,12 +70,18 @@ func TestTool_Metadata(t *testing.T) {
 }
 
 func TestTool_ValidateInput(t *testing.T) {
-	tl := newToolForTest()
-	if err := tl.ValidateInput(json.RawMessage(`{"task":"do thing"}`)); err != nil {
+	tl := newToolForTest(t)
+	if err := tl.ValidateInput(json.RawMessage(`{"task":"do thing","subagent_type":"freelancer"}`)); err != nil {
 		t.Errorf("valid input rejected: %v", err)
 	}
 	if err := tl.ValidateInput(json.RawMessage(`{}`)); err == nil {
-		t.Error("empty task should be rejected")
+		t.Error("empty input should be rejected")
+	}
+	if err := tl.ValidateInput(json.RawMessage(`{"task":"do thing"}`)); err == nil {
+		t.Error("missing subagent_type should be rejected")
+	}
+	if err := tl.ValidateInput(json.RawMessage(`{"subagent_type":"freelancer"}`)); err == nil {
+		t.Error("missing task should be rejected")
 	}
 }
 
@@ -72,9 +94,9 @@ func TestTool_Execute_SyncSuccess(t *testing.T) {
 			Terminal: types.Terminal{Reason: types.TerminalCompleted},
 		},
 	}, nil)
-	tl := New(sched, definition.NewRegistry(), zap.NewNop())
+	tl := New(sched, newRegistryWithFreelancer(t), nil, zap.NewNop())
 
-	res, err := tl.Execute(context.Background(), json.RawMessage(`{"task":"deep dive"}`))
+	res, err := tl.Execute(context.Background(), json.RawMessage(`{"task":"deep dive","subagent_type":"freelancer"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -87,18 +109,32 @@ func TestTool_Execute_SyncSuccess(t *testing.T) {
 	if sched.params == nil {
 		t.Fatal("Dispatch was not called")
 	}
-	if sched.params.Definition.Name != SubagentType {
-		t.Errorf("Definition.Name = %q want %q", sched.params.Definition.Name, SubagentType)
+	if sched.params.Definition.Name != "freelancer" {
+		t.Errorf("Definition.Name = %q want %q", sched.params.Definition.Name, "freelancer")
 	}
 	if sched.params.Prompt != "deep dive" {
 		t.Errorf("Prompt = %q", sched.params.Prompt)
 	}
 }
 
+func TestTool_Execute_UnknownSubagentType(t *testing.T) {
+	tl := New(&mockScheduler{}, newRegistryWithFreelancer(t), nil, zap.NewNop())
+	res, err := tl.Execute(context.Background(), json.RawMessage(`{"task":"do x","subagent_type":"nonexistent"}`))
+	if err != nil {
+		t.Fatalf("Execute returned go err: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("unknown subagent_type should produce IsError=true")
+	}
+	if !strings.Contains(res.Content, "nonexistent") {
+		t.Errorf("Content should name the unknown agent: %q", res.Content)
+	}
+}
+
 func TestTool_Execute_PlanModeReturnsError(t *testing.T) {
-	tl := newToolForTest()
+	tl := newToolForTest(t)
 	ctx := tool.WithCoordinatorMode(context.Background(), "plan")
-	res, err := tl.Execute(ctx, json.RawMessage(`{"task":"x"}`))
+	res, err := tl.Execute(ctx, json.RawMessage(`{"task":"x","subagent_type":"freelancer"}`))
 	if err != nil {
 		t.Fatalf("Execute returned go err: %v", err)
 	}
@@ -111,8 +147,8 @@ func TestTool_Execute_PlanModeReturnsError(t *testing.T) {
 }
 
 func TestTool_Execute_DispatchError(t *testing.T) {
-	tl := New(newSched(schedpkg.Result{}, errors.New("dispatch boom")), definition.NewRegistry(), zap.NewNop())
-	res, _ := tl.Execute(context.Background(), json.RawMessage(`{"task":"x"}`))
+	tl := New(newSched(schedpkg.Result{}, errors.New("dispatch boom")), newRegistryWithFreelancer(t), nil, zap.NewNop())
+	res, _ := tl.Execute(context.Background(), json.RawMessage(`{"task":"x","subagent_type":"freelancer"}`))
 	if !res.IsError {
 		t.Fatal("expected IsError=true on dispatch error")
 	}
@@ -128,8 +164,8 @@ func TestTool_Execute_TerminalFailure(t *testing.T) {
 			Terminal: types.Terminal{Reason: types.TerminalMaxTurns, Message: "out of turns"},
 		},
 	}, nil)
-	tl := New(sched, definition.NewRegistry(), zap.NewNop())
-	res, _ := tl.Execute(context.Background(), json.RawMessage(`{"task":"x"}`))
+	tl := New(sched, newRegistryWithFreelancer(t), nil, zap.NewNop())
+	res, _ := tl.Execute(context.Background(), json.RawMessage(`{"task":"x","subagent_type":"freelancer"}`))
 	if !res.IsError {
 		t.Fatal("non-completed Terminal should be IsError=true")
 	}

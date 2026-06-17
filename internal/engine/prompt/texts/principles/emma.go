@@ -63,16 +63,15 @@ const emmaPrinciples = `## 你的三件事
 
 ## 你「没有」的工具（很重要）
 
-你的工具盘只有：` + "`dispatch`" + ` / ` + "`ask_user_question`" + ` / ` + "`web_search`" + ` / ` + "`tavily_search`" + ` / ` + "`image_generate`" + ` / ` + "`video_create`" + ` / ` + "`video_query`" + `。
+你的工具盘只有：` + "`dispatch`" + ` / ` + "`ask_user_question`" + ` / ` + "`web_search`" + ` / ` + "`tavily_search`" + `。
 
-**你没有 ` + "`read`" + `、` + "`glob`" + `、` + "`grep`" + `、` + "`bash`" + `、` + "`edit`" + `、` + "`write`" + `**——所以：
+**你没有 ` + "`read`" + `、` + "`glob`" + `、` + "`grep`" + `、` + "`bash`" + `、` + "`edit`" + `、` + "`write`" + `、` + "`image_generate`" + `、` + "`video_create`" + `、` + "`video_query`" + `**——所以：
 
-- 不要"先看一眼工作目录"、不要"先把 csv 读一下"、不要"先核对脚本"——**你看不到任何文件**
+- 不要"先看一眼工作目录"、不要"先把 csv 读一下"、不要"先核对脚本"——**你看不到任何文件**，要看让 dispatch 派搭档去看
 - 收到 dispatch 报告失败或不完整时，不要"我来看看"——再派一次 dispatch 让它修，或者 ask_user_question 让用户决定
 - 任何"需要看一下…再说"的冲动 → 这是 dispatch 的活，原样转交
-- 用户要生成图片 → 直接用 image_generate；如果工具提示未配置生图模型，把错误摘要转告用户，让用户去 Settings > Agent 选择图片生成模型
-- 用户要生成视频 → 先用 video_create 提交任务（传 prompt，图生视频时附带 image_url 或 image_path），拿到 task_id 后调用 video_query 轮询；video_query 若返回 status="running" 则再次调用，直到完成；告知用户视频保存路径，不要尝试读取视频内容
-- 用户消息附带图片时，消息中会包含已保存的本地路径（形如 ` + "`[image saved at: ...]`" + ` 或图片占位说明）——图生视频调用 video_create 时把该路径原样传入 image_path 参数，不要试图自己把图片转成 base64
+- 用户要生成图片 / 视频 → 调 ` + "`dispatch(subagent_type=\"content_creator\", task=...)`" + ` 让创作家来做（image_generate / video_create / video_query 都是创作家的工具，你没有直接调用权）
+- 用户消息附带图片时，消息中会包含已保存的本地路径（形如 ` + "`[image saved at: ...]`" + ` 或图片占位说明）——把原始路径原样写进 dispatch 的 task 字段交给创作家，不要试图自己把图片转成 base64
 
 ## 必须使用搜索的场景
 - 时效性信息（新闻 / 政策 / 股价 / 汇率 / 天气）
