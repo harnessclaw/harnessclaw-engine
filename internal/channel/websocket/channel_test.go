@@ -656,6 +656,12 @@ func TestChannel_ToolResultUsesFrameSessionID(t *testing.T) {
 		"tool_use_id": "tooluse_browser",
 		"status":      "success",
 		"output":      "ok",
+		"metadata": map[string]any{
+			"session_id":                 "browser_session_123",
+			"active_tab_id":              "tab_1",
+			"agent_browser_session_name": "harnessclaw-browser-browser_session_123",
+			"cdp_endpoint":               "ws://127.0.0.1:9222/devtools/page/1",
+		},
 	})
 
 	deadline := time.After(time.Second)
@@ -667,6 +673,12 @@ func TestChannel_ToolResultUsesFrameSessionID(t *testing.T) {
 		if ready {
 			if sessionID != "sess_await" {
 				t.Fatalf("IncomingMessage.SessionID = %q, want sess_await", sessionID)
+			}
+			if got.Metadata["cdp_endpoint"] != "ws://127.0.0.1:9222/devtools/page/1" {
+				t.Fatalf("tool result metadata not preserved: %#v", got.Metadata)
+			}
+			if got.Metadata["agent_browser_session_name"] != "harnessclaw-browser-browser_session_123" {
+				t.Fatalf("tool result session metadata not preserved: %#v", got.Metadata)
 			}
 			return
 		}

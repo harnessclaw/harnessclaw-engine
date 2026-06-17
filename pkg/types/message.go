@@ -114,21 +114,22 @@ type IncomingMessage struct {
 // fields describe where to find the data (local path, remote URL, or inline
 // base64).
 type IncomingContentBlock struct {
-	Type      string `json:"type"`                 // "text", "image", "file"
-	Text      string `json:"text,omitempty"`       // for type=text
-	MIMEType  string `json:"mime_type,omitempty"`  // e.g. "image/png", "text/csv"
-	Path      string `json:"path,omitempty"`       // local filesystem path
-	URL       string `json:"url,omitempty"`        // remote URL
-	Data      string `json:"data,omitempty"`       // base64-encoded inline data
+	Type     string `json:"type"`                // "text", "image", "file"
+	Text     string `json:"text,omitempty"`      // for type=text
+	MIMEType string `json:"mime_type,omitempty"` // e.g. "image/png", "text/csv"
+	Path     string `json:"path,omitempty"`      // local filesystem path
+	URL      string `json:"url,omitempty"`       // remote URL
+	Data     string `json:"data,omitempty"`      // base64-encoded inline data
 }
 
 // ToolResultPayload carries the result of client-side tool execution.
 type ToolResultPayload struct {
-	ToolUseID    string `json:"tool_use_id"`
-	Status       string `json:"status"`        // success, error, denied, timeout, cancelled
-	Output       string `json:"output,omitempty"`
-	ErrorCode    string `json:"error_code,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
+	ToolUseID    string         `json:"tool_use_id"`
+	Status       string         `json:"status"` // success, error, denied, timeout, cancelled
+	Output       string         `json:"output,omitempty"`
+	ErrorCode    string         `json:"error_code,omitempty"`
+	ErrorMessage string         `json:"error_message,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
 }
 
 // Usage tracks token consumption for a single LLM call.

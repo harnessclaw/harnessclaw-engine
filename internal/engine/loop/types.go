@@ -12,9 +12,9 @@ import (
 	"go.uber.org/zap"
 
 	"harnessclaw-go/internal/engine/compact"
-	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/engine/loop/toolexec"
 	"harnessclaw-go/internal/engine/permission"
+	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/tools"
@@ -139,6 +139,12 @@ type Hooks struct {
 	// OnTurnComplete. Use for inter-round signalling (e.g. emma's
 	// NextRoundThinking event).
 	OnToolsDispatched func(turn int, calls []types.ToolCall, results []types.ToolResult)
+
+	// OnToolResult fires as each ordered dispatch segment produces a
+	// result, before later segments run. Use for same-turn dependencies
+	// where a client-routed tool result must update private state before
+	// a following server-side tool executes.
+	OnToolResult func(turn int, call types.ToolCall, result types.ToolResult)
 }
 
 // LLMResponseSnapshot is what the loop hands to Hooks.OnLLMResponse. It
