@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"harnessclaw-go/internal/config"
+	"harnessclaw-go/internal/tools"
 )
 
 func enabledCfg() config.ToolConfig {
@@ -129,21 +130,109 @@ func TestExecuteWriteContent(t *testing.T) {
 	}
 }
 
-func TestExecuteRequiresExistingDir(t *testing.T) {
+// TestExecute_AutoMkdir_WithinTaskDir 验证白名单内（task_dir 子树下）的
+// 写入会自动创建父目录。task_dir = {SessionRoot}/tasks/{TaskID}。
+func TestExecute_AutoMkdir_WithinTaskDir(t *testing.T) {
+	ft := New(enabledCfg())
+	sessionRoot := t.TempDir()
+	taskID := "t-abc"
+	taskDir := filepath.Join(sessionRoot, "tasks", taskID)
+	path := filepath.Join(taskDir, "sub", "deep", "file.md") // 嵌套不存在的目录
+
+	scope := tool.AgentScope{
+		SessionRoot: sessionRoot,
+		TaskID:      taskID,
+	}
+	ctx := tool.WithAgentScope(context.Background(), scope)
+
+	input := json.RawMessage(`{"file_path":"` + path + `","content":"hello"}`)
+	result, err := ft.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success (auto-mkdir within task_dir), got error: %s", result.Content)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back failed: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Errorf("file content = %q", string(got))
+	}
+}
+
+// TestExecute_RejectsOutsideTaskDir 验证白名单外的路径维持"父目录必须
+// 已存在"约束。这是沙箱保护：LLM 写错路径不应在任意位置 mkdir。
+func TestExecute_RejectsOutsideTaskDir(t *testing.T) {
+	ft := New(enabledCfg())
+	sessionRoot := t.TempDir()
+	outsideRoot := t.TempDir() // 完全独立的目录
+	taskID := "t-abc"
+	path := filepath.Join(outsideRoot, "nonexistent", "file.md") // task_dir 之外
+
+	scope := tool.AgentScope{
+		SessionRoot: sessionRoot,
+		TaskID:      taskID,
+	}
+	ctx := tool.WithAgentScope(context.Background(), scope)
+
+	input := json.RawMessage(`{"file_path":"` + path + `","content":"x"}`)
+	result, err := ft.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error when writing outside task_dir to nonexistent parent")
+	}
+	if !strings.Contains(result.Content, "does not exist") {
+		t.Errorf("error should mention dir not existing, got: %s", result.Content)
+	}
+	// 验证没在 outsideRoot 下偷偷建目录
+	if _, statErr := os.Stat(filepath.Dir(path)); statErr == nil {
+		t.Error("parent dir should NOT have been created outside task_dir")
+	}
+}
+
+// TestExecute_NoScopeFallsBackToStrict 验证没 AgentScope 的 ctx（legacy 路径 /
+// 单元测试默认 ctx）走严格分支：父目录必须已存在。
+func TestExecute_NoScopeFallsBackToStrict(t *testing.T) {
 	ft := New(enabledCfg())
 	dir := t.TempDir()
-	path := filepath.Join(dir, "sub", "dir", "test.txt")
+	path := filepath.Join(dir, "sub", "deep", "test.txt")
 
-	input := json.RawMessage(`{"file_path":"` + path + `","content":"nested"}`)
+	input := json.RawMessage(`{"file_path":"` + path + `","content":"x"}`)
 	result, err := ft.Execute(context.Background(), input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.IsError {
-		t.Error("expected error when directory does not exist")
+		t.Error("expected error when no AgentScope in ctx and parent missing")
 	}
-	if !strings.Contains(result.Content, "does not exist") {
-		t.Errorf("error message should mention directory does not exist, got: %s", result.Content)
+}
+
+// TestExecute_PrefixBoundaryDoesNotLeak 验证白名单匹配做的是路径段比较，
+// 而非字符串前缀比较 —— "/foo/tasks/t1-evil" 不能命中 "/foo/tasks/t1"。
+func TestExecute_PrefixBoundaryDoesNotLeak(t *testing.T) {
+	ft := New(enabledCfg())
+	sessionRoot := t.TempDir()
+	taskID := "t1"
+	// 构造一个跟 task_dir 同前缀但不同子目录的 evil 路径
+	evilPath := filepath.Join(sessionRoot, "tasks", "t1-evil", "deep", "file.md")
+
+	scope := tool.AgentScope{
+		SessionRoot: sessionRoot,
+		TaskID:      taskID,
+	}
+	ctx := tool.WithAgentScope(context.Background(), scope)
+
+	input := json.RawMessage(`{"file_path":"` + evilPath + `","content":"x"}`)
+	result, err := ft.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error: t1-evil sibling must NOT be treated as within task_dir t1")
 	}
 }
 
