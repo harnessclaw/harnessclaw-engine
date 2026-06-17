@@ -1,6 +1,31 @@
-// Package promotetool implements the promote tool — L2's "this is a final
-// deliverable, surface it to the user" action. Uses cp (not mv): source is
-// frozen by the same call, so the two copies never diverge.
+// Package promotetool implements the promote tool — emma's "this sub-agent
+// output is good enough for the user, lift it to deliverables/" action.
+//
+// Workflow:
+//
+//	sub-agent: write artifacts → meta_write → submit_task_result
+//	   ↓ (artifacts stay in tasks/t-xxx/)
+//	emma: dispatch returns metadata.task_id + outputs[]
+//	   ↓ (emma judges quality)
+//	emma: promote({task_id, promotions: [{source, as?}]})
+//	   ↓
+//	   deliverables/report.md   (默认保持原名)
+//	   ↓
+//	emma tells user "成品在 deliverables/report.md"
+//
+// Design notes:
+//   - Caller: emma main agent (not sub-agent). Sub-agents only know about
+//     their own task_dir; emma is the curator deciding which outputs are
+//     user-facing.
+//   - Pure file operation: no plan.json mutation, no meta.json read. The
+//     legacy plan-mode coupling (task registration / frozen flag /
+//     PlanWriter) was removed when emma started dispatching L3 directly.
+//   - **Filename is user-facing**: 默认保持源文件名 (报告就叫 report.md);
+//     deliverables/ 下同名冲突时 promote 报错让 LLM 自己起一个可读性的
+//     新名 (例如 report_v2.md / report_q4_2026.md), 而不是机械加 task_id
+//     前缀污染用户视角的命名。
+//   - Uses cp not mv: source file remains in task_dir so retries / replays
+//     can read it again; deliverables/ holds the curated snapshot.
 package promotetool
 
 import (
@@ -10,8 +35,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
+	"strings"
 
+	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/tools"
 	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/pkg/types"
@@ -19,15 +45,19 @@ import (
 
 const ToolName = "promote"
 
+// PromoteTool 把 task_dir 的产物拷到 deliverables/。emma palette 工具。
 type PromoteTool struct {
 	tool.BaseTool
-	registry *workspace.PlanWriterRegistry
-	rootDir  string
-	events   chan<- types.EngineEvent // nil OK; tests/headless skip emit
+	rootDir string
+	events  chan<- types.EngineEvent // nil OK; tests/headless skip emit
 }
 
-func NewPromoteTool(registry *workspace.PlanWriterRegistry, rootDir string, events chan<- types.EngineEvent) *PromoteTool {
-	return &PromoteTool{registry: registry, rootDir: rootDir, events: events}
+// NewPromoteTool constructs a PromoteTool rooted at rootDir.
+//
+// 注：旧 NewPromoteTool 接受 PlanWriterRegistry 参数 (plan.json mutation)，
+// 现在 promote 不再操作 plan.json，参数砍到只剩 rootDir + events。
+func NewPromoteTool(rootDir string, events chan<- types.EngineEvent) *PromoteTool {
+	return &PromoteTool{rootDir: rootDir, events: events}
 }
 
 func (*PromoteTool) Name() string                  { return ToolName }
@@ -41,34 +71,48 @@ func (*PromoteTool) InputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"session_id": map[string]any{"type": "string"},
-			"task_id":    map[string]any{"type": "string"},
-			"mappings": map[string]any{
+			"task_id": map[string]any{
+				"type":        "string",
+				"description": "要 promote 的 sub-agent task_id（从 dispatch 工具返回 metadata 的 task_id 字段拿）。例：t-7f21d356-8ee",
+			},
+			"promotions": map[string]any{
 				"type": "array",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"output_index": map[string]any{"type": "integer", "minimum": 0},
-						"target_name":  map[string]any{"type": "string"},
+						"source": map[string]any{
+							"type":        "string",
+							"description": "task_dir 内的源文件名（basename，不含 \"/\"）。例：report.md / plan.md",
+						},
+						"as": map[string]any{
+							"type":        "string",
+							"description": "可选。deliverables/ 下的目标文件名（basename）。**默认保持源文件名 (推荐)**；只有当 deliverables/ 下已经有同名文件、需要避免覆盖时，才显式起一个**有可读性、用户能理解**的新名，例如：report_v2.md / q4_sales_report.md / design_oauth_2026-06-17.md。绝不要起 file_1.md / output_a.md 这种没语义的占位名。",
+						},
 					},
-					"required": []string{"output_index", "target_name"},
+					"required": []string{"source"},
 				},
-				"minItems": 1,
+				"minItems":    1,
+				"description": "要 promote 的文件列表。默认每项保持源文件名；同名冲突时通过 as 起一个用户能理解的新名。",
 			},
 		},
-		"required": []string{"session_id", "task_id", "mappings"},
+		"required": []string{"task_id", "promotions"},
 	}
 }
 
 type input struct {
-	SessionID string    `json:"session_id"`
-	TaskID    string    `json:"task_id"`
-	Mappings  []mapping `json:"mappings"`
+	TaskID     string      `json:"task_id"`
+	Promotions []promotion `json:"promotions"`
 }
 
-type mapping struct {
-	OutputIndex int    `json:"output_index"`
-	TargetName  string `json:"target_name"`
+type promotion struct {
+	Source string `json:"source"`
+	As     string `json:"as,omitempty"`
+}
+
+// promotedItem 是单个 promote 文件的结果，返回给 emma 的 metadata 里。
+type promotedItem struct {
+	Source string `json:"source"`
+	Path   string `json:"path"`
 }
 
 func (t *PromoteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
@@ -76,122 +120,96 @@ func (t *PromoteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult("invalid input: " + err.Error()), nil
 	}
-
-	// Fall back to ctx-injected SessionRoot when the LLM didn't supply
-	// session_id (consistent with plan_read / plan_update / meta_write
-	// / submit_task_result). session_id is the last path component of
-	// {rootDir}/session/{sessionID}.
-	if in.SessionID == "" {
-		if scope, ok := tool.AgentScopeFromCtx(ctx); ok && scope.SessionRoot != "" {
-			in.SessionID = filepath.Base(scope.SessionRoot)
-		}
+	if strings.TrimSpace(in.TaskID) == "" {
+		return errResult("task_id is required"), nil
 	}
-	if in.SessionID == "" {
-		return errResult("session_id missing: framework did not inject SessionRoot via ctx — engine configuration error"), nil
+	if len(in.Promotions) == 0 {
+		return errResult("promotions must contain at least one entry"), nil
 	}
 
-	// PreCheck stage — read meta + plan, validate every mapping before any
-	// filesystem mutation. Cheaper to refuse here than to copy-then-rollback.
-	meta, err := loadMeta(t.rootDir, in.SessionID, in.TaskID)
-	if err != nil {
-		return errResult("load meta: " + err.Error()), nil
+	// session_id 从 ctx 自取 —— emma 主路径会注入 RootSessionID
+	// (emma/core.go ProcessMessage)。LLM 不应该传 session_id, 也没法传对。
+	sessionID, ok := sessionstats.RootSessionIDFromCtx(ctx)
+	if !ok || sessionID == "" {
+		return errResult("session_id missing: framework did not inject RootSessionID via ctx — engine configuration error"), nil
 	}
-	plan, err := loadPlan(t.rootDir, in.SessionID)
-	if err != nil {
-		return errResult("load plan: " + err.Error()), nil
+	if t.rootDir == "" {
+		return errResult("rootDir not configured — promote disabled"), nil
 	}
-	task, ok := plan.Tasks[in.TaskID]
-	if !ok {
-		return errResult(fmt.Sprintf("task %s not found in plan", in.TaskID)), nil
+
+	taskDir := workspace.TaskDir(t.rootDir, sessionID, in.TaskID)
+	if _, err := os.Stat(taskDir); err != nil {
+		return errResult(fmt.Sprintf("task_dir %s not accessible: %v (did the sub-agent run yet?)", taskDir, err)), nil
 	}
-	if task.Frozen {
-		return errResult(fmt.Sprintf("task %s already promoted (frozen); promote is single-shot", in.TaskID)), nil
+
+	// PreCheck stage —— 校验每个 promotion 合法 + 源文件存在 + 目标不重名。
+	// 预检失败不动文件系统，让 LLM 一次性看到所有问题再纠正。
+	deliverDir := workspace.DeliverablesDir(t.rootDir, sessionID)
+	if err := os.MkdirAll(deliverDir, 0o755); err != nil {
+		return errResult("create deliverables dir: " + err.Error()), nil
 	}
-	seen := map[int]bool{}
+
+	type plan struct{ src, dst, dstBase string }
+	plans := make([]plan, 0, len(in.Promotions))
+	seenSource := map[string]bool{}
 	seenTarget := map[string]bool{}
-	deliverDir := workspace.DeliverablesDir(t.rootDir, in.SessionID)
-	for _, m := range in.Mappings {
-		if m.OutputIndex < 0 || m.OutputIndex >= len(meta.Outputs) {
-			return errResult(fmt.Sprintf("output_index %d out of range [0,%d)", m.OutputIndex, len(meta.Outputs))), nil
+	for _, p := range in.Promotions {
+		// source 校验：必填 + basename only
+		if err := validateBasename(p.Source); err != nil {
+			return errResult(fmt.Sprintf("source %q invalid: %v", p.Source, err)), nil
 		}
-		if seen[m.OutputIndex] {
-			return errResult(fmt.Sprintf("duplicate output_index %d", m.OutputIndex)), nil
+		if seenSource[p.Source] {
+			return errResult(fmt.Sprintf("duplicate source %q in one promote call", p.Source)), nil
 		}
-		seen[m.OutputIndex] = true
-		if seenTarget[m.TargetName] {
-			return errResult(fmt.Sprintf("duplicate target_name %q", m.TargetName)), nil
+		seenSource[p.Source] = true
+
+		// as 校验：可选，给了就要合法
+		dstName := p.Source
+		if p.As != "" {
+			if err := validateBasename(p.As); err != nil {
+				return errResult(fmt.Sprintf("as %q invalid: %v", p.As, err)), nil
+			}
+			dstName = p.As
 		}
-		seenTarget[m.TargetName] = true
-		src := meta.Outputs[m.OutputIndex].Path
+		if seenTarget[dstName] {
+			return errResult(fmt.Sprintf("duplicate target name %q in one promote call (两条 promotion 指向同一目标名)", dstName)), nil
+		}
+		seenTarget[dstName] = true
+
+		src := filepath.Join(taskDir, p.Source)
 		if _, err := os.Stat(src); err != nil {
 			return errResult(fmt.Sprintf("source %s not accessible: %v", src, err)), nil
 		}
-		dst := filepath.Join(deliverDir, m.TargetName)
+		dst := filepath.Join(deliverDir, dstName)
 		if _, err := os.Stat(dst); err == nil {
-			return errResult(fmt.Sprintf("target %s already exists; pick a different target_name", dst)), nil
+			return errResult(fmt.Sprintf(
+				"deliverables/%s 已存在 — 同名冲突。请在 promotions 里给这一项加 \"as\" 字段，起一个**用户能理解、有可读性后缀**的新名（例：report_v2.md / q4_sales_report.md / design_oauth_2026-06-17.md），不要用 file_1.md / output_a.md 这种没语义的占位名。",
+				dstName,
+			)), nil
 		}
+		plans = append(plans, plan{src: src, dst: dst, dstBase: dstName})
 	}
 
-	// Copy stage — io.Copy each mapping. Track copied files so PlanWriter
-	// failure can roll them back atomically.
+	// Copy stage —— 逐个拷贝。任一失败就 rollback 已拷的，文件系统保持
+	// "全成功 or 全不动" 的原子性。
 	var copied []string
 	rollback := func() {
 		for _, p := range copied {
 			_ = os.Remove(p)
 		}
 	}
-	for _, m := range in.Mappings {
-		src := meta.Outputs[m.OutputIndex].Path
-		dst := filepath.Join(deliverDir, m.TargetName)
-		if err := copyFile(src, dst); err != nil {
+	promoted := make([]promotedItem, 0, len(plans))
+	for _, p := range plans {
+		if err := copyFile(p.src, p.dst); err != nil {
 			rollback()
-			return errResult(fmt.Sprintf("copy %s → %s: %v", src, dst, err)), nil
+			return errResult(fmt.Sprintf("copy %s → %s: %v", p.src, p.dst, err)), nil
 		}
-		copied = append(copied, dst)
+		copied = append(copied, p.dst)
+		promoted = append(promoted, promotedItem{Source: p.src, Path: p.dst})
 	}
 
-	// PlanWriter mutation — freeze task + append Deliverable entries. If
-	// this fails (e.g. plan.json corrupted between PreCheck and now), we
-	// roll back the copied files so the filesystem stays consistent with
-	// the unchanged plan.
-	if t.registry == nil {
-		rollback()
-		return errResult("PlanWriterRegistry not configured — promote cannot mutate plan.json"), nil
-	}
-	w := t.registry.Get(in.SessionID)
-	if w == nil {
-		rollback()
-		return errResult(fmt.Sprintf("no PlanWriter for session %q — has the session been bootstrapped?", in.SessionID)), nil
-	}
-	now := time.Now().UTC()
-	err = w.Apply(ctx, func(p *workspace.Plan) error {
-		task, ok := p.Tasks[in.TaskID]
-		if !ok {
-			return fmt.Errorf("task %s vanished from plan", in.TaskID)
-		}
-		if task.Frozen {
-			return fmt.Errorf("task %s already frozen", in.TaskID)
-		}
-		task.Frozen = true
-		for _, m := range in.Mappings {
-			p.Deliverables = append(p.Deliverables, workspace.DeliverableEntry{
-				Path:         "deliverables/" + m.TargetName,
-				PromotedFrom: meta.Outputs[m.OutputIndex].Path,
-				PromotedAt:   now,
-			})
-		}
-		return nil
-	})
-	if err != nil {
-		rollback()
-		return errResult("plan update: " + err.Error()), nil
-	}
-
-	// Best-effort Deliverable events. Constructor channel wins for tests;
-	// production callers leave it nil and we fall back to the per-session
-	// event channel attached to ctx by ToolExecutor. Non-blocking — UI can
-	// also recover from plan.json on reconnect, so a dropped event is not
-	// load-bearing.
+	// 发 Deliverable 事件 —— UI 前端收到后可在 deliverables 区显示新成品。
+	// 非阻塞 (best-effort)，event channel 满或缺失都不影响 promote 完成。
 	out := t.events
 	if out == nil {
 		if ch, ok := tool.GetEventOut(ctx); ok {
@@ -199,45 +217,52 @@ func (t *PromoteTool) Execute(ctx context.Context, raw json.RawMessage) (*types.
 		}
 	}
 	if out != nil {
-		for _, m := range in.Mappings {
-			dst := filepath.Join(deliverDir, m.TargetName)
+		for _, item := range promoted {
 			select {
 			case out <- types.EngineEvent{
-				Type:        types.EngineEventDeliverable,
-				Deliverable: &types.Deliverable{FilePath: dst, ByteSize: int(safeSize(dst))},
+				Type: types.EngineEventDeliverable,
+				Deliverable: &types.Deliverable{
+					FilePath: item.Path,
+					ByteSize: int(safeSize(item.Path)),
+				},
 			}:
 			default:
 			}
 		}
 	}
 
+	body, _ := json.Marshal(struct {
+		Status    string         `json:"status"`
+		TaskID    string         `json:"task_id"`
+		Promoted  []promotedItem `json:"promoted"`
+	}{
+		Status:   "promoted",
+		TaskID:   in.TaskID,
+		Promoted: promoted,
+	})
 	return &types.ToolResult{
-		Content: fmt.Sprintf("promoted %d file(s) for task %s; task is now frozen", len(in.Mappings), in.TaskID),
+		Content: string(body),
+		Metadata: map[string]any{
+			"task_id":  in.TaskID,
+			"promoted": promoted,
+		},
 	}, nil
 }
 
-func loadMeta(root, sid, tid string) (*workspace.Meta, error) {
-	b, err := os.ReadFile(workspace.MetaPath(root, sid, tid))
-	if err != nil {
-		return nil, err
+// validateBasename 拒绝 "/" / ".." / 绝对路径 / 隐藏文件等。source 和 as
+// 都必须是 basename 形式，防 LLM 写 "../../etc/passwd" 这种越界访问，
+// 也防 promote 在 deliverables/ 下创建意外子目录。
+func validateBasename(f string) error {
+	if strings.TrimSpace(f) == "" {
+		return fmt.Errorf("empty")
 	}
-	var m workspace.Meta
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil, err
+	if strings.ContainsAny(f, "/\\") {
+		return fmt.Errorf("must be a basename without path separator")
 	}
-	return &m, nil
-}
-
-func loadPlan(root, sid string) (*workspace.Plan, error) {
-	b, err := os.ReadFile(workspace.PlanPath(root, sid))
-	if err != nil {
-		return nil, err
+	if f == "." || strings.Contains(f, "..") {
+		return fmt.Errorf("path traversal not allowed")
 	}
-	var p workspace.Plan
-	if err := json.Unmarshal(b, &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
+	return nil
 }
 
 func copyFile(src, dst string) error {
@@ -270,10 +295,31 @@ func errResult(msg string) *types.ToolResult {
 	return &types.ToolResult{Content: msg, IsError: true, ErrorType: types.ToolErrorInvalidInput}
 }
 
-const description = `把 task 的产出文件 promote 到 deliverables/，即向用户曝光为成品。仅 L2 调用。
+const description = `把 sub-agent 的产出文件 promote 到 deliverables/，让产物变成用户可见的成品。emma 调用 —— 在收到 dispatch 返回的 task_id + outputs 后, 评估质量合理 → 调本工具拷贝到 deliverables/。
 
-- 一次调用支持多个 mapping（{output_index, target_name}）。
-- 用 cp 不是 mv：源文件保留在 tasks/ 不动。
-- 调用即整个 task frozen（不可再 promote、不可再改 status）。
-- target_name 在 deliverables/ 下必须不重名。
-- 失败回滚：任一阶段失败，已 cp 的目标文件被 os.Remove 清理。`
+入参:
+- task_id: 来自 dispatch 工具返回的 metadata.task_id (例如 "t-7f21d356-8ee")
+- promotions: 要 promote 的文件列表 (一次调用支持多项), 每项是 {source, as?}
+  - source: task_dir 内的源文件名 basename (例: report.md)
+  - as: 可选, deliverables/ 下的目标文件名 basename; **默认保持源文件名**, 只在同名冲突时才显式指定
+
+命名策略 (重要):
+- **默认保持源文件名** —— deliverables/ 是用户视角的文件夹, 名字直接影响用户理解。"report.md" 比 "t-abc__report.md" 友好得多, 默认不要加任何前缀。
+- **同名冲突时本工具会报错**, 不会自动覆盖也不会自动加前缀。你看到 "deliverables/<name> 已存在" 的错误后, 在 promotions 那一项加上 "as" 字段, 起一个**用户能看懂、有可读性后缀**的新名字。可选风格:
+  - 版本号: report_v2.md / design_v3.md
+  - 日期: report_2026-06-17.md
+  - 用途 / 主题: q4_sales_report.md / design_oauth.md / email_for_intern.md
+- **不要起没语义的名字**: file_1.md / output_a.md / copy_of_report.md / new_report.md 都是反例。
+
+行为:
+- session_id 由 framework 通过 ctx 注入, **你不需要传**。
+- 一次调用支持多项 promotion; 任一失败回滚全部已拷贝项, 文件系统保持原子性。
+- 用 cp 不是 mv: 源文件保留在 tasks/ 内, 重试 / 重放仍能访问。
+- 重复 promote 同一文件 (同 source 同目标名) 会被拒。
+
+调用时机:
+- dispatch 返回 SyncOutcome 后, 你已读 outputs[].path / summary 觉得**质量合格**且**值得给用户看** → promote
+- 质量不合格 → 再派一次让搭档修, **不要** promote 半成品
+- dispatch 是纯文本回报 / 仅状态汇报 (无文件产物) → 不需要 promote
+
+调用之后, 给用户的回复用 deliverables/<file> 路径 (不带技术前缀), 而不是 tasks/ 的内部路径。`

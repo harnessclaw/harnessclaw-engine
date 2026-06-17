@@ -129,6 +129,9 @@ type Option func(*Engine)
 //   - dispatch                    → THE delegation entry point. emma 通过
 //     dispatch(subagent_type=...) 派给 plan / freelancer / content_creator
 //     等团队 agent；图片 / 视频生成走 content_creator 而非直接调工具。
+//   - promote                     → curation gate. dispatch 返回后 emma
+//     评估产物质量, 合格的调 promote 把 task_dir 内文件拷到
+//     deliverables/, 给用户的回复用 deliverables/ 路径。
 //   - web_search / tavily_search  → emma's own *light* fact-finding for
 //     context gathering before dispatching.
 //   - ask_user_question           → clarification when the request is
@@ -174,6 +177,7 @@ func DefaultEmmaConfig() EmmaConfig {
 			"web_search",
 			"tavily_search",
 			"ask_user_question",
+			"promote",
 		},
 		// MaxTurns = 0 → loop.Run 视为无上限，emma 主 agent 不被 turn 数掐死。
 		// emma 是用户对话入口，可能要多次澄清 + 多次 dispatch + 反馈，硬上限
@@ -199,6 +203,7 @@ func WithEmmaConfig(cfg EmmaConfig) Option {
 			"web_search",
 			"tavily_search",
 			"ask_user_question",
+			"promote",
 		}
 	}
 	// 注意：不再 fallback 到 15 —— emma 默认走 MaxTurns=0（无限），

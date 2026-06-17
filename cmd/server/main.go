@@ -232,7 +232,7 @@ func main() {
 		{workspaceRootDir != "", func() tool.Tool { return plantool.NewPlanUpdateTool(planWriterReg, workspaceRootDir) }},
 		{workspaceRootDir != "", func() tool.Tool { return plantool.NewPlanReadTool(workspaceRootDir) }},
 		{workspaceRootDir != "", func() tool.Tool { return metatool.NewMetaWriteTool(workspaceRootDir) }},
-		{workspaceRootDir != "", func() tool.Tool { return promotetool.NewPromoteTool(planWriterReg, workspaceRootDir, nil) }},
+		{workspaceRootDir != "", func() tool.Tool { return promotetool.NewPromoteTool(workspaceRootDir, nil) }},
 	}
 	for _, bt := range builtInTools {
 		if bt.enabled {
