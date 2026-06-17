@@ -7,23 +7,14 @@ import (
 	"harnessclaw-go/internal/workspace"
 )
 
-// EnsureTaskDir mkdir-Ps the per-task workspace directory the SeedPrompt
-// preamble advertises to the LLM. Without this the LLM is told "write
-// produce into {task_dir}" and the FIRST write/edit/bash call fails
-// with `directory does not exist; create it first` — the LLM then
-// burns turns shelling out `mkdir -p` before it can do anything
-// useful, and on bad days the recovery loop hangs the whole session.
+// 注：旧 EnsureTaskDir(cfg, rootDir) 已删 —— 之前在 dispatch sub-agent 启动
+// 前预 mkdir task_dir，导致只读 sub-agent（如纯调 web_search 后回报）也
+// 会在磁盘留空目录。改为 lazy 创建：write / edit / meta_write 工具在
+// 写入前自己 MkdirAll(filepath.Dir(path))，需要落盘的 sub-agent 自然
+// 触发；不落盘的不留垃圾目录。
 //
-// Idempotent (MkdirAll). No-op when rootDir / RootSessionID / TaskID
-// is missing — callers that don't know their per-task slot get the
-// session-level bootstrap from scheduler.Run's EnsureSession.
-func EnsureTaskDir(cfg *SpawnConfig, rootDir string) error {
-	if cfg == nil || rootDir == "" || cfg.RootSessionID == "" || cfg.TaskID == "" {
-		return nil
-	}
-	dir := workspace.TaskDir(rootDir, cfg.RootSessionID, cfg.TaskID)
-	return os.MkdirAll(dir, 0o755)
-}
+// 如果未来需要重新启用预创建（比如某些工具不便延迟），用
+// workspace.EnsureTaskDir(rootDir, sessionID, taskID) 这个 helper。
 
 // WorkspacePrelude returns a short, natural-language paragraph telling
 // a sub-agent where its work directory lives. Prepended to the user

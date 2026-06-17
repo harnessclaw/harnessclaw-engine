@@ -322,3 +322,46 @@ func TestRun_MaxTurnsHit(t *testing.T) {
 		t.Errorf("NumTurns = %d, want 2", res.NumTurns)
 	}
 }
+
+// 验证 MaxTurns=0 = unlimited 语义：loop 不会因 MaxTurns 退出，只会因
+// OnTurnComplete 返回 Terminate 退出。这是 emma 主 agent 的默认行为。
+func TestRun_UnlimitedTurnsTerminatesOnHookOnly(t *testing.T) {
+	store := memory.New()
+	mgr := session.NewManager(store, zap.NewNop(), time.Hour)
+	sess, _ := mgr.GetOrCreate(context.Background(), "t-unl", "ws", "u")
+	sess.AddMessage(types.Message{Role: types.RoleUser, Content: []types.ContentBlock{{Type: types.ContentTypeText, Text: "go"}}})
+
+	// Hook 在第 5 轮显式 terminate；如果 loop 因 MaxTurns=0 错把 0 当成
+	// 0-turn 上限提前退，就拿不到 5。
+	hook := func(snap loop.TurnSnapshot) loop.Decision {
+		if snap.Turn >= 5 {
+			return loop.Decision{Terminate: &types.Terminal{
+				Reason: types.TerminalCompleted, Turn: snap.Turn,
+			}}
+		}
+		return loop.Decision{}
+	}
+	out := make(chan types.EngineEvent, 64)
+	defer close(out)
+
+	res, err := loop.Run(context.Background(), &loop.Config{
+		Session: sess, SystemPrompt: "x",
+		Tools:    tool.NewToolPool(tool.NewRegistry(), nil, nil),
+		Provider: &fakeProviderSequence{},
+		Retryer:  retry.New(retry.DefaultConfig(), zap.NewNop()),
+		Logger:   zap.NewNop(),
+		MaxTurns: 0, MaxTokens: 100, ContextWindow: 200000,
+		Out: out, AgentID: "a-unl",
+		PermChecker:    permission.BypassChecker{},
+		OnTurnComplete: hook,
+	})
+	if err != nil {
+		t.Fatalf("Run with MaxTurns=0 should not error, got: %v", err)
+	}
+	if res.Terminal.Reason != types.TerminalCompleted {
+		t.Errorf("Terminal.Reason = %v, want TerminalCompleted (hook decided)", res.Terminal.Reason)
+	}
+	if res.NumTurns < 5 {
+		t.Errorf("NumTurns = %d, want >=5 (hook terminates at turn 5)", res.NumTurns)
+	}
+}

@@ -47,10 +47,14 @@ func (e *Engine) run(
 	// the Anthropic side.
 	sysPrompt := e.buildSystemPrompt(ctx, sess, sess.GetMessages())
 
-	// MaxTurns precedence: per-spawn MainAgentMaxTurns > MaxTurns.
-	maxTurns := cfg.MaxTurns
-	if cfg.MainAgentMaxTurns > 0 {
-		maxTurns = cfg.MainAgentMaxTurns
+	// MaxTurns 优先级：MainAgentMaxTurns 显式设置时一律采纳（含 0 = unlimited）；
+	// 完全未设置（< 0 这种"未触碰"语义）才走 Config.MaxTurns fallback。
+	//
+	// emma 默认 MainAgentMaxTurns=0 → 主 agent 不被 turn 掐死，loop.Run 把 0
+	// 视为无上限。要把 emma 改成有限 turn 的调用方显式传正数。
+	maxTurns := cfg.MainAgentMaxTurns
+	if cfg.MainAgentMaxTurns < 0 {
+		maxTurns = cfg.MaxTurns
 	}
 
 	// Artifact producer stamp — emma-side tools that produce artifacts

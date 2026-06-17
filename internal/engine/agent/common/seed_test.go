@@ -56,38 +56,19 @@ func TestSeedPrompt_NoTaskID_FallsBackToSessionRoot(t *testing.T) {
 	}
 }
 
-// TestEnsureTaskDir_CreatesPerTaskDir verifies the per-task workspace
-// dir gets created so the LLM's first write/edit doesn't fail with
-// `directory does not exist`. This was the root cause of the 11:51
-// "AI 散文" task hanging: write failed → LLM shelled out mkdir → next
-// LLM turn deadlocked. After this fix the dir is in place before the
-// LLM ever sees the SeedPrompt that advertises it.
-func TestEnsureTaskDir_CreatesPerTaskDir(t *testing.T) {
-	rootDir := t.TempDir()
-	cfg := &SpawnConfig{
-		RootSessionID: "sess_xyz",
-		TaskID:        "t-42",
-	}
-	if err := EnsureTaskDir(cfg, rootDir); err != nil {
-		t.Fatalf("EnsureTaskDir: %v", err)
-	}
-	expected := rootDir + "/session/sess_xyz/tasks/t-42"
-	info, err := os.Stat(expected)
-	if err != nil {
-		t.Fatalf("expected %s to exist, got %v", expected, err)
-	}
-	if !info.IsDir() {
-		t.Errorf("expected directory, got %v", info.Mode())
-	}
-}
+// 注：旧 TestEnsureTaskDir_CreatesPerTaskDir 和
+// TestEnsureTaskDir_NoOpOnMissingFields 已删 —— EnsureTaskDir 函数本身
+// 被废弃（task_dir 改为 lazy 由 write/edit/meta_write 工具内部创建）。
+//
+// ScanResidualFiles 相关测试仍保留，把 fixture mkdir 改成直接 os.MkdirAll。
 
 func TestScanResidualFiles_ListsFilesNonRecursive(t *testing.T) {
 	rootDir := t.TempDir()
 	cfg := &SpawnConfig{RootSessionID: "s1", TaskID: "t1"}
-	if err := EnsureTaskDir(cfg, rootDir); err != nil {
-		t.Fatalf("EnsureTaskDir: %v", err)
-	}
 	taskDir := rootDir + "/session/s1/tasks/t1"
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatalf("mkdir taskDir: %v", err)
+	}
 	if err := os.WriteFile(taskDir+"/gen.js", []byte("console.log('hi')"), 0o644); err != nil {
 		t.Fatalf("write gen.js: %v", err)
 	}
@@ -135,7 +116,7 @@ func TestScanResidualFiles_NilOnEmptyOrMissing(t *testing.T) {
 	// Existing dir but empty → nil (not empty slice — keeps the failure
 	// summary from rendering an empty section).
 	cfg := &SpawnConfig{RootSessionID: "s2", TaskID: "t2"}
-	_ = EnsureTaskDir(cfg, rootDir)
+	_ = os.MkdirAll(rootDir+"/session/s2/tasks/t2", 0o755)
 	if got := ScanResidualFiles(cfg, rootDir); got != nil {
 		t.Errorf("empty dir should yield nil, got %+v", got)
 	}
@@ -145,26 +126,3 @@ func TestScanResidualFiles_NilOnEmptyOrMissing(t *testing.T) {
 	}
 }
 
-func TestEnsureTaskDir_NoOpOnMissingFields(t *testing.T) {
-	rootDir := t.TempDir()
-	tests := []struct {
-		name string
-		cfg  *SpawnConfig
-	}{
-		{"nil cfg", nil},
-		{"empty rootSession", &SpawnConfig{TaskID: "t-1"}},
-		{"empty taskID", &SpawnConfig{RootSessionID: "s"}},
-	}
-	for _, c := range tests {
-		t.Run(c.name, func(t *testing.T) {
-			if err := EnsureTaskDir(c.cfg, rootDir); err != nil {
-				t.Errorf("unexpected error: %v", err)
-			}
-			// Nothing should have been created under rootDir.
-			entries, _ := os.ReadDir(rootDir)
-			if len(entries) != 0 {
-				t.Errorf("expected empty rootDir, got %d entries", len(entries))
-			}
-		})
-	}
-}

@@ -31,9 +31,11 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 	if cfg.OnTurnComplete == nil {
 		return nil, fmt.Errorf("loop.Run: OnTurnComplete required")
 	}
-	if cfg.MaxTurns <= 0 {
-		return nil, fmt.Errorf("loop.Run: MaxTurns must be > 0")
-	}
+	// MaxTurns <= 0 表示无上限 —— 主 agent（emma）的语义需要：
+	// emma 不被 turn 数掐死，只在用户取消 / 异常 / OnTurnComplete 返回
+	// Terminate 时才退出。sub-agent 仍然按各自 AgentDefinition.MaxTurns
+	// 走有限 turn（防止 LLM 失控 spin）。
+	unlimitedTurns := cfg.MaxTurns <= 0
 	if cfg.PermChecker == nil {
 		return nil, fmt.Errorf("loop.Run: PermChecker required")
 	}
@@ -49,7 +51,7 @@ func Run(ctx context.Context, cfg *Config) (*Result, error) {
 		threshold = defaultAutoCompactThreshold
 	}
 
-	for turn := 1; turn <= cfg.MaxTurns; turn++ {
+	for turn := 1; unlimitedTurns || turn <= cfg.MaxTurns; turn++ {
 		if err := ctx.Err(); err != nil {
 			res.Terminal = types.Terminal{
 				Reason: types.TerminalAbortedStreaming,
