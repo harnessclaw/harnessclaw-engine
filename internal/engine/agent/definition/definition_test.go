@@ -79,23 +79,8 @@ func TestAgentDefinitionRegistry_Names(t *testing.T) {
 	}
 }
 
-func TestAgentDefinitionRegistry_RegisterBuiltins(t *testing.T) {
-	reg := NewRegistry()
-	reg.RegisterBuiltins()
-
-	if reg.Get("plan") == nil {
-		t.Error("expected 'plan' builtin")
-	}
-	if reg.Get("freelancer") == nil {
-		t.Error("expected 'freelancer' builtin")
-	}
-	if reg.Get("plan_agent") == nil {
-		t.Error("expected 'plan_agent' builtin")
-	}
-	if reg.Get("plan_executor_agent") == nil {
-		t.Error("expected 'plan_executor_agent' builtin")
-	}
-}
+// Note: 内建 agent 的注册 + 内容断言已搬到 builtin/register_test.go ——
+// definition 包不再持有 RegisterBuiltins 方法，builtin 包负责 data + 注册。
 
 // --- Tier validation tests ---
 
@@ -217,14 +202,14 @@ func TestRenderSubAgentContract_RendersAllSections(t *testing.T) {
 	got := RenderSubAgentContract(def)
 
 	// L3 sub-agent contract intentionally focuses on what's L3-specific:
-	// no further dispatch + EscalateToPlanner exit. ArtifactWrite /
+	// no further dispatch + 诚实退出（status=failed）. ArtifactWrite /
 	// SubmitTaskResult / <summary> mechanics live in artifactsGuidance —
 	// don't assert them here, that's the redundancy we just trimmed.
 	for _, want := range []string{
 		"<sub-agent-contract>",
 		"</sub-agent-contract>",
 		"L3 sub-agent",
-		"escalate_to_planner",
+		"status: \"failed\"",
 		"writing / polishing", // skills joined
 		"output_schema",
 		"```json", // schema fenced code block
@@ -236,13 +221,12 @@ func TestRenderSubAgentContract_RendersAllSections(t *testing.T) {
 			t.Errorf("contract missing %q\nfull:\n%s", want, got)
 		}
 	}
-	// Inverse assertion: redundancy guard. If somebody re-adds these
-	// strings to <sub-agent-contract>, that means the duplication crept
-	// back in — Final Text contract / ArtifactWrite mechanics already live
-	// in artifactsGuidance.
+	// Inverse assertion: redundancy guard. ArtifactWrite 机制属于
+	// artifactsGuidance；这里只允许提"做不到时如何诚实退出"的 submit
+	// 调用（旧 escalate_to_planner 工具已删，必须在 contract 里教 LLM
+	// 怎么用 submit+status=failed 表达"我做不到"）。
 	for _, mustNotHave := range []string{
-		"submit_task_result", // belongs in artifactsGuidance, not here
-		"ArtifactWrite",      // ditto
+		"ArtifactWrite", // belongs in artifactsGuidance, not here
 	} {
 		if strings.Contains(got, mustNotHave) {
 			t.Errorf("contract redundantly mentions %q (lives in artifactsGuidance)", mustNotHave)
@@ -288,65 +272,6 @@ func TestListForPlanner_ExcludesCoordinators(t *testing.T) {
 	}
 }
 
-func TestFreelancer_BuiltinRegistration(t *testing.T) {
-	reg := NewRegistry()
-	reg.RegisterBuiltins()
-	def := reg.Get("freelancer")
-	if def == nil {
-		t.Fatal("freelancer builtin not registered")
-	}
-	if def.EffectiveTier() != TierSubAgent {
-		t.Errorf("Tier = %s, want sub_agent", def.EffectiveTier())
-	}
-	if len(def.OutputSchema) == 0 {
-		t.Error("OutputSchema must be set for TierSubAgent")
-	}
-	if def.IsTeamMember {
-		t.Error("freelancer must NOT be a team member (emma should not see it)")
-	}
-	// AllowedTools must contain the four skill self-management tools
-	wantTools := []string{"search_skill", "load_skill", "unload_skill", "list_loaded_skills"}
-	for _, w := range wantTools {
-		found := false
-		for _, a := range def.AllowedTools {
-			if a == w {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("AllowedTools missing %q", w)
-		}
-	}
-	// Must NOT contain "skill" tool — spec calls this out explicitly
-	for _, a := range def.AllowedTools {
-		if a == "skill" {
-			t.Error("freelancer AllowedTools should NOT contain Skill tool (use LoadSkill)")
-		}
-	}
-
-	// Regression: InputSchema must NOT require `task` because Task tool
-	// puts the task description in cfg.Prompt, not cfg.Inputs. Requiring
-	// it here would break every freelancer dispatch that includes
-	// candidate_skills (cfg.Inputs becomes non-empty → schema validates →
-	// finds no `task` → fails). See bug "input schema validation failed
-	// for freelancer: required field task is missing".
-	if req, ok := def.InputSchema["required"]; ok {
-		if arr, ok := req.([]string); ok {
-			for _, r := range arr {
-				if r == "task" {
-					t.Errorf("InputSchema.required must NOT contain %q — task text "+
-						"flows through cfg.Prompt not cfg.Inputs; this would break "+
-						"every dispatch with candidate_skills", r)
-				}
-			}
-		}
-	}
-	// Properties should still describe candidate_skills (for L2 to know
-	// the maxItems constraint).
-	if props, ok := def.InputSchema["properties"].(map[string]any); ok {
-		if _, hasCS := props["candidate_skills"]; !hasCS {
-			t.Error("InputSchema.properties should describe candidate_skills")
-		}
-	}
-}
+// TestFreelancer_BuiltinRegistration 移到 builtin/register_test.go ——
+// 该断言现在直接读 builtin.Freelancer 字面量 + RegisterAll 注册结果，
+// 不再依赖被删除的 (*Registry).RegisterBuiltins() 方法。

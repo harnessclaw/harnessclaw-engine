@@ -23,7 +23,6 @@ func BrowserAgentDefinition() *definition.AgentDefinition {
 			"agent_browser_command",
 			"browser_skill_reference",
 			"browser_agent_final_result",
-			"escalate_to_planner",
 		},
 		Skills:       []string{"browser", "web_extract"},
 		SystemPrompt: browserAgentPrompt,

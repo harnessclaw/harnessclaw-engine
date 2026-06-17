@@ -8,11 +8,11 @@ func getDescription() string {
 
 重要：除非有明确指示或你已确认专用工具不行，否则不要用本工具跑 ` + "`find`" + `、` + "`grep`" + `、` + "`cat`" + `、` + "`head`" + `、` + "`tail`" + `、` + "`sed`" + `、` + "`awk`" + `、` + "`echo`" + ` 这类命令。请改用专用工具——它们交互更友好、权限审核也更直观：
 
- - 找文件：用 Glob（不要 find / ls）
- - 找内容：用 Grep（不要 grep / rg）
- - 读文件：用 FileRead（不要 cat / head / tail）
- - 改文件：用 FileEdit（不要 sed / awk）
- - 写文件：用 FileWrite（不要 echo > / cat <<EOF）
+ - 找文件：用 ` + "`glob`" + `（不要 find / ls）
+ - 找内容：用 ` + "`grep`" + `（不要 grep / rg）
+ - 读文件：用 ` + "`read`" + `（不要 cat / head / tail）
+ - 改文件：用 ` + "`edit`" + `（不要 sed / awk）
+ - 写文件：用 ` + "`write`" + `（不要 echo > / cat <<EOF）
  - 输出文本：直接 assistant 输出（不要 echo / printf）
 
 虽然 Bash 也能干同样的事，但内置工具体验更好，也方便审核与授权。
@@ -38,5 +38,5 @@ func getDescription() string {
 
 # 路径作用域（重要）
 
-L3 sub-agent 通过 ReadScope/WriteScope 限制 FileRead/FileEdit/FileWrite 的可达路径，**Bash 不在该作用域校验之内**。请自觉只在本 task 目录及上游声明的 input_paths 下读写，不要 ` + "`rm`" + ` / ` + "`cp`" + ` / ` + "`>`" + ` 到其他 task 目录。越界由 L2 通过 plan.json 审计可追溯。`
+L3 sub-agent 通过 ReadScope/WriteScope 限制 ` + "`read`" + ` / ` + "`edit`" + ` / ` + "`write`" + ` 的可达路径，**Bash 不在该作用域校验之内**。请自觉只在本 task 目录及上游声明的 input_paths 下读写，不要 ` + "`rm`" + ` / ` + "`cp`" + ` / ` + "`>`" + ` 到其他 task 目录。越界由调度方审计可追溯。`
 }

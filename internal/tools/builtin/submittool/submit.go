@@ -222,8 +222,8 @@ func summaryFromResult(result map[string]any) string {
 	return string(body)
 }
 
-// utf8Len counts runes (not bytes). Shared with EscalateTool so both
-// "too long" checks treat Chinese / multibyte text consistently.
+// utf8Len counts runes (not bytes) for Chinese / multibyte-aware
+// length checks. Kept generic in case future fields need length caps.
 func utf8Len(s string) int {
 	n := 0
 	for range s {
@@ -245,15 +245,21 @@ func rejected(reason string) (*types.ToolResult, error) {
 	}, nil
 }
 
-const description = `通知 L2: "我已写完 meta.json + 所有 outputs[].path 声明的产物，请验收。"
+const description = `通知调度方: "我已写完 meta.json + 所有 outputs[].path 声明的产物，请验收。"
 
 - task_id: 自己的 task id（与 plan.json / meta.json.task_id 一致）。
 - meta_path: meta.json 的相对 sessionRoot 路径（典型形如 tasks/{task_id}/meta.json）。
 
-L2 收到后会读 meta.json 校验 summary 非空 + status + outputs 路径合法，然后 plan_update(status=done, summary_ref=meta_path)。
+task_id / meta_path 都由 framework 从 ctx 自取，**调用时不要传入参，传空 {} 即可**。
+
+调度方收到后会读 meta.json 校验 summary 非空 + status + outputs 路径合法，然后 plan_update(status=done, summary_ref=meta_path)。
 
 调用顺序：先 meta_write，再 submit_task_result。
 若 meta.json 还没写，本工具会因 ENOENT 拒绝；先写再交。
-完全不调本工具就 end_turn 时，L2 会兜底检查 meta.json 是否存在：在则视为完成；不在则视为失败按 D14 重试。
+完全不调本工具就 end_turn 时，调度方会兜底检查 meta.json 是否存在：在则视为完成；不在则视为失败重试。
 
-如任务在当前作用域内确实无法完成（缺关键输入 / 约束冲突 / 能力差距），改调 escalate_to_planner——那是"我做不到"的合法出口，不算失败。`
+**任务做不到时的合法退出**（缺关键输入 / 约束冲突 / 能力差距 / 撞死循环）：
+  1. meta_write({status: "failed", summary: "做不到的原因 + 建议下一步该怎么处理"})
+  2. submit_task_result({})
+
+这是诚实退出，不算失败。**不要硬写一个差产物冒充完成**，也不要原地空转撞 max_turns。`
