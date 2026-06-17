@@ -110,7 +110,7 @@ func newHTTPClient() *http.Client {
 
 func (*Tool) Name() string { return ToolName }
 func (*Tool) Description() string {
-	return "Generate images from a text prompt using configured image-generation models. Returns local file paths for generated images."
+	return "用文本 prompt 生成图片（同步），调用配置好的图片生成模型。返回生成图片的本地文件路径，图片已自动落到 task 目录下，不需要再 cp / mv 搬运。"
 }
 func (*Tool) IsReadOnly() bool              { return false }
 func (*Tool) SafetyLevel() tool.SafetyLevel { return tool.SafetyCaution }
