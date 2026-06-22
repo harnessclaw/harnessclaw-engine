@@ -103,8 +103,12 @@ func TestTool_Execute_SyncSuccess(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error: %+v", res)
 	}
-	if res.Content != "scheduler summary" {
-		t.Errorf("Content = %q", res.Content)
+	// Content 由 concatText(sync.Content) + framework 注入的 <dispatch-meta> 尾注组成。
+	if !strings.HasPrefix(res.Content, "scheduler summary") {
+		t.Errorf("Content should start with sub-agent text, got %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "<dispatch-meta>") || !strings.Contains(res.Content, "task_id: t-1") {
+		t.Errorf("Content should embed dispatch-meta with task_id, got %q", res.Content)
 	}
 	if sched.params == nil {
 		t.Fatal("Dispatch was not called")
@@ -154,6 +158,69 @@ func TestTool_Execute_DispatchError(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "dispatch boom") {
 		t.Errorf("Content = %q", res.Content)
+	}
+}
+
+func TestAppendDispatchMeta(t *testing.T) {
+	cases := []struct {
+		name         string
+		content      string
+		taskID       string
+		deliverables []types.Deliverable
+		want         string
+	}{
+		{
+			name:    "taskID only — no outputs",
+			content: "邮件写好了。",
+			taskID:  "t-ae15b37c-7d6",
+			want:    "邮件写好了。\n\n<dispatch-meta>\ntask_id: t-ae15b37c-7d6\n</dispatch-meta>",
+		},
+		{
+			name:    "taskID + outputs",
+			content: "done",
+			taskID:  "t-abc",
+			deliverables: []types.Deliverable{
+				{FilePath: "/workspace/session/sid/tasks/t-abc/report.md"},
+				{FilePath: "/workspace/session/sid/tasks/t-abc/data.csv"},
+			},
+			want: "done\n\n<dispatch-meta>\ntask_id: t-abc\noutputs:\n  - report.md\n  - data.csv\n</dispatch-meta>",
+		},
+		{
+			name:    "empty content still gets meta",
+			content: "",
+			taskID:  "t-xyz",
+			want:    "\n<dispatch-meta>\ntask_id: t-xyz\n</dispatch-meta>",
+		},
+		{
+			name:    "content already ends with newline — no double blank",
+			content: "done\n",
+			taskID:  "t-1",
+			want:    "done\n\n<dispatch-meta>\ntask_id: t-1\n</dispatch-meta>",
+		},
+		{
+			name:    "no taskID — no-op (defensive)",
+			content: "done",
+			taskID:  "",
+			want:    "done",
+		},
+		{
+			name:    "duplicate basenames deduped",
+			content: "x",
+			taskID:  "t-1",
+			deliverables: []types.Deliverable{
+				{FilePath: "/a/report.md"},
+				{FilePath: "/b/report.md"},
+			},
+			want: "x\n\n<dispatch-meta>\ntask_id: t-1\noutputs:\n  - report.md\n</dispatch-meta>",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := appendDispatchMeta(c.content, c.taskID, c.deliverables)
+			if got != c.want {
+				t.Errorf("appendDispatchMeta\ngot:  %q\nwant: %q", got, c.want)
+			}
+		})
 	}
 }
 

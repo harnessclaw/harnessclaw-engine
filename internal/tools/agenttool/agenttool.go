@@ -216,6 +216,12 @@ func (t *AgentTool) Execute(ctx context.Context, raw json.RawMessage) (*types.To
 		// 失败路径：Terminal 不是 completed 当作 error
 		isError := outcome.Terminal.Reason != "" && outcome.Terminal.Reason != types.TerminalCompleted
 		content := concatText(outcome.Content)
+		if !isError {
+			// 成功路径才在尾注追加 dispatch metadata。LLM 看到的 sub-agent
+			// 自由文本不一定提到 task_id（emma 凭空猜 → promote 失败），所以
+			// 把 task_id（必备）+ outputs basename（best-effort）显式拼出来。
+			content = appendDispatchMeta(content, string(res.TaskID), outcome.Deliverables)
+		}
 		if isError {
 			content = formatFailure(input, outcome)
 			t.logger.Warn("Task: sub-agent failed",
@@ -272,6 +278,68 @@ func concatText(blocks []types.ContentBlock) string {
 		}
 	}
 	return sb.String()
+}
+
+// appendDispatchMeta 在 sub-agent 自由文本末尾追加 dispatch 元信息块，
+// 让父 LLM（emma）能稳定看到 task_id 和已落地的 outputs basename。
+// 没有 task_id 时直接返回原 content（防御，理论上不会发生）。
+//
+// 输出格式（包在 fence 里，便于 emma 区分 sub-agent 文本 vs framework 元信息）：
+//
+//	<dispatch-meta>
+//	task_id: t-ae15b37c-7d6
+//	outputs:
+//	  - AI赋能职场.txt
+//	</dispatch-meta>
+func appendDispatchMeta(content, taskID string, deliverables []types.Deliverable) string {
+	if taskID == "" {
+		return content
+	}
+	var sb strings.Builder
+	sb.WriteString(content)
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n<dispatch-meta>\ntask_id: ")
+	sb.WriteString(taskID)
+	if names := deliverableBasenames(deliverables); len(names) > 0 {
+		sb.WriteString("\noutputs:")
+		for _, n := range names {
+			sb.WriteString("\n  - ")
+			sb.WriteString(n)
+		}
+	}
+	sb.WriteString("\n</dispatch-meta>")
+	return sb.String()
+}
+
+// deliverableBasenames 提取每个 Deliverable.FilePath 的文件名（去重，保序）。
+// promote 工具的 source 字段要求 basename，所以这里只返回不带路径分隔符的部分。
+func deliverableBasenames(deliverables []types.Deliverable) []string {
+	if len(deliverables) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(deliverables))
+	out := make([]string, 0, len(deliverables))
+	for _, d := range deliverables {
+		if d.FilePath == "" {
+			continue
+		}
+		// 同时容忍 "/" 和 "\"，避免 cross-platform 切错位。
+		base := d.FilePath
+		if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+			base = base[i+1:]
+		}
+		if base == "" {
+			continue
+		}
+		if _, ok := seen[base]; ok {
+			continue
+		}
+		seen[base] = struct{}{}
+		out = append(out, base)
+	}
+	return out
 }
 
 // formatFailure 把失败 SyncOutcome 渲染成给父 LLM 看的 content。

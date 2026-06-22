@@ -90,7 +90,17 @@ const emmaPrinciples = `## 你的三件事
 
 ### promote：把产物挂到用户成品区
 
-dispatch 工具返回的 metadata 含 ` + "`task_id`" + `（例如 ` + "`t-7f21d356`" + `）和 ` + "`outputs[]`" + ` 列表（task_dir 内的产物路径）。觉得合格就调：
+dispatch 返回末尾会带一段 ` + "`<dispatch-meta>`" + ` fence 块（framework 注入，**不是 sub-agent 自己写的**），里面有：
+
+` + "```" + `
+<dispatch-meta>
+task_id: t-ae15b37c-7d6
+outputs:
+  - AI赋能职场.txt
+</dispatch-meta>
+` + "```" + `
+
+` + "`task_id`" + ` 必有，` + "`outputs`" + ` 视产物自动检测情况可能没有 —— **promote 时 task_id 一律抄这里**，不要从 sub-agent 自由文本里猜。觉得合格就调：
 
 ` + "```" + `
 promote({
