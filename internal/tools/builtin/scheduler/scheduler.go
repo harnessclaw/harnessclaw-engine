@@ -288,6 +288,13 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 
 	isError := sync.Terminal.Reason != "" && sync.Terminal.Reason != types.TerminalCompleted
 	content := concatText(sync.Content)
+	if !isError {
+		// 成功路径在尾注追加 dispatch metadata。sub-agent 自由文本里不一定
+		// 提到 task_id（emma 凭空猜 → promote 用错 id 必失败），所以把
+		// task_id（必备）+ outputs basename（best-effort）显式拼到末尾，让
+		// emma 后续调 promote 时能直接抄。
+		content = appendDispatchMeta(content, string(res.TaskID), sync.Deliverables)
+	}
 	if isError {
 		content = fmt.Sprintf("[scheduler failed] reason=%s\n%s\n\nLast output:\n%s",
 			sync.Terminal.Reason, sync.Terminal.Message, content)
@@ -336,6 +343,68 @@ func concatText(blocks []types.ContentBlock) string {
 		}
 	}
 	return sb.String()
+}
+
+// appendDispatchMeta 在 sub-agent 自由文本末尾追加 dispatch 元信息块，
+// 让父 LLM（emma）能稳定看到 task_id 和已落地的 outputs basename。
+// emma 调 promote 必须用这个 task_id；自由文本里不一定提到，所以这里
+// 强制塞一份。
+//
+// 输出格式（fence 块便于 emma 区分 sub-agent 文本 vs framework 元信息）：
+//
+//	<dispatch-meta>
+//	task_id: t-ae15b37c-7d6
+//	outputs:
+//	  - AI赋能职场.txt
+//	</dispatch-meta>
+func appendDispatchMeta(content, taskID string, deliverables []types.Deliverable) string {
+	if taskID == "" {
+		return content
+	}
+	var sb strings.Builder
+	sb.WriteString(content)
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n<dispatch-meta>\ntask_id: ")
+	sb.WriteString(taskID)
+	if names := deliverableBasenames(deliverables); len(names) > 0 {
+		sb.WriteString("\noutputs:")
+		for _, n := range names {
+			sb.WriteString("\n  - ")
+			sb.WriteString(n)
+		}
+	}
+	sb.WriteString("\n</dispatch-meta>")
+	return sb.String()
+}
+
+// deliverableBasenames 提取每个 Deliverable.FilePath 的文件名（去重保序，
+// 跨平台路径分隔符容忍）。promote 工具的 source 字段要求 basename。
+func deliverableBasenames(deliverables []types.Deliverable) []string {
+	if len(deliverables) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(deliverables))
+	out := make([]string, 0, len(deliverables))
+	for _, d := range deliverables {
+		if d.FilePath == "" {
+			continue
+		}
+		base := d.FilePath
+		if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+			base = base[i+1:]
+		}
+		if base == "" {
+			continue
+		}
+		if _, ok := seen[base]; ok {
+			continue
+		}
+		seen[base] = struct{}{}
+		out = append(out, base)
+	}
+	return out
 }
 
 // errResult is a short-form failure helper. Defaults ErrorType to

@@ -98,8 +98,12 @@ func TestAgentTool_Execute_SyncSuccess(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("unexpected error result: %+v", res)
 	}
-	if res.Content != "done" {
-		t.Errorf("Content = %q want %q", res.Content, "done")
+	// Content 拼了 sub-agent 文本 + framework 注入的 <dispatch-meta> 尾注。
+	if !strings.HasPrefix(res.Content, "done") {
+		t.Errorf("Content should start with sub-agent text %q, got %q", "done", res.Content)
+	}
+	if !strings.Contains(res.Content, "<dispatch-meta>") || !strings.Contains(res.Content, "task_id: t-1") {
+		t.Errorf("Content should embed dispatch-meta with task_id, got %q", res.Content)
 	}
 	if sched.params == nil {
 		t.Fatal("Dispatch was not called")
@@ -179,6 +183,89 @@ func TestAgentTool_Execute_SyncFailureFromTerminal(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "max_turns") {
 		t.Errorf("Content should mention terminal reason: %q", res.Content)
+	}
+}
+
+func TestAppendDispatchMeta(t *testing.T) {
+	cases := []struct {
+		name         string
+		content      string
+		taskID       string
+		deliverables []types.Deliverable
+		want         string
+	}{
+		{
+			name:    "taskID only — no outputs",
+			content: "邮件写好了，AI赋能职场.txt 已落地。",
+			taskID:  "t-ae15b37c-7d6",
+			want:    "邮件写好了，AI赋能职场.txt 已落地。\n\n<dispatch-meta>\ntask_id: t-ae15b37c-7d6\n</dispatch-meta>",
+		},
+		{
+			name:    "taskID + outputs",
+			content: "done",
+			taskID:  "t-abc",
+			deliverables: []types.Deliverable{
+				{FilePath: "/workspace/session/sid/tasks/t-abc/report.md"},
+				{FilePath: "/workspace/session/sid/tasks/t-abc/data.csv"},
+			},
+			want: "done\n\n<dispatch-meta>\ntask_id: t-abc\noutputs:\n  - report.md\n  - data.csv\n</dispatch-meta>",
+		},
+		{
+			name:    "empty content still gets meta",
+			content: "",
+			taskID:  "t-xyz",
+			want:    "\n<dispatch-meta>\ntask_id: t-xyz\n</dispatch-meta>",
+		},
+		{
+			name:    "content already ends with newline — no double blank insertion",
+			content: "done\n",
+			taskID:  "t-1",
+			want:    "done\n\n<dispatch-meta>\ntask_id: t-1\n</dispatch-meta>",
+		},
+		{
+			name:    "no taskID — no-op (defensive; should not happen)",
+			content: "done",
+			taskID:  "",
+			want:    "done",
+		},
+		{
+			name:    "duplicate basenames are deduped",
+			content: "x",
+			taskID:  "t-1",
+			deliverables: []types.Deliverable{
+				{FilePath: "/a/report.md"},
+				{FilePath: "/b/report.md"},
+			},
+			want: "x\n\n<dispatch-meta>\ntask_id: t-1\noutputs:\n  - report.md\n</dispatch-meta>",
+		},
+		{
+			name:    "empty FilePath is skipped",
+			content: "x",
+			taskID:  "t-1",
+			deliverables: []types.Deliverable{
+				{FilePath: ""},
+				{FilePath: "/a/keep.md"},
+			},
+			want: "x\n\n<dispatch-meta>\ntask_id: t-1\noutputs:\n  - keep.md\n</dispatch-meta>",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := appendDispatchMeta(c.content, c.taskID, c.deliverables)
+			if got != c.want {
+				t.Errorf("appendDispatchMeta\ngot:  %q\nwant: %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestDeliverableBasenames_BackslashSeparator(t *testing.T) {
+	// 防御 cross-platform — Windows 风格路径也应当被识别。
+	got := deliverableBasenames([]types.Deliverable{
+		{FilePath: `C:\workspace\tasks\t-1\sub\file.txt`},
+	})
+	if len(got) != 1 || got[0] != "file.txt" {
+		t.Errorf("backslash path → basename: got %v", got)
 	}
 }
 
