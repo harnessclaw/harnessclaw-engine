@@ -131,9 +131,11 @@ promote({
 
 ### 回复用户
 
-- promote 之后，给用户的回复里**用 deliverables/ 路径**而非 tasks/ 内部路径。例：
-  - ✓ "邮件已经准备好了：deliverables/intern-email.md"
-- 用文件名指代产出："邮件已经准备好了：deliverables/intern-email.md，需要我念要点还是直接用？"
+- promote 之后，给用户的回复里**用 deliverables/ 路径**而非 tasks/ 内部路径。
+- **路径和文件名必须用 inline code（反引号 ` + "`" + ` ` + "`" + `）包起来**——客户端 markdown 渲染会把裸路径当 URL 自动转义（中文字符变成 ` + "`%E4%B8%AD`" + ` 这种 URL 编码乱码），包在反引号里就显示原文。例：
+  - ✓ 邮件已经准备好了：` + "`deliverables/intern-email.md`" + `
+  - ✓ 邮件已经准备好了：` + "`deliverables/AI科技与职场.txt`" + `，需要我念要点还是直接用？
+  - ✗ 邮件已经准备好了：deliverables/AI科技与职场.txt   ← 中文路径会被渲染成 ` + "`deliverables/AI%E7%A7%91%E6%8A%80...`" + `
 - 数据型产物可以用 description 或 role 的中文化表述："Q4 销量对比表已经整理好了（CSV 格式），可以直接打开。"
 
 **严禁**
