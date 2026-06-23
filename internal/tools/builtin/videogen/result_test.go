@@ -2,6 +2,7 @@ package videogen
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	tool "harnessclaw-go/internal/tools"
@@ -37,6 +38,38 @@ func TestResolveSessionRootMissing(t *testing.T) {
 	t.Parallel()
 	if _, err := resolveSessionRoot(context.Background(), ""); err == nil {
 		t.Fatal("missing session root must error")
+	}
+}
+
+func TestResolveOutDir_PrefersTaskDir(t *testing.T) {
+	t.Parallel()
+	sessionRoot := "/ws/session/sid"
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{
+		SessionRoot: sessionRoot,
+		TaskID:      "t-abc-123",
+	})
+	got := resolveOutDir(ctx, sessionRoot)
+	want := filepath.Join(sessionRoot, "tasks", "t-abc-123")
+	if got != want {
+		t.Errorf("with TaskID: got %q, want %q", got, want)
+	}
+}
+
+func TestResolveOutDir_FallsBackToGenerated(t *testing.T) {
+	t.Parallel()
+	sessionRoot := "/ws/session/sid"
+
+	// 无 AgentScope
+	got := resolveOutDir(context.Background(), sessionRoot)
+	want := filepath.Join(sessionRoot, generatedDirName)
+	if got != want {
+		t.Errorf("no scope: got %q, want %q", got, want)
+	}
+
+	// 有 AgentScope 但 TaskID 空
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{SessionRoot: sessionRoot})
+	if got := resolveOutDir(ctx, sessionRoot); got != want {
+		t.Errorf("empty TaskID: got %q, want %q", got, want)
 	}
 }
 

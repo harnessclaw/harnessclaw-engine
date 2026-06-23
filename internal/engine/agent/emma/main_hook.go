@@ -103,11 +103,38 @@ func (e *Engine) emmaHooks(
 		},
 
 		OnLLMError: func(turn int, err error) {
-			// Emit the three terminal events the legacy runner produced
-			// at runner.go:173-175.
-			out <- types.EngineEvent{Type: types.EngineEventError, Error: err}
-			out <- types.EngineEvent{Type: types.EngineEventMessageDelta, StopReason: "error", Error: err}
-			out <- types.EngineEvent{Type: types.EngineEventMessageStop}
+			// 区分用户取消（ctx 已 cancel）vs 真错误：
+			//  - ctx cancelled → 发明确的 user_aborted 信号，让前端显示
+			//    「已取消」而不是「请求失败 context canceled」
+			//  - ctx still live → 真上游错误，保持原有 error 路径
+			ctxCancelled := ctx.Err() != nil
+
+			if ctxCancelled {
+				// 取消路径：附 Terminal 让 translator 路由到 user_aborted，
+				// 并把 StopReason 改成 "user_aborted" 给前端区分。
+				abortMsg := "用户已取消"
+				if cause := context.Cause(ctx); cause != nil {
+					abortMsg = cause.Error()
+				}
+				out <- types.EngineEvent{
+					Type:  types.EngineEventError,
+					Error: errEmmaAborted, // 稳定的"用户取消"信号，避免裸 "context canceled" 上 wire
+					Terminal: &types.Terminal{
+						Reason:  types.TerminalAbortedStreaming,
+						Message: abortMsg,
+					},
+				}
+				out <- types.EngineEvent{
+					Type:       types.EngineEventMessageDelta,
+					StopReason: "user_aborted",
+				}
+				out <- types.EngineEvent{Type: types.EngineEventMessageStop}
+			} else {
+				// 真错误：保持原 3-event 序列。
+				out <- types.EngineEvent{Type: types.EngineEventError, Error: err}
+				out <- types.EngineEvent{Type: types.EngineEventMessageDelta, StopReason: "error", Error: err}
+				out <- types.EngineEvent{Type: types.EngineEventMessageStop}
+			}
 
 			// ctx.Cause diagnostic log. Mirrors runner.go:177-209: split
 			// into "ctx already cancelled" (engine-side abort) vs "ctx
@@ -117,11 +144,11 @@ func (e *Engine) emmaHooks(
 			if cause != nil {
 				causeStr = cause.Error()
 			}
-			if ctxErr := ctx.Err(); ctxErr != nil {
+			if ctxCancelled {
 				e.logger.Warn("LLM call returned with ctx already cancelled",
 					zap.String("session_id", sess.ID),
 					zap.Int("turn", turn),
-					zap.String("ctx_err", ctxErr.Error()),
+					zap.String("ctx_err", ctx.Err().Error()),
 					zap.String("ctx_cause", causeStr),
 					zap.Error(err))
 			} else {

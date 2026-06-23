@@ -231,9 +231,13 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 	if err != nil {
 		return errResult(err.Error(), types.ToolErrorInternal), nil
 	}
-	outDir := filepath.Join(sessionRoot, generatedDirName)
+	// 优先把图落到当前 spawn 的 task_dir —— emma 调 promote 时按
+	// {sessionRoot}/tasks/{task_id}/{basename} 找源文件，与之对齐。
+	// 没有 TaskID（直接 root agent 调用 / 测试 / 旧 spawn 路径）才 fallback
+	// 到 session-level generated/ 共享池。
+	outDir := resolveOutDir(ctx, sessionRoot)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return errResult("create generated directory: "+err.Error(), types.ToolErrorInternal), nil
+		return errResult("create output directory: "+err.Error(), types.ToolErrorInternal), nil
 	}
 
 	result, err := t.generateWithRetry(ctx, provider, GenerateRequest{
@@ -428,6 +432,18 @@ func (t *Tool) resolveSessionRoot(ctx context.Context) (string, error) {
 		return workspace.SessionRoot(t.rootDir, producer.SessionID), nil
 	}
 	return "", errors.New("SessionRoot missing in ctx — engine configuration error")
+}
+
+// resolveOutDir 决定生成的图落在哪：
+//   - 有 AgentScope.TaskID（sub-agent 正常派活路径，包括 content_creator）
+//     → {sessionRoot}/tasks/{task_id}/  ← emma 的 promote 工具能找到
+//   - 无 TaskID（root agent 直调 / 测试 / 旧 spawn）
+//     → {sessionRoot}/generated/        ← 保留原有 session 共享池语义
+func resolveOutDir(ctx context.Context, sessionRoot string) string {
+	if scope, ok := tool.AgentScopeFromCtx(ctx); ok && strings.TrimSpace(scope.TaskID) != "" {
+		return filepath.Join(sessionRoot, "tasks", scope.TaskID)
+	}
+	return filepath.Join(sessionRoot, generatedDirName)
 }
 
 func normalizeImageMIME(value string) string {

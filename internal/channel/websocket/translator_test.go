@@ -509,3 +509,75 @@ func TestTranslator_SystemNotice(t *testing.T) {
 // silence unused import when no wait references; needed to keep parity
 // with the existing translator package layout.
 var _ = context.Background
+
+// TestBuildEngineErrorInfo_UserAborted 验证 ctx-cancelled 路径的 EngineEventError
+// 能被 wire 层正确识别为 user_aborted，而不是默认的 internal。这是修复
+// 「点取消显示『请求失败 context canceled』」bug 的关键映射。
+func TestBuildEngineErrorInfo_UserAborted_FromTerminal(t *testing.T) {
+	ev := &types.EngineEvent{
+		Type: types.EngineEventError,
+		Terminal: &types.Terminal{
+			Reason:  types.TerminalAbortedStreaming,
+			Message: "用户已取消",
+		},
+		Error: errStub{msg: "emma: AbortSession invoked by caller"},
+	}
+	info := buildEngineErrorInfo(ev)
+	if info == nil {
+		t.Fatal("ErrorInfo nil")
+	}
+	if info.Type != emitv2.ErrorTypeUserAborted {
+		t.Errorf("Type = %q, want %q", info.Type, emitv2.ErrorTypeUserAborted)
+	}
+	// message 必须替换为友好文案，不能泄露内部错误链给前端展示。
+	if info.Message != "Cancelled by user" {
+		t.Errorf("Message = %q, want %q (must not leak internal err string)", info.Message, "Cancelled by user")
+	}
+}
+
+// TestBuildEngineErrorInfo_UserAborted_Fallback 防御性兜底：哪怕没附 Terminal，
+// errEmmaAborted / context.Canceled 这类字符串信号也应被识别。
+func TestBuildEngineErrorInfo_UserAborted_Fallback(t *testing.T) {
+	cases := []struct {
+		name   string
+		errMsg string
+	}{
+		{"errEmmaAborted", "emma: AbortSession invoked by caller"},
+		{"context.Canceled", "context canceled"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ev := &types.EngineEvent{
+				Type:  types.EngineEventError,
+				Error: errStub{msg: c.errMsg},
+			}
+			info := buildEngineErrorInfo(ev)
+			if info == nil {
+				t.Fatal("ErrorInfo nil")
+			}
+			if info.Type != emitv2.ErrorTypeUserAborted {
+				t.Errorf("Type = %q, want %q (fallback should classify by err string)", info.Type, emitv2.ErrorTypeUserAborted)
+			}
+			if info.Message != "Cancelled by user" {
+				t.Errorf("Message = %q, want %q", info.Message, "Cancelled by user")
+			}
+		})
+	}
+}
+
+// TestBuildEngineErrorInfo_RealError 反例：真错误（非取消）仍保持原分类，
+// 防止误把所有错误都报成 user_aborted。
+func TestBuildEngineErrorInfo_RealError(t *testing.T) {
+	ev := &types.EngineEvent{
+		Type:  types.EngineEventError,
+		Error: errStub{msg: "bifrost: 502 bad gateway"},
+	}
+	info := buildEngineErrorInfo(ev)
+	if info.Type != emitv2.ErrorTypeInternal {
+		t.Errorf("genuine error should stay Internal, got %q", info.Type)
+	}
+}
+
+type errStub struct{ msg string }
+
+func (e errStub) Error() string { return e.msg }

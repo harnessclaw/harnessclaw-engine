@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -281,8 +282,21 @@ func (c *Conn) readPump(ctx context.Context) {
 		case "session.resume":
 			c.handleSessionResume(data)
 		case "session.interrupt":
-			// no engine API today; log only
 			c.logger.Info("session.interrupt received", zap.String("session", c.sessionID))
+			if c.ch.abortFn != nil && c.sessionID != "" {
+				if err := c.ch.abortFn(ctx, c.sessionID); err != nil {
+					// "no active query" 是常态（用户在 idle 时点取消），
+					// 用 Debug 记录避免 spam；其他错误是真的有问题，用 Warn。
+					if strings.Contains(err.Error(), "no active query") {
+						c.logger.Debug("session.interrupt: no active query",
+							zap.String("session", c.sessionID))
+					} else {
+						c.logger.Warn("session.interrupt: abort failed",
+							zap.String("session", c.sessionID),
+							zap.Error(err))
+					}
+				}
+			}
 		default:
 			c.sendError("invalid_input", "unknown frame type: "+head.Type)
 		}

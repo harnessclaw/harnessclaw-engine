@@ -159,6 +159,29 @@ func TestTool_Execute_DispatchError(t *testing.T) {
 	if !strings.Contains(res.Content, "dispatch boom") {
 		t.Errorf("Content = %q", res.Content)
 	}
+	if res.ErrorType != types.ToolErrorDependencyFail {
+		t.Errorf("real dispatch error should be DependencyFail, got %q", res.ErrorType)
+	}
+}
+
+// TestTool_Execute_UserCancelled 验证用户取消（ctx 已 cancel）路径返回
+// user_aborted 错误类，让前端不要显示「前置步骤失败 + 自动重试」转圈。
+func TestTool_Execute_UserCancelled(t *testing.T) {
+	tl := New(newSched(schedpkg.Result{}, context.Canceled), newRegistryWithFreelancer(t), nil, zap.NewNop())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // 模拟用户取消：ctx 立即结束
+
+	res, _ := tl.Execute(ctx, json.RawMessage(`{"task":"x","subagent_type":"freelancer"}`))
+	if !res.IsError {
+		t.Fatal("expected IsError=true on cancellation")
+	}
+	if res.ErrorType != types.ToolErrorUserAborted {
+		t.Errorf("user cancel should map to ToolErrorUserAborted, got %q", res.ErrorType)
+	}
+	if strings.Contains(res.Content, "context canceled") {
+		t.Errorf("user-facing message should not leak raw 'context canceled', got %q", res.Content)
+	}
 }
 
 func TestAppendDispatchMeta(t *testing.T) {

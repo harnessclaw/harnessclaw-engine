@@ -21,10 +21,20 @@ import (
 // the WS URL and a cleanup hook. Internally it bypasses the public
 // Start() (which blocks) and uses the same underlying machinery.
 func startTestChannel(t *testing.T, handler func(ctx context.Context, msg *types.IncomingMessage) error) (wsURL string, ch *Channel) {
+	return startTestChannelWithAbort(t, handler, nil)
+}
+
+// startTestChannelWithAbort 是 startTestChannel 的扩展版本 —— 测试 session.interrupt
+// 路径时把 abortFn 串进来观测调用。abortFn nil 时与原版完全等价。
+func startTestChannelWithAbort(
+	t *testing.T,
+	handler func(ctx context.Context, msg *types.IncomingMessage) error,
+	abortFn func(context.Context, string) error,
+) (wsURL string, ch *Channel) {
 	t.Helper()
 	cfg := config.WSChannelConfig{Host: "127.0.0.1", Port: 0, Path: "/v1/ws"}
 	logger := zap.NewNop()
-	ch = New(cfg, nil, logger)
+	ch = New(cfg, abortFn, logger)
 
 	// Initialise the bits Start() would set up, minus the blocking listener.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -753,5 +763,71 @@ func TestChannel_AskUserQuestionCancelled(t *testing.T) {
 	}
 	if got.Status != "cancelled" {
 		t.Errorf("cancelled status = %q, want cancelled", got.Status)
+	}
+}
+
+// TestChannel_SessionInterruptInvokesAbortFn verifies that a client-sent
+// session.interrupt frame triggers the injected abortFn for the current
+// session — exercising the wiring fix for the "cancel did nothing" bug.
+func TestChannel_SessionInterruptInvokesAbortFn(t *testing.T) {
+	var (
+		mu        sync.Mutex
+		gotCalls  []string
+		releaseCh = make(chan struct{})
+	)
+	abortFn := func(_ context.Context, sid string) error {
+		mu.Lock()
+		gotCalls = append(gotCalls, sid)
+		mu.Unlock()
+		select {
+		case releaseCh <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+
+	url, _ := startTestChannelWithAbort(t,
+		func(_ context.Context, _ *types.IncomingMessage) error { return nil },
+		abortFn,
+	)
+	ws := dial(t, url)
+	send(t, ws, map[string]any{"type": "session.create", "session_id": "sess_interrupt"})
+	_ = recv(t, ws) // session.event opened
+
+	send(t, ws, map[string]any{"type": "session.interrupt"})
+
+	select {
+	case <-releaseCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("abortFn was not invoked within 2s of session.interrupt")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotCalls) != 1 {
+		t.Fatalf("abortFn calls = %d, want 1", len(gotCalls))
+	}
+	if gotCalls[0] != "sess_interrupt" {
+		t.Errorf("abortFn sessionID = %q, want %q", gotCalls[0], "sess_interrupt")
+	}
+}
+
+// TestChannel_SessionInterruptNilAbortFn ensures the legacy no-abortFn
+// path (e.g. tests, channels not wired to engine) still degrades to
+// log-only without crashing.
+func TestChannel_SessionInterruptNilAbortFn(t *testing.T) {
+	url, _ := startTestChannel(t, func(_ context.Context, _ *types.IncomingMessage) error { return nil })
+	ws := dial(t, url)
+	send(t, ws, map[string]any{"type": "session.create", "session_id": "sess_no_abort"})
+	_ = recv(t, ws)
+
+	// Should NOT crash / disconnect when abortFn is nil
+	send(t, ws, map[string]any{"type": "session.interrupt"})
+
+	// Subsequent ping should still work — connection is alive
+	send(t, ws, map[string]any{"type": "ping"})
+	pong := recv(t, ws)
+	if pong["type"] != "pong" {
+		t.Errorf("after interrupt with nil abortFn, ping/pong broken: %v", pong)
 	}
 }

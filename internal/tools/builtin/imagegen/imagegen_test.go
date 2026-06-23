@@ -307,6 +307,43 @@ func TestExecuteSuccessWritesFilesAndEmitsDeliverable(t *testing.T) {
 	}
 }
 
+func TestExecuteWritesToTaskDirWhenScopeHasTaskID(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	sid := "sess-task-scoped"
+	tid := "t-abc-123"
+	if err := workspace.EnsureSession(root, sid); err != nil {
+		t.Fatal(err)
+	}
+	source := NewSource(newTestImageCfg("sk-x", "https://api.test", "/v1/images/generations"), fakeAgentSource{ref: "openai:gpt-image"})
+	provider := &stubImageProvider{name: "openai", result: pngResult("cat")}
+	tr := newToolWith(t, source, provider, root)
+
+	// spawn ctx 携带 TaskID —— content_creator 派活的正常路径
+	ctx := tool.WithAgentScope(context.Background(), tool.AgentScope{
+		SessionRoot: workspace.SessionRoot(root, sid),
+		TaskID:      tid,
+	})
+	res, err := tr.Execute(ctx, json.RawMessage(`{"prompt":"cat","model":"openai:gpt-image","n":1,"size":"2048x2048","quality":"high"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("Execute returned error: %#v", res)
+	}
+	images := res.Metadata["images"].([]GeneratedImage)
+	got := filepath.Dir(images[0].Path)
+	want := workspace.TaskDir(root, sid, tid)
+	if got != want {
+		t.Fatalf("with TaskID image should land in task_dir:\n got %q\nwant %q", got, want)
+	}
+	// 确认 generated/ 兜底路径**没**被创建
+	if _, err := os.Stat(filepath.Join(workspace.SessionRoot(root, sid), generatedDirName)); err == nil {
+		t.Errorf("session-level generated/ should not exist when TaskID is present")
+	}
+}
+
 func TestExecuteUsesArtifactProducerSessionWhenAgentScopeMissing(t *testing.T) {
 	t.Parallel()
 

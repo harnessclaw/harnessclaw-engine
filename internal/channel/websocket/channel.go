@@ -63,6 +63,12 @@ type Channel struct {
 	// slow consumer doesn't backpressure the conn read loop.
 	messages chan *types.IncomingMessage
 
+	// abortFn 由 main.go 注入 engine.AbortSession。conn 收到 session.interrupt
+	// 帧时调它取消该 session 的 in-flight 查询（cancel ctx → LLM 流断 →
+	// 下层 dispatch / tool 跟着 unwind）。nil 时 interrupt 帧只打日志（向后
+	// 兼容旧 channel 使用方）。
+	abortFn func(ctx context.Context, sessionID string) error
+
 	healthy   atomic.Bool
 	closeOnce sync.Once
 
@@ -70,11 +76,10 @@ type Channel struct {
 	connCanc context.CancelFunc
 }
 
-// New constructs a v2.2 WebSocket channel. Signature mirrors the legacy
-// v1 constructor so cmd/server/main.go does not need updating. The
-// abortFn is currently unused — interrupt is signalled via session.interrupt
-// frames in v2.2.
-func New(cfg config.WSChannelConfig, _ func(context.Context, string) error, logger *zap.Logger) *Channel {
+// New constructs a v2.2 WebSocket channel. abortFn 接 engine.AbortSession
+// (从 main.go 注入)；conn 收到 session.interrupt 帧时调它 cancel 当前会话
+// 的 in-flight 查询。nil 时 interrupt 帧降级为只打日志（兼容老用法 / 测试）。
+func New(cfg config.WSChannelConfig, abortFn func(context.Context, string) error, logger *zap.Logger) *Channel {
 	if cfg.Path == "" {
 		cfg.Path = "/v1/ws"
 	}
@@ -94,6 +99,7 @@ func New(cfg config.WSChannelConfig, _ func(context.Context, string) error, logg
 		sequencer:  emitv2.NewSequencer(),
 		tracker:    emitv2.NewTracker(emitv2.TrackerConfig{CheckEvery: time.Second}),
 		messages:   make(chan *types.IncomingMessage, 128),
+		abortFn:    abortFn,
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -546,7 +547,13 @@ func (t *Translator) Translate(em *emitv2.Emitter, sessionID string, ev *types.E
 				if typ == "" {
 					typ = emitv2.ErrorTypeInternal
 				}
-				errInfo = emitv2.NewError(typ, ev.ToolResult.Content)
+				msg := ev.ToolResult.Content
+				// user_aborted 工具结果不应让内部错误链上 wire——统一友好文案，
+				// 防止个别工具直接把 "context canceled" 当 Content 返回。
+				if typ == emitv2.ErrorTypeUserAborted {
+					msg = "Cancelled by user"
+				}
+				errInfo = emitv2.NewError(typ, msg)
 			}
 			// promote known metadata keys to typed fields; everything
 			// else flows through to ToolPayload.Metadata verbatim. This
@@ -1384,9 +1391,25 @@ func buildEngineErrorInfo(ev *types.EngineEvent) *emitv2.ErrorInfo {
 			typ = emitv2.ErrorTypeModelError
 		case types.TerminalImageError:
 			typ = emitv2.ErrorTypeInvalidInput
+		case types.TerminalAbortedStreaming, types.TerminalAbortedTools:
+			typ = emitv2.ErrorTypeUserAborted
 		}
 	}
-	info := emitv2.NewError(typ, errMsg(ev.Error))
+	// EngineEventError.Error 直接是 errEmmaAborted 时（emma OnLLMError 在
+	// ctx 已 cancel 时发的稳定信号）也升级到 user_aborted —— 防御性兜底，
+	// 即便 Terminal 没附上也能正确分类。
+	if typ == emitv2.ErrorTypeInternal && isUserAbortError(ev.Error) {
+		typ = emitv2.ErrorTypeUserAborted
+	}
+	// 当分类为 user_aborted 时，message 也要用友好文案 —— 否则
+	// "emma: AbortSession invoked by caller" / "context canceled" 这种
+	// 内部错误链会被前端误当成"请求失败"展示。前端可能用 message 或
+	// user_message 任一字段渲染，所以两侧都给 friendly value。
+	msg := errMsg(ev.Error)
+	if typ == emitv2.ErrorTypeUserAborted {
+		msg = "Cancelled by user"
+	}
+	info := emitv2.NewError(typ, msg)
 
 	if ev.ErrorDetails != nil {
 		if um, ok := ev.ErrorDetails["user_message"].(string); ok && um != "" {
@@ -1447,6 +1470,11 @@ func errorInfoFromTerminal(term *types.Terminal) *emitv2.ErrorInfo {
 	if msg == "" {
 		msg = string(term.Reason)
 	}
+	// user_aborted 路径不暴露内部 message ("context canceled" / errEmmaAborted)
+	// 给前端 —— 统一展示成 "Cancelled by user"。
+	if typ == emitv2.ErrorTypeUserAborted {
+		msg = "Cancelled by user"
+	}
 	info := emitv2.NewError(typ, msg)
 	// Stash the raw Terminal.Reason so the client can branch on the
 	// engine-internal taxonomy too (e.g. distinguish model_error vs
@@ -1483,6 +1511,20 @@ func errMsg(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// isUserAbortError 是 buildEngineErrorInfo 的兜底分类器：在缺 Terminal 的
+// EngineEventError 上识别"用户取消"语义。emma 用 errEmmaAborted 作为稳定
+// 信号，但跨包不暴露这个 sentinel，所以用 string 匹配（low-risk：错误信息
+// 字符串是 emma 包稳定的契约）。
+func isUserAbortError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// emma/core.go 的 errEmmaAborted 字面值；context.Canceled 字面值。
+	return strings.Contains(msg, "AbortSession invoked by caller") ||
+		strings.Contains(msg, "context canceled")
 }
 
 func safeTurnCount(ev *types.EngineEvent) int {
