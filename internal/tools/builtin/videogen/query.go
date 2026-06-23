@@ -205,9 +205,12 @@ func (t *VideoQueryTool) finishSuccess(ctx context.Context, provider VideoProvid
 	if err != nil {
 		return errResult(err.Error(), types.ToolErrorInternal)
 	}
-	outDir := filepath.Join(sessionRoot, generatedDirName)
+	// 优先把视频落到当前 spawn 的 task_dir —— emma 调 promote 时按
+	// {sessionRoot}/tasks/{task_id}/{basename} 找源文件，与之对齐。
+	// 没有 TaskID 才 fallback 到 session-level generated/ 共享池。
+	outDir := resolveOutDir(ctx, sessionRoot)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return errResult("create generated directory: "+err.Error(), types.ToolErrorInternal)
+		return errResult("create output directory: "+err.Error(), types.ToolErrorInternal)
 	}
 
 	data, _, err := t.downloadWithRetry(ctx, provider, res.VideoURL)
