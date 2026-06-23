@@ -27,6 +27,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -220,6 +221,15 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolRes
 		// Definition 未设时 Runtime.LLM 兜底 30。
 	})
 	if err != nil {
+		// 用户主动取消（点 stop / AbortSession）走 user_aborted 错误类，前端
+		// 据此显示「已取消」而不是「前置步骤失败 + 自动重试」。其他错误才是
+		// 真 dependency_fail。判断条件：ctx 已 cancel 或错误链中含 Canceled。
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			t.logger.Info("scheduler spawn cancelled by user",
+				zap.Duration("duration", time.Since(startTime)),
+			)
+			return errTypedResult("用户已取消", types.ToolErrorUserAborted), nil
+		}
 		t.logger.Error("scheduler spawn failed",
 			zap.Error(err),
 			zap.Duration("duration", time.Since(startTime)),
