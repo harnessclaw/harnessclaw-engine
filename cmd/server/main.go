@@ -692,7 +692,10 @@ func main() {
 		}
 		waitPrompter := humanloop.New(humanloop.Config{Store: waitStore})
 
-		wsCh := wsch.New(cfg.Channel.WebSocket, nil, logger)
+		// engine.AbortSession 接到 session.interrupt 帧 —— 客户端点取消时
+		// cancel 当前 turn 的 ctx，让正在跑的 LLM stream / dispatch / tool
+		// 链式 unwind。
+		wsCh := wsch.New(cfg.Channel.WebSocket, eng.AbortSession, logger)
 		wsCh.SetPrompter(waitPrompter)
 		wsCh.SetResumer(resume.New(rtr.Handle, logger))
 		wsCh.GetTranslator().SetIssuer(waitPrompter)
