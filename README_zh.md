@@ -180,6 +180,7 @@ make clean              # 清理构建产物
 ## 文档
 
 - [WebSocket 协议规范 v2.2](docs/protocols/websocket.md)
+- [使用示例](docs/examples.md) — wscat 冒烟测试、最小 Node.js 客户端、prompt 应答、断线重连
 
 ## 📞 Support
 
