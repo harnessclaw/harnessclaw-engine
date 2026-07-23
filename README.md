@@ -180,6 +180,7 @@ For detailed protocol specifications, see [docs/protocols/websocket.md](docs/pro
 ## Documentation
 
 - [WebSocket Protocol Specification v2.2](docs/protocols/websocket.md)
+- [Usage Examples](docs/examples.md) — wscat smoke test, minimal Node.js client, prompt handling, reconnect
 
 ## 📞 Support
 
