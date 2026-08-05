@@ -36,7 +36,7 @@
 ## 核心特性
 
 - **5 阶段查询循环** — 预处理(自动压缩) → LLM 流式调用 → 错误恢复(指数退避重试) → 工具执行(并行/串行) → 续行判断
-- **WebSocket 协议 v1.4** — 显式会话握手、完整消息生命周期、双向工具调用(服务端执行 + 客户端执行)、权限请求/响应流
+- **WebSocket 协议 v2.2（Card 模型）** — UI-first 流式：8 个动作(`card.add/set/append/tick/close` + `prompt.user/reply` + `session.event`) × 13 种 card 类型；服务端 & 客户端工具执行、权限 / 问答 / plan 审阅 prompt，以及未答 prompt 的崩溃恢复
 - **7 个内置工具** — Bash、FileRead、FileEdit、FileWrite、Grep、Glob、WebFetch
 - **6 步权限管线** — DenyRule → ToolCheckPerm → BypassMode → AlwaysAllowRule → ReadOnlyAutoAllow → ModeDefault，支持 6 种权限模式
 - **技能系统** — 从 `SKILL.md` 文件加载技能，支持 YAML frontmatter、参数替换、优先级覆盖
@@ -81,7 +81,7 @@ go_rebuild/
 │   ├── types/             # 共享类型 (Message, Event, ToolCall, Context)
 │   └── errors/            # 领域错误 (16 个错误码)
 ├── docs/
-│   ├── protocols/         # WebSocket 协议规范 (v1.4)
+│   ├── protocols/         # WebSocket 协议规范 (v2.2)
 ├── Makefile               # 构建/运行/测试/lint
 └── go.mod                 # Go 1.26.1
 ```
@@ -139,7 +139,7 @@ make clean              # 清理构建产物
 |--------|------|--------|
 | `server.port` | HTTP 服务端口 | `8080` |
 | `channels.websocket.port` | WebSocket 端口 | `8081` |
-| `channels.websocket.path` | WebSocket 路径 | `/ws` |
+| `channels.websocket.path` | WebSocket 路径 | `/v1/ws` |
 | `llm.default_provider` | LLM Provider | `anthropic` |
 | `llm.providers.anthropic.model` | 模型名称 | `astron-code-latest` |
 | `engine.max_turns` | 单轮最大工具调用次数 | `50` |
@@ -150,32 +150,35 @@ make clean              # 清理构建产物
 
 ## WebSocket 协议
 
-连接地址: `ws://host:8081/ws`
+连接地址: `ws://host:8081/v1/ws`
+
+该协议是 **UI-first 的 card 模型**：引擎以流式方式推送一张张*卡片*(一个 turn、
+一条 message、一次工具调用、一个 sub-agent……)，通过打开、追加、关闭来更新，
+而非扁平的事件日志。
 
 ### 会话生命周期
 
 ```text
-客户端                                   服务端
-  │                                        │
-  │── session.create ──────────────────────>│
-  │<────────────────────── session.created ─│
-  │                                        │
-  │── user.message ────────────────────────>│
-  │<──────────────────── message.start ─────│
-  │<──── content.start / content.delta ─────│  (流式文本)
-  │<──────── tool.start / tool.end ─────────│  (服务端工具)
-  │<──────────── tool.call ─────────────────│  (客户端工具)
-  │── tool.result ─────────────────────────>│
-  │<──── permission.request ────────────────│  (权限确认)
-  │── permission.response ─────────────────>│
-  │<──────────────── content.stop ──────────│
-  │<──────────────── message.stop ──────────│
-  │<──────────────── task.end ──────────────│
-  │                                        │
-  │── abort ───────────────────────────────>│  (中断)
+客户端                                    服务端
+  │                                         │
+  │── WebSocket 升级 ───────────────────────>│
+  │<──────────────── 101 Switching ─────────│
+  │<──── session.event (kind=opened) ───────│  握手 + 能力声明
+  │                                         │
+  │── user.message ─────────────────────────>│
+  │<──────────────── card.add ──────────────│  打开一张卡片 (turn / message / tool / …)
+  │<──────────────── card.append ───────────│  流式追加内容 (channel: text / tool_input)
+  │<──── prompt.user (permission / … ) ─────│  引擎发起询问；阻塞直到应答
+  │── prompt.user_response ─────────────────>│
+  │<──────────────── card.close ────────────│  卡片结束 (+ 指标: tokens, 费用)
+  │<──────────── card.close (kind=turn) ────│  本轮 turn 完成
+  │                                         │
+  │── session.interrupt (trace_id) ─────────>│  中断进行中的 turn
+  │── session.resume  (last_seq) ───────────>│  重连并补发丢失的事件
 ```
 
-详细协议规范见 [docs/protocols/websocket.md](docs/protocols/websocket.md)。
+可直接复制的客户端见 [使用示例](docs/examples.md)；完整协议契约见
+[docs/protocols/websocket.md](docs/protocols/websocket.md)。
 
 ## 文档
 
