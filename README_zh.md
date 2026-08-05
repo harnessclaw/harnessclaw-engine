@@ -6,6 +6,34 @@
 
 使用Go语言构建的 LLM 编程助手引擎。通过 WebSocket 协议对外提供能力，支持多轮对话、工具调用、权限管控和技能扩展。
 
+## 快速集成 (Quick Start)
+
+一分钟内跑起引擎并看到流式输出。
+
+```bash
+# 1. 克隆，然后填写你的 LLM Provider (base_url / api_key / model)
+git clone https://github.com/harnessclaw/harnessclaw-engine.git
+cd harnessclaw-engine
+$EDITOR configs/config.yaml          # llm.providers.*
+
+# 2. 运行 —— WebSocket 监听 :8081/v1/ws, HTTP 监听 :8080
+make run
+```
+
+对话 —— 引擎以 **card 模型**流式返回 (`card.add` → `card.append` → `card.close`)：
+
+```bash
+npm i -g wscat
+wscat -c ws://localhost:8081/v1/ws
+
+# ← 连上后，服务端立即推送  session.event (kind=opened)   ← 握手
+> {"type":"user.message","event_id":"c1","content":[{"type":"text","text":"Say hello"}]}
+# ← card.add → card.append (channel:"text") … → card.close (card_kind:"turn")
+```
+
+核心契约：**连接 → `session.event(opened)` → `user.message` → 接收 `card.*` 流直到 `turn` 卡关闭。**
+完整的流式客户端（心跳保活、权限 prompt 应答、断线重连）见 **[docs/examples.md](docs/examples.md)**。
+
 ## 架构概览
 
 ```text
@@ -86,7 +114,7 @@ go_rebuild/
 └── go.mod                 # Go 1.26.1
 ```
 
-## 快速开始
+## 从源码构建
 
 ### 前置条件
 
