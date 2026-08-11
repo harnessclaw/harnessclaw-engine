@@ -36,7 +36,7 @@ An LLM programming assistant engine built with Go. It provides capabilities via 
 ## Core Features
 
 - **5-Phase Query Loop** — Preprocessing (Auto-compaction) → LLM Streaming Call → Error Recovery (Exponential Backoff) → Tool Execution (Parallel/Serial) → Continuation Check
-- **WebSocket Protocol v1.4** — Explicit session handshake, full message lifecycle, bidirectional tool calling (Server-side + Client-side execution), permission request/response stream
+- **WebSocket Protocol v2.2 (Card Model)** — UI-first streaming: 8 actions (`card.add/set/append/tick/close` + `prompt.user/reply` + `session.event`) × 13 card kinds; server-side & client-side tool execution, permission / question / plan-review prompts, and crash-recovery of unanswered prompts
 - **7 Built-in Tools** — Bash, FileRead, FileEdit, FileWrite, Grep, Glob, WebFetch
 - **6-Step Permission Pipeline** — DenyRule → ToolCheckPerm → BypassMode → AlwaysAllowRule → ReadOnlyAutoAllow → ModeDefault, supporting 6 permission modes
 - **Skill System** — Loads skills from `SKILL.md` files, supporting YAML frontmatter, parameter substitution, and priority override
@@ -81,7 +81,7 @@ go_rebuild/
 │   ├── types/             # Shared types (Message, Event, ToolCall, Context)
 │   └── errors/            # Domain errors (16 error codes)
 ├── docs/
-│   ├── protocols/         # WebSocket protocol specification (v1.4)
+│   ├── protocols/         # WebSocket protocol specification (v2.2)
 ├── Makefile               # Build/Run/Test/Lint
 └── go.mod                 # Go 1.26.1
 ```
@@ -139,7 +139,7 @@ The configuration file is located at `configs/config.yaml`. Main configuration i
 |--------|------|--------|
 | `server.port` | HTTP server port | `8080` |
 | `channels.websocket.port` | WebSocket port | `8081` |
-| `channels.websocket.path` | WebSocket path | `/ws` |
+| `channels.websocket.path` | WebSocket path | `/v1/ws` |
 | `llm.default_provider` | LLM Provider | `anthropic` |
 | `llm.providers.anthropic.model` | Model name | `astron-code-latest` |
 | `engine.max_turns` | Max tool calls per turn | `50` |
@@ -150,32 +150,35 @@ The configuration file is located at `configs/config.yaml`. Main configuration i
 
 ## WebSocket Protocol
 
-Connection Address: `ws://host:8081/ws`
+Connection Address: `ws://host:8081/v1/ws`
+
+The protocol is a **UI-first card model**: the engine streams *cards* (a turn,
+a message, a tool call, a sub-agent, …) that are opened, appended to, and
+closed, rather than a flat event log.
 
 ### Session Lifecycle
 
 ```text
-Client                                   Server
-  │                                        │
-  │── session.create ──────────────────────>│
-  │<────────────────────── session.created ─│
-  │                                        │
-  │── user.message ────────────────────────>│
-  │<──────────────────── message.start ─────│
-  │<──── content.start / content.delta ─────│  (Streaming Text)
-  │<──────── tool.start / tool.end ─────────│  (Server-side Tool)
-  │<──────────── tool.call ─────────────────│  (Client-side Tool)
-  │── tool.result ─────────────────────────>│
-  │<──── permission.request ────────────────│  (Permission Request)
-  │── permission.response ─────────────────>│
-  │<──────────────── content.stop ──────────│
-  │<──────────────── message.stop ──────────│
-  │<──────────────── task.end ──────────────│
-  │                                        │
-  │── abort ───────────────────────────────>│  (Interrupt)
+Client                                    Server
+  │                                         │
+  │── WebSocket upgrade ────────────────────>│
+  │<──────────────── 101 Switching ─────────│
+  │<──── session.event (kind=opened) ───────│  handshake + capabilities
+  │                                         │
+  │── user.message ─────────────────────────>│
+  │<──────────────── card.add ──────────────│  open a card (turn / message / tool / …)
+  │<──────────────── card.append ───────────│  stream content (channel: text / tool_input)
+  │<──── prompt.user (permission / … ) ─────│  engine asks; blocks until answered
+  │── prompt.user_response ─────────────────>│
+  │<──────────────── card.close ────────────│  card done (+ metrics: tokens, cost)
+  │<──────────── card.close (kind=turn) ────│  turn finished
+  │                                         │
+  │── session.interrupt (trace_id) ─────────>│  interrupt an in-flight turn
+  │── session.resume  (last_seq) ───────────>│  reconnect & replay missed events
 ```
 
-For detailed protocol specifications, see [docs/protocols/websocket.md](docs/protocols/websocket.md).
+For a copy-paste client, see the [Usage Examples](docs/examples.md); for the
+full wire contract, see [docs/protocols/websocket.md](docs/protocols/websocket.md).
 
 ## Documentation
 
