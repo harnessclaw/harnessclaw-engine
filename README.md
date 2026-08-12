@@ -6,6 +6,34 @@
 
 An LLM programming assistant engine built with Go. It provides capabilities via the WebSocket protocol, supporting multi-turn dialogues, tool calling, permission control, and skill extension.
 
+## Quick Start
+
+Get a running engine and see streaming output in under a minute.
+
+```bash
+# 1. Clone, then set your LLM provider (base_url / api_key / model)
+git clone https://github.com/harnessclaw/harnessclaw-engine.git
+cd harnessclaw-engine
+$EDITOR configs/config.yaml          # llm.providers.*
+
+# 2. Run — WebSocket on :8081/v1/ws, HTTP on :8080
+make run
+```
+
+Talk to it — the engine streams back a **card model** (`card.add` → `card.append` → `card.close`):
+
+```bash
+npm i -g wscat
+wscat -c ws://localhost:8081/v1/ws
+
+# ← on connect, the server pushes  session.event (kind=opened)   ← handshake
+> {"type":"user.message","event_id":"c1","content":[{"type":"text","text":"Say hello"}]}
+# ← card.add → card.append (channel:"text") … → card.close (card_kind:"turn")
+```
+
+The whole contract: **connect → `session.event(opened)` → `user.message` → `card.*` stream until the `turn` card closes.**
+For a full streaming client (keep-alive, permission prompts, reconnect), see **[docs/examples.md](docs/examples.md)**.
+
 ## Architecture Overview
 
 ```text
@@ -86,7 +114,7 @@ go_rebuild/
 └── go.mod                 # Go 1.26.1
 ```
 
-## Quick Start
+## Building from Source
 
 ### Prerequisites
 
@@ -183,6 +211,7 @@ full wire contract, see [docs/protocols/websocket.md](docs/protocols/websocket.m
 ## Documentation
 
 - [WebSocket Protocol Specification v2.2](docs/protocols/websocket.md)
+- [Usage Examples](docs/examples.md) — wscat smoke test, minimal Node.js client, prompt handling, reconnect
 
 ## 📞 Support
 
