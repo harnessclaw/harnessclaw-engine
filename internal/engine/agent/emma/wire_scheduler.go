@@ -33,6 +33,7 @@ type wiredDeps struct {
 	Logger        *zap.Logger
 	Cfg           Config
 	WorkspaceRoot string
+	MCPTools      []tool.Tool
 }
 
 // wireScheduler 装配 scheduler.Scheduler，注入：
@@ -56,6 +57,7 @@ func wireScheduler(wd wiredDeps) scheduler.Scheduler {
 		Retryer:       wd.Retryer,
 		PromptBuilder: wd.PromptBuilder,
 		SkillReader:   wd.SkillReader,
+		MCPTools:      wd.MCPTools,
 		Logger:        wd.Logger,
 		Cfg: loopruntime.Config{
 			MaxTokens:           wd.Cfg.MaxTokens,

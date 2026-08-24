@@ -2,6 +2,7 @@ package tool
 
 import (
 	"sort"
+	"strings"
 
 	"harnessclaw-go/internal/provider"
 )
@@ -243,19 +244,29 @@ func (tp *ToolPool) FilteredFor(agentType AgentType) *ToolPool {
 	return sub
 }
 
-// FilterByNames returns a sub-pool containing only tools whose names are in
-// the whitelist. If whitelist is nil or empty, returns the pool unchanged.
+// FilterByNames returns a sub-pool containing only tools whose names
+// match the whitelist. If whitelist is nil or empty, returns the pool
+// unchanged.
+//
+// An entry may be an exact tool name, "*" (match everything), or a
+// trailing-wildcard prefix such as "mcp__*". The wildcard forms exist
+// because MCP tool names are not knowable when an AgentDefinition is
+// written — they depend on which servers an operator configured and what
+// those servers advertise at runtime. Without a pattern, a definition
+// with a whitelist could never admit MCP tools at all, and since
+// AllowedTools is authoritative (see common.BuildToolPool) that would
+// make connected servers invisible to every agent that has one.
+//
+// Matching stays deliberately simple — exact, "*", or one trailing "*" —
+// mirroring permission.matchesToolName rather than introducing glob
+// semantics the rest of the codebase does not have.
 func (tp *ToolPool) FilterByNames(whitelist []string) *ToolPool {
 	if len(whitelist) == 0 {
 		return tp
 	}
-	allowed := make(map[string]bool, len(whitelist))
-	for _, name := range whitelist {
-		allowed[name] = true
-	}
 	var filtered []Tool
 	for _, t := range tp.merged {
-		if allowed[t.Name()] {
+		if matchesAnyToolPattern(whitelist, t.Name()) {
 			filtered = append(filtered, t)
 		}
 	}
@@ -355,4 +366,32 @@ func (tp *ToolPool) WithoutNames(deny []string) *ToolPool {
 // Size returns the number of tools in the pool.
 func (tp *ToolPool) Size() int {
 	return len(tp.merged)
+}
+
+// matchesAnyToolPattern reports whether name satisfies at least one
+// entry in patterns.
+func matchesAnyToolPattern(patterns []string, name string) bool {
+	for _, p := range patterns {
+		if matchesToolPattern(p, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesToolPattern implements the three accepted forms: "*" matches
+// anything, a trailing "*" matches on prefix, and everything else is an
+// exact comparison.
+//
+// A bare "*" is checked before the prefix branch so it cannot be read as
+// "empty prefix" — same result here, but the explicit case keeps the
+// intent obvious to the next reader.
+func matchesToolPattern(pattern, name string) bool {
+	if pattern == "*" {
+		return true
+	}
+	if strings.HasSuffix(pattern, "*") {
+		return strings.HasPrefix(name, strings.TrimSuffix(pattern, "*"))
+	}
+	return pattern == name
 }

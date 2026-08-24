@@ -5,6 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+### Added
+- MCP (Model Context Protocol) client support. Configure servers under `tools.mcp_servers` in `config.yaml` and the engine connects to each on startup, discovers its tools, and exposes them to agents as `mcp__<server>__<tool>`. Stdio transport only for now: the engine spawns the server as a child process and speaks JSON-RPC over its stdin/stdout. Per-server `enabled`, `command`, `args`, `env` and `timeout`. A server that fails to start logs a warning and costs only its own tools, never engine startup: the handshake gets a short 20s budget by default so an unreachable server cannot stall boot, and a server known to be slow raises its own bound with an explicit `timeout`. Tools from a server that fails the initial handshake become available after an engine restart; a server that dies mid-session is re-dialled on the next call. Child processes are reaped on shutdown.
+- `AgentDefinition.AllowedTools` entries now accept a trailing wildcard (`mcp__*`), so a definition can admit tools whose names are only known at runtime. `freelancer` opts in by default; emma's curated palette deliberately does not.
+
+### Fixed
+- Environment variables for MCP servers keep the exact case written in YAML. Viper lowercases every key it stores, so a `GITHUB_TOKEN` entry would previously have reached the child process as `github_token` — a server that starts cleanly and then fails to authenticate.
+
 ## [0.0.23-beta.0] - 2026-06-16
 
 ### Fixed

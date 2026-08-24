@@ -9,6 +9,7 @@ import (
 	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/provider/retry"
 	"harnessclaw-go/internal/skills"
+	"harnessclaw-go/internal/tools"
 )
 
 // Config holds tunables for the emma engine's query loop.
@@ -94,6 +95,16 @@ type Config struct {
 	// forwarded to the browser-agent module so it can construct its
 	// SkillProvider.
 	BrowserAgent config.BrowserAgentConfig
+
+	// MCPTools are the MCP-backed tools discovered at startup, built by
+	// mcptool.NewTools from a connected mcp.Manager. Nil disables MCP
+	// entirely, which is the default and the common case.
+	//
+	// These are passed to every tool pool the engine builds — emma's own
+	// and every sub-agent's — but an agent only actually sees them if its
+	// whitelist admits them (an "mcp__*" entry in AllowedTools). Handing
+	// them to the pool is therefore safe regardless of configuration.
+	MCPTools []tool.Tool
 
 	// StatsRegistry, when non-nil, lets the engine attribute LLM /
 	// sub-agent / tool activity to the correct Tracker.

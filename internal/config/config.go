@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
 
 	"harnessclaw-go/internal/provider/bifrost"
 )
@@ -722,6 +724,17 @@ type ToolsConfig struct {
 	WebSearch    WebSearchConfig    `mapstructure:"web_search"`
 	TavilySearch TavilySearchConfig `mapstructure:"tavily_search"`
 	BrowserAgent BrowserAgentConfig `mapstructure:"browser_agent"`
+
+	// MCPServers maps a server name to its connection config. Tools
+	// discovered from these servers are appended to the pool AFTER the
+	// built-in block (see tool.NewToolPool step 4) so the built-in
+	// prefix stays byte-stable for prompt caching.
+	//
+	// The key is the server name exactly as written in YAML. Load uses
+	// viper's "::" key delimiter, so a name containing dots
+	// ("acme.files") stays one key instead of being split into a
+	// nested path.
+	MCPServers map[string]MCPServerConfig `mapstructure:"mcp_servers"`
 }
 
 // ToolConfig holds individual tool settings.
@@ -766,11 +779,201 @@ type BrowserAgentConfig struct {
 	ConfirmActions       []string      `mapstructure:"confirm_actions"`
 }
 
+// MCPTransportStdio is the only MCP transport implemented today: the
+// engine spawns the server as a child process and speaks JSON-RPC over
+// its stdin/stdout.
+const MCPTransportStdio = "stdio"
+
+// MCPServerConfig describes one MCP server the engine connects to as a
+// client.
+//
+// Transport is carried in the schema even though only stdio is
+// implemented, so URL-based servers (streamable HTTP / SSE) can be added
+// later without a breaking config change. SanitizeMCPServers drops an
+// entry naming any other transport rather than silently ignoring the
+// field, which would look to an operator like a connection that simply
+// never happened.
+type MCPServerConfig struct {
+	// Enabled gates the connection. A disabled entry is still parsed and
+	// shape-checked, so an operator can keep a definition around without
+	// paying for the child process.
+	Enabled bool `mapstructure:"enabled"`
+
+	// Transport selects the wire transport. Empty means stdio — read it
+	// through EffectiveTransport rather than comparing to "" directly.
+	Transport string `mapstructure:"transport"`
+
+	// Command is the executable to spawn for stdio transport.
+	Command string `mapstructure:"command"`
+
+	// Args are passed to Command verbatim.
+	Args []string `mapstructure:"args"`
+
+	// Env is merged over the engine's own environment for the child
+	// process. This is where an operator puts a server's API token, so
+	// values must never be logged — see SanitizeMCPServers, which logs
+	// only key names.
+	Env map[string]string `mapstructure:"env"`
+
+	// Timeout caps a single MCP request (initialize / tools/list /
+	// tools/call). Zero means "use the engine default", NOT "no
+	// timeout" — an unbounded MCP call would park a tool-dispatch
+	// goroutine for the life of the process.
+	Timeout time.Duration `mapstructure:"timeout"`
+}
+
+// EffectiveTransport resolves the empty default to stdio. Branch on this
+// instead of comparing Transport to "" at each call site.
+func (m MCPServerConfig) EffectiveTransport() string {
+	if m.Transport == "" {
+		return MCPTransportStdio
+	}
+	return m.Transport
+}
+
 // PermissionConfig holds tool permission control settings.
 type PermissionConfig struct {
 	Mode         string   `mapstructure:"mode"` // default, plan, bypass, acceptEdits, dontAsk
 	AllowedTools []string `mapstructure:"allowed_tools"`
 	DeniedTools  []string `mapstructure:"denied_tools"`
+}
+
+// SanitizeMCPServers drops malformed MCP server entries, logging each
+// removal at WARN. Same philosophy as SanitizeLLM: a bad server
+// definition must not stop the engine from booting, because nothing the
+// user does in chat depends on it. Run AFTER Validate.
+//
+// Mutates c in place. Logger may be nil (drops happen silently — fine
+// for tests).
+//
+// Entries are shape-checked whether or not they are enabled, so a typo
+// in a disabled block surfaces at startup instead of the first time
+// someone flips `enabled: true`. A dropped entry is removed outright,
+// which lets callers treat everything still in the map as connectable.
+func (c *Config) SanitizeMCPServers(logger *zap.Logger) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	for name, srv := range c.Tools.MCPServers {
+		if strings.TrimSpace(name) == "" {
+			logger.Warn("config sanitize: dropping MCP server — name is empty")
+			delete(c.Tools.MCPServers, name)
+			continue
+		}
+		if transport := srv.EffectiveTransport(); transport != MCPTransportStdio {
+			logger.Warn("config sanitize: dropping MCP server — unsupported transport",
+				zap.String("server", name),
+				zap.String("transport", transport),
+				zap.String("supported", MCPTransportStdio))
+			delete(c.Tools.MCPServers, name)
+			continue
+		}
+		if strings.TrimSpace(srv.Command) == "" {
+			logger.Warn("config sanitize: dropping MCP server — command is empty",
+				zap.String("server", name))
+			delete(c.Tools.MCPServers, name)
+			continue
+		}
+		if srv.Timeout < 0 {
+			logger.Warn("config sanitize: dropping MCP server — timeout is negative",
+				zap.String("server", name),
+				zap.Duration("timeout", srv.Timeout))
+			delete(c.Tools.MCPServers, name)
+			continue
+		}
+	}
+}
+
+// EnabledMCPServers returns the names of servers that are both present
+// after sanitization and enabled, in sorted order.
+//
+// Sorted rather than map order so startup logs and any derived tool
+// ordering are reproducible across runs — Go map iteration is
+// deliberately randomised, and an unstable order here would show up as
+// churn in the prompt-cache prefix once these tools reach the pool.
+func (c *Config) EnabledMCPServers() []string {
+	names := make([]string, 0, len(c.Tools.MCPServers))
+	for name, srv := range c.Tools.MCPServers {
+		if srv.Enabled {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// rawMCPEnvFile is the minimal shape needed to recover exact-case env
+// keys straight from the YAML file. Only the fields we must bypass viper
+// for are declared — everything else about an MCP server still comes
+// from the normal viper unmarshal.
+type rawMCPEnvFile struct {
+	Tools struct {
+		MCPServers map[string]struct {
+			Env map[string]string `yaml:"env"`
+		} `yaml:"mcp_servers"`
+	} `yaml:"tools"`
+}
+
+// applyRawMCPEnv restores exact-case `env` keys for MCP servers.
+//
+// viper lowercases every key it stores, so an env block written as
+// ACME_TOKEN arrives as acme_token. Environment variables are
+// case-sensitive on Unix and MCP servers conventionally name theirs in
+// uppercase, so the lowercased form would be handed to the child process
+// and silently fail to authenticate — the worst kind of config bug,
+// since the server starts and only misbehaves later.
+//
+// Rather than move the schema off the ecosystem-standard map form (which
+// users copy-paste out of MCP server READMEs), re-read just the
+// tools.mcp_servers.*.env subtree from the file, where key case
+// survives. Server names stay lowercased by viper, which is harmless and
+// documented in configs/config.yaml — so raw names are matched
+// case-insensitively here.
+//
+// path may be empty (no config file found on disk); then there is
+// nothing to recover and the viper-parsed values stand. A malformed file
+// is not an error here either — viper already parsed it successfully, so
+// a yaml error at this point can only mean we disagree about the shape,
+// and losing env case is better than refusing to boot.
+func applyRawMCPEnv(cfg *Config, path string, logger *zap.Logger) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	if path == "" || len(cfg.Tools.MCPServers) == 0 {
+		return
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		logger.Warn("config: could not re-read file for MCP env case recovery",
+			zap.String("path", path), zap.Error(err))
+		return
+	}
+
+	var raw rawMCPEnvFile
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		logger.Warn("config: could not parse MCP env block; env var names may be lowercased",
+			zap.String("path", path), zap.Error(err))
+		return
+	}
+
+	for rawName, rawSrv := range raw.Tools.MCPServers {
+		if len(rawSrv.Env) == 0 {
+			continue
+		}
+		key := strings.ToLower(rawName)
+		srv, ok := cfg.Tools.MCPServers[key]
+		if !ok {
+			continue
+		}
+		env := make(map[string]string, len(rawSrv.Env))
+		for k, v := range rawSrv.Env {
+			env[k] = v
+		}
+		srv.Env = env
+		cfg.Tools.MCPServers[key] = srv
+	}
 }
 
 // Load reads configuration from file, environment variables, and defaults.
@@ -850,6 +1053,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("tools::browser_agent::allowed_domains", []string{})
 	v.SetDefault("tools::browser_agent::action_policy_path", "")
 	v.SetDefault("tools::browser_agent::confirm_actions", []string{})
+	v.SetDefault("tools::mcp_servers", map[string]any{})
 	v.SetDefault("permission::mode", "default")
 	v.SetDefault("skills::dirs", []string{"~/.harnessclaw/workspace/skills"})
 	v.SetDefault("console::enabled", true)
@@ -895,6 +1099,13 @@ func Load(configPath string) (*Config, error) {
 			cfg.SourcePath = used
 		}
 	}
+
+	// Recover exact-case MCP env keys from the file viper just read.
+	// Must run after SourcePath is resolved, since that is the path we
+	// re-parse. Load has no logger (the logger is built FROM this
+	// config), so recovery failures degrade silently — see
+	// applyRawMCPEnv.
+	applyRawMCPEnv(&cfg, cfg.SourcePath, nil)
 
 	// Apply default skills directory when config has no dirs.
 	// Viper's SetDefault won't help if the key exists but the value is null/empty.

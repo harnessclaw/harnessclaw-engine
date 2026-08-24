@@ -38,8 +38,19 @@ var dispatchToolNames = []string{"freelance", "dispatch", "task"}
 //  3. optionally strip dispatch tools for strict leaves (applies after
 //     either branch so a whitelist that mistakenly named a dispatch
 //     tool still gets clamped)
-func BuildToolPool(registry *tool.Registry, allowed []string, agentType tool.AgentType, stripDispatch bool) *tool.ToolPool {
-	pool := tool.NewToolPool(registry, nil, nil)
+//  4. MCP tools, when supplied via WithMCPTools, join the pool as its
+//     mcp group — appended after the built-in block so the built-in
+//     prefix stays byte-stable for prompt caching. They are subject to
+//     the same whitelist/blacklist passes as built-ins, so a definition
+//     admits them with an "mcp__*" entry in AllowedTools (see
+//     tool.ToolPool.FilterByNames).
+func BuildToolPool(registry *tool.Registry, allowed []string, agentType tool.AgentType, stripDispatch bool, opts ...PoolOption) *tool.ToolPool {
+	var o poolOptions
+	for _, fn := range opts {
+		fn(&o)
+	}
+
+	pool := tool.NewToolPool(registry, o.mcpTools, nil)
 
 	if len(allowed) > 0 {
 		pool = pool.FilterByNames(allowed)
@@ -52,4 +63,24 @@ func BuildToolPool(registry *tool.Registry, allowed []string, agentType tool.Age
 	}
 
 	return pool
+}
+
+// poolOptions carries the optional inputs to BuildToolPool.
+type poolOptions struct {
+	mcpTools []tool.Tool
+}
+
+// PoolOption configures BuildToolPool.
+//
+// Options rather than extra parameters: BuildToolPool has two production
+// call sites and a dozen in tests, and MCP is additive — an option keeps
+// every existing caller compiling unchanged while letting the two paths
+// that can reach a Manager opt in.
+type PoolOption func(*poolOptions)
+
+// WithMCPTools supplies the MCP-backed tools for this pool. Pass the
+// slice from mcptool.NewTools. Nil or empty is a no-op, which is the
+// normal case for a user with no MCP servers configured.
+func WithMCPTools(tools []tool.Tool) PoolOption {
+	return func(o *poolOptions) { o.mcpTools = tools }
 }

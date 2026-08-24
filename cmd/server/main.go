@@ -49,6 +49,7 @@ import (
 	"harnessclaw-go/internal/engine/agent/emma/resume"
 	"harnessclaw-go/internal/humanloop"
 	"harnessclaw-go/internal/engine/session"
+	"harnessclaw-go/internal/mcp"
 	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/engine/permission"
 	"harnessclaw-go/internal/provider"
@@ -63,6 +64,7 @@ import (
 	sqlitesess "harnessclaw-go/internal/persistence/sqlite"
 	"harnessclaw-go/internal/tasks"
 	"harnessclaw-go/internal/tools"
+	"harnessclaw-go/internal/tools/mcptool"
 	"harnessclaw-go/internal/tools/agenttool"
 	"harnessclaw-go/internal/tools/builtin/askuserquestion"
 	"harnessclaw-go/internal/tools/builtin/bash"
@@ -131,6 +133,12 @@ func main() {
 	// by Validate above; this pass only removes the parts that
 	// won't load cleanly, leaving the rest usable.
 	cfg.SanitizeLLM(logger)
+
+	// Same treatment for MCP server entries: a malformed definition is
+	// dropped with a WARN so one bad server can't stop the engine from
+	// booting. Everything left in cfg.Tools.MCPServers after this point
+	// is shape-valid and safe to hand to a connector.
+	cfg.SanitizeMCPServers(logger)
 
 	// Sanity-check every endpoint's model_type. Unknown tokens are
 	// dropped with a warn so a typo doesn't fail engine startup — the
@@ -454,6 +462,31 @@ func main() {
 	// holds a pointer, so writes through agentDefReg are visible to it.
 	agentDefReg := definition.NewRegistry()
 
+	// Connect configured MCP servers and adapt their tools. Best-effort
+	// by design: Manager.Connect logs and swallows per-server failures, so
+	// a broken server costs the user those tools and nothing else. Returns
+	// immediately when no server is enabled, which is the common case.
+	//
+	// Two different budgets on purpose. Tool CALLS get engine.tool_timeout
+	// (120s by default) because a real tool may legitimately run that
+	// long. The HANDSHAKE gets mcp.DefaultConnectTimeout (20s) because
+	// this call blocks startup, and the desktop app waits on the engine's
+	// WebSocket — so a wedged server here shows up to the user as an app
+	// that will not launch. A server that is genuinely slow to start
+	// raises its own bound with an explicit per-server `timeout`.
+	mcpMgr := mcp.NewManager(logger, cfg.Engine.ToolTimeout, mcp.DefaultConnectTimeout)
+	mcpMgr.Connect(context.Background(), cfg.Tools.MCPServers)
+	mcpTools := mcptool.NewTools(mcpMgr)
+	if len(mcpTools) > 0 {
+		names := make([]string, 0, len(mcpTools))
+		for _, t := range mcpTools {
+			names = append(names, t.Name())
+		}
+		logger.Info("mcp tools registered",
+			zap.Int("count", len(mcpTools)),
+			zap.Strings("names", names))
+	}
+
 	// L2 (worker / sub-agent) settings live on emma.Config directly.
 	// emma settings (profile, restricted tool palette, small loop) are
 	// applied via WithEmmaConfig below and overwrite the main-agent fields.
@@ -487,6 +520,7 @@ func main() {
 		DefRegistry:   agentDefReg,
 		SkillReader:   skillReader,
 		StatsRegistry: statsRegistry,
+		MCPTools:      mcpTools,
 		BrowserAgent:  cfg.Tools.BrowserAgent,
 		// MainAgentProfile / DisplayName / AllowedTools / MaxTurns are
 		// applied by WithEmmaConfig; setting non-default values here would
@@ -898,6 +932,14 @@ func main() {
 	// stuck writer cannot block shutdown indefinitely.
 	planWriterReg.StopAll(shutdownCtx)
 	logger.Info("plan writer registry stopped")
+
+	// Reap MCP child processes. Without this they outlive the engine as
+	// orphans — stdio servers are our children, and nothing else will
+	// clean them up.
+	if err := mcpMgr.Close(); err != nil {
+		logger.Error("failed to close some MCP servers", zap.Error(err))
+	}
+	logger.Info("mcp servers stopped")
 
 	// Flush logger.
 	logger.Info("shutdown complete")

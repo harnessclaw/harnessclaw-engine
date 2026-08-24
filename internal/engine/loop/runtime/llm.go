@@ -46,6 +46,12 @@ type LLM struct {
 	SkillReader   *skill.Reader // nil → freelancer 的 skill 自管理子系统未启用
 	Logger        *zap.Logger
 	Cfg           Config
+
+	// MCPTools are the MCP-backed tools discovered at startup. Passed
+	// into every sub-agent pool; a definition still has to admit them
+	// via an "mcp__*" entry in AllowedTools. Nil when no MCP server is
+	// configured, which is the common case.
+	MCPTools []tool.Tool
 }
 
 // Config 是 LLM Runtime 运行时配置。所有字段从 emma config 透传。
@@ -69,6 +75,7 @@ type LLMArgs struct {
 	SkillReader   *skill.Reader
 	Logger        *zap.Logger
 	Cfg           Config
+	MCPTools      []tool.Tool
 }
 
 // NewLLM 构造一个 LLM Runtime。
@@ -83,6 +90,7 @@ func NewLLM(a LLMArgs) *LLM {
 		SkillReader:   a.SkillReader,
 		Logger:        a.Logger,
 		Cfg:           a.Cfg,
+		MCPTools:      a.MCPTools,
 	}
 }
 
@@ -128,7 +136,8 @@ func (r *LLM) Run(ctx context.Context, p runtime.RunParams) (<-chan pkgtypes.Eng
 	// 落盘的 sub-agent 自然建出目录，无需写入的 sub-agent 不留垃圾目录。
 
 	// 3. 工具池（runner.RunLeaf:151-155）
-	pool := common.BuildToolPool(r.Registry, p.Definition.AllowedTools, p.Definition.AgentType, false)
+	pool := common.BuildToolPool(r.Registry, p.Definition.AllowedTools, p.Definition.AgentType, false,
+		common.WithMCPTools(r.MCPTools))
 
 	// 4. Profile + system prompt（runner.RunLeaf:158-180）
 	// WorkerIdentity 走 BuildFunctionalIdentity：用 sub-agent 自己的

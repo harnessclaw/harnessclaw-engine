@@ -306,6 +306,9 @@ func New(
 		Logger:        logger,
 		Cfg:           cfg,
 		WorkspaceRoot: workspace.DefaultRootDir(),
+		// MCP tools reach sub-agent pools through the scheduler runtime;
+		// emma's own pool picks them up separately in run().
+		MCPTools: cfg.MCPTools,
 	})
 
 	// @-mention router — only wired when a definition registry is

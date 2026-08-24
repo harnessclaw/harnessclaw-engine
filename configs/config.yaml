@@ -310,6 +310,48 @@ tools:
         allowed_domains: []
         action_policy_path: ""
         confirm_actions: []
+    # MCP servers the engine connects to as a client.
+    #
+    # Each key is a server name. Tools a server exposes are appended to the
+    # tool pool AFTER the built-in block, so adding a server never shifts
+    # the built-in prefix that prompt caching depends on.
+    #
+    # Only the stdio transport is implemented today: the engine spawns
+    # `command` with `args` and speaks JSON-RPC over the child's
+    # stdin/stdout. An entry naming any other transport is dropped at
+    # startup with a WARN rather than silently ignored.
+    #
+    # `timeout` bounds one tool call AND, when set, that server's startup
+    # handshake. Leave it unset and the handshake gets a short default
+    # (20s) so one unreachable server cannot stall engine startup, while
+    # tool calls fall back to engine.tool_timeout. Set it explicitly for a
+    # server you know is slow to start — a cold `npx` that installs on
+    # first run.
+    #
+    # A server that fails its startup handshake advertises no tools, so
+    # nothing it offers is available until the engine restarts. Servers
+    # that connect and later die are re-dialled automatically on the next
+    # call.
+    #
+    # Credentials belong in `env` — keep the real values in
+    # configs/config_self.yaml or environment variables, never here.
+    #
+    # Two case notes, both deliberate: server NAMES are lowercased when
+    # loaded ("MyServer" becomes "myserver"), matching how the MCP
+    # ecosystem names servers; env var KEYS keep their exact case, so
+    # GITHUB_TOKEN reaches the child process as GITHUB_TOKEN.
+    mcp_servers: {}
+    # mcp_servers:
+    #     filesystem:
+    #         enabled: true
+    #         command: "npx"
+    #         args: ["-y", "@modelcontextprotocol/server-filesystem", "~/Documents"]
+    #         timeout: "30s"       # caps one MCP request; 0 = engine default
+    #     acme-kb:
+    #         enabled: false       # parsed and shape-checked, never spawned
+    #         command: "/usr/local/bin/acme-mcp"
+    #         env:
+    #             ACME_TOKEN: ""
 # --- Agents ---
 # Project-level agent definitions loaded from YAML files at startup.
 # YAML is authoritative: edits take effect on next restart (no recompile).

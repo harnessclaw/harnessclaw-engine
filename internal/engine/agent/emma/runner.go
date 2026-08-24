@@ -35,7 +35,14 @@ func (e *Engine) run(
 	cfg := e.config
 
 	// Tool pool: optionally filtered by MainAgentAllowedTools.
-	pool := tool.NewToolPool(e.registry, nil, nil)
+	//
+	// MCP tools are handed in here too, but emma's default palette is a
+	// short whitelist (dispatch / promote / search / ask_user_question),
+	// so in practice they are filtered straight back out. That is the
+	// intended shape: emma delegates and curates, workers execute. An
+	// operator who wants emma calling an MCP tool directly adds an
+	// "mcp__*" entry to MainAgentAllowedTools.
+	pool := tool.NewToolPool(e.registry, cfg.MCPTools, nil)
 	if len(cfg.MainAgentAllowedTools) > 0 {
 		pool = pool.FilterByNames(cfg.MainAgentAllowedTools)
 	}

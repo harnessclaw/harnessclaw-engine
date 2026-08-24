@@ -33,6 +33,12 @@ var Freelancer = definition.AgentDefinition{
 		"meta_write",
 		// Skill 自管理
 		"search_skill", "load_skill", "unload_skill", "list_loaded_skills",
+		// MCP tools from any configured server. A pattern rather than
+		// literal names because MCP tool names are only known at runtime
+		// — they depend on which servers the operator configured. Still
+		// gated by PermissionManager like read/edit/write/bash, and
+		// resolves to nothing when no MCP server is connected.
+		"mcp__*",
 		// Terminal tools（MaybeAugmentForSubAgent 会自动加，这里列出来便于阅读）。
 		// "做不到"用 meta_write({status:"failed"}) + submit_task_result 表达，
 		// 不再有 escalate_to_planner。
