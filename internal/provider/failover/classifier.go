@@ -31,13 +31,11 @@ func FailoverWorthy(err error) bool {
 		return false
 	}
 
-	var fbErr *retry.FallbackTriggeredError
-	if errors.As(err, &fbErr) {
+	if _, ok := errors.AsType[*retry.FallbackTriggeredError](err); ok {
 		return true
 	}
 
-	var apiErr *retry.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*retry.APIError](err); ok {
 		switch apiErr.Type {
 		case retry.ErrPromptTooLong, retry.ErrMaxOutputTokens:
 			return false
