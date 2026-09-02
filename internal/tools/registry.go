@@ -13,6 +13,13 @@ type Registry struct {
 	mu      sync.RWMutex
 	tools   map[string]Tool
 	aliases map[string]string // alias → canonical name
+
+	// mcpTools holds tools discovered from external MCP servers. They are
+	// kept in a separate bucket from the built-in tools map on purpose:
+	// NewToolPool consumes them through its dedicated mcp slot so the pool
+	// keeps its cache-stable "built-in prefix, MCP appended" ordering.
+	// EnabledTools/All/Schemas intentionally do NOT include these.
+	mcpTools []Tool
 }
 
 // NewRegistry creates an empty tool registry.
@@ -83,6 +90,32 @@ func (r *Registry) Replace(name string, newTool Tool) error {
 		}
 	}
 	return nil
+}
+
+// SetMCPTools stores the tools discovered from external MCP servers.
+// Called once at startup after the MCP manager has connected and listed
+// tools. Replaces any previously stored set. The slice is copied so the
+// caller may reuse its own.
+func (r *Registry) SetMCPTools(tools []Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(tools) == 0 {
+		r.mcpTools = nil
+		return
+	}
+	r.mcpTools = append(make([]Tool, 0, len(tools)), tools...)
+}
+
+// MCPTools returns the tools discovered from external MCP servers, to be
+// passed into NewToolPool's mcp slot. Returns nil when none are configured.
+// The returned slice is a copy and safe for the caller to keep.
+func (r *Registry) MCPTools() []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.mcpTools) == 0 {
+		return nil
+	}
+	return append(make([]Tool, 0, len(r.mcpTools)), r.mcpTools...)
 }
 
 // Get retrieves a tool by name or alias. Returns nil if not found.

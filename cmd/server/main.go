@@ -48,6 +48,7 @@ import (
 	"harnessclaw-go/internal/engine/agent/emma"
 	"harnessclaw-go/internal/engine/agent/emma/resume"
 	"harnessclaw-go/internal/humanloop"
+	"harnessclaw-go/internal/mcp"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/metric/sessionstats"
 	"harnessclaw-go/internal/engine/permission"
@@ -250,6 +251,24 @@ func main() {
 			}
 			logger.Info("browser tool registered", zap.String("name", t.Name()))
 		}
+	}
+
+	// Connect to configured MCP servers and expose their tools to every
+	// tool pool through the registry's MCP slot (appended after the
+	// built-ins, matching the pool's cache-stable ordering). Discovery is
+	// best-effort: a server that fails to connect is skipped with a WARN
+	// and never blocks startup. The manager holds the sessions open for
+	// the process lifetime and is closed during graceful shutdown.
+	var mcpManager *mcp.Manager
+	if len(cfg.Tools.MCPServers) > 0 {
+		mcpManager = mcp.NewManager(cfg.Tools.MCPServers, nil, logger)
+		mcpCtx, mcpCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		mcpTools := mcpManager.Load(mcpCtx)
+		mcpCancel()
+		registry.SetMCPTools(mcpTools)
+		logger.Info("mcp tools loaded",
+			zap.Int("tools", len(mcpTools)),
+			zap.Int("servers", len(cfg.Tools.MCPServers)))
 	}
 
 	// Load skills and register SkillTool.
@@ -852,6 +871,13 @@ func main() {
 	// Stop accepting new messages and cancel idle cleanup.
 	cleanupCancel()
 	channelCancel()
+
+	// Close MCP sessions (and their stdio subprocesses).
+	if mcpManager != nil {
+		if err := mcpManager.Close(); err != nil {
+			logger.Warn("mcp manager close error", zap.Error(err))
+		}
+	}
 
 	// Stop all channels in parallel with timeout.
 	var wg sync.WaitGroup

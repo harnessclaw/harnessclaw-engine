@@ -722,6 +722,51 @@ type ToolsConfig struct {
 	WebSearch    WebSearchConfig    `mapstructure:"web_search"`
 	TavilySearch TavilySearchConfig `mapstructure:"tavily_search"`
 	BrowserAgent BrowserAgentConfig `mapstructure:"browser_agent"`
+
+	// MCPServers lists external Model Context Protocol servers whose tools
+	// are discovered at startup and merged into the tool pool (appended
+	// after the built-ins, matching the pool's cache-stable ordering).
+	// A server that fails to connect is skipped with a WARN — one bad
+	// server never blocks the others or startup.
+	MCPServers []MCPServerConfig `mapstructure:"mcp_servers"`
+}
+
+// MCPServerConfig describes a single Model Context Protocol server the
+// engine connects to as a client. Two transports are supported:
+//
+//   - "stdio": the engine launches Command with Args/Env and speaks
+//     JSON-RPC over the child's stdin/stdout.
+//   - "http":  the engine connects to URL (Streamable HTTP) with the
+//     given Headers (e.g. an Authorization bearer token).
+//
+// Every tool discovered from a server is exposed under the namespaced
+// name "<Name>__<remoteTool>" so the originating server stays attributable
+// through dedup, deny-rule matching, and the tool decision record, and so
+// two servers advertising the same tool name never collide.
+type MCPServerConfig struct {
+	// Name is the server's local identifier and the namespace prefix for
+	// its tools. Required; must be unique across mcp_servers.
+	Name string `mapstructure:"name"`
+	// Transport selects the wire protocol: "stdio" (default) or "http".
+	Transport string `mapstructure:"transport"`
+	// Command is the executable to launch (stdio transport). Required for stdio.
+	Command string `mapstructure:"command"`
+	// Args are the command arguments (stdio transport).
+	Args []string `mapstructure:"args"`
+	// Env are extra environment variables (KEY=VALUE is derived from the
+	// map) for the child process (stdio transport).
+	Env map[string]string `mapstructure:"env"`
+	// URL is the Streamable HTTP endpoint (http transport). Required for http.
+	URL string `mapstructure:"url"`
+	// Headers are sent on every HTTP request (http transport) — e.g.
+	// {"Authorization": "Bearer …"}.
+	Headers map[string]string `mapstructure:"headers"`
+	// Deny lists bare (un-namespaced) tool names to drop from THIS server
+	// at discovery time. Per-server so an operator can prune one server's
+	// tools without affecting another that exposes the same name.
+	Deny []string `mapstructure:"deny"`
+	// Disabled parks the server: it is skipped entirely at load time.
+	Disabled bool `mapstructure:"disabled"`
 }
 
 // ToolConfig holds individual tool settings.

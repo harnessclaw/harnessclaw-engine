@@ -34,8 +34,10 @@ func (e *Engine) run(
 ) types.Terminal {
 	cfg := e.config
 
-	// Tool pool: optionally filtered by MainAgentAllowedTools.
-	pool := tool.NewToolPool(e.registry, nil, nil)
+	// Tool pool: optionally filtered by MainAgentAllowedTools. MCP tools
+	// (if any) are appended after the built-ins; emma's whitelist normally
+	// filters them back out, but they flow through to sub-agent pools.
+	pool := tool.NewToolPool(e.registry, e.registry.MCPTools(), nil)
 	if len(cfg.MainAgentAllowedTools) > 0 {
 		pool = pool.FilterByNames(cfg.MainAgentAllowedTools)
 	}

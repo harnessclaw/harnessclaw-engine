@@ -39,7 +39,7 @@ var dispatchToolNames = []string{"freelance", "dispatch", "task"}
 //     either branch so a whitelist that mistakenly named a dispatch
 //     tool still gets clamped)
 func BuildToolPool(registry *tool.Registry, allowed []string, agentType tool.AgentType, stripDispatch bool) *tool.ToolPool {
-	pool := tool.NewToolPool(registry, nil, nil)
+	pool := tool.NewToolPool(registry, registry.MCPTools(), nil)
 
 	if len(allowed) > 0 {
 		pool = pool.FilterByNames(allowed)
