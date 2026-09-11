@@ -163,3 +163,146 @@ func TestSkillCard_JSON_OmitsPath(t *testing.T) {
 		t.Errorf("SkillCard JSON leaks Path value: %s", string(b))
 	}
 }
+
+func TestReader_Search_ExcludesModelDisabledSkills(t *testing.T) {
+	tmp := t.TempDir()
+	writeSkill(t, tmp, "a-manual",
+		"name: a-manual\ndescription: shared task\ndisable-model-invocation: true", "manual body")
+	writeSkill(t, tmp, "b-enabled",
+		"name: b-enabled\ndescription: shared task\ndisable-model-invocation: false", "enabled body")
+	writeSkill(t, tmp, "c-default",
+		"name: c-default\ndescription: shared task", "default body")
+	r := NewReader([]string{tmp}, zap.NewNop())
+	for _, tc := range []struct {
+		query string
+		limit int
+		want  string
+	}{
+		{"", 20, "b-enabled,c-default"},
+		{"a-manual", 20, ""},
+		{"shared", 20, "b-enabled,c-default"},
+		{"", 1, "b-enabled"},
+		{"a-manual shared", 1, "b-enabled"},
+	} {
+		got, err := r.Search(tc.query, tc.limit)
+		if err != nil {
+			t.Fatalf("Search(%q, %d): %v", tc.query, tc.limit, err)
+		}
+		var names []string
+		for _, card := range got {
+			names = append(names, card.Name)
+		}
+		if joined := strings.Join(names, ","); joined != tc.want {
+			t.Errorf("Search(%q, %d) = %q, want %q", tc.query, tc.limit, joined, tc.want)
+		}
+	}
+	// Filtering the model's search results must not discard the cached entry
+	// needed to explicitly load a manual-only skill.
+	full, err := r.Load("a-manual")
+	if err != nil {
+		t.Fatalf("Load after Search: %v", err)
+	}
+	if full.Body != "manual body" {
+		t.Errorf("explicit Load body = %q, want manual body", full.Body)
+	}
+}
+
+func TestReader_ModelInvocationPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		flag     string
+		disabled bool
+	}{
+		{"manual-only", "\ndisable-model-invocation: true", true},
+		{"enabled", "\ndisable-model-invocation: false", false},
+		{"default", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			writeSkill(t, tmp, "style", "name: style\ndescription: output style"+tc.flag, "Action first.")
+			r := NewReader([]string{tmp}, zap.NewNop())
+			full, err := r.Load("style")
+			if err != nil {
+				t.Fatalf("explicit Load: %v", err)
+			}
+			if full.Body != "Action first." || full.DisableModelInvocation != tc.disabled {
+				t.Fatalf("explicit Load = %+v", full)
+			}
+			full, err = r.LoadForModel("style")
+			if tc.disabled {
+				if err == nil || full != nil {
+					t.Fatalf("LoadForModel must reject manual-only skill: full=%+v, err=%v", full, err)
+				}
+			} else if err != nil || full == nil || full.Body != "Action first." {
+				t.Fatalf("LoadForModel should load enabled skill: full=%+v, err=%v", full, err)
+			}
+		})
+	}
+}
+
+func TestReader_LoadForModel_UsesCurrentPolicyWithCachedMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		initial  string
+		current  string
+		disabled bool
+	}{
+		{"disable-after-cache", "false", "true", true},
+		{"enable-after-cache", "true", "false", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			fm := "name: style\ndescription: output style\ndisable-model-invocation: "
+			writeSkill(t, tmp, "style", fm+tc.initial, "Original instructions.")
+			r := NewReader([]string{tmp}, zap.NewNop())
+			if _, err := r.Load("style"); err != nil {
+				t.Fatalf("prime metadata cache: %v", err)
+			}
+			writeSkill(t, tmp, "style", fm+tc.current, "Updated instructions.")
+			full, err := r.LoadForModel("style")
+			if tc.disabled {
+				if err == nil || full != nil {
+					t.Fatalf("new policy must prevent loading: full=%+v, err=%v", full, err)
+				}
+			} else if err != nil || full == nil || full.Body != "Updated instructions." {
+				t.Fatalf("new policy must allow loading: full=%+v, err=%v", full, err)
+			}
+			full, err = r.Load("style")
+			if err != nil {
+				t.Fatalf("explicit Load after edit: %v", err)
+			}
+			if full.Body != "Updated instructions." || full.DisableModelInvocation != tc.disabled {
+				t.Fatalf("explicit Load returned stale content or policy: %+v", full)
+			}
+		})
+	}
+}
+
+func TestLoader_ManualOnlySkillRetainsExplicitPrompt(t *testing.T) {
+	tmp := t.TempDir()
+	writeSkill(t, tmp, "i-have-adhd",
+		"name: i-have-adhd\ndescription: output style\ndisable-model-invocation: true", "Action first.")
+	result := NewLoader([]string{tmp}, zap.NewNop()).LoadAll()
+	if len(result.Errors) != 0 || len(result.Commands) != 1 {
+		t.Fatalf("LoadAll = %+v", result)
+	}
+	pc := result.Commands[0].Prompt
+	if pc == nil || !pc.UserInvocable || !pc.DisableModelInvocation {
+		t.Fatalf("manual-only command policy lost: %+v", pc)
+	}
+	blocks, err := pc.GetPromptForCommand("", nil)
+	if err != nil || len(blocks) != 1 || blocks[0].Text != "Action first." {
+		t.Fatalf("explicit prompt expansion = %+v, err=%v", blocks, err)
+	}
+}
+
+func TestSkillCard_JSON_OmitsModelInvocationPolicy(t *testing.T) {
+	card := SkillCard{Name: "style", DisableModelInvocation: true}
+	encoded, err := json.Marshal(card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(string(encoded)), "invocation") {
+		t.Fatalf("model-visible JSON exposes internal invocation policy: %s", encoded)
+	}
+}

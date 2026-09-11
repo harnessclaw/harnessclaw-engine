@@ -8,10 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"go.uber.org/zap"
-	"harnessclaw-go/internal/skills"
+	skill "harnessclaw-go/internal/skills"
 	"harnessclaw-go/internal/skills/tracker"
-	"harnessclaw-go/internal/tools"
+	tool "harnessclaw-go/internal/tools"
+
+	"go.uber.org/zap"
 )
 
 func writeSkill(t *testing.T, root, name, body string) {
@@ -153,5 +154,51 @@ func TestLoadSkill_NotFound(t *testing.T) {
 	res, _ := tl.Execute(mkCtx(tracker), raw)
 	if !res.IsError {
 		t.Fatal("missing skill should error")
+	}
+}
+
+func TestLoadSkill_DisableModelInvocation(t *testing.T) {
+	for _, preloaded := range []bool{false, true} {
+		name := "new"
+		if preloaded {
+			name = "unloaded"
+		}
+		t.Run(name, func(t *testing.T) {
+			tmp := t.TempDir()
+			writeSkill(t, tmp, "manual-only", "")
+			content := "---\nname: manual-only\ndisable-model-invocation: true\n---\nManual-only instructions."
+			if err := os.WriteFile(filepath.Join(tmp, "manual-only", "SKILL.md"), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			reader := skill.NewReader([]string{tmp}, zap.NewNop())
+			tr := tracker.NewSkillTracker(3)
+			if preloaded {
+				full, err := reader.Load("manual-only")
+				if err != nil {
+					t.Fatalf("explicit Load: %v", err)
+				}
+				if err := tr.Preload([]*skill.SkillFull{full}); err != nil {
+					t.Fatal(err)
+				}
+				if err := tr.MarkUnloaded("manual-only"); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			tl := New(reader, zap.NewNop())
+			res, err := tl.Execute(mkCtx(tr), json.RawMessage(`{"skill":"manual-only"}`))
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if !res.IsError {
+				t.Errorf("model load should be denied, got %q", res.Content)
+			}
+			if len(res.NewMessages) != 0 || strings.Contains(res.Content, "Manual-only instructions.") {
+				t.Error("denied model load exposed skill instructions")
+			}
+			if tr.Count() != 0 || tr.IsActive("manual-only") || tr.IsTracked("manual-only") != preloaded {
+				t.Error("denied model load changed tracker state")
+			}
+		})
 	}
 }

@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+### Fixed
+- Runtime skill lookup now keeps the first valid copy of each skill name in configured directory order, so lower-priority duplicates cannot replace its body or invocation policy or consume search results.
+- Runtime skill discovery, model loading, and candidate preloading now respect `disable-model-invocation: true`; explicit skill reads remain available, and models cannot reactivate unloaded skills marked for manual invocation.
+
 ## [0.0.23-beta.0] - 2026-06-16
 
 ### Fixed

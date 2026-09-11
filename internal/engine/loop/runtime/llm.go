@@ -22,15 +22,15 @@ import (
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/engine/prompt/texts"
 	"harnessclaw-go/internal/engine/scheduler/middlewares"
-	"harnessclaw-go/internal/workspace"
 	"harnessclaw-go/internal/engine/scheduler/runtime"
 	"harnessclaw-go/internal/engine/session"
 	"harnessclaw-go/internal/provider"
 	"harnessclaw-go/internal/provider/retry"
-	"harnessclaw-go/internal/skills"
+	skill "harnessclaw-go/internal/skills"
 	"harnessclaw-go/internal/skills/tracker"
-	"harnessclaw-go/internal/tools"
+	tool "harnessclaw-go/internal/tools"
 	browsertools "harnessclaw-go/internal/tools/builtin/browser"
+	"harnessclaw-go/internal/workspace"
 	pkgtypes "harnessclaw-go/pkg/types"
 )
 
@@ -393,7 +393,7 @@ func hydrateSkills(reader *skill.Reader, candidates []string) (*tracker.SkillTra
 	}
 	fulls := make([]*skill.SkillFull, 0, len(candidates))
 	for _, name := range candidates {
-		full, err := reader.Load(name)
+		full, err := reader.LoadForModel(name)
 		if err != nil {
 			return nil, "", fmt.Errorf("candidate skill %q: %w", name, err)
 		}

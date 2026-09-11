@@ -17,12 +17,13 @@ import (
 // Path is internal: SearchSkill outputs `json:"-"` to avoid leaking absolute
 // paths to the LLM; LoadSkill injects skill root via a separate XML attr.
 type SkillCard struct {
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	WhenToUse    string   `json:"when_to_use,omitempty"`
-	Version      string   `json:"version,omitempty"`
-	AllowedTools []string `json:"allowed_tools,omitempty"`
-	Path         string   `json:"-"`
+	Name                   string   `json:"name"`
+	Description            string   `json:"description"`
+	WhenToUse              string   `json:"when_to_use,omitempty"`
+	Version                string   `json:"version,omitempty"`
+	AllowedTools           []string `json:"allowed_tools,omitempty"`
+	Path                   string   `json:"-"`
+	DisableModelInvocation bool     `json:"-"`
 }
 
 // SkillFull carries the SKILL.md body in addition to metadata.
@@ -57,7 +58,7 @@ func NewReader(dirs []string, logger *zap.Logger) *Reader {
 	return &Reader{dirs: dirs, logger: logger}
 }
 
-// Search returns metadata-only SkillCards across all configured dirs.
+// Search returns model-invocable SkillCards across all configured dirs.
 // query, if non-empty, filters by case-insensitive substring match on
 // Name / Description / WhenToUse. limit caps results (0 → 20, max 50).
 func (r *Reader) Search(query string, limit int) ([]SkillCard, error) {
@@ -72,6 +73,15 @@ func (r *Reader) Search(query string, limit int) ([]SkillCard, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Filter into a separate slice: scan also serves explicit Load callers.
+	var visible []SkillCard
+	for _, card := range cards {
+		if !card.DisableModelInvocation {
+			visible = append(visible, card)
+		}
+	}
+	cards = visible
 
 	if query == "" {
 		if len(cards) > limit {
@@ -101,9 +111,9 @@ func (r *Reader) Search(query string, limit int) ([]SkillCard, error) {
 		return nil, nil
 	}
 	type scored struct {
-		card     SkillCard
-		hits     int
-		nameHit  bool
+		card    SkillCard
+		hits    int
+		nameHit bool
 	}
 	var ranked []scored
 	for _, c := range cards {
@@ -183,6 +193,7 @@ func (r *Reader) scan() ([]SkillCard, error) {
 	r.mu.Unlock()
 
 	seen := make(map[string]bool)
+	seenNames := make(map[string]bool)
 	var cards []SkillCard
 	for _, dir := range r.dirs {
 		if dir == "" {
@@ -222,13 +233,19 @@ func (r *Reader) scan() ([]SkillCard, error) {
 			if name == "" {
 				name = filepath.Base(filepath.Dir(p))
 			}
+			// Resolve directory priority before sorting or model visibility filtering.
+			if seenNames[name] {
+				continue
+			}
+			seenNames[name] = true
 			cards = append(cards, SkillCard{
-				Name:         name,
-				Description:  fm.Description,
-				WhenToUse:    fm.WhenToUse,
-				Version:      fm.Version,
-				AllowedTools: []string(fm.AllowedTools),
-				Path:         filepath.Dir(p), // skill root, NOT SKILL.md
+				Name:                   name,
+				Description:            fm.Description,
+				WhenToUse:              fm.WhenToUse,
+				Version:                fm.Version,
+				AllowedTools:           []string(fm.AllowedTools),
+				Path:                   filepath.Dir(p), // skill root, NOT SKILL.md
+				DisableModelInvocation: fm.DisableModelInvocation,
 			})
 		}
 	}
@@ -241,8 +258,10 @@ func (r *Reader) scan() ([]SkillCard, error) {
 	return cards, nil
 }
 
-// Load returns the full SkillFull including body. body is not cached
-// to avoid memory growth (skill body can be 100KB-ish per the spec cap).
+// Load returns the full SkillFull for explicit callers, including skills
+// that disable model invocation. Model-driven callers must use LoadForModel.
+// The body is not cached to avoid memory growth (skill body can be
+// 100KB-ish per the spec cap).
 func (r *Reader) Load(name string) (*SkillFull, error) {
 	cards, err := r.scan()
 	if err != nil {
@@ -263,9 +282,25 @@ func (r *Reader) Load(name string) (*SkillFull, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read skill body %s: %w", skillMd, err)
 	}
-	_, body, err := ParseFrontmatter(string(content))
+	fm, body, err := ParseFrontmatter(string(content))
 	if err != nil {
 		return nil, fmt.Errorf("frontmatter parse %s: %w", skillMd, err)
 	}
-	return &SkillFull{SkillCard: *card, Body: body}, nil
+	// Enforce the policy from the file we just read, not cached metadata.
+	fullCard := *card
+	fullCard.DisableModelInvocation = fm.DisableModelInvocation
+	return &SkillFull{SkillCard: fullCard, Body: body}, nil
+}
+
+// LoadForModel loads a skill only when its current frontmatter permits
+// model invocation. Explicit callers can continue to use Load.
+func (r *Reader) LoadForModel(name string) (*SkillFull, error) {
+	full, err := r.Load(name)
+	if err != nil {
+		return nil, err
+	}
+	if full.DisableModelInvocation {
+		return nil, fmt.Errorf("skill %q has disable-model-invocation set", name)
+	}
+	return full, nil
 }

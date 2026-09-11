@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"time"
 
-	"go.uber.org/zap"
 	"harnessclaw-go/internal/engine/prompt"
 	"harnessclaw-go/internal/metric/sessionstats"
-	"harnessclaw-go/internal/skills"
+	skill "harnessclaw-go/internal/skills"
 	"harnessclaw-go/internal/skills/tracker"
-	"harnessclaw-go/internal/tools"
+	tool "harnessclaw-go/internal/tools"
 	"harnessclaw-go/pkg/types"
+
+	"go.uber.org/zap"
 )
 
 const ToolName = "load_skill"
@@ -99,6 +100,14 @@ func (t *LoadSkillTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 
 	// Branch 2: tracked but unloaded → reactivate (with budget pre-check).
 	if tracker.IsTracked(in.Skill) {
+		full, _ := tracker.GetFull(in.Skill)
+		if full != nil && full.DisableModelInvocation {
+			t.logInfo(agentRunID, in.Skill, "denied", "model_invocation_disabled", 0, tracker.Count(), "")
+			return &types.ToolResult{
+				Content: fmt.Sprintf("skill %q has disable-model-invocation set", in.Skill),
+				IsError: true,
+			}, nil
+		}
 		if tracker.Count() >= tracker.Max() {
 			t.logInfo(agentRunID, in.Skill, "denied", "budget_full", 0, tracker.Count(), "")
 			active, _ := tracker.List()
@@ -112,7 +121,6 @@ func (t *LoadSkillTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 			t.logInfo(agentRunID, in.Skill, "error", "reactivate_failed: "+err.Error(), 0, tracker.Count(), "")
 			return &types.ToolResult{Content: "reactivate failed: " + err.Error(), IsError: true}, nil
 		}
-		full, _ := tracker.GetFull(in.Skill)
 		version := ""
 		bodyBytes := 0
 		if full != nil {
@@ -137,7 +145,7 @@ func (t *LoadSkillTool) Execute(ctx context.Context, raw json.RawMessage) (*type
 		t.logInfo(agentRunID, in.Skill, "error", "reader_unset", 0, tracker.Count(), "")
 		return &types.ToolResult{Content: "skill reader not configured", IsError: true}, nil
 	}
-	full, err := t.reader.Load(in.Skill)
+	full, err := t.reader.LoadForModel(in.Skill)
 	if err != nil {
 		t.logInfo(agentRunID, in.Skill, "error", "disk_load_failed: "+err.Error(), 0, tracker.Count(), "")
 		return &types.ToolResult{Content: "load failed: " + err.Error(), IsError: true}, nil
