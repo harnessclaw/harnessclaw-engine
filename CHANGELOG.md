@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and versions
 
 ## [Unreleased]
 
+### Fixed
+- Avoid emitting tool-use events twice when the first LLM streaming attempt succeeds.
+
 ## [0.0.23-beta.0] - 2026-06-16
 
 ### Fixed

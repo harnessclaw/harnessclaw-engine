@@ -29,7 +29,7 @@ var llmHeartbeatInterval = 30 * time.Second
 
 // Test-only accessors. Keep here (not in _test.go) so they share the
 // var with the runtime path and don't get build-tagged out.
-func llmHeartbeatIntervalForTest() time.Duration   { return llmHeartbeatInterval }
+func llmHeartbeatIntervalForTest() time.Duration     { return llmHeartbeatInterval }
 func setLLMHeartbeatIntervalForTest(d time.Duration) { llmHeartbeatInterval = d }
 
 // LLMCallTimeouts bundles the per-attempt deadlines applied to one
@@ -106,10 +106,9 @@ type LLMCallResult struct {
 // per-attempt streaming + timing instrumentation.
 //
 // When out is non-nil, events are streamed in real-time on the FIRST
-// attempt (optimistic path). Retries buffer silently to avoid emitting
-// duplicate / partial data; the caller's result already received the
-// first attempt's stream so a clean overwrite isn't possible — but
-// that's the same trade-off the previous bespoke loop made.
+// attempt (optimistic path). Before each retry, a text reset clears any
+// partial first-attempt text. Retries buffer silently, and a successful
+// retry replays its final text and tool calls once.
 //
 // retryer must be non-nil (callers fetch it from QueryEngine.retryer);
 // nil retryer disables retries entirely (single-attempt fallback).
@@ -352,30 +351,12 @@ func CallLLM(
 		result = &LLMCallResult{}
 	}
 
-	// On clean success, replay the buffered text + tool_use events
-	// onto `out` so downstream consumers (translator, sub-agent
-	// driver post-processing) see them as if they were live-streamed.
-	// On failure, emit nothing — the caller (subagent_driver /
-	// queryloop) sees result.StreamErr and emits its own
-	// Error / MessageDelta(stop_reason=error) / MessageStop frames.
-	//
-	// Why replay instead of streaming live: see the doOnce comment.
-	// Short version: a failed attempt-1 with partial chunks then
-	// followed by a successful retry leaves the wire with stale
-	// content the front-end can't reconcile. Buffer-then-replay
-	// guarantees the wire only ever carries the FINAL successful
-	// attempt's content.
-	//
-	// Ordering: text first (concatenated into one EngineEventText),
-	// then tool_uses in arrival order. Interleaved text-tool-text-
-	// tool isn't preserved, but that pattern is rare in current
-	// tool-using LLMs (Anthropic / OpenAI almost always emit text
-	// then tool calls; pure-text or pure-tool responses are also
-	// common). Front-end rendering of "text bubble + tool card
-	// sequence" is unaffected.
-	if err == nil && out != nil && result != nil {
-		// Skip text replay when attempt 1 already streamed it live.
-		if !streamedLive && result.TextBuf != "" {
+	// Replay only a successful buffered retry: the first attempt already
+	// emitted both text and tool-use events live. Replaying its tool calls
+	// here would deliver each tool use twice. Failed buffered attempts are
+	// discarded; the caller owns the final error envelope.
+	if err == nil && out != nil && result != nil && !streamedLive {
+		if result.TextBuf != "" {
 			out <- types.EngineEvent{Type: types.EngineEventText, AgentID: agentID, Text: result.TextBuf}
 		}
 		for _, tc := range result.ToolCalls {
@@ -442,8 +423,8 @@ func logSubmissionShape(_ *zap.Logger, _ *provider.ChatRequest) {
 
 // CallLLMOnce performs one Chat call and fully consumes the stream,
 // collecting text, tool calls, and usage. When out is non-nil, events
-// are also emitted in real-time for streaming to the client (today
-// CallLLM always passes nil — see buffer-then-replay rationale). When
+// are also emitted in real-time for streaming to the client. CallLLM
+// enables this for the first attempt and buffers retries. When
 // planningOut is non-nil, the stream-aware tracker emits ToolPlanning
 // / ToolPlanningProgress events live, even when out is nil — these are
 // observation-only signals that may be retracted on retry.
@@ -789,8 +770,8 @@ func runLLMHeartbeat(
 		case now := <-t.C:
 			select {
 			case out <- types.EngineEvent{
-				Type:    types.EngineEventLLMHeartbeat,
-				AgentID: agentID,
+				Type:     types.EngineEventLLMHeartbeat,
+				AgentID:  agentID,
 				Duration: now.Sub(start).Milliseconds(),
 			}:
 			default:

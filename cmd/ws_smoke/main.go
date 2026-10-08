@@ -61,7 +61,7 @@ func main() {
 	})
 
 	fmt.Printf("→ posted task to session %s: %s\n", sessID, truncate(prompt, 60))
-	fmt.Println("→ streaming frames…\n")
+	fmt.Print("→ streaming frames…\n\n")
 
 	frameCounts := map[string]int{}
 	cardKindCounts := map[string]int{}

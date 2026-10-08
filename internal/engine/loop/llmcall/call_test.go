@@ -519,10 +519,7 @@ func TestRetryLLMCall_HeartbeatsStopAfterCompletion(t *testing.T) {
 }
 
 // twoChunkProvider sends two text chunks plus one tool_use, mimicking
-// a typical Anthropic-style tool-using response. Used to verify the
-// buffer-then-replay path emits exactly the same wire events as if
-// the chunks streamed live, just in a single burst after the call
-// resolves.
+// a typical Anthropic-style tool-using response.
 type twoChunkProvider struct{}
 
 func (p *twoChunkProvider) Name() string { return "two-chunk" }
@@ -544,17 +541,8 @@ func (p *twoChunkProvider) Chat(_ context.Context, _ *provider.ChatRequest) (*pr
 	return &provider.ChatStream{Events: ch, Err: func() error { return nil }}, nil
 }
 
-// TestRetryLLMCall_ReplaysBufferedContentOnSuccess pins the Plan-B
-// contract: every attempt is buffered (no live streaming), and the
-// successful attempt's full content is replayed onto out as a single
-// burst — text concatenated, then tool_uses in arrival order.
-//
-// Why this matters: in the old design, attempt 1 streamed text live.
-// If attempt 1 failed mid-stream and a retry succeeded, the wire had
-// stale partial content from attempt 1, while the engine's internal
-// model state held attempt 2's fresh full answer. Buffer-then-replay
-// guarantees wire = internal state.
-func TestRetryLLMCall_ReplaysBufferedContentOnSuccess(t *testing.T) {
+// A successful first attempt streams each text chunk and tool call once.
+func TestRetryLLMCall_StreamsFirstAttemptWithoutReplay(t *testing.T) {
 	out := make(chan types.EngineEvent, 16)
 
 	result := CallLLM(
@@ -597,11 +585,8 @@ func TestRetryLLMCall_ReplaysBufferedContentOnSuccess(t *testing.T) {
 			t.Errorf("unexpected event type on wire: %s", ev.Type)
 		}
 	}
-	// Buffer-then-replay: exactly one EngineEventText carrying the
-	// CONCATENATED textBuf (not one event per chunk like live
-	// streaming would produce).
-	if len(texts) != 1 || texts[0] != "Hello world" {
-		t.Errorf("expected exactly one text event with full content; got %v", texts)
+	if len(texts) != 2 || texts[0] != "Hello " || texts[1] != "world" {
+		t.Errorf("expected the two original text chunks without replay; got %v", texts)
 	}
 	if len(tools) != 1 || tools[0] != "bash" {
 		t.Errorf("expected one tool_use; got %v", tools)
@@ -610,12 +595,78 @@ func TestRetryLLMCall_ReplaysBufferedContentOnSuccess(t *testing.T) {
 	_ = hbCount
 }
 
-// TestRetryLLMCall_NoEmissionOnFailure pins the failure half of the
-// contract: when retries are exhausted, NO text/tool_use events fire
-// onto out at all. The caller (subagent_driver / queryloop) is
-// responsible for emitting Error / MessageDelta(stop=error) /
-// MessageStop frames. CallLLM stays out of the way.
-func TestRetryLLMCall_NoEmissionOnFailure(t *testing.T) {
+// retryChunkProvider fails mid-stream before a final two-chunk success.
+type retryChunkProvider struct {
+	twoChunkProvider
+	calls     int
+	failUntil int
+}
+
+func (p *retryChunkProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatStream, error) {
+	p.calls++
+	if p.calls > p.failUntil {
+		return p.twoChunkProvider.Chat(ctx, req)
+	}
+	ch := make(chan types.StreamEvent, 1)
+	ch <- types.StreamEvent{Type: types.StreamEventText, Text: "partial"}
+	close(ch)
+	return &provider.ChatStream{
+		Events: ch,
+		Err:    func() error { return fmt.Errorf("read tcp: i/o timeout") },
+	}, nil
+}
+
+func TestRetryLLMCall_ResetsPartialTextAndReplaysSuccessfulRetry(t *testing.T) {
+	for _, failures := range []int{1, 2} {
+		t.Run(fmt.Sprintf("failures_%d", failures), func(t *testing.T) {
+			prov := &retryChunkProvider{failUntil: failures}
+			out := make(chan types.EngineEvent, 32)
+			result := CallLLM(context.Background(), prov, &provider.ChatRequest{}, zap.NewNop(),
+				fastRetryer(failures), LLMCallTimeouts{}, "agent_retry", out, nil)
+			close(out)
+			if result.StreamErr != nil {
+				t.Fatalf("call should succeed: %v", result.StreamErr)
+			}
+			if prov.calls != failures+1 || result.TextBuf != "Hello world" || len(result.ToolCalls) != 1 {
+				t.Fatalf("unexpected result after %d attempts: %+v", prov.calls, result)
+			}
+			var visible string
+			var texts []string
+			resets, tools := 0, 0
+			for ev := range out {
+				if ev.AgentID != "agent_retry" {
+					t.Errorf("event targets agent %q, want agent_retry", ev.AgentID)
+				}
+				switch ev.Type {
+				case types.EngineEventText:
+					visible += ev.Text
+					texts = append(texts, ev.Text)
+				case types.EngineEventTextReset:
+					visible = ""
+					resets++
+				case types.EngineEventToolUse:
+					tools++
+					if ev.ToolUseID != "tu_a" || ev.ToolName != "bash" || ev.ToolInput != result.ToolCalls[0].Input {
+						t.Errorf("unexpected replayed tool: %+v", ev)
+					}
+				case types.EngineEventLLMHeartbeat, types.EngineEventLLMRetry:
+				default:
+					t.Errorf("unexpected event: %s", ev.Type)
+				}
+			}
+			if visible != result.TextBuf || resets != failures || tools != 1 {
+				t.Errorf("visible=%q resets=%d tools=%d", visible, resets, tools)
+			}
+			if len(texts) != 2 || texts[0] != "partial" || texts[1] != "Hello world" {
+				t.Errorf("want first-attempt prefix then one successful replay; got %v", texts)
+			}
+		})
+	}
+}
+
+// When every Chat call fails before streaming, only retry status and
+// reset events appear. The caller remains responsible for error frames.
+func TestRetryLLMCall_NoContentOnChatFailure(t *testing.T) {
 	const maxRetries = 2
 	prov := &retryMockProvider{
 		failUntil: 100, // every attempt fails
@@ -642,14 +693,19 @@ func TestRetryLLMCall_NoEmissionOnFailure(t *testing.T) {
 		t.Errorf("expected %d attempts; got %d", maxRetries+1, prov.calls)
 	}
 
-	// Only status ticks (heartbeats / retry notes) should appear on
-	// out — never text / tool_use / error frames from CallLLM
-	// itself. The caller emits its own error envelope after we return.
+	resets := 0
+	retries := 0
 	for ev := range out {
 		switch ev.Type {
+		case types.EngineEventTextReset:
+			resets++
+			if ev.AgentID != "agent_fail" {
+				t.Errorf("reset targets agent %q, want agent_fail", ev.AgentID)
+			}
 		case types.EngineEventLLMHeartbeat:
 			// fine — keep-alive ticks during the wait
 		case types.EngineEventLLMRetry:
+			retries++
 			// fine — status tick fired by retry.Retryer before each
 			// backoff sleep. Carries no assistant content; it's the
 			// "we're retrying" wire signal the front-end needs to
@@ -659,6 +715,9 @@ func TestRetryLLMCall_NoEmissionOnFailure(t *testing.T) {
 		default:
 			t.Errorf("unexpected wire event: %s", ev.Type)
 		}
+	}
+	if resets != maxRetries || retries != maxRetries {
+		t.Errorf("got %d resets and %d retries, want %d of each", resets, retries, maxRetries)
 	}
 }
 

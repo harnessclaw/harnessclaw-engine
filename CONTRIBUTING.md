@@ -45,6 +45,11 @@ go test -tags=integration ./internal/provider/bifrost/ -v
 
 A coverage report is available via `make test-cover`, which writes `coverage.html`.
 
+**Testing policy:** new functionality and bug fixes must come with automated
+tests. Add unit tests next to the code you change, and add a regression test for
+every bug fix whenever practical. CI runs `go build`, `go vet` and
+`go test -race` on every pull request.
+
 ## Architecture constraints
 
 Dependencies flow in one direction:
@@ -99,6 +104,9 @@ script reshuffles usually do not need an entry. When in doubt, add one. The file
 follows [Keep a Changelog](https://keepachangelog.com/) and is written in English.
 
 ## Reporting bugs and asking questions
+
+For security vulnerabilities, follow the private reporting instructions in
+[SECURITY.md](SECURITY.md).
 
 - 🐛 [Issues](https://github.com/harnessclaw/harnessclaw-engine/issues) - bugs and feature requests
 - 💬 [Discussions](https://github.com/harnessclaw/harnessclaw-engine/discussions) - questions and ideas
